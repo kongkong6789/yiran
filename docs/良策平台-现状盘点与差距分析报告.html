@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>良策平台 · 现状盘点与差距分析报告（对照 Loops 行动方案 v2.0）</title>
+<style>
+  :root { --bg:#0a0c18; --card:#12151f; --border:#2a2e42; --text:#e7e9f3; --muted:#8b90ad; --accent:#7d7aff; --accent2:#c4b5fd; --ok:#59e5ff; --warn:#ffd77a; --risk:#ff8fa3; --green:#6ee7a0; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.65; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 28px; margin: 0 0 8px; background: linear-gradient(135deg,#e7e9f3,#c4b5fd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+  h2 { font-size: 18px; color: var(--accent2); border-left: 3px solid var(--accent); padding-left: 12px; margin: 40px 0 16px; }
+  h3 { font-size: 15px; color: #aab0d6; margin: 20px 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0; }
+  .highlight { border-color: var(--accent); background: rgba(125,122,255,0.06); }
+  .warncard { border-color: #5c4a1e; background: rgba(255,215,122,0.06); }
+  .riskcard { border-color: #6b2f3d; background: rgba(255,143,163,0.06); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; background: rgba(125,122,255,0.08); white-space: nowrap; }
+  code { background: #1e2240; border: 1px solid #3d4270; border-radius: 4px; padding: 1px 6px; font-size: 12px; color: #c4b5fd; font-family: ui-monospace, Consolas, monospace; }
+  .tag { display: inline-block; border-radius: 6px; padding: 1px 10px; font-size: 12px; border: 1px solid; white-space: nowrap; }
+  .t-done { border-color: #2e5c46; color: var(--green); background: rgba(110,231,160,0.08); }
+  .t-mock { border-color: #5c4a1e; color: var(--warn); background: rgba(255,215,122,0.08); }
+  .t-miss { border-color: #6b2f3d; color: var(--risk); background: rgba(255,143,163,0.08); }
+  .t-part { border-color: #2e4a5c; color: var(--ok); background: rgba(89,229,255,0.08); }
+  .bar-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; font-size: 13px; }
+  .bar-label { width: 170px; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 14px; background: #0e1018; border-radius: 7px; overflow: hidden; border: 1px solid var(--border); }
+  .bar-fill { height: 100%; border-radius: 7px; }
+  .bar-pct { width: 48px; text-align: right; color: var(--muted); flex-shrink: 0; }
+  .arch { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: #0e1018; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre; line-height: 1.6; color: #aab0d6; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 12px; }
+  .grid-item { background: #0e1018; border-radius: 10px; padding: 14px 16px; border: 1px solid var(--border); }
+  .grid-item h4 { margin: 0 0 8px; font-size: 14px; }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .score { font-weight: 600; }
+  .s-high { color: var(--green); } .s-mid { color: var(--warn); } .s-low { color: var(--risk); }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; font-size: 13px; }
+  .chain-node { border: 1px solid; border-radius: 8px; padding: 6px 12px; }
+  .cn-done { border-color: #2e5c46; color: var(--green); }
+  .cn-mock { border-color: #5c4a1e; color: var(--warn); }
+  .cn-miss { border-color: #6b2f3d; color: var(--risk); border-style: dashed; }
+  .chain-arrow { color: var(--muted); }
+  @media print { body { background:#fff; color:#111; } .card { border-color:#ddd; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>良策平台 · 现状盘点与差距分析报告</h1>
+<p class="subtitle">
+  对照文档: 依然公司 Loops 品牌代理行动方案 v2.0（Relation≠Loop · 五步法）<br/>
+  盘点范围: backend 9 个 Django App · frontend 8 个页面 · 配置与迁移 · Loops 关键词全局扫描<br/>
+  日期: 2026-07-10 · 图例: <span class="tag t-done">已实现</span> <span class="tag t-part">部分实现</span> <span class="tag t-mock">Mock/骨架</span> <span class="tag t-miss">完全缺失</span>
+</p>
+
+<!-- ===== 结论 ===== -->
+<h2>〇、一句话结论</h2>
+<div class="card highlight">
+  <p><strong>结构层（L1/L2）已可演示闭环，动力学层（L3/L4）代码为零。</strong></p>
+  <p>目前平台已跑通「本体图谱(含 AGE 直读) → 指标/异常数据底座 → 圆桌多 Agent 会诊(图谱注入+回写+三格式产物) → SOP 编排+闸机+审计」这条演示主线。
+  但方案 v2 的核心价值主张——<strong>五步法生成 Loop（动态关系识别→CLD→闭环检测→证据评分→人工确认）</strong>——在代码库中没有任何实现：
+  没有 <code>CausalLink</code>、没有 <code>loop_detect</code>、<code>OntRelation</code> 上没有 polarity/delay 字段。
+  同时，全部 7 个业务连接器为 Mock，RAG 为 4 条硬编码语料，所有 API 无鉴权。</p>
+  <p>对应方案的渐进采纳路径：<strong>当前处于 Level 0（纯 Ontology 建模）末段</strong>，距离第一期目标（Level 1 手工 CLD 试点 + 确认 1~2 条 Loop）还差五步法工具链与真实业务数据两块。</p>
+</div>
+
+<!-- ===== 完成度总览 ===== -->
+<h2>一、能力域完成度总览</h2>
+<div class="card">
+  <div class="bar-row"><span class="bar-label">圆桌会议 Council</span><div class="bar-track"><div class="bar-fill" style="width:85%;background:linear-gradient(90deg,#59e5ff,#6ee7a0)"></div></div><span class="bar-pct">85%</span></div>
+  <div class="bar-row"><span class="bar-label">AGE 知识图谱</span><div class="bar-track"><div class="bar-fill" style="width:80%;background:linear-gradient(90deg,#59e5ff,#6ee7a0)"></div></div><span class="bar-pct">80%</span></div>
+  <div class="bar-row"><span class="bar-label">Ontology 本体(结构层)</span><div class="bar-track"><div class="bar-fill" style="width:75%;background:linear-gradient(90deg,#59e5ff,#6ee7a0)"></div></div><span class="bar-pct">75%</span></div>
+  <div class="bar-row"><span class="bar-label">审计日志</span><div class="bar-track"><div class="bar-fill" style="width:70%;background:#59e5ff"></div></div><span class="bar-pct">70%</span></div>
+  <div class="bar-row"><span class="bar-label">指标看板/数据底座</span><div class="bar-track"><div class="bar-fill" style="width:65%;background:#59e5ff"></div></div><span class="bar-pct">65%</span></div>
+  <div class="bar-row"><span class="bar-label">Harness 闸机/审批</span><div class="bar-track"><div class="bar-fill" style="width:55%;background:#ffd77a"></div></div><span class="bar-pct">55%</span></div>
+  <div class="bar-row"><span class="bar-label">RAG 知识库</span><div class="bar-track"><div class="bar-fill" style="width:15%;background:#ff8fa3"></div></div><span class="bar-pct">15%</span></div>
+  <div class="bar-row"><span class="bar-label">认证与权限</span><div class="bar-track"><div class="bar-fill" style="width:10%;background:#ff8fa3"></div></div><span class="bar-pct">10%</span></div>
+  <div class="bar-row"><span class="bar-label">业务连接器(7个)</span><div class="bar-track"><div class="bar-fill" style="width:5%;background:#ff8fa3"></div></div><span class="bar-pct">5%</span></div>
+  <div class="bar-row"><span class="bar-label"><strong>Loops 引擎(L3/L4)</strong></span><div class="bar-track"><div class="bar-fill" style="width:0%;background:#ff8fa3"></div></div><span class="bar-pct"><strong>0%</strong></span></div>
+</div>
+
+<!-- ===== 已做 ===== -->
+<h2>二、已经做到的（可演示、可用）</h2>
+<div class="card">
+  <table>
+    <tr><th>能力</th><th>状态</th><th>关键实现</th><th>证据文件</th></tr>
+    <tr>
+      <td><strong>本体图谱 CRUD + 可视化</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>OntObject/OntRelation 模型、split/merge、LLM 抽取、画布坐标、对象行级数据回查、PG 镜像同步</td>
+      <td><code>ontology/models.py</code> <code>graph_views.py</code> <code>signals.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>AGE 图谱直读</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>Cypher 直读 LightRAG workspace（683 顶点/852 边）、5 分钟进程内缓存、按需导入、<code>?focus=</code> 聚焦</td>
+      <td><code>datalake/age.py</code> <code>OntologyGraph.tsx</code></td>
+    </tr>
+    <tr>
+      <td><strong>圆桌会议全流程</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>多 Agent 并发轮次发言、用户插话、会议历史、结束产方案；LLM 网关双模（有 key 走真 LLM，无 key 智能 Mock）</td>
+      <td><code>council/engine.py</code> <code>llm.py</code> <code>Council.tsx</code></td>
+    </tr>
+    <tr>
+      <td><strong>图谱注入会议</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>问题关键词 → AGE 实体匹配 + 1-hop 子图 → 注入 Agent 资料卡；前端引用实体卡片可跳转图谱聚焦</td>
+      <td><code>council/graph_knowledge.py</code> <code>knowledge.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>会议回写本体</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>会议/方案入图、引用实体连边、LLM 方案抽取（后台线程执行）</td>
+      <td><code>council/writeback.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>三格式产物</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>MD 方案 + HTML 图表报告(SVG) + Excel 四 Sheet(openpyxl)；预览 + 下载 API</td>
+      <td><code>council/deliverables_gen.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>数据底座</strong></td><td><span class="tag t-part">部分实现</span></td>
+      <td>PG 分层数仓 DDL（dim/dwd/dws/ads）、指标/异常管线、主备 fallback、DuckDB 降级；<strong>但数据为演示 seed</strong></td>
+      <td><code>datalake/pg.py</code> <code>service.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>SOP 编排 + 闸机</strong></td><td><span class="tag t-part">部分实现</span></td>
+      <td>意图识别(关键词)→RAG→表单→闸机(Schema/权限/预算/状态)→连接器→审计；高风险仅标记 <code>need_approval</code></td>
+      <td><code>orchestration/graph.py</code> <code>harness/gate.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>审计留痕</strong></td><td><span class="tag t-done">已实现</span></td>
+      <td>AuditLog（trace/actor/intent/decision/checks）+ PG <code>biz_object_event</code>；前端审计页</td>
+      <td><code>core/models.py</code> <code>Audit.tsx</code></td>
+    </tr>
+  </table>
+</div>
+
+<!-- ===== 未做 ===== -->
+<h2>三、还没做的（对照方案逐项）</h2>
+
+<div class="card riskcard">
+  <h3>3.1 Loops 引擎 —— 方案核心，代码为零 <span class="tag t-miss">完全缺失</span></h3>
+  <p>全局扫描 <code>loop_detect</code> / <code>loop_simulate</code> / <code>leverage_analyze</code> / <code>CausalLink</code> / <code>FeedbackLoop</code> / <code>polarity</code> / <code>delay</code> / <code>PDC</code>，业务代码<strong>零命中</strong>（仅方案文档本身提及）。具体缺口：</p>
+  <table>
+    <tr><th>五步法步骤</th><th>需要的能力</th><th>现状</th></tr>
+    <tr><td>① 动态关系识别</td><td>OntologyRelation + 时序数据 → CausalLink 候选筛选</td><td>Relation 只有 <code>label</code> 一个语义字段，无时序关联分析</td></tr>
+    <tr><td>② 符号因果图 CLD</td><td>Relation 扩展 polarity(+/-)、delay(Δt)、function ƒ(x)；Entity→Stock 五类映射规则</td><td>模型无任何因果元数据字段；无 Stock/Flow 概念</td></tr>
+    <tr><td>③ 闭环检测</td><td><code>loop_detect</code> 图遍历闭合路径 + R/B 判定</td><td>无</td></tr>
+    <tr><td>④ 证据评分</td><td>数据相关性 + 专家标注 + SOP 支撑的加权置信度</td><td>无</td></tr>
+    <tr><td>⑤ 人工确认</td><td>Loop 候选评审 UI + 企微审批 + 写入 Loop 库</td><td>无 Loop 模型、无评审页面、企微未对接</td></tr>
+  </table>
+  <p style="color:var(--muted);font-size:13px;">第三期的 <code>loop_simulate</code>（模拟）、杠杆点分析、回路健康监控同样为零。24 个回路模式库目前只存在于方案文档，未进入任何数据结构。</p>
+</div>
+
+<div class="card warncard">
+  <h3>3.2 连接器 —— 全部 Mock <span class="tag t-mock">Mock/骨架</span></h3>
+  <p><code>connectors/base.py</code> 注册了 7 个连接器（金蝶、吉客云、企微智能表格、飞瓜/蝉妈妈、店铺后台、审批、内部），<strong>全部是 <code>MockConnector</code></strong>，返回伪造 external_id，无任何真实 HTTP/SDK 调用。方案要求的<strong>腾讯文档、微盘、NAS、WorkBuddy</strong> 连接器连注册都没有。这意味着：</p>
+  <ul>
+    <li>感知层无真实数据：吉客云订单/库存、金蝶财务无法进入数据底座（当前指标全靠 seed 演示数据）</li>
+    <li>执行层无真实动作：SOP「通过」闸机后的执行是假执行</li>
+    <li>五步法①的「时序数据」原料实际不存在</li>
+  </ul>
+</div>
+
+<div class="card warncard">
+  <h3>3.3 RAG —— 关键词占位 <span class="tag t-mock">Mock/骨架</span></h3>
+  <p><code>rag/service.py</code> 是 4 条硬编码语料 + 字符级关键词打分，并非真实 LightRAG 检索。圆桌会议注入的「制度/SOP 资料」实际来自这 4 条假语料。AGE 图谱虽然连通了 LightRAG 的 workspace，但<strong>文本检索通道没有打通</strong>。</p>
+</div>
+
+<div class="card warncard">
+  <h3>3.4 其他缺口</h3>
+  <table>
+    <tr><th>项</th><th>现状</th><th>影响</th></tr>
+    <tr><td>API 鉴权</td><td>DRF 全局 <code>AllowAny</code>，role 由请求体自报</td><td>不能对外/多人使用；闸机的权限校验可被绕过</td></tr>
+    <tr><td>审批闭环</td><td>闸机只返回 <code>need_approval</code> 状态，无审批 API、状态机、企微审批对接、批后放行</td><td>高风险动作实际无人审、也无法续跑</td></tr>
+    <tr><td>LLM 网关</td><td>当前环境网关不可用，Agent 发言与方案抽取运行在 Mock 模式</td><td>会议质量、方案抽取、图谱 LLM 抽取全部降级</td></tr>
+    <tr><td>LLM 意图识别</td><td>orchestration 意图识别为关键词规则，注释称对齐 LangGraph 但无依赖</td><td>自然语言指令覆盖面窄</td></tr>
+    <tr><td>Wiki / RAG 前端</td><td>WikiPage 模型 + API 存在但无前端页面；RAG 搜索也无页面</td><td>知识资产不可见</td></tr>
+    <tr><td>connectors / harness / rag / orchestration 无 DB 模型</td><td>纯内存/无状态骨架</td><td>连接器凭据、审批单、检索日志均无处持久化</td></tr>
+  </table>
+</div>
+
+<!-- ===== 技术链路 ===== -->
+<h2>四、产品视角：技术链路差在哪</h2>
+<div class="card">
+  <h3>4.1 数据流五层链路体检</h3>
+  <p>按方案的「感知→理解→决策→执行→复盘」逐层看，绿色实线为已通，黄色为 Mock 顶着，红色虚线为断点：</p>
+
+  <h3 style="margin-top:18px;">感知层（数据进来）</h3>
+  <div class="chain">
+    <span class="chain-node cn-miss">吉客云 API</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">金蝶云 API</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-mock">seed 演示数据</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-done">PG 分层数仓 dwd→dws→ads</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-done">指标/异常 API</span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);">断点：真实业务数据入口。没有它，五步法①的时序原料、证据评分④的数据相关性都无从谈起。<strong>这是整条链路的第一优先级缺口。</strong></p>
+
+  <h3>理解层（知识组织）</h3>
+  <div class="chain">
+    <span class="chain-node cn-done">AGE 图谱直读+缓存</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-done">本体 L1/L2 CRUD+镜像</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-mock">RAG(4条硬编码)</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">L3 回路层(Stock/CausalLink/Loop)</span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);">断点：<code>OntRelation</code> 停在纯结构层。要进 Level 2，最小改动是给 Relation 加 <code>polarity</code>/<code>delay_days</code>/<code>evidence_score</code>/<code>is_causal_candidate</code> 四个字段，新增 <code>Loop</code> 模型（成员链、R/B 类型、置信分、确认状态）。</p>
+
+  <h3>决策层（会诊与判断）</h3>
+  <div class="chain">
+    <span class="chain-node cn-done">圆桌多Agent会诊</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-done">图谱注入+回写</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-mock">LLM(网关不可用,Mock顶替)</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">Loop候选评审(五步法⑤)</span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);">决策层是全平台完成度最高的一层，但缺 Loop 评审这个「专用会议类型」：把候选 Loop（极性/延迟/证据分）作为议题注入圆桌，确认后写入 Loop 库。</p>
+
+  <h3>执行层（动作落地）</h3>
+  <div class="chain">
+    <span class="chain-node cn-done">闸机5道校验</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">审批流(仅标记无闭环)</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-mock">连接器(全Mock)</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-done">审计留痕</span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);">断点：<code>need_approval</code> 之后没有下文——需要审批单模型 + 企微审批回调 + 批后续跑。连接器需要至少 1 个真实对接（建议吉客云只读）打样。</p>
+
+  <h3>复盘层（回路监控）</h3>
+  <div class="chain">
+    <span class="chain-node cn-done">审计日志查询</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">PDC循环</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">回路健康监控</span><span class="chain-arrow">→</span>
+    <span class="chain-node cn-miss">杠杆点分析/模拟</span>
+  </div>
+  <p style="font-size:13px;color:var(--muted);">整层属于第二、三期，当前不阻塞，但依赖 L3 回路层先建起来。</p>
+
+  <h3>4.2 技术债清单（按优先级）</h3>
+  <table>
+    <tr><th>#</th><th>技术债</th><th>为什么现在要还</th><th>预估工作量</th></tr>
+    <tr><td>1</td><td>修复 LLM 网关（<code>.env</code> 的 <code>LLM_BASE_URL</code>/<code>LLM_API_KEY</code>）</td><td>会议发言、方案抽取、图谱抽取全在 Mock，试点质量不可信</td><td>0.5 天（配置排查）</td></tr>
+    <tr><td>2</td><td>吉客云只读连接器（订单/库存/SKU → dwd 层）</td><td>五步法①和证据评分④的数据原料；第一期硬依赖</td><td>1~2 周</td></tr>
+    <tr><td>3</td><td><code>OntRelation</code> 因果元数据 + <code>Loop</code> 模型 + 迁移</td><td>Level 2 入场券；改动小收益大</td><td>2~3 天</td></tr>
+    <tr><td>4</td><td>loop_detect 引擎（NetworkX 找环 + R/B 判定）</td><td>五步法③；有了 3 之后即可做</td><td>1 周</td></tr>
+    <tr><td>5</td><td>RAG 接真实 LightRAG（复用已有 workspace 配置）</td><td>会议 SOP 资料从 4 条假语料变为真知识库</td><td>3~5 天</td></tr>
+    <tr><td>6</td><td>DRF 鉴权（Token/JWT）+ 角色来源改服务端</td><td>多人使用前必须；闸机权限当前可绕过</td><td>3~5 天</td></tr>
+    <tr><td>7</td><td>审批单模型 + 企微审批回调 + 批后续跑</td><td>高风险动作的闭环；第二期</td><td>1~2 周</td></tr>
+    <tr><td>8</td><td>金蝶只读、腾讯文档/微盘/NAS 连接器</td><td>财务证据链与 CLD 工作坊协作；第二期</td><td>各 1 周+</td></tr>
+  </table>
+</div>
+
+<!-- ===== 业务注意 ===== -->
+<h2>五、业务视角：需要注意什么</h2>
+<div class="grid2">
+  <div class="grid-item">
+    <h4>⚠️ 演示数据 ≠ 业务事实</h4>
+    <p style="font-size:13px;">当前 DataLake 页看到的 GMV/毛利率/异常预警全部来自 seed 演示数据。<strong>在吉客云真实接入前，不要用平台数字做任何经营判断</strong>，也不要向依然公司演示时暗示这是真数。</p>
+  </div>
+  <div class="grid-item">
+    <h4>⚠️ Mock 模式下的会议产物</h4>
+    <p style="font-size:13px;">LLM 网关不可用时，Agent 发言与最终方案由 Mock 模板生成，观点是「像样但空心」的。试点会议（如品牌退款率会诊）务必先修复网关，否则人工确认环节（五步法⑤）在给假分析背书。</p>
+  </div>
+  <div class="grid-item">
+    <h4>⚠️ 不要跳过人工确认</h4>
+    <p style="font-size:13px;">方案核心原则「OntologyRelation ≠ Loop、人工确认不可省略」。即使 loop_detect 上线后，统计关联误判因果（假阳性）依然是最大方法论风险；业务负责人评审极性/延迟这一步是刚性流程，不是可选项。</p>
+  </div>
+  <div class="grid-item">
+    <h4>⚠️ 组织投入先于工具</h4>
+    <p style="font-size:13px;">第一期 Level 1 是「腾讯文档手工画 CLD + 圆桌验证」，不依赖新代码。需要提前锁定 2~3 名业务骨干 + 1 名 IT 对接人，安排 2~3 次各 2 小时的 CLD 工作坊。工具再好，没人标注极性/延迟就是空转。</p>
+  </div>
+  <div class="grid-item">
+    <h4>⚠️ 软存量数据缺口</h4>
+    <p style="font-size:13px;">品牌声誉、代理能力指数等 TYPE IV 衍生存量没有直接数据源。第一期建议降级为「专家打分的定性 Loop」，不要为凑数据强行拼指标。</p>
+  </div>
+  <div class="grid-item">
+    <h4>⚠️ 对外使用前必须加鉴权</h4>
+    <p style="font-size:13px;">所有 API 当前完全开放（AllowAny），角色由调用方自报。内网单人演示可接受，但接入依然公司真实订单/财务数据前，鉴权 + 角色服务端化是红线，否则闸机的权限/预算校验形同虚设。</p>
+  </div>
+</div>
+
+<!-- ===== 路线图 ===== -->
+<h2>六、建议行动顺序（对齐方案三期）</h2>
+<div class="card">
+  <table>
+    <tr><th>周期</th><th>动作</th><th>对应方案</th><th>产出验收</th></tr>
+    <tr>
+      <td rowspan="4"><strong>现在~2周</strong></td>
+      <td>修 LLM 网关；跑一场真 LLM 圆桌验证</td><td>基础设施</td><td>Agent 发言非 Mock，方案抽取真实</td>
+    </tr>
+    <tr><td>OntRelation 加 polarity/delay/evidence_score；新增 Loop 模型</td><td>Level 2 铺垫</td><td>迁移上线，图谱编辑可标注极性</td></tr>
+    <tr><td>吉客云只读连接器立项（申请 API 凭据）</td><td>第一期</td><td>SKU/订单/库存进 dwd 层</td></tr>
+    <tr><td>锁定试点品牌 + 业务骨干名单</td><td>第一期</td><td>CLD 工作坊排期确定</td></tr>
+    <tr>
+      <td rowspan="3"><strong>第3~6周</strong></td>
+      <td>手工绘制 R1+B1 CLD（腾讯文档），录入平台标注极性/延迟</td><td>五步法①②</td><td>CausalLink 候选集入库</td>
+    </tr>
+    <tr><td>loop_detect v1（图遍历找环 + R/B 判定 + 简单证据分）</td><td>五步法③④</td><td>检出 C1 增长极限候选</td></tr>
+    <tr><td>圆桌开「Loop 评审会」，人工确认 1~2 条 Loop</td><td>五步法⑤</td><td>正式 Loop 库有第一批记录</td></tr>
+    <tr>
+      <td rowspan="3"><strong>第7周起</strong></td>
+      <td>RAG 接真 LightRAG；DRF 鉴权上线</td><td>第二期</td><td>会议资料真实化、多人可用</td>
+    </tr>
+    <tr><td>审批单 + 企微审批回调；金蝶只读对接</td><td>第二期</td><td>need_approval 有闭环</td></tr>
+    <tr><td>B3/B5/C3 三条 Loop 扩展；PDC 工作流设计</td><td>第二期</td><td>回路库扩容至 5 条以上</td></tr>
+  </table>
+  <p style="color:var(--muted);font-size:13px;margin-top:12px;">
+    判断标准回顾（方案可行性分析）：第一期成功率 90%（手工 CLD + 现有平台即可），阻塞项只有 LLM 网关和试点数据两个；不要在第一期就动 loop_simulate、24 回路全库这些第三期的东西。
+  </p>
+</div>
+
+<div class="footer">
+  良策 AI Agent SaaS · 现状盘点与差距分析报告 · 2026-07-10<br/>
+  对照方案: docs/依然公司-Loops品牌代理行动方案.html (v2.0) · 盘点方式: 全代码库逐模块审读 + Loops 关键词全局扫描<br/>
+  核心结论: L1/L2 可演示 · L3/L4 零代码 · 连接器全 Mock · 第一期最短路径 = 修网关 + 吉客云只读 + Relation 因果字段 + 手工 CLD
+</div>
+</div>
+</body>
+</html>

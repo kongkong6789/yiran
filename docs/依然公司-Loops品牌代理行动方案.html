@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>依然公司 · Loops 品牌代理行动方案（完整版）</title>
+<style>
+  :root { --bg:#0a0c18; --card:#12151f; --border:#2a2e42; --text:#e7e9f3; --muted:#8b90ad; --accent:#7d7aff; --accent2:#c4b5fd; --ok:#59e5ff; --warn:#ffd77a; --risk:#ff8fa3; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.65; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 28px; margin: 0 0 8px; background: linear-gradient(135deg,#e7e9f3,#c4b5fd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+  h2 { font-size: 18px; color: var(--accent2); border-left: 3px solid var(--accent); padding-left: 12px; margin: 36px 0 16px; }
+  h3 { font-size: 15px; color: #aab0d6; margin: 20px 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0; }
+  .highlight { border-color: var(--accent); background: rgba(125,122,255,0.06); }
+  .warn { border-color: #5c4a1e; background: rgba(255,215,122,0.06); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--border); padding: 10px 12px; text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; background: rgba(125,122,255,0.08); }
+  .tag { display: inline-block; background: #1e2240; border: 1px solid #3d4270; border-radius: 6px; padding: 2px 10px; margin: 2px; font-size: 12px; }
+  .tag-r { border-color: #7a3d3d; color: #ff8fa3; }
+  .tag-b { border-color: #3d5a7a; color: #59e5ff; }
+  .pipeline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .pipe-step { background: #1e2240; border: 1px solid #3d4270; border-radius: 8px; padding: 8px 14px; font-size: 13px; }
+  .pipe-arrow { color: var(--muted); }
+  .feas { display: grid; grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); gap: 12px; }
+  .feas-item { background: #0e1018; border-radius: 10px; padding: 14px; border: 1px solid var(--border); }
+  .feas-item h4 { margin: 0 0 8px; font-size: 14px; }
+  .score { font-size: 22px; font-weight: 600; }
+  .score-high { color: #59e5ff; }
+  .score-mid { color: #ffd77a; }
+  .score-low { color: #ff8fa3; }
+  .arch { font-family: ui-monospace, monospace; font-size: 12px; background: #0e1018; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre; line-height: 1.5; color: #aab0d6; }
+  .phase { border-left: 3px solid var(--ok); padding-left: 14px; margin: 16px 0; }
+  .phase h4 { margin: 0 0 6px; color: var(--ok); }
+  ul { padding-left: 20px; } li { margin: 4px 0; }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  @media print { body { background:#fff; color:#111; } .card { border-color:#ddd; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>依然公司 · Loops 品牌代理行动方案</h1>
+<p class="subtitle">
+  基于 Loops 方法论文档 v1.0（徐健Simon · Meadows 系统思维 × Palantir Ontology 扩展）<br/>
+  技术栈: Mac · 企业微信 · 腾讯文档 · 微盘 · 金蝶云 · 吉客云 · NAS · WorkBuddy · 良策 AI<br/>
+  版本: v2.0 · 2026-07-10
+</p>
+
+<!-- ===== 核心命题 ===== -->
+<h2>〇、核心命题：Relation ≠ Loop</h2>
+<div class="card highlight">
+  <p><strong>Palantir Ontology 回答了「组织中存在什么对象？它们如何关联？」——这是结构层。</strong></p>
+  <p><strong>Loops 补充回答了「这些关联如何随时间产生行为变化？在哪些节点干预最有效？」——这是动力学层。</strong></p>
+  <blockquote style="border-left:3px solid var(--accent);margin:16px 0;padding-left:16px;color:#c4b5fd;">
+    Relations 告诉你谁连接谁；Loops 告诉你连接产生了什么后果。<br/>
+    <strong>OntologyRelation 不能直接等价为 Loop</strong>，但可以作为发现 <code>CausalLink</code> 候选的原料。
+  </blockquote>
+  <table>
+    <tr><th>维度</th><th>Ontology（结构层）</th><th>Loops（动力学层）</th></tr>
+    <tr><td>核心概念</td><td>Objects / Properties / Relations</td><td>Stocks / Flows / Causal Chains / Feedback Loops</td></tr>
+    <tr><td>时间维度</td><td>静态快照（Point-in-Time）</td><td>动态演化（Over-Time）</td></tr>
+    <tr><td>分析能力</td><td>溯源、查询、规则触发</td><td>模拟、预测、杠杆点分析</td></tr>
+    <tr><td>行动能力</td><td>操作级 Action（增删改查）</td><td>策略级 Intervention（回路干预）</td></tr>
+  </table>
+</div>
+
+<!-- ===== Loops 生成流水线 ===== -->
+<h2>一、新 Loops 生成机制（五步法）</h2>
+<div class="card">
+  <p>依然公司落地时，<strong>不从 OntologyRelation 直接映射 Loop</strong>，而是通过以下流水线生成：</p>
+  <div class="pipeline">
+    <span class="pipe-step">① 动态关系识别</span><span class="pipe-arrow">→</span>
+    <span class="pipe-step">② 符号因果图(CLD)</span><span class="pipe-arrow">→</span>
+    <span class="pipe-step">③ 闭环检测(R/B)</span><span class="pipe-arrow">→</span>
+    <span class="pipe-step">④ 证据评分</span><span class="pipe-arrow">→</span>
+    <span class="pipe-step">⑤ 人工确认</span>
+  </div>
+  <table>
+    <tr><th>步骤</th><th>输入</th><th>处理</th><th>输出</th><th>依然公司工具</th></tr>
+    <tr>
+      <td><strong>① 动态关系识别</strong></td>
+      <td>OntologyRelation + 时序数据 + 业务文档</td>
+      <td>从静态关系中识别可能随时间变化的因果候选；区分结构关系 vs 动力学关系</td>
+      <td>Relation 候选集 + 时序关联强度</td>
+      <td>良策本体图谱 + 吉客云/金蝶时序 + RAG(SOP)</td>
+    </tr>
+    <tr>
+      <td><strong>② 符号因果图</strong></td>
+      <td>候选关系 + Entity→Stock 五类映射</td>
+      <td>将候选升格为 CausalLink：添加 polarity(+/-)、delay(Δt)、function ƒ(x)</td>
+      <td>CLD 因果链集合</td>
+      <td>良策 OntologyGraph + 专家工作坊(腾讯文档)</td>
+    </tr>
+    <tr>
+      <td><strong>③ 闭环检测</strong></td>
+      <td>CLD 因果链图</td>
+      <td>图遍历找闭合路径；统计负极性数量判定 R(偶数个-) / B(奇数个-)</td>
+      <td>FeedbackLoop 实例（含 R/B 分类）</td>
+      <td>良策后端 loop_detect 引擎（待建）</td>
+    </tr>
+    <tr>
+      <td><strong>④ 证据评分</strong></td>
+      <td>候选 Loop + 指标时序 + 异常记录</td>
+      <td>多源证据加权：数据相关性、业务专家标注、历史案例匹配、SOP 文档支撑</td>
+      <td>Loop 置信度分数(0~100)</td>
+      <td>数据底座指标 + 圆桌会议 + 审计日志</td>
+    </tr>
+    <tr>
+      <td><strong>⑤ 人工确认</strong></td>
+      <td>高分候选 Loop</td>
+      <td>业务负责人审核极性/延迟/杠杆点；确认后写入正式 Loop 库</td>
+      <td>已确认 Loop → 纳入 PDC 监控</td>
+      <td>企微审批 + 圆桌会议 + WorkBuddy</td>
+    </tr>
+  </table>
+  <h3>Entity → Stock 五类映射（融合架构）</h3>
+  <table>
+    <tr><th>类型</th><th>条件</th><th>公式</th><th>依然公司示例</th></tr>
+    <tr><td>TYPE I 直接等同</td><td>实例会增减</td><td>Stock = COUNT(Entity)</td><td>代理品牌数、SKU数</td></tr>
+    <tr><td>TYPE II 属性提取</td><td>有累积性数值属性</td><td>Stock = SUM(property)</td><td>库存水位、现金余额</td></tr>
+    <tr><td>TYPE III 聚合汇总</td><td>时间窗口聚合</td><td>Stock = AGG(time_window)</td><td>月营收、日订单量</td></tr>
+    <tr><td>TYPE IV 衍生构造</td><td>跨实体函数合成</td><td>Stock = ƒ(props...)</td><td>品牌声誉指数、客户LTV</td></tr>
+    <tr><td>TYPE V 实体即流量</td><td>创建速率即流量</td><td>Flow = COUNT(created)/Δt</td><td>订单速率、退款速率</td></tr>
+  </table>
+</div>
+
+<!-- ===== 四层架构 ===== -->
+<h2>二、四层建模架构</h2>
+<div class="card arch">L4 干预层(Intervention)  ← Loops 新增: 杠杆点定位 · 行动映射 · 模拟预测 · 回路监控
+L3 回路层(Loop)          ← Loops 新增: 存量标记 · 流量定义 · 因果链+极性+延迟 · 闭环检测
+L2 关系层(Relation)      ← Ontology 原生: 关系类型 · 链接方向 · 基数约束
+L1 对象层(Object)        ← Ontology 原生: 对象类型 · 属性定义 · 属性类型
+
+融合原则:
+  Ontology 管理"是什么"  → Entity是原料, Relation是结构, Property是数据, Action是操作
+  Mapping  定义"怎么算"   → 5种Type规则, 极性+延迟, 聚合窗口
+  Loops    分析"为什么变" → Stock是计算产物, CausalLink是动态连接, Intervention是策略</div>
+
+<!-- ===== 依然公司24回路 ===== -->
+<h2>三、依然公司品牌代理 · 24 个回路模式库</h2>
+<div class="card">
+  <h3>增强回路 R（9个）</h3>
+  <table>
+    <tr><th>编号</th><th>名称</th><th>核心因果链</th><th>关键延迟</th></tr>
+    <tr><td>R1</td><td>品牌代理飞轮</td><td>成功案例→品牌信任→新合作→渠道密度→销售额→满意→品牌数↑</td><td>信任建立 6~18月</td></tr>
+    <tr><td>R2</td><td>渠道覆盖网络效应</td><td>网点数↑→触达率↑→销售额↑→议价能力↑→优质渠道↑</td><td>渠道谈判 1~3月</td></tr>
+    <tr><td>R3</td><td>品牌投入-回报飞轮</td><td>营销投入↑→认知↑→转化率↑→销售额↑→预算↑</td><td>认知积累 3~6月</td></tr>
+    <tr><td>R4</td><td>优质品牌资源倾斜</td><td>表现好→资源倾斜→增长↑→表现更优→更多资源</td><td>季度评估</td></tr>
+    <tr><td>R5</td><td>代理能力飞轮</td><td>项目交付↑→方法论沉淀↑→能力成熟度↑→竞标力↑→新品牌↑</td><td>跨品类提炼 数项目</td></tr>
+    <tr><td>R6</td><td>口碑推荐飞轮</td><td>满意度↑→行业口碑↑→主动接洽↑→收入↑→能力投入↑</td><td>口碑传播 6~12月</td></tr>
+    <tr><td>R7</td><td>人才吸引力飞轮</td><td>人才密度↑→产出质量↑→行业声誉↑→吸引力↑</td><td>招聘周期 2~4月</td></tr>
+    <tr><td>R8</td><td>运营学习曲线</td><td>累计运营量↑→经验↑→单位成本↓→利润↑→再投资↑</td><td>学习曲线 持续</td></tr>
+    <tr><td>R9</td><td>合作伙伴生态飞轮</td><td>品牌组合质量↑→渠道吸引力↑→优质位置↑→终端表现↑</td><td>渠道续约 年度</td></tr>
+  </table>
+  <h3>调节回路 B（7个）</h3>
+  <table>
+    <tr><th>编号</th><th>名称</th><th>核心因果链</th><th>风险</th></tr>
+    <tr><td>B1</td><td>管理带宽约束</td><td>品牌数↑→注意力稀释→服务质量↓→满意↓→续约↓</td><td>增长极限(C1)</td></tr>
+    <tr><td>B2</td><td>服务质量调节</td><td>实际质量→与标准差距↑→改进投入↑→[延迟]→质量↑</td><td>目标侵蚀(C2)</td></tr>
+    <tr><td>B3</td><td>库存调节/牛鞭效应</td><td>目标库存→缺口↑→补货↑→[延迟]→过冲→再缺货</td><td>震荡加剧</td></tr>
+    <tr><td>B4</td><td>物流配送时效</td><td>订单量↑→配送压力↑→[延迟]→时效↓→满意度↓</td><td>大促瓶颈</td></tr>
+    <tr><td>B5</td><td>现金流周转</td><td>预付款↑→现金↓→赊销收紧→进货↓→销售暂停→回笼</td><td>增长硬约束</td></tr>
+    <tr><td>B6</td><td>虚假需求信号</td><td>压货→出货虚高→品牌方误判→目标↑→库存积压</td><td>信息纪律</td></tr>
+    <tr><td>B7</td><td>人员招聘-流失</td><td>业务↑→人手不足→加班↑→[招聘延迟]→过冲→裁员</td><td>双重延迟</td></tr>
+  </table>
+  <h3>复合回路 Comp（8个）</h3>
+  <p>
+    <span class="tag">C1 增长极限</span><span class="tag">C2 目标侵蚀</span><span class="tag">C3 转移负担</span>
+    <span class="tag">C4 成功归成功者</span><span class="tag">C5 增长与投资不足</span><span class="tag">C6 意外敌人</span>
+    <span class="tag">C7 竞争升级</span><span class="tag">C8 信息延迟决策</span>
+  </p>
+  <p style="color:var(--muted);font-size:13px;">优先试点: <strong>R1+B1→C1(增长极限)</strong>、<strong>B3(牛鞭效应)</strong>、<strong>B5(现金流)</strong>、<strong>C3(促销vs品牌)</strong></p>
+</div>
+
+<!-- ===== 系统分工 ===== -->
+<h2>四、系统分工与数据流</h2>
+<div class="card arch">Mac(员工终端) → 企微 WorkBuddy → 良策 Agent / 圆桌会议 / Loop确认
+
+感知层: 吉客云(订单/库存/商品) + 金蝶云(财务/对账) + 店铺后台(指标)
+理解层: 良策本体图谱(L1/L2) + AGE知识图谱 + RAG(SOP/制度) + Mapping规则(L1→L3)
+决策层: 圆桌会议(Council) + Loop候选评审 + 杠杆点分析
+执行层: 闸机校验 + 吉客云/金蝶/企微审批
+复盘层: PDC循环 + 回路健康监控 + 方案/Loop回写图谱
+
+协作层: 腾讯文档(SOP/工作坊CLD) + 微盘(分发) + NAS(合同/归档)</div>
+
+<!-- ===== 分期行动 ===== -->
+<h2>五、分三期行动方案</h2>
+
+<div class="phase">
+  <h4>第一期（4~6周）：Ontology 打底 + Loop 试点（R1+B1→C1）</h4>
+  <ul>
+    <li>录入 Top 品牌/店铺/SKU 到本体库；吉客云只读连接器</li>
+    <li>定义 GMV/毛利率/退款率/库存周转口径（TYPE II/III 映射）</li>
+    <li>手工绘制 R1(品牌飞轮)+B1(管理带宽) CLD，验证 C1 增长极限</li>
+    <li>运行五步法 ①~⑤：从 OntologyRelation「品牌-授权→店铺」等识别 CausalLink 候选</li>
+    <li>圆桌会诊真实问题（如某品牌退款率超标）；产出 MD/HTML/Excel 三份产物</li>
+  </ul>
+  <p><strong>成功标准:</strong> 确认 1~2 条 Loop（含极性/延迟/证据分）；本体有真实图谱；异常→会诊→方案→留痕</p>
+</div>
+
+<div class="phase">
+  <h4>第二期（6~8周）：Loop 引擎 + 三业务 Loop 贯通</h4>
+  <ul>
+    <li>部署 loop_detect（闭环检测）+ 证据评分模块</li>
+    <li>扩展 B3(库存/牛鞭)、B5(现金流)、C3(促销vs品牌) 三条 Loop</li>
+    <li>吉客云读写 + 金蝶对账；NAS 合同入库抽取返利条款</li>
+    <li>企微审批接入高风险 Intervention；WorkBuddy 自然语言触发</li>
+    <li>PDC 工作流：Plan(回路工作坊)→Do(干预执行)→Check(回路健康)→Act(调杠杆点)</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h4>第三期（8~12周）：24 回路库运营化</h4>
+  <ul>
+    <li>逐步确认附录 24 个回路中的高优先级子集</li>
+    <li>回路模拟（loop_simulate）与杠杆点分析（leverage_analyze）</li>
+    <li>全渠道指标看板 + 回路健康实时监控（震荡/临界点预警）</li>
+    <li>按岗位配置 Agent 权限与 Loop 可见范围</li>
+  </ul>
+</div>
+
+<!-- ===== 可行性分析 ===== -->
+<h2>六、可行性分析</h2>
+
+<div class="card">
+  <h3>6.1 总体评估</h3>
+  <table>
+    <tr><th>维度</th><th>评分</th><th>判断</th><th>说明</th></tr>
+    <tr><td>业务匹配度</td><td class="score score-high">85/100</td><td>高可行</td><td>品牌代理存在大量时滞反馈现象（库存、现金流、品牌信任），与 Loops 适用边界高度吻合</td></tr>
+    <tr><td>数据基础</td><td class="score score-mid">65/100</td><td>中等可行</td><td>吉客云+金蝶已有结构化数据，但缺终端动销、品牌声誉等 TYPE IV 软存量；需补数或降级为定性 Loop</td></tr>
+    <tr><td>技术平台</td><td class="score score-mid">70/100</td><td>中等可行</td><td>良策 AI 已有 L1/L2 本体+AGE图谱+圆桌+闸机骨架；L3/L4 Loop 引擎待建，但五步法可手工+半自动先行</td></tr>
+    <tr><td>组织准备度</td><td class="score score-mid">60/100</td><td>需培育</td><td>Loops 要求业务负责人参与 CLD 工作坊和人工确认(步骤⑤)；需 2~3 名业务骨干+1 名 IT 对接人</td></tr>
+    <tr><td>投入产出比</td><td class="score score-high">80/100</td><td>高回报潜力</td><td>第一期仅需 4~6 周、1 条 Loop 试点即可验证价值；避免大爆炸式改造</td></tr>
+    <tr><td><strong>综合</strong></td><td class="score score-high"><strong>72/100</strong></td><td><strong>建议推进</strong></td><td>采用渐进式采纳(Level 0→2)，先手工 CLD 验证再自动化</td></tr>
+  </table>
+</div>
+
+<div class="feas">
+  <div class="feas-item">
+    <h4>✅ 有利条件</h4>
+    <ul style="font-size:13px;padding-left:16px;">
+      <li>8 个系统已覆盖业务全链路（OMS+财务+协作+归档）</li>
+      <li>良策 AI 七层架构与 Loops 四层模型可映射</li>
+      <li>附录已有 24 个品牌代理回路模式可直接引用</li>
+      <li>圆桌会议已支持图谱注入+三格式产物输出</li>
+      <li>渐进路径清晰（Level 0~4），可小步验证</li>
+    </ul>
+  </div>
+  <div class="feas-item">
+    <h4>⚠️ 主要风险</h4>
+    <ul style="font-size:13px;padding-left:16px;">
+      <li><strong>假阳性</strong>：统计关联误判为因果回路（需证据评分+人工确认）</li>
+      <li><strong>延迟难测</strong>：无实验条件下延迟精确值难提取（先用专家估算）</li>
+      <li><strong>LLM 网关</strong>：当前 LLM 不可用，Agent 发言和方案抽取降级为 mock</li>
+      <li><strong>TYPE IV 缺口</strong>：品牌声誉等软存量无直接数据源</li>
+      <li><strong>组织惯性</strong>：习惯调参数(Level 12)而非改结构(Level 6~3)</li>
+    </ul>
+  </div>
+  <div class="feas-item">
+    <h4>🔧 关键依赖</h4>
+    <ul style="font-size:13px;padding-left:16px;">
+      <li>吉客云 API 只读接入（SKU/订单/库存）</li>
+      <li>金蝶云 API 只读接入（应收/凭证）</li>
+      <li>业务骨干参与 2~3 次 CLD 工作坊（每次 2h）</li>
+      <li>修复 LLM 网关（提升 Agent 发言和方案质量）</li>
+      <li>loop_detect 引擎开发（第二期，约 2~3 周）</li>
+    </ul>
+  </div>
+  <div class="feas-item">
+    <h4>📊 分期可行性</h4>
+    <ul style="font-size:13px;padding-left:16px;">
+      <li><strong>第一期</strong> <span class="score-high">90%</span> — 手工 CLD + 现有平台即可</li>
+      <li><strong>第二期</strong> <span class="score-mid">70%</span> — 依赖 API 对接+Loop 引擎</li>
+      <li><strong>第三期</strong> <span class="score-mid">55%</span> — 依赖模拟引擎+组织流程变革</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card warn">
+  <h3>6.2 方法论适用边界（来自方法论文档）</h3>
+  <p><strong>适用于：</strong>有时滞的组织现象、有反馈机制的业务问题、需中长期战略判断、复杂系统定性结构认知</p>
+  <p><strong>不适用于：</strong>实时高频交易、简单机械审批流程、一次性项目、不可逆非反馈系统</p>
+  <p><strong>已知理论挑战：</strong>回路识别完备性（假阳性）、延迟精准测量、非线性函数形式化、自组织回路涌现预测</p>
+</div>
+
+<div class="card">
+  <h3>6.3 渐进式采纳路径（对标 Palantir Level 0~4）</h3>
+  <table>
+    <tr><th>Level</th><th>状态</th><th>依然公司对应动作</th><th>时间</th></tr>
+    <tr><td>Level 0</td><td>纯 Ontology 建模</td><td>录入品牌/店铺/SKU/合同到本体库</td><td>现在</td></tr>
+    <tr><td>Level 1</td><td>手工 CLD 试点</td><td>选 R1+B1→C1，腾讯文档画因果图，圆桌验证</td><td>第1期 W2~W3</td></tr>
+    <tr><td>Level 2</td><td>Relation 扩展元数据</td><td>关键 Relation 加 polarity/delay；五步法半自动</td><td>第2期</td></tr>
+    <tr><td>Level 3</td><td>自动检测+模拟</td><td>loop_detect + loop_simulate 引擎上线</td><td>第2~3期</td></tr>
+    <tr><td>Level 4</td><td>PDC 全面整合</td><td>决策流程融入回路视角；24 回路库运营</td><td>第3期</td></tr>
+  </table>
+</div>
+
+<!-- ===== 建议下一步 ===== -->
+<h2>七、建议下一步</h2>
+<div class="card highlight">
+  <p><strong>用依然公司一个真实品牌，按 Loops 五步法跑通 R1+B1→C1：</strong></p>
+  <ol>
+    <li>吉客云导出该品牌店铺+SKU+近 90 天销售 → 录入本体库（L1/L2）</li>
+    <li>从 OntologyRelation 中识别 CausalLink 候选（如 品牌→店铺→SKU→销售额）</li>
+    <li>业务骨干 + IT 在腾讯文档手工绘制 R1+B1 CLD，标注极性和延迟</li>
+    <li>闭环检测确认 C1(增长极限)；证据评分（指标时序+专家判断）</li>
+    <li>圆桌会议会诊「该品牌是否接近管理带宽天花板？」→ 人工确认 Loop</li>
+    <li>产出 MD 方案 + HTML 分析报告 + Excel 指标表</li>
+  </ol>
+</div>
+
+<div class="footer">
+  良策 AI Agent SaaS · 依然公司品牌代理 Loops 行动方案 v2.0<br/>
+  方法论来源: Loops方法_完整方法论文档 v1.0（徐健Simon · Meadows × Palantir Ontology 扩展）<br/>
+  核心原则: OntologyRelation ≠ Loop · 五步法生成 · 人工确认不可省略
+</div>
+</div>
+</body>
+</html>

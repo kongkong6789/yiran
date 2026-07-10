@@ -1,0 +1,17 @@
+# Web 框架 & API
+Django>=5.1,<6.0
+djangorestframework>=3.15
+django-cors-headers>=4.4
+python-dotenv>=1.0
+
+# 第1层 数据底座
+duckdb>=1.1
+psycopg2-binary>=2.9
+openpyxl>=3.1
+
+# 说明:
+# 第2层 LightRAG、第4层 LangGraph 目前用轻量自研接口占位(见 apps/rag、apps/orchestration),
+# 待运行环境稳定后可替换为:
+#   langgraph>=0.2
+#   lightrag-hku
+#   openai>=1.0            # LLM 调用(意图识别/生成)
