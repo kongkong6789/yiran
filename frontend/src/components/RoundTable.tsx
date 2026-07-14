@@ -1,5 +1,6 @@
 import { Avatar } from "antd";
 import type { Agent } from "../api/client";
+import { brand } from "../theme/brand";
 
 interface Props {
   question: string;
@@ -38,7 +39,7 @@ export default function RoundTable({ question, agents, activeAgentId, size = 360
               y1={cy}
               x2={x}
               y2={y}
-              stroke={active ? "#b45cff" : "#2a2e42"}
+              stroke={active ? brand.gold : brand.borderLight}
               strokeWidth={active ? 2.5 : 1}
               strokeDasharray={active ? "0" : "4 4"}
             />
@@ -55,7 +56,7 @@ export default function RoundTable({ question, agents, activeAgentId, size = 360
           width: bigR * 2,
           height: bigR * 2,
           borderRadius: "50%",
-          background: "linear-gradient(135deg,#b45cff,#ff53c8)",
+          background: brand.gradientGold,
           color: "#fff",
           display: "flex",
           alignItems: "center",
@@ -64,7 +65,7 @@ export default function RoundTable({ question, agents, activeAgentId, size = 360
           padding: 12,
           fontSize: 12,
           fontWeight: 600,
-          boxShadow: "0 6px 24px rgba(180,92,255,.45)",
+          boxShadow: "0 6px 24px rgba(196, 146, 74, 0.35)",
         }}
       >
         {question.length > 28 ? question.slice(0, 28) + "…" : question}
@@ -92,15 +93,15 @@ export default function RoundTable({ question, agents, activeAgentId, size = 360
             <Avatar
               size={48}
               style={{
-                background: active ? "#b45cff" : "#161a2c",
-                border: active ? "2px solid #b45cff" : "1px solid #2a2e42",
+                background: active ? brand.gold : brand.bgElevated,
+                border: active ? `2px solid ${brand.gold}` : `1px solid ${brand.borderLight}`,
                 fontSize: 22,
-                boxShadow: active ? "0 0 0 6px rgba(180,92,255,.2)" : "none",
+                boxShadow: active ? "0 0 0 6px rgba(196, 146, 74, 0.2)" : "none",
               }}
             >
               {a.emoji}
             </Avatar>
-            <div style={{ fontSize: 11, marginTop: 2, color: active ? "#d3b3ff" : "#9096b3" }}>
+            <div style={{ fontSize: 11, marginTop: 2, color: active ? brand.goldPale : brand.textMuted }}>
               {a.name}
               {active && " 💬"}
             </div>

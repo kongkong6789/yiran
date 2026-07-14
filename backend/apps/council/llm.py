@@ -14,28 +14,251 @@ import urllib.error
 from django.conf import settings
 
 
-def llm_available() -> bool:
-    return bool(settings.LLM_API_KEY)
+def _resolve_credentials(user=None) -> tuple[str, str, str]:
+    """解析 LLM 凭据: 用户个人设置优先,否则回退全局 .env。"""
+    if user is not None and getattr(user, "is_authenticated", False):
+        from apps.core.models import UserSettings
+
+        us = UserSettings.objects.filter(user=user).first()
+        if us and us.llm_api_key:
+            return (
+                us.llm_api_key.strip(),
+                (us.llm_base_url or settings.LLM_BASE_URL or "").strip(),
+                (us.llm_model or settings.LLM_MODEL or "").strip(),
+            )
+    return (
+        (settings.LLM_API_KEY or "").strip(),
+        (settings.LLM_BASE_URL or "").strip(),
+        (settings.LLM_MODEL or "").strip(),
+    )
 
 
-def fast_model() -> str:
+def llm_available(user=None) -> bool:
+    api_key, _, _ = _resolve_credentials(user)
+    return bool(api_key)
+
+
+def fast_model(user=None) -> str:
     """逐轮发言/压缩用的快模型。"""
-    return getattr(settings, "LLM_MODEL_FAST", None) or settings.LLM_MODEL
+    _, _, model = _resolve_credentials(user)
+    return getattr(settings, "LLM_MODEL_FAST", None) or model
 
 
 def chat(system: str, user: str, temperature: float = 0.8, max_tokens: int = 400,
-         model: str | None = None, timeout: int = 30) -> str:
+         model: str | None = None, timeout: int = 30, *, llm_user=None) -> str:
     """调用 LLM 生成一段文本;失败或无 key 时返回空串(由上层降级到 mock)。"""
-    if not llm_available():
+    return chat_messages(
+        system,
+        [{"role": "user", "content": user}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+        model=model,
+        timeout=timeout,
+        llm_user=llm_user,
+    )
+
+
+def looks_non_vision_model(model: str) -> bool:
+    """粗判常见纯文本模型(DeepSeek 等),避免识图时被个人设置覆盖。"""
+    m = (model or "").lower().replace(" ", "").replace("_", "-")
+    if not m:
+        return False
+    if any(x in m for x in ("-vl", "vision", "gpt-4o", "gpt4o", "4o-mini", "gemini", "claude-3", "claude-4")):
+        return False
+    if "deepseek" in m or m.startswith("ds-"):
+        return True
+    if any(x in m for x in ("coder", "-r1", "reasoner")):
+        return True
+    return False
+
+
+def personal_llm_model(user=None) -> str:
+    if user is None or not getattr(user, "is_authenticated", False):
         return ""
-    url = settings.LLM_BASE_URL.rstrip("/") + "/chat/completions"
+    from apps.core.models import UserSettings
+
+    us = UserSettings.objects.filter(user=user).first()
+    return ((us.llm_model if us else "") or "").strip()
+
+
+def vision_model_candidates(user=None) -> list[str]:
+    """识图模型候选:全局 IMAGE_VISION_MODEL 优先,不回退到非视觉个人模型。"""
+    ordered: list[str] = []
+    for name in (
+        (getattr(settings, "IMAGE_VISION_MODEL", "") or "").strip(),
+        "gpt-4o",
+        "gpt-4o-mini",
+        "qwen-vl-max",
+        "qwen-vl-plus",
+    ):
+        if name and name not in ordered and not looks_non_vision_model(name):
+            ordered.append(name)
+    personal = personal_llm_model(user)
+    if personal and not looks_non_vision_model(personal) and personal not in ordered:
+        ordered.insert(0, personal)
+    return ordered or [(settings.LLM_MODEL or "gpt-4o").strip()]
+
+
+def _is_vision_unsupported_error(err: str) -> bool:
+    e = (err or "").lower()
+    return (
+        "image_url" in e
+        or ("unknown variant" in e and "text" in e)
+        or "does not support image" in e
+        or ("vision" in e and ("not support" in e or "unsupported" in e))
+    )
+
+
+def _strip_images_from_messages(messages: list[dict]) -> list[dict]:
+    """将 multimodal content 压成纯文本,用于不支持识图的模型重试/说明。"""
+    out: list[dict] = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            texts = [
+                str(p.get("text") or "").strip()
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            ]
+            img_n = sum(
+                1 for p in content
+                if isinstance(p, dict) and p.get("type") == "image_url"
+            )
+            text = "\n".join(t for t in texts if t)
+            if img_n:
+                text = (text + f"\n\n(用户另附了 {img_n} 张图片,但当前模型接口不支持识图)").strip()
+            out.append({"role": m.get("role", "user"), "content": text})
+        else:
+            out.append(m)
+    return out
+
+
+def chat_messages(
+    system: str,
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 800,
+    model: str | None = None,
+    timeout: int = 45,
+    llm_user=None,
+) -> str:
+    """多轮对话;失败返回空串。详细错误见 chat_messages_result。"""
+    return chat_messages_result(
+        system, messages,
+        temperature=temperature, max_tokens=max_tokens,
+        model=model, timeout=timeout, llm_user=llm_user,
+    ).get("content") or ""
+
+
+def chat_messages_result(
+    system: str,
+    messages: list[dict],
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 800,
+    model: str | None = None,
+    timeout: int = 45,
+    llm_user=None,
+    allow_images: bool = True,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """多轮对话,返回 {content, error, configured, model, base_url, vision_unsupported}。
+
+    可显式传入 api_key/base_url(例如图片专用密钥)。
+    """
+    resolved_key, resolved_base, default_model = _resolve_credentials(llm_user)
+    used_key = (api_key or resolved_key or "").strip()
+    used_base = (base_url or resolved_base or "").strip()
+    used_model = model or default_model or fast_model(llm_user)
+    if not used_key:
+        return {
+            "content": "",
+            "error": "未配置 LLM API Key(个人设置或全局 .env)",
+            "configured": False,
+            "model": used_model,
+            "base_url": used_base,
+            "vision_unsupported": False,
+        }
+    if not used_base:
+        return {
+            "content": "",
+            "error": "未配置 LLM Base URL",
+            "configured": True,
+            "model": used_model,
+            "base_url": "",
+            "vision_unsupported": False,
+        }
+
+    result = _chat_completions_once(
+        system, messages,
+        api_key=used_key, base_url=used_base, used_model=used_model,
+        temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+        allow_images=allow_images,
+    )
+    if (
+        allow_images
+        and not result.get("content")
+        and _is_vision_unsupported_error(result.get("error") or "")
+    ):
+        result["vision_unsupported"] = True
+    return result
+
+
+def _chat_completions_once(
+    system: str,
+    messages: list[dict],
+    *,
+    api_key: str,
+    base_url: str,
+    used_model: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: int,
+    allow_images: bool,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload_messages = [{"role": "system", "content": system}]
+    for m in messages[-20:]:
+        role = m.get("role", "user")
+        if role not in ("user", "assistant", "system"):
+            role = "user"
+        content = m.get("content")
+        if isinstance(content, list):
+            if not allow_images:
+                texts = [
+                    str(p.get("text") or "").strip()
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = "\n".join(t for t in texts if t)
+                if text:
+                    payload_messages.append({"role": role, "content": text})
+                continue
+            cleaned = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "text" and str(part.get("text") or "").strip():
+                    cleaned.append({"type": "text", "text": str(part["text"]).strip()})
+                elif ptype == "image_url" and part.get("image_url"):
+                    cleaned.append({"type": "image_url", "image_url": part["image_url"]})
+            if cleaned:
+                # 若仅有 text 一个 part,多数纯文本 API 更接受 string 而不是 array
+                if len(cleaned) == 1 and cleaned[0]["type"] == "text":
+                    payload_messages.append({"role": role, "content": cleaned[0]["text"]})
+                else:
+                    payload_messages.append({"role": role, "content": cleaned})
+            continue
+        text = (content or "").strip() if isinstance(content, str) else ""
+        if text:
+            payload_messages.append({"role": role, "content": text})
     body = json.dumps(
         {
-            "model": model or settings.LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "model": used_model,
+            "messages": payload_messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -45,15 +268,61 @@ def chat(system: str, user: str, temperature: float = 0.8, max_tokens: int = 400
         data=body,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {settings.LLM_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
+            # 部分网关(Cloudflare 1010)会拦默认 Python-urllib UA
+            "User-Agent": "LiangceAgent/1.0 (OpenAI-compatible)",
+            "Accept": "application/json",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        return data["choices"][0]["message"]["content"].strip()
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError):
-        return ""
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        if isinstance(content, list):
+            content = "".join(
+                str(p.get("text") or "") for p in content if isinstance(p, dict)
+            )
+        content = str(content).strip()
+        if not content:
+            return {
+                "content": "",
+                "error": "模型返回空内容",
+                "configured": True,
+                "model": used_model,
+                "base_url": base_url,
+                "vision_unsupported": False,
+            }
+        return {
+            "content": content,
+            "error": "",
+            "configured": True,
+            "model": used_model,
+            "base_url": base_url,
+            "vision_unsupported": False,
+        }
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace")[:800]
+        except Exception:
+            detail = str(exc)
+        return {
+            "content": "",
+            "error": f"LLM HTTP {exc.code}: {detail or exc.reason}",
+            "configured": True,
+            "model": used_model,
+            "base_url": base_url,
+            "vision_unsupported": False,
+        }
+    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError) as exc:
+        return {
+            "content": "",
+            "error": f"LLM 调用失败: {exc}",
+            "configured": True,
+            "model": used_model,
+            "base_url": base_url,
+            "vision_unsupported": False,
+        }
 
 
 # ---------------- 智能 Mock(无 LLM key 时使用) ----------------

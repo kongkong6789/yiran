@@ -104,5 +104,36 @@ class DuckLake:
                     """
                 )
 
+    def ingest_jackyun(self, goods: list[dict], trades: list[dict]) -> dict:
+        """降级路径:把吉客云汇总写入 daily_sales(DuckDB)。"""
+        self.seed()
+        products = len([g for g in goods if g.get("sku")])
+        shops = set()
+        sales = 0
+        with _lock, self.connect() as con:
+            for t in trades:
+                shop = t.get("shop_name") or t.get("shop_id") or ""
+                sku = t.get("sku") or ""
+                if not shop or not sku:
+                    continue
+                shops.add(shop)
+                con.execute(
+                    "DELETE FROM daily_sales WHERE dt = ? AND shop = ? AND sku = ?",
+                    [t["dt"], shop, sku],
+                )
+                con.execute(
+                    "INSERT INTO daily_sales VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        t["dt"], shop, "", sku,
+                        t.get("gmv") or 0, t.get("orders") or 0, t.get("refund_amt") or 0,
+                    ],
+                )
+                sales += 1
+        return {"products": products, "shops": len(shops), "sales": sales}
+
 
 ducklake = DuckLake()
+
+
+def ingest_jackyun(goods: list[dict], trades: list[dict]) -> dict:
+    return ducklake.ingest_jackyun(goods, trades)

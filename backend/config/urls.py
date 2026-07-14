@@ -14,4 +14,7 @@ urlpatterns = [
     path("api/orchestration/", include("apps.orchestration.urls")),
     path("api/connectors/", include("apps.connectors.urls")),
     path("api/council/", include("apps.council.urls")),
+    path("api/mcp/", include("apps.mcp.urls")),
+    path("api/skills/", include("apps.skills.urls")),
+    path("api/collab/", include("apps.collab.urls")),
 ]

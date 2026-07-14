@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { ConfigProvider, theme, App as AntApp } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import App from "./App";
+import { brand } from "./theme/brand";
 import "antd/dist/reset.css";
 import "./index.css";
 
@@ -12,31 +13,43 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <ConfigProvider
       locale={zhCN}
       theme={{
-        algorithm: theme.darkAlgorithm,
+        algorithm: theme.defaultAlgorithm,
         token: {
-          colorPrimary: "#b45cff",
-          colorInfo: "#59e5ff",
-          colorBgBase: "#0b0d18",
-          colorBgLayout: "#080a12",
-          colorBorder: "#26293a",
-          colorBorderSecondary: "#1c1f2e",
+          colorPrimary: brand.gold,
+          colorInfo: brand.accentBlue,
+          colorLink: brand.navyMid,
+          colorBgBase: brand.bg,
+          colorBgLayout: brand.bgLayout,
+          colorBgContainer: brand.bgElevated,
+          colorBorder: brand.border,
+          colorBorderSecondary: brand.borderLight,
+          colorText: brand.text,
+          colorTextSecondary: brand.textMuted,
           borderRadius: 10,
           fontSize: 14,
         },
         components: {
           Layout: {
-            headerBg: "rgba(10,12,22,0.75)",
-            siderBg: "#0a0c16",
-            bodyBg: "#080a12",
+            headerBg: "rgba(255, 255, 255, 0.88)",
+            siderBg: brand.bgElevated,
+            bodyBg: brand.bgLayout,
           },
           Menu: {
-            darkItemBg: "transparent",
-            darkItemSelectedBg: "rgba(180,92,255,0.22)",
-            darkItemHoverBg: "rgba(255,255,255,0.06)",
-            darkItemSelectedColor: "#e9dcff",
+            itemBg: "transparent",
+            itemSelectedBg: "rgba(196, 146, 74, 0.14)",
+            itemHoverBg: "rgba(11, 33, 68, 0.05)",
+            itemSelectedColor: brand.navy,
+            horizontalItemSelectedColor: brand.navy,
+            activeBarHeight: 0,
           },
           Card: {
-            colorBgContainer: "rgba(20,23,38,0.6)",
+            colorBgContainer: brand.bgCard,
+          },
+          Button: {
+            primaryShadow: "0 2px 0 rgba(196, 146, 74, 0.12)",
+          },
+          Tag: {
+            defaultBg: "rgba(11, 33, 68, 0.06)",
           },
         },
       }}

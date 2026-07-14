@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # 第三方
     "rest_framework",
+    "rest_framework.authtoken",
     "corsheaders",
     # 业务分层 App
     "apps.core",
@@ -44,6 +45,9 @@ INSTALLED_APPS = [
     "apps.orchestration",
     "apps.connectors",
     "apps.council",
+    "apps.mcp",
+    "apps.skills",
+    "apps.collab",
 ]
 
 MIDDLEWARE = [
@@ -105,8 +109,11 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.AllowAny",  # 骨架阶段放开,后续接入鉴权
+        "rest_framework.permissions.IsAuthenticated",
     ],
 }
 
@@ -150,3 +157,48 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 圆桌发言/上下文压缩用的"快模型";最终方案仍用 LLM_MODEL(更强)。
 LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", LLM_MODEL)
+
+# 图片 API(文生图/图生图),与对话 Key 可分离
+IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")
+IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "") or LLM_BASE_URL
+IMAGE_GEN_MODEL = os.getenv("IMAGE_GEN_MODEL", "dall-e-3")
+IMAGE_EDIT_MODEL = os.getenv("IMAGE_EDIT_MODEL", "dall-e-2")
+IMAGE_VISION_MODEL = os.getenv("IMAGE_VISION_MODEL", "") or LLM_MODEL
+
+# 吉客云只读同步(不配则用 fixture 灌入 DataLake)
+JACKYUN_APP_KEY = os.getenv("JACKYUN_APP_KEY", "")
+JACKYUN_APP_SECRET = os.getenv("JACKYUN_APP_SECRET", "")
+JACKYUN_BASE_URL = os.getenv(
+    "JACKYUN_BASE_URL", "https://open.jackyun.com/open/openapi/do"
+)
+JACKYUN_METHOD_GOODS = os.getenv("JACKYUN_METHOD_GOODS", "erp.goods.listget")
+JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
+
+# MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
+MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")
+MCP_TENCENT_DOCS_URL = os.getenv("MCP_TENCENT_DOCS_URL", "")
+MCP_WEDRIVE_URL = os.getenv("MCP_WEDRIVE_URL", "")
+MCP_KINGDEE_URL = os.getenv("MCP_KINGDEE_URL", "")
+MCP_JACKYUN_URL = os.getenv("MCP_JACKYUN_URL", "")
+MCP_WORKBUDDY_URL = os.getenv("MCP_WORKBUDDY_URL", "")
+MCP_NAS_COMMAND = os.getenv("MCP_NAS_COMMAND", "")
+MCP_NAS_ARGS = os.getenv("MCP_NAS_ARGS", "")
+
+# 腾讯云 COS(通用 media 与 Skill 仓库分离)
+USE_TENCENT_COS = os.getenv("USE_TENCENT_COS", "false").lower() == "true"
+TENCENT_COS_SECRET_ID = os.getenv("TENCENT_COS_SECRET_ID", "")
+TENCENT_COS_SECRET_KEY = os.getenv("TENCENT_COS_SECRET_KEY", "")
+TENCENT_COS_BUCKET = os.getenv("TENCENT_COS_BUCKET", "")
+TENCENT_COS_REGION = os.getenv("TENCENT_COS_REGION", "ap-guangzhou")
+TENCENT_COS_CUSTOM_DOMAIN = os.getenv("TENCENT_COS_CUSTOM_DOMAIN", "")
+TENCENT_COS_SCHEME = os.getenv("TENCENT_COS_SCHEME", "https")
+TENCENT_COS_LOCATION = os.getenv("TENCENT_COS_LOCATION", "media")
+TENCENT_COS_ACL = os.getenv("TENCENT_COS_ACL", "public-read")
+# Skill 专用:可单独建桶;未配置则复用主桶但使用独立路径前缀 skills/
+TENCENT_COS_SKILLS_BUCKET = os.getenv("TENCENT_COS_SKILLS_BUCKET", "")
+TENCENT_COS_SKILLS_LOCATION = os.getenv("TENCENT_COS_SKILLS_LOCATION", "skills")
+
+CHAT_ATTACHMENTS_ROOT = BASE_DIR / "chat_attachments"
+SKILLS_WORKSPACE_ROOT = BASE_DIR / "skill_workspaces"
+SKILL_SCRIPT_TIMEOUT = int(os.getenv("SKILL_SCRIPT_TIMEOUT", "180"))
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 支持较大图片 multipart 直进内存

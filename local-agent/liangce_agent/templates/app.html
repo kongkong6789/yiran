@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>良策本地 Agent</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <strong>历史对话</strong>
+        <button id="new-chat" class="btn small">新建</button>
+      </div>
+      <div id="session-list" class="session-list"></div>
+      <div class="sidebar-foot">
+        <button id="open-mcp" class="btn ghost">MCP 配置</button>
+        <button id="logout" class="btn ghost">退出</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>对话 Agent</h1>
+          <p id="user-info" class="muted"></p>
+        </div>
+        <div id="status-tags" class="tags"></div>
+      </header>
+      <div id="messages" class="messages"></div>
+      <footer class="composer">
+        <textarea id="draft" rows="3" placeholder="输入问题或粘贴企业微信文档链接"></textarea>
+        <button id="send" class="btn primary">发送</button>
+      </footer>
+    </main>
+  </div>
+
+  <dialog id="mcp-dialog">
+    <form method="dialog" class="mcp-panel">
+      <header>
+        <h2>企业微信 MCP</h2>
+        <p class="muted">配置保存在本机：<code id="mcp-path"></code></p>
+      </header>
+      <label>StreamableHttp URL
+        <textarea id="mcp-url" rows="3" placeholder="https://qyapi.weixin.qq.com/mcp/robot-doc?apikey=..."></textarea>
+      </label>
+      <label>JSON Config（可选，粘贴后点导入）
+        <textarea id="mcp-json" rows="6"></textarea>
+      </label>
+      <div class="row">
+        <button type="button" id="mcp-save" class="btn primary">保存</button>
+        <button type="button" id="mcp-import" class="btn">导入 JSON</button>
+        <button type="button" id="mcp-probe" class="btn">探测连接</button>
+        <button value="cancel" class="btn ghost">关闭</button>
+      </div>
+      <pre id="mcp-cursor" class="code"></pre>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
