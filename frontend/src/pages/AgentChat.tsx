@@ -25,7 +25,7 @@ import {
 } from "../api/client";
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
-import ChatMarkdown, { isReportLike } from "../components/ChatMarkdown";
+import ChatMarkdown, { isReportLike, looksBlocky } from "../components/ChatMarkdown";
 import { brand } from "../theme/brand";
 
 const { TextArea } = Input;
@@ -505,7 +505,7 @@ export default function AgentChat() {
           <Space>
             <Avatar size={40} style={{ background: brand.gradientGold }} icon={<RobotOutlined />} />
             <div>
-              <Typography.Title level={4} style={{ margin: 0 }}>对话 Agent</Typography.Title>
+              <Typography.Title level={4} style={{ margin: 0 }}>对话</Typography.Title>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {viewingOthers
                   ? `管理员只读预览 · ${activeSession?.username || "用户"} 的对话`
@@ -569,17 +569,22 @@ export default function AgentChat() {
             </div>
           ) : messages.map((item, index) => {
             const isUser = item.role === "user";
-            const isReport = !isUser && isReportLike(item.content);
+            const isBlocks = !isUser && (isReportLike(item.content) || looksBlocky(item.content));
             return (
               <div key={item.id || index} className={`agent-chat-row ${isUser ? "user" : "assistant"}`}>
                 <Avatar
                   size={32}
-                  icon={isUser ? <UserOutlined /> : <RobotOutlined />}
+                  src={isUser && me?.avatar_url
+                    ? `${me.avatar_url}${me.avatar_url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getAuthToken() || "")}`
+                    : undefined}
+                  icon={isUser
+                    ? (me?.avatar_url ? undefined : <UserOutlined />)
+                    : <RobotOutlined />}
                   style={isUser
-                    ? { background: brand.navyMid }
+                    ? { background: me?.avatar_url ? undefined : brand.navyMid }
                     : { background: brand.gradientGold }}
                 />
-                <div className={`agent-chat-bubble${isReport ? " report" : ""}`}>
+                <div className={`agent-chat-bubble${isBlocks ? " report" : ""}`}>
                   {isUser ? (
                     <>
                       {!!(item.meta?.attachments as AttachMeta[] | undefined)?.length && (
@@ -609,7 +614,7 @@ export default function AgentChat() {
                       </Typography.Paragraph>
                     </>
                   ) : (
-                    <ChatMarkdown content={item.content} />
+                    <ChatMarkdown content={item.content} variant="auto" />
                   )}
                 </div>
               </div>

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Card, Table, Button, Space, Tag, Modal, Form, Input, Select, InputNumber,
-  App, Typography, Alert, Descriptions, Divider,
+  App, Typography, Alert, Descriptions, Divider, Tabs,
 } from "antd";
 import {
   PlusOutlined, ReloadOutlined, SearchOutlined, CheckOutlined,
@@ -13,12 +13,17 @@ import {
   listCausalCandidates,
   type FeedbackLoop, type LoopDetectCandidate, type LoopDetectDiagnostics,
 } from "../api/client";
+import BrandStockFlowLoop from "../components/BrandStockFlowLoop";
+import BrandAgencyLoops from "../components/BrandAgencyLoops";
 
 const TYPE_COLOR: Record<string, string> = { R: "red", B: "blue", comp: "purple" };
 const TYPE_LABEL: Record<string, string> = { R: "增强 R", B: "调节 B", comp: "复合" };
 const STATUS_COLOR: Record<string, string> = {
   candidate: "gold", confirmed: "green", archived: "default",
 };
+
+const BRAND_LOOP_CODE = "BRAND-SF";
+const AGENCY_LOOP_CODE = "BRAND-AGENCY-8S";
 
 export default function Loops() {
   const { message } = App.useApp();
@@ -46,7 +51,51 @@ export default function Loops() {
     return listCausalCandidates().then((r) => setMarkedRels(r.results));
   }, []);
 
-  useEffect(() => { load(); loadMarked(); }, [load, loadMarked]);
+  const seededRef = useRef(false);
+
+  const ensureBrandLoop = useCallback(async () => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    try {
+      const r = await listLoops();
+      const codes = new Set(r.results.map((x) => x.code));
+      if (!codes.has(BRAND_LOOP_CODE)) {
+        const created = await createLoop({
+          name: "品牌经营 Stock–Flow 回路",
+          code: BRAND_LOOP_CODE,
+          loop_type: "comp",
+          relation_ids: [],
+          confidence: 88,
+          description:
+            "复合回路：R1 推广→声量→销量→利润→再推广；R2 节日/趋势/新闻放大声量；B1 销量抬升成本侵蚀利润；B2 竞品分流与抢声量。详见页内动态 Stock–Flow 图。",
+        });
+        await confirmLoop(created.id, { confirmed_by: "系统预置", confidence: 88 });
+      }
+      if (!codes.has(AGENCY_LOOP_CODE)) {
+        const created = await createLoop({
+          name: "Loops Method · 品牌代理 8 Stock",
+          code: AGENCY_LOOP_CODE,
+          loop_type: "comp",
+          relation_ids: [],
+          confidence: 92,
+          description:
+            "8 存量：S1 代理品牌数、S2 渠道覆盖、S3 市场认知、S4 终端销售、S5 品牌方满意度、S6 团队产能、S7 运营能力、S8 资源健康。"
+            + "骨架链 A 增长 / B 管理约束 / C 资源 / D 人才 / E 销资反馈；展开为 R1–R9、B1–B7、C1–C8 共 24 条回路。详见页内交互图。",
+        });
+        await confirmLoop(created.id, { confirmed_by: "系统预置", confidence: 92 });
+      }
+    } catch {
+      seededRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      await ensureBrandLoop();
+      await load();
+      await loadMarked();
+    })();
+  }, [ensureBrandLoop, load, loadMarked]);
 
   const doDetect = async () => {
     setDetecting(true);
@@ -136,20 +185,39 @@ export default function Loops() {
   return (
     <div>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
-        Loops 反馈回路
+        回路
       </Typography.Title>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-        OntologyRelation 是 CausalLink 原料 → 闭环检测 → 证据评分 → 人工确认 → 正式 Loop 库
+        系统动力学视角的反馈回路：存量 Stock、流量 Flow、增强 / 调节 / 复合闭环。含品牌经营示例与品牌代理 8 Stock × 24 回路（Loops Method）。
       </Typography.Paragraph>
+
+      <Card size="small" className="brand-sfd-card" style={{ marginBottom: 16 }}>
+        <Tabs
+          size="small"
+          defaultActiveKey="agency"
+          items={[
+            {
+              key: "agency",
+              label: "品牌代理 8 Stock",
+              children: <BrandAgencyLoops />,
+            },
+            {
+              key: "brand-sf",
+              label: "品牌经营 Stock–Flow",
+              children: <BrandStockFlowLoop />,
+            },
+          ]}
+        />
+      </Card>
 
       <Alert
         style={{ marginBottom: 16 }}
         type="info"
         showIcon
-        message="闭环检测只在「首尾相接的有向环」上生效。知识图谱多为单向结构,需标出完整业务回路(如 A→B→C→A),或用手工创建。"
+        message="闭环检测只在「首尾相接的有向环」上生效。知识图谱多为单向结构，需标出完整业务回路（如 A→B→C→A），或用手工创建。"
         action={
           <Button size="small" icon={<ShareAltOutlined />} onClick={() => nav("/ontology")}>
-            去本体图谱
+            去图谱
           </Button>
         }
       />

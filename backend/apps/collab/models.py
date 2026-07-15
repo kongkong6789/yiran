@@ -35,6 +35,7 @@ class CollabRoom(models.Model):
         db_index=True,
     )
     summary = models.TextField("会话摘要", blank=True, default="")
+    interject_enabled = models.BooleanField("允许AI插嘴", default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -83,7 +84,40 @@ class CollabMessage(models.Model):
         default="user",
         db_index=True,
     )
+    ai_kind = models.CharField(
+        "AI角色",
+        max_length=16,
+        blank=True,
+        default="",
+        choices=[
+            ("", "无"),
+            ("reply", "应答"),
+            ("interject", "插嘴"),
+            ("suggest", "建议"),
+        ],
+        db_index=True,
+    )
+    status = models.CharField(
+        "状态",
+        max_length=16,
+        choices=[
+            ("normal", "正常"),
+            ("recalled", "已撤回"),
+            ("deleted", "已删除"),
+        ],
+        default="normal",
+        db_index=True,
+    )
+    risk_flag = models.CharField("风险标签", max_length=40, blank=True, default="")
+    risk_flag_level = models.CharField(
+        "风险标签等级",
+        max_length=16,
+        blank=True,
+        default="",
+        choices=[("", "无"), ("yellow", "注意"), ("red", "高风险")],
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     class Meta:
         ordering = ["id"]

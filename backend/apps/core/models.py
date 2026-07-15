@@ -50,7 +50,7 @@ class ChatMessage(models.Model):
 
 
 class UserSettings(models.Model):
-    """用户个人设置(LLM Key 等),与账号绑定。"""
+    """用户个人资料与 LLM 密钥,与账号绑定。"""
 
     user = models.OneToOneField(
         "auth.User",
@@ -58,6 +58,10 @@ class UserSettings(models.Model):
         on_delete=models.CASCADE,
         verbose_name="用户",
     )
+    display_name = models.CharField("显示名称", max_length=64, blank=True, default="")
+    bio = models.CharField("个性签名", max_length=200, blank=True, default="")
+    methodology = models.TextField("方法论", blank=True, default="")
+    avatar = models.CharField("头像文件", max_length=255, blank=True, default="")
     llm_api_key = models.CharField("LLM API Key", max_length=255, blank=True, default="")
     llm_base_url = models.CharField("LLM Base URL", max_length=255, blank=True, default="")
     llm_model = models.CharField("LLM Model", max_length=128, blank=True, default="")
@@ -69,6 +73,12 @@ class UserSettings(models.Model):
 
     def __str__(self):
         return f"settings:{self.user_id}"
+
+    @property
+    def avatar_url(self) -> str:
+        if not self.avatar:
+            return ""
+        return f"/api/auth/avatars/{self.avatar}/"
 
 
 class AuditLog(models.Model):
