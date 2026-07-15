@@ -1,0 +1,973 @@
+"""协作风控 API。"""
+from __future__ import annotations
+
+import mimetypes
+
+from django.contrib.auth import get_user_model
+from django.db.models import Q
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+
+from apps.core.attachments import (
+    attachment_public_meta,
+    process_uploaded_files,
+    resolve_attachment_path,
+    resolve_attachment_path_any,
+)
+
+from .analyze import analyze_room_messages, max_risk
+from .mentions import (
+    get_collab_ai_user,
+    has_ai_mention,
+    parse_mentions,
+    reply_ai_mention,
+)
+from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
+from .presence import presence_map, touch_presence
+
+User = get_user_model()
+
+
+def _is_admin(user) -> bool:
+    return bool(getattr(user, "is_authenticated", False) and (user.is_staff or user.is_superuser))
+
+
+def _user_brief(user, *, presence: dict | None = None, nickname: str | None = None) -> dict:
+    nick = (nickname or "").strip()
+    info = {
+        "id": user.id,
+        "username": user.username,
+        "nickname": nick,
+        "display_name": nick or user.username,
+        "online": False,
+        "last_seen": None,
+    }
+    if presence and user.id in presence:
+        info["online"] = bool(presence[user.id].get("online"))
+        info["last_seen"] = presence[user.id].get("last_seen")
+    return info
+
+
+def _can_access_room(user, room: CollabRoom) -> bool:
+    if _is_admin(user):
+        return True
+    return CollabParticipant.objects.filter(room=room, user=user).exists()
+
+
+def _nickname_map(room: CollabRoom) -> dict[int, str]:
+    return {
+        p.user_id: (p.nickname or "").strip()
+        for p in room.participants.all()
+    }
+
+
+def _unread_count_for(user, room: CollabRoom, *, last_read_id: int | None = None) -> int:
+    if last_read_id is None:
+        row = CollabParticipant.objects.filter(room=room, user=user).only("last_read_message_id").first()
+        last_read_id = row.last_read_message_id if row else 0
+    return (
+        CollabMessage.objects.filter(room=room, id__gt=int(last_read_id or 0))
+        .exclude(sender_id=user.id)
+        .count()
+    )
+
+
+def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> int:
+    row = CollabParticipant.objects.filter(room=room, user=user).first()
+    if not row:
+        return 0
+    if up_to_id is None:
+        up_to_id = room.messages.order_by("-id").values_list("id", flat=True).first() or 0
+    up_to_id = int(up_to_id or 0)
+    if up_to_id > (row.last_read_message_id or 0):
+        row.last_read_message_id = up_to_id
+        row.save(update_fields=["last_read_message_id"])
+    return row.last_read_message_id
+
+
+def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=None) -> dict:
+    participant_rows = list(room.participants.select_related("user").all())
+    users = [p.user for p in participant_rows]
+    ids = [u.id for u in users]
+    if room.created_by_id not in ids:
+        ids.append(room.created_by_id)
+    pmap = presence_map(ids)
+    nick_by_id = {p.user_id: (p.nickname or "").strip() for p in participant_rows}
+    members = [
+        _user_brief(p.user, presence=pmap, nickname=p.nickname)
+        for p in participant_rows
+    ]
+    display_title = room.title
+    if room.room_kind == "dm" and viewer is not None:
+        others = [m["display_name"] for m in members if m["id"] != viewer.id]
+        if others:
+            display_title = others[0]
+        elif members:
+            display_title = members[0]["display_name"]
+    elif room.room_kind == "group" and (not room.title or room.title in ("协作会话", "群聊")):
+        names = [m["display_name"] for m in members][:4]
+        display_title = "、".join(names) + ("…" if len(members) > 4 else "")
+
+    # 单聊：对端是否在线；群聊：在线人数
+    peer_online = None
+    online_count = sum(1 for m in members if m.get("online"))
+    if room.room_kind == "dm" and viewer is not None:
+        peer = next((m for m in members if m["id"] != viewer.id), None)
+        peer_online = bool(peer["online"]) if peer else False
+
+    created_nick = nick_by_id.get(room.created_by_id, "")
+    payload = {
+        "id": str(room.id),
+        "title": room.title,
+        "display_title": display_title,
+        "room_kind": room.room_kind,
+        "status": room.status,
+        "risk_level": room.risk_level,
+        "summary": room.summary,
+        "created_by": _user_brief(room.created_by, presence=pmap, nickname=created_nick),
+        "participants": members,
+        "member_count": len(members),
+        "peer_online": peer_online,
+        "online_count": online_count,
+        "created_at": room.created_at.isoformat(),
+        "updated_at": room.updated_at.isoformat(),
+        "message_count": room.messages.count(),
+        "insight_count": room.insights.count(),
+        "unread_count": 0,
+    }
+    if viewer is not None:
+        viewer_part = next((p for p in participant_rows if p.user_id == viewer.id), None)
+        if viewer_part is not None:
+            payload["unread_count"] = _unread_count_for(
+                viewer, room, last_read_id=viewer_part.last_read_message_id,
+            )
+            payload["last_read_message_id"] = viewer_part.last_read_message_id or 0
+    last = room.messages.select_related("sender").order_by("-id").first()
+    if last:
+        preview = (last.content or "").strip()
+        if not preview and last.attachments:
+            n = len(last.attachments)
+            imgs = sum(1 for a in last.attachments if a.get("is_image"))
+            files = n - imgs
+            bits = []
+            if imgs:
+                bits.append(f"[图片×{imgs}]" if imgs > 1 else "[图片]")
+            if files:
+                bits.append(f"[附件×{files}]" if files > 1 else "[附件]")
+            preview = " ".join(bits) or "[附件]"
+        sender_nick = nick_by_id.get(last.sender_id, "")
+        payload["last_message"] = {
+            "id": last.id,
+            "content": (preview or "[消息]")[:80],
+            "sender": sender_nick or last.sender.username,
+            "created_at": last.created_at.isoformat(),
+        }
+    if include_messages:
+        payload["messages"] = [
+            _message_payload(m, nickname_map=nick_by_id)
+            for m in room.messages.select_related("sender").all()[:200]
+        ]
+        payload["insights"] = [
+            _insight_payload(i) for i in room.insights.all()[:30]
+        ]
+    return payload
+
+
+def _find_open_dm(user_a, user_b) -> CollabRoom | None:
+    """查找两人之间已有的单聊（优先进行中）。"""
+    ids = {user_a.id, user_b.id}
+    candidates = (
+        CollabRoom.objects.filter(room_kind="dm", participants__user=user_a)
+        .filter(participants__user=user_b)
+        .distinct()
+        .prefetch_related("participants")
+        .order_by("-updated_at")
+    )
+    for room in candidates:
+        member_ids = {p.user_id for p in room.participants.all()}
+        if member_ids == ids:
+            return room
+    return None
+
+
+def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabRoom:
+    room = CollabRoom.objects.create(
+        title=title[:120],
+        created_by=creator,
+        room_kind=room_kind,
+    )
+    CollabParticipant.objects.create(room=room, user=creator)
+    for peer in peers:
+        CollabParticipant.objects.get_or_create(room=room, user=peer)
+    return room
+
+
+def _message_payload(msg: CollabMessage, *, nickname_map: dict[int, str] | None = None) -> dict:
+    nick = ""
+    if nickname_map is not None:
+        nick = (nickname_map.get(msg.sender_id) or "").strip()
+    elif getattr(msg, "room_id", None):
+        # 单条消息场景：按需查群昵称
+        row = CollabParticipant.objects.filter(room_id=msg.room_id, user_id=msg.sender_id).first()
+        nick = (row.nickname or "").strip() if row else ""
+    sender_brief = _user_brief(msg.sender, nickname=nick)
+    if msg.msg_type == "ai":
+        sender_brief = {
+            **sender_brief,
+            "username": "良策AI",
+            "nickname": "",
+            "display_name": "良策AI",
+            "online": True,
+        }
+    return {
+        "id": msg.id,
+        "room_id": str(msg.room_id),
+        "sender": sender_brief,
+        "content": msg.content or "",
+        "attachments": msg.attachments or [],
+        "mentions": msg.mentions or [],
+        "msg_type": msg.msg_type or "user",
+        "created_at": msg.created_at.isoformat(),
+    }
+
+
+def _message_analysis_text(msg: CollabMessage) -> str:
+    text = (msg.content or "").strip()
+    # 附件分析上下文
+    atts = msg.attachments or []
+    if atts:
+        names = "、".join(a.get("name") or ("图片" if a.get("is_image") else "附件") for a in atts[:5])
+        tag = f"[附件: {names}]"
+        text = f"{text}\n{tag}".strip() if text else tag
+    return text or "[空消息]"
+
+
+def _insight_payload(row: CollabInsight) -> dict:
+    return {
+        "id": row.id,
+        "room_id": str(row.room_id),
+        "risk_level": row.risk_level,
+        "title": row.title,
+        "analysis": row.analysis,
+        "advice": row.advice,
+        "control": row.control,
+        "tags": row.tags or [],
+        "evidence_message_ids": row.evidence_message_ids or [],
+        "draft_reply": row.draft_reply or "",
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
+    rows = list(
+        room.messages.select_related("sender").order_by("-id")[:24]
+    )
+    rows.reverse()
+    messages = [
+        {
+            "id": m.id,
+            "username": "良策AI" if m.msg_type == "ai" else m.sender.username,
+            "content": _message_analysis_text(m),
+            "msg_type": m.msg_type,
+        }
+        for m in rows
+    ]
+    data = analyze_room_messages(messages, llm_user=llm_user)
+    insight = CollabInsight.objects.create(
+        room=room,
+        risk_level=data["risk_level"],
+        title=data["title"],
+        analysis=data["analysis"],
+        advice=data["advice"],
+        control=data["control"],
+        tags=data.get("tags") or [],
+        evidence_message_ids=data.get("evidence_message_ids") or [],
+        draft_reply=data.get("draft_reply") or "",
+    )
+    room.risk_level = max_risk(room.risk_level, data["risk_level"])
+    if data.get("analysis"):
+        room.summary = data["analysis"][:500]
+    room.save(update_fields=["risk_level", "summary", "updated_at"])
+    return insight
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def room_list(request):
+    touch_presence(request.user)
+    if request.method == "POST":
+        # 兼容：peer_username 单聊；peer_usernames 群聊；room_kind 可显式指定
+        peer_username = str(request.data.get("peer_username") or "").strip()
+        raw_peers = request.data.get("peer_usernames") or []
+        if isinstance(raw_peers, str):
+            raw_peers = [x.strip() for x in raw_peers.split(",") if x.strip()]
+        peer_usernames = [str(x).strip() for x in raw_peers if str(x).strip()]
+        if peer_username and peer_username not in peer_usernames:
+            peer_usernames = [peer_username, *peer_usernames]
+
+        peer_usernames = [u for u in dict.fromkeys(peer_usernames) if u != request.user.username]
+        if not peer_usernames:
+            return Response({"ok": False, "error": "请选择至少一位聊天对象"}, status=400)
+
+        peers = list(User.objects.filter(username__in=peer_usernames, is_active=True))
+        found = {u.username for u in peers}
+        missing = [u for u in peer_usernames if u not in found]
+        if missing:
+            return Response({"ok": False, "error": f"用户不存在: {', '.join(missing)}"}, status=404)
+
+        room_kind = str(request.data.get("room_kind") or "").strip().lower()
+        if room_kind not in ("dm", "group"):
+            room_kind = "dm" if len(peers) == 1 else "group"
+
+        if room_kind == "dm":
+            if len(peers) != 1:
+                return Response({"ok": False, "error": "单聊只能选择一位联系人"}, status=400)
+            existing = _find_open_dm(request.user, peers[0])
+            if existing:
+                if existing.status == "closed":
+                    existing.status = "open"
+                    existing.save(update_fields=["status", "updated_at"])
+                return Response(
+                    _room_payload(existing, include_messages=True, viewer=request.user),
+                    status=200,
+                )
+            title = str(request.data.get("title") or peers[0].username).strip() or peers[0].username
+            room = _create_room(creator=request.user, peers=peers, room_kind="dm", title=title)
+            return Response(
+                _room_payload(room, include_messages=True, viewer=request.user),
+                status=201,
+            )
+
+        # group
+        title = str(request.data.get("title") or "").strip()
+        if not title:
+            names = [p.username for p in peers[:3]]
+            title = f"{request.user.username}、" + "、".join(names)
+            if len(peers) > 3:
+                title += "等"
+            title = f"群聊({title})"
+        room = _create_room(creator=request.user, peers=peers, room_kind="group", title=title[:120])
+        return Response(
+            _room_payload(room, include_messages=True, viewer=request.user),
+            status=201,
+        )
+
+    if _is_admin(request.user):
+        qs = CollabRoom.objects.all()
+    else:
+        qs = CollabRoom.objects.filter(participants__user=request.user).distinct()
+    status_filter = str(request.query_params.get("status") or "").strip()
+    if status_filter in ("open", "closed"):
+        qs = qs.filter(status=status_filter)
+    rooms = list(qs.select_related("created_by").prefetch_related("participants__user")[:100])
+    return Response({
+        "count": len(rooms),
+        "results": [_room_payload(r, viewer=request.user) for r in rooms],
+    })
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def room_detail(request, room_id):
+    room = get_object_or_404(CollabRoom.objects.select_related("created_by"), id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    if request.method == "DELETE":
+        is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+        can_delete = is_member or _is_admin(request.user)
+        if not can_delete:
+            return Response({"ok": False, "error": "无权删除该会话"}, status=403)
+        # 仅群主/单聊任一成员/管理员可删整会话；普通群成员不可整群删除
+        if room.room_kind == "group" and not _is_admin(request.user):
+            if room.created_by_id != request.user.id:
+                return Response({"ok": False, "error": "仅群主或管理员可删除群聊"}, status=403)
+        room_id_str = str(room.id)
+        room.delete()
+        return Response({"ok": True, "deleted": room_id_str})
+
+    if request.method == "PATCH":
+        if room.status == "closed":
+            return Response({"ok": False, "error": "会话已结束"}, status=400)
+        new_status = str(request.data.get("status") or "").strip()
+        title = request.data.get("title")
+        if title is not None:
+            room.title = str(title).strip()[:120] or room.title
+        if new_status == "closed":
+            room.status = "closed"
+            # 结束时再析一场
+            try:
+                _run_analysis(room, llm_user=request.user)
+            except Exception:
+                pass
+        room.save()
+        return Response(_room_payload(room, include_messages=True, viewer=request.user))
+
+    # 打开会话详情视为已读
+    if CollabParticipant.objects.filter(room=room, user=request.user).exists():
+        _mark_room_read(request.user, room)
+    return Response(_room_payload(room, include_messages=True, viewer=request.user))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def room_mark_read(request, room_id):
+    """将会话标记为已读。"""
+    touch_presence(request.user)
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
+        if not _is_admin(request.user):
+            return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+        return Response({"ok": True, "unread_count": 0, "last_read_message_id": 0})
+    raw = request.data.get("up_to_id")
+    up_to = int(raw) if str(raw or "").isdigit() else None
+    last_id = _mark_room_read(request.user, room, up_to_id=up_to)
+    return Response({
+        "ok": True,
+        "last_read_message_id": last_id,
+        "unread_count": 0,
+        "room_id": str(room.id),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def unread_summary(request):
+    """顶栏铃铛：未读协作消息汇总。"""
+    touch_presence(request.user)
+    parts = list(
+        CollabParticipant.objects.filter(user=request.user)
+        .select_related("room", "room__created_by")
+    )
+    items = []
+    total = 0
+    for part in parts:
+        room = part.room
+        count = _unread_count_for(request.user, room, last_read_id=part.last_read_message_id)
+        if count <= 0:
+            continue
+        total += count
+        payload = _room_payload(room, viewer=request.user)
+        last = payload.get("last_message") or {}
+        items.append({
+            "room_id": str(room.id),
+            "title": payload.get("display_title") or room.title,
+            "room_kind": room.room_kind,
+            "unread_count": count,
+            "last_message": last,
+            "updated_at": room.updated_at.isoformat(),
+            "risk_level": room.risk_level,
+        })
+    items.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return Response({
+        "ok": True,
+        "total_unread": total,
+        "count": len(items),
+        "results": items[:30],
+    })
+
+
+@api_view(["POST", "DELETE", "PATCH"])
+@permission_classes([IsAuthenticated])
+def room_members(request, room_id):
+    """群聊拉人（POST）/ 踢人（DELETE）/ 修改群内名称（PATCH）。"""
+    touch_presence(request.user)
+    room = get_object_or_404(CollabRoom.objects.select_related("created_by"), id=room_id)
+    is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+    if not is_member and not _is_admin(request.user):
+        return Response({"ok": False, "error": "仅群成员可操作"}, status=403)
+    if room.room_kind != "group":
+        return Response({"ok": False, "error": "仅群聊支持成员管理"}, status=400)
+    if room.status != "open" and request.method != "PATCH":
+        return Response({"ok": False, "error": "会话已结束，无法变更成员"}, status=400)
+
+    if request.method == "PATCH":
+        username = str(request.data.get("username") or "").strip()
+        nickname = str(request.data.get("nickname") or "").strip()[:64]
+        if not username:
+            return Response({"ok": False, "error": "请指定要修改的成员"}, status=400)
+        target = User.objects.filter(username=username, is_active=True).first()
+        if not target:
+            return Response({"ok": False, "error": "账号不存在"}, status=404)
+        row = CollabParticipant.objects.filter(room=room, user=target).first()
+        if not row:
+            return Response({"ok": False, "error": "该用户不在群中"}, status=404)
+        can_edit_others = (
+            room.created_by_id == request.user.id
+            or _is_admin(request.user)
+        )
+        if target.id != request.user.id and not can_edit_others:
+            return Response({"ok": False, "error": "只能修改自己的群内名称，或由群主修改"}, status=403)
+        old = (row.nickname or "").strip()
+        row.nickname = nickname
+        row.save(update_fields=["nickname"])
+        room.save(update_fields=["updated_at"])
+        tip = None
+        new_label = nickname or target.username
+        if old != nickname:
+            actor = request.user.username
+            if target.id == request.user.id:
+                tip_text = f"{actor} 将群内名称改为「{new_label}」"
+            else:
+                tip_text = f"{actor} 将 {target.username} 的群内名称改为「{new_label}」"
+            tip = CollabMessage.objects.create(
+                room=room,
+                sender=request.user,
+                content=tip_text,
+                attachments=[],
+                mentions=[],
+                msg_type="system",
+            )
+        body = {
+            "ok": True,
+            "participant": _user_brief(target, nickname=nickname),
+            "room": _room_payload(room, include_messages=False, viewer=request.user),
+        }
+        if tip:
+            body["message"] = _message_payload(tip, nickname_map=_nickname_map(room))
+        return Response(body)
+
+    raw = request.data.get("usernames") or request.data.get("peer_usernames") or []
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.split(",") if x.strip()]
+    usernames = [str(x).strip() for x in raw if str(x).strip()]
+    usernames = list(dict.fromkeys(usernames))
+    if not usernames:
+        action = "邀请" if request.method == "POST" else "移出"
+        return Response({"ok": False, "error": f"请选择要{action}的账号"}, status=400)
+
+    if request.method == "DELETE":
+        # 群主或平台管理员可踢人；普通成员仅可把自己踢出（退群）
+        can_moderate = (
+            room.created_by_id == request.user.id
+            or _is_admin(request.user)
+        )
+        peers = list(User.objects.filter(username__in=usernames, is_active=True))
+        found = {u.username for u in peers}
+        missing = [u for u in usernames if u not in found]
+        if missing:
+            return Response({"ok": False, "error": f"账号不存在: {', '.join(missing)}"}, status=404)
+
+        removed = []
+        for peer in peers:
+            if peer.id == room.created_by_id:
+                return Response({"ok": False, "error": "不能移出群主"}, status=400)
+            if peer.id == request.user.id:
+                # 自己退群
+                deleted, _ = CollabParticipant.objects.filter(room=room, user=peer).delete()
+                if deleted:
+                    removed.append(peer)
+                continue
+            if not can_moderate:
+                return Response({"ok": False, "error": "仅群主或管理员可踢人"}, status=403)
+            deleted, _ = CollabParticipant.objects.filter(room=room, user=peer).delete()
+            if deleted:
+                removed.append(peer)
+
+        if not removed:
+            return Response({"ok": False, "error": "所选用户不在群中"}, status=400)
+
+        names = "、".join(u.username for u in removed)
+        if len(removed) == 1 and removed[0].id == request.user.id:
+            tip = f"{request.user.username} 退出了群聊"
+        else:
+            tip = f"{request.user.username} 将 {names} 移出了群聊"
+        system_msg = CollabMessage.objects.create(
+            room=room,
+            sender=request.user,
+            content=tip,
+            attachments=[],
+            msg_type="system",
+            mentions=[],
+        )
+        room.save(update_fields=["updated_at"])
+
+        still_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+        payload = {
+            "ok": True,
+            "removed": [_user_brief(u) for u in removed],
+            "removed_count": len(removed),
+            "message": _message_payload(system_msg),
+            "left": not still_member,
+        }
+        if still_member or _is_admin(request.user):
+            payload["room"] = _room_payload(room, include_messages=False, viewer=request.user)
+        else:
+            payload["room"] = None
+        return Response(payload, status=200)
+
+    # POST: 拉人
+    if not is_member:
+        return Response({"ok": False, "error": "仅群成员可邀请他人"}, status=403)
+
+    existing_ids = set(
+        CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
+    )
+    peers = list(User.objects.filter(username__in=usernames, is_active=True))
+    found = {u.username for u in peers}
+    missing = [u for u in usernames if u not in found]
+    if missing:
+        return Response({"ok": False, "error": f"账号不存在: {', '.join(missing)}"}, status=404)
+
+    added = []
+    for peer in peers:
+        if peer.id in existing_ids:
+            continue
+        CollabParticipant.objects.get_or_create(room=room, user=peer)
+        added.append(peer)
+
+    if not added:
+        return Response({"ok": False, "error": "所选用户已在群中"}, status=400)
+
+    names = "、".join(u.username for u in added)
+    tip = f"{request.user.username} 邀请 {names} 加入了群聊"
+    system_msg = CollabMessage.objects.create(
+        room=room,
+        sender=request.user,
+        content=tip,
+        attachments=[],
+        msg_type="system",
+        mentions=[],
+    )
+    room.save(update_fields=["updated_at"])
+
+    return Response({
+        "ok": True,
+        "added": [_user_brief(u) for u in added],
+        "added_count": len(added),
+        "message": _message_payload(system_msg),
+        "room": _room_payload(room, include_messages=False, viewer=request.user),
+    }, status=200)
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def room_messages(request, room_id):
+    touch_presence(request.user)
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    if request.method == "DELETE":
+        is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+        if not is_member and not _is_admin(request.user):
+            return Response({"ok": False, "error": "仅成员可清空聊天记录"}, status=403)
+        msg_count, _ = room.messages.all().delete()
+        insight_count, _ = room.insights.all().delete()
+        room.risk_level = "green"
+        room.summary = ""
+        room.save(update_fields=["risk_level", "summary", "updated_at"])
+        # 保留会话，写入一条系统提示
+        if is_member or _is_admin(request.user):
+            tip = CollabMessage.objects.create(
+                room=room,
+                sender=request.user,
+                content=f"{request.user.username} 清空了聊天记录",
+                attachments=[],
+                mentions=[],
+                msg_type="system",
+            )
+        else:
+            tip = None
+        return Response({
+            "ok": True,
+            "cleared_messages": msg_count,
+            "cleared_insights": insight_count,
+            "message": _message_payload(tip) if tip else None,
+            "room": _room_payload(room, include_messages=True, viewer=request.user),
+        })
+
+    if request.method == "POST":
+        if room.status != "open":
+            return Response({"ok": False, "error": "会话已结束，无法发送"}, status=400)
+        # 管理员旁观不可代发（除非也是参与者）
+        if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
+            return Response({"ok": False, "error": "旁观者无法发送消息"}, status=403)
+        content = str(request.data.get("content") or "").strip()
+        files = request.FILES.getlist("files") or request.FILES.getlist("file")
+        attachments_meta: list[dict] = []
+        if files:
+            try:
+                processed = process_uploaded_files(files, request.user.id)
+            except ValueError as exc:
+                return Response({"ok": False, "error": str(exc)}, status=400)
+            attachments_meta = attachment_public_meta(processed)
+            for item in attachments_meta:
+                stored = item.get("id") or ""
+                item["url"] = f"/api/collab/attachments/{stored}/"
+        if not content and not attachments_meta:
+            return Response({"ok": False, "error": "消息不能为空"}, status=400)
+        if len(content) > 4000:
+            return Response({"ok": False, "error": "消息过长"}, status=400)
+
+        member_names = list(
+            CollabParticipant.objects.filter(room=room)
+            .select_related("user")
+            .values_list("user__username", flat=True)
+        )
+        mentions = parse_mentions(content, member_names)
+
+        msg = CollabMessage.objects.create(
+            room=room,
+            sender=request.user,
+            content=content,
+            attachments=attachments_meta,
+            mentions=mentions,
+            msg_type="user",
+        )
+        room.save(update_fields=["updated_at"])
+
+        ai_msg = None
+        if has_ai_mention(mentions):
+            try:
+                recent = list(
+                    room.messages.select_related("sender").order_by("-id")[:20]
+                )
+                recent.reverse()
+                transcript = [
+                    {
+                        "username": (
+                            "良策AI" if m.msg_type == "ai" else m.sender.username
+                        ),
+                        "content": m.content or "",
+                        "msg_type": m.msg_type,
+                    }
+                    for m in recent
+                ]
+                reply = reply_ai_mention(
+                    room_title=room.title,
+                    transcript=transcript,
+                    trigger_content=content,
+                    llm_user=request.user,
+                    mentions=mentions,
+                )
+                ai_user = get_collab_ai_user()
+                ai_msg = CollabMessage.objects.create(
+                    room=room,
+                    sender=ai_user,
+                    content=reply,
+                    attachments=[],
+                    mentions=[],
+                    msg_type="ai",
+                )
+                room.save(update_fields=["updated_at"])
+            except Exception as exc:
+                # 仍给出可看见的回复，避免“没反应”
+                try:
+                    ai_user = get_collab_ai_user()
+                    ai_msg = CollabMessage.objects.create(
+                        room=room,
+                        sender=ai_user,
+                        content=(
+                            f"召唤到了，但生成回复时出错：{exc}。"
+                            "请稍后重试，或换个问法再 @AI。"
+                        )[:2000],
+                        attachments=[],
+                        mentions=[],
+                        msg_type="ai",
+                    )
+                    room.save(update_fields=["updated_at"])
+                except Exception:
+                    ai_msg = None
+
+        insight = None
+        analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
+        if analyze:
+            try:
+                insight = _run_analysis(room, llm_user=request.user)
+            except Exception:
+                insight = None
+
+        body = {
+            "ok": True,
+            "message": _message_payload(msg),
+            "room": _room_payload(room, viewer=request.user),
+        }
+        if ai_msg:
+            body["ai_message"] = _message_payload(ai_msg)
+        if insight:
+            body["insight"] = _insight_payload(insight)
+        return Response(body, status=201)
+
+    after_id = int(request.query_params.get("after_id") or 0)
+    qs = room.messages.select_related("sender").order_by("id")
+    if after_id > 0:
+        qs = qs.filter(id__gt=after_id)
+    rows = list(qs[:200])
+    room_view = _room_payload(room, viewer=request.user)
+    nick_map = _nickname_map(room)
+    # 正在拉取消息 = 正在看此会话，标记已读到最新
+    if CollabParticipant.objects.filter(room=room, user=request.user).exists():
+        _mark_room_read(request.user, room)
+    return Response({
+        "count": len(rows),
+        "results": [_message_payload(m, nickname_map=nick_map) for m in rows],
+        "room": {
+            "id": str(room.id),
+            "status": room.status,
+            "risk_level": room.risk_level,
+            "updated_at": room.updated_at.isoformat(),
+            "peer_online": room_view.get("peer_online"),
+            "online_count": room_view.get("online_count"),
+            "participants": room_view.get("participants"),
+            "unread_count": 0,
+        },
+    })
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def room_insights(request, room_id):
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    if request.method == "POST":
+        try:
+            insight = _run_analysis(room, llm_user=request.user)
+        except Exception as exc:
+            return Response({"ok": False, "error": str(exc)}, status=500)
+        return Response({"ok": True, "insight": _insight_payload(insight), "room": _room_payload(room, viewer=request.user)})
+
+    after_id = int(request.query_params.get("after_id") or 0)
+    qs = room.insights.order_by("id")
+    if after_id > 0:
+        qs = qs.filter(id__gt=after_id)
+    else:
+        qs = room.insights.order_by("-id")
+    rows = list(qs[:40])
+    if after_id <= 0:
+        rows = list(reversed(rows))
+    return Response({
+        "count": len(rows),
+        "results": [_insight_payload(i) for i in rows],
+        "room_risk_level": room.risk_level,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_users(request):
+    """供创建会话时选择对方账号。"""
+    touch_presence(request.user)
+    q = str(request.query_params.get("q") or "").strip()
+    qs = User.objects.filter(is_active=True).exclude(id=request.user.id)
+    if q:
+        qs = qs.filter(Q(username__icontains=q) | Q(email__icontains=q))
+    rows = list(qs.order_by("username")[:50])
+    pmap = presence_map([u.id for u in rows])
+    return Response({
+        "count": len(rows),
+        "results": [_user_brief(u, presence=pmap) for u in rows],
+    })
+
+
+@api_view(["POST", "GET"])
+@permission_classes([IsAuthenticated])
+def presence_heartbeat(request):
+    """前端定时心跳，维持在线状态；GET 可查询一批用户在线情况。"""
+    row = touch_presence(request.user)
+    if request.method == "GET":
+        raw_ids = request.query_params.get("user_ids") or ""
+        ids = []
+        for part in str(raw_ids).split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.append(int(part))
+        pmap = presence_map(ids)
+        return Response({
+            "ok": True,
+            "me": {
+                "id": request.user.id,
+                "online": True,
+                "last_seen": row.last_seen.isoformat(),
+            },
+            "users": {
+                str(uid): pmap.get(uid, {"online": False, "last_seen": None})
+                for uid in ids
+            },
+        })
+    return Response({
+        "ok": True,
+        "online": True,
+        "last_seen": row.last_seen.isoformat(),
+        "window_seconds": 75,
+    })
+
+
+def _resolve_request_user(request):
+    user = request.user if getattr(request.user, "is_authenticated", False) else None
+    if user is not None and user.is_authenticated:
+        return user
+    raw = (request.query_params.get("token") or "").strip()
+    if not raw:
+        return None
+    from rest_framework.authtoken.models import Token
+
+    row = Token.objects.filter(key=raw).select_related("user").first()
+    return row.user if row else None
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def collab_attachment(request, stored_id: str):
+    """会话成员可互看图片；支持 Header Token 或 ?token=（便于 <img src>）。"""
+    user = _resolve_request_user(request)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return Response({"ok": False, "error": "未登录"}, status=401)
+
+    safe = (stored_id or "").replace("\\", "/").split("/")[-1]
+    if not safe or ".." in safe:
+        return Response({"ok": False, "error": "附件不存在"}, status=404)
+
+    # 附件需出现在用户可访问的协作消息中
+    msg = None
+    try:
+        msg = (
+            CollabMessage.objects.filter(attachments__contains=[{"id": safe}])
+            .select_related("room")
+            .order_by("-id")
+            .first()
+        )
+    except Exception:
+        msg = None
+    # JSON contains 在部分后端不可靠，回退扫描最近引用
+    if msg is None:
+        candidates = (
+            CollabMessage.objects.exclude(attachments=[])
+            .select_related("room", "sender")
+            .order_by("-id")[:300]
+        )
+        for row in candidates:
+            for att in row.attachments or []:
+                if att.get("id") == safe:
+                    msg = row
+                    break
+            if msg is not None:
+                break
+    if msg is None:
+        # 发送者本人刚上传、尚未入库的边缘情况：允许读自己目录
+        path = resolve_attachment_path(user.id, safe)
+        if path:
+            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+            force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
+            as_attach = force_download or not (mime or "").startswith("image/")
+            return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)
+        return Response({"ok": False, "error": "附件不存在"}, status=404)
+
+    if not _can_access_room(user, msg.room):
+        return Response({"ok": False, "error": "无权查看该附件"}, status=403)
+
+    path = resolve_attachment_path(msg.sender_id, safe) or resolve_attachment_path_any(safe)
+    if not path:
+        return Response({"ok": False, "error": "附件文件丢失"}, status=404)
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+    force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
+    as_attach = force_download or not (mime or "").startswith("image/")
+    return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)

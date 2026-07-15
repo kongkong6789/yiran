@@ -87,6 +87,17 @@ ACTIONS: dict[str, ActionContract] = {
         budget_field="amount",
         high_risk=True,
     ),
+    "jackyun.sync": ActionContract(
+        name="jackyun.sync",
+        title="同步吉客云数据",
+        object_type="report",
+        connector="jackyun",
+        required_fields={},
+        required_roles=["operator", "manager", "director"],
+        from_states=[],
+        to_state=None,
+        high_risk=False,
+    ),
 }
 
 

@@ -1,0 +1,555 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  Drawer, Tag, Button, Space, Typography, List, message, Tooltip,
+  Form, Input, Switch, Divider, Alert,
+} from "antd";
+import {
+  FileTextOutlined,
+  CloudOutlined,
+  AccountBookOutlined,
+  ShoppingOutlined,
+  HddOutlined,
+  RobotOutlined,
+  ApiOutlined,
+  CopyOutlined,
+  RadarChartOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+  ImportOutlined,
+} from "@ant-design/icons";
+import WecomIcon from "./WecomIcon";
+import type { ReactNode } from "react";
+import {
+  getMcpServers,
+  getMcpServer,
+  saveMcpServer,
+  importMcpServer,
+  probeMcpServer,
+  type McpServer,
+  type McpServerDetail,
+} from "../api/client";
+
+const ICONS: Record<string, ReactNode> = {
+  wecom: <WecomIcon size={20} />,
+  tencent_docs: <FileTextOutlined />,
+  wedrive: <CloudOutlined />,
+  kingdee: <AccountBookOutlined />,
+  jackyun: <ShoppingOutlined />,
+  nas: <HddOutlined />,
+  workbuddy: <RobotOutlined />,
+};
+
+const COLORS: Record<string, string> = {
+  wecom: "#0082EF",
+  tencent_docs: "#2b7fff",
+  wedrive: "#5b8def",
+  kingdee: "#e62e2e",
+  jackyun: "#ff6b35",
+  nas: "#a78bfa",
+  workbuddy: "#34d399",
+};
+
+const STATUS_TAG: Record<string, { color: string; text: string }> = {
+  unconfigured: { color: "default", text: "未配置" },
+  configured: { color: "processing", text: "已配置" },
+  reachable: { color: "success", text: "可连通" },
+  unreachable: { color: "error", text: "不可达" },
+  error: { color: "error", text: "异常" },
+  disabled: { color: "default", text: "已禁用" },
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  personal: "个人配置",
+  ui: "界面配置",
+  env: ".env 默认",
+  none: "未配置",
+};
+
+const TRANSPORT_LABEL: Record<string, string> = {
+  streamable_http: "HTTP",
+  sse: "SSE",
+  stdio: "stdio",
+};
+
+const WECOM_JSON_TEMPLATE = `{
+  "mcpServers": {
+    "企业微信文档": {
+      "type": "streamable-http",
+      "url": "https://qyapi.weixin.qq.com/mcp/robot-doc?apikey=你的apikey"
+    }
+  }
+}`;
+
+type Props = {
+  variant?: "dock" | "sidebar" | "page";
+  title?: string;
+};
+
+type FormValues = {
+  enabled: boolean;
+  url?: string;
+  command?: string;
+  args?: string;
+  env?: string;
+  paste_json?: string;
+};
+
+function mcpStatus(item: Pick<McpServer, "status" | "configured" | "enabled">): McpServer["status"] {
+  if (item.status && item.status !== "unconfigured") return item.status;
+  if (item.enabled === false) return "disabled";
+  return item.configured ? "configured" : "unconfigured";
+}
+
+function normalizeServer(item: McpServer): McpServer {
+  return { ...item, status: mcpStatus(item) };
+}
+
+export default function McpServers({ variant = "dock", title = "MCP 业务接入" }: Props) {
+  const [servers, setServers] = useState<McpServer[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<McpServerDetail | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [form] = Form.useForm<FormValues>();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getMcpServers()
+      .then((d) => setServers((d.results || []).map(normalizeServer)))
+      .catch(() => message.error("加载 MCP 服务失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fillForm = (d: McpServerDetail) => {
+    const ph = d.placeholders || {};
+    form.setFieldsValue({
+      enabled: d.enabled !== false,
+      url: d.url || "",
+      command: d.command || "",
+      args: d.args?.length ? JSON.stringify(d.args) : "",
+      env: d.env && Object.keys(d.env).length
+        ? JSON.stringify(d.env, null, 2)
+        : "",
+      paste_json: "",
+    });
+    // 未配置时用占位提示(不写入 form 正式值,靠 placeholder 展示)
+    if (!d.command && !d.url && ph.command) {
+      // keep empty so user can see placeholders
+    }
+  };
+
+  const applyDetail = (saved: McpServerDetail, id: string) => {
+    const normalized = normalizeServer(saved);
+    setDetail(saved);
+    fillForm(saved);
+    setServers((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, ...normalized } : s)),
+    );
+  };
+
+  const openServer = async (id: string) => {
+    setOpenId(id);
+    try {
+      const d = await getMcpServer(id);
+      setDetail(d);
+      fillForm(d);
+    } catch {
+      message.error("读取 MCP 配置失败");
+      setOpenId(null);
+    }
+  };
+
+  const doSave = async () => {
+    if (!openId) return;
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      const saved = await saveMcpServer(openId, {
+        enabled: values.enabled,
+        url: values.url?.trim() || "",
+        command: values.command?.trim() || "",
+        args: values.args?.trim() || "",
+        env: values.env?.trim() || "",
+      });
+      applyDetail(saved, openId);
+      message.success("MCP 配置已保存");
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doImport = async () => {
+    if (!openId) return;
+    const raw = (form.getFieldValue("paste_json") || "").trim();
+    if (!raw) {
+      message.warning("请先粘贴 Cursor mcp.json 片段");
+      return;
+    }
+    setImporting(true);
+    try {
+      const saved = await importMcpServer(openId, raw);
+      applyDetail(saved, openId);
+      message.success("已从 mcp.json 导入并保存");
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || "导入失败,请检查 JSON");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const fillWecomTemplate = () => {
+    form.setFieldsValue({ paste_json: WECOM_JSON_TEMPLATE });
+    message.info("已填入 JSON Config 模板,请替换 apikey 后点「导入并保存」");
+  };
+
+  const copyUrl = async () => {
+    const url = (form.getFieldValue("url") || "").trim();
+    if (!url) {
+      message.warning("请先填写 StreamableHttp URL");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      message.success("已复制 StreamableHttp URL");
+    } catch {
+      message.error("复制失败");
+    }
+  };
+
+  const doProbe = async () => {
+    if (!openId) return;
+    setProbing(true);
+    try {
+      const res = await probeMcpServer(openId);
+      const st = (res.status || "error") as McpServer["status"];
+      setServers((prev) =>
+        prev.map((s) => (s.id === openId ? { ...s, status: st } : s)),
+      );
+      if (res.ok) {
+        message.success(res.message || "探测成功");
+      } else {
+        message.warning(res.message || "探测未通过");
+      }
+    } catch {
+      message.error("探测请求失败");
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const copyConfig = async () => {
+    if (!detail?.cursor_json) return;
+    try {
+      await navigator.clipboard.writeText(detail.cursor_json);
+      message.success("已复制 Cursor mcp.json 片段");
+    } catch {
+      message.error("复制失败,请手动选择复制");
+    }
+  };
+
+  const renderCard = (item: McpServer) => {
+    const color = COLORS[item.id] || "#59c2ff";
+    const st = STATUS_TAG[mcpStatus(item)] || STATUS_TAG.unconfigured;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        className="mcp-card"
+        onClick={() => openServer(item.id)}
+        style={{ "--accent": color } as React.CSSProperties}
+      >
+        <span className="mcp-card-icon" style={{ color }}>{ICONS[item.id]}</span>
+        <b>{item.name}</b>
+        <em>{item.desc}</em>
+        <span className="mcp-card-meta">
+          <Tag color={st.color} bordered={false} style={{ margin: 0, fontSize: 10 }}>
+            {st.text}
+          </Tag>
+          <i>{TRANSPORT_LABEL[item.transport] || item.transport}</i>
+        </span>
+      </button>
+    );
+  };
+
+  const renderRow = (item: McpServer) => {
+    const color = COLORS[item.id] || "#59c2ff";
+    const st = STATUS_TAG[mcpStatus(item)] || STATUS_TAG.unconfigured;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        className="mcp-sidebar-item"
+        onClick={() => openServer(item.id)}
+        title={`${item.desc} · ${TRANSPORT_LABEL[item.transport]}`}
+      >
+        <span className="mcp-icon" style={{ color, borderColor: `${color}55` }}>
+          {ICONS[item.id]}
+        </span>
+        <span className="mcp-name">{item.name}</span>
+        <Tag color={st.color} bordered={false} style={{ margin: 0, fontSize: 10, lineHeight: "16px" }}>
+          {st.text}
+        </Tag>
+      </button>
+    );
+  };
+
+  const isWecom = openId === "wecom";
+  const showStdio = !isWecom && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
+  const showUrl = !isWecom && (
+    detail?.declared_transport === "streamable_http"
+    || detail?.declared_transport === "sse"
+    || !!detail?.url
+  );
+  const ph = detail?.placeholders || {};
+
+  const configuredCount = servers.filter((s) => mcpStatus(s) === "configured" || mcpStatus(s) === "reachable").length;
+  const layerOrder = ["协作", "感知", "终端"];
+  const layers = [
+    ...layerOrder.filter((l) => servers.some((s) => s.layer === l)),
+    ...Array.from(new Set(servers.map((s) => s.layer).filter((l) => !layerOrder.includes(l)))),
+  ];
+
+  return (
+    <>
+      {variant === "sidebar" ? (
+        <div className="mcp-sidebar">
+          <div className="mcp-sidebar-head">
+            <span>{title}</span>
+            <Tooltip title="刷新">
+              <Button type="text" size="small" icon={<ReloadOutlined />} loading={loading} onClick={load} />
+            </Tooltip>
+          </div>
+          {servers.map(renderRow)}
+        </div>
+      ) : variant === "page" ? (
+        <section className="connectors-board">
+          <div className="connectors-stats">
+            <div className="connectors-stat">
+              <b>{servers.length}</b>
+              <span>平台总数</span>
+            </div>
+            <div className="connectors-stat">
+              <b>{configuredCount}</b>
+              <span>已配置</span>
+            </div>
+            <div className="connectors-stat">
+              <b>{servers.filter((s) => s.status === "reachable").length}</b>
+              <span>可连通</span>
+            </div>
+            <Space>
+              <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>
+            </Space>
+          </div>
+          {layers.map((layer) => {
+            const items = servers.filter((s) => s.layer === layer);
+            if (!items.length) return null;
+            return (
+              <div key={layer} className="connectors-layer">
+                <Typography.Title level={5} className="connectors-layer-title">{layer}</Typography.Title>
+                <div className="mcp-dock-grid connectors-grid">
+                  {items.map(renderCard)}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      ) : (
+        <section className="mcp-dock">
+          <div className="mcp-dock-head">
+            <h3><ApiOutlined /> {title}</h3>
+            <Space size={8}>
+              <span>Model Context Protocol · 前端可填可存</span>
+              <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={load}>
+                刷新
+              </Button>
+            </Space>
+          </div>
+          <div className="mcp-dock-grid">
+            {servers.map(renderCard)}
+          </div>
+        </section>
+      )}
+
+      <Drawer
+        title={detail ? `${detail.name} · MCP 配置` : "MCP 配置"}
+        open={!!openId}
+        onClose={() => { setOpenId(null); setDetail(null); form.resetFields(); }}
+        width={560}
+        extra={
+          detail && (
+            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>
+              保存
+            </Button>
+          )
+        }
+      >
+        {detail && (
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <div>
+              <Typography.Text type="secondary">{detail.desc}</Typography.Text>
+              <div style={{ marginTop: 8 }}>
+                <Tag>{detail.layer}</Tag>
+                <Tag color="blue">{TRANSPORT_LABEL[detail.transport]}</Tag>
+                <Tag color={detail.config_source === "personal" || detail.config_source === "ui" ? "success" : "default"}>
+                  {SOURCE_LABEL[detail.config_source] || detail.config_source}
+                </Tag>
+              </div>
+            </div>
+
+            {!!detail.hints?.length && (
+              <Alert
+                type="info"
+                showIcon
+                message={isWecom ? "企业微信 MCP 填写说明" : "配置说明"}
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {detail.hints.map((h) => <li key={h}>{h}</li>)}
+                  </ul>
+                }
+              />
+            )}
+
+            <Form form={form} layout="vertical" requiredMark={false}>
+              <Form.Item label="启用" name="enabled" valuePropName="checked">
+                <Switch checkedChildren="开" unCheckedChildren="关" />
+              </Form.Item>
+
+              {isWecom ? (
+                <>
+                  <Form.Item
+                    label="StreamableHttp URL"
+                    name="url"
+                    extra="从企微 MCP 配置页复制 StreamableHttp URL,粘贴后点右上角「保存」"
+                  >
+                    <Input.TextArea
+                      rows={3}
+                      placeholder={ph.url || "https://qyapi.weixin.qq.com/mcp/robot-doc?apikey=..."}
+                      allowClear
+                    />
+                  </Form.Item>
+                  <Button size="small" icon={<CopyOutlined />} onClick={copyUrl} style={{ marginBottom: 12 }}>
+                    复制 URL
+                  </Button>
+
+                  <Divider style={{ margin: "4px 0 12px" }}>JSON Config</Divider>
+
+                  <Form.Item
+                    label="JSON Config"
+                    name="paste_json"
+                    extra='从企微 MCP 配置页复制 JSON Config,粘贴后点「导入并保存」'
+                  >
+                    <Input.TextArea
+                      rows={10}
+                      placeholder={WECOM_JSON_TEMPLATE}
+                    />
+                  </Form.Item>
+                  <Space wrap>
+                    <Button onClick={fillWecomTemplate}>填入模板</Button>
+                    <Button
+                      type="primary"
+                      ghost
+                      icon={<ImportOutlined />}
+                      loading={importing}
+                      onClick={doImport}
+                    >
+                      导入并保存
+                    </Button>
+                  </Space>
+                </>
+              ) : (
+                <>
+                  {showStdio && (
+                    <>
+                      <Form.Item
+                        label="command"
+                        name="command"
+                        extra="stdio 启动命令"
+                      >
+                        <Input placeholder={ph.command || "npx"} allowClear />
+                      </Form.Item>
+                      <Form.Item
+                        label="args"
+                        name="args"
+                        extra='JSON 数组'
+                      >
+                        <Input.TextArea
+                          rows={2}
+                          placeholder={ph.args || '["-y","@modelcontextprotocol/server-filesystem","/mnt/nas"]'}
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        label="env"
+                        name="env"
+                        extra='JSON 对象(可选)'
+                      >
+                        <Input.TextArea rows={4} placeholder='{"KEY":"value"}' />
+                      </Form.Item>
+                    </>
+                  )}
+
+                  {showUrl && (
+                    <Form.Item label="MCP URL" name="url" extra="HTTP / SSE 端点">
+                      <Input placeholder={ph.url || "http://127.0.0.1:3101/mcp"} allowClear />
+                    </Form.Item>
+                  )}
+
+                  <Divider style={{ margin: "4px 0 12px" }}>或粘贴 Cursor mcp.json</Divider>
+
+                  <Form.Item label="粘贴导入" name="paste_json" extra="支持完整 mcp.json 或单个 server 对象">
+                    <Input.TextArea
+                      rows={8}
+                      placeholder={'{\n  "mcpServers": {\n    "...": { "command": "npx", "args": [], "env": {} }\n  }\n}'}
+                    />
+                  </Form.Item>
+                  <Button
+                    type="primary"
+                    ghost
+                    icon={<ImportOutlined />}
+                    loading={importing}
+                    onClick={doImport}
+                  >
+                    导入并保存
+                  </Button>
+                </>
+              )}
+            </Form>
+
+            <div>
+              <Typography.Text strong>可用工具</Typography.Text>
+              <List
+                size="small"
+                dataSource={detail.tools}
+                renderItem={(t) => <List.Item style={{ padding: "4px 0" }}><code>{t}</code></List.Item>}
+              />
+            </div>
+
+            <Divider style={{ margin: "4px 0" }} />
+
+            <div>
+              <Space style={{ marginBottom: 8 }} wrap>
+                <Typography.Text strong>当前 Cursor mcp.json</Typography.Text>
+                <Button size="small" icon={<CopyOutlined />} onClick={copyConfig}>复制</Button>
+                <Button size="small" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
+                  探测连接
+                </Button>
+              </Space>
+              <pre className="mcp-json">{detail.cursor_json}</pre>
+            </div>
+
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
+              {isWecom
+                ? "与企微后台一致: 填 StreamableHttp URL 或粘贴 JSON Config。配置含 apikey,请勿泄露。"
+                : "填写后点右上角「保存」,或粘贴 mcp.json 后「导入并保存」。"}
+            </Typography.Paragraph>
+          </Space>
+        )}
+      </Drawer>
+    </>
+  );
+}

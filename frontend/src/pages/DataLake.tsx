@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Card, Table, Tag, Row, Col, Statistic, Space, Typography } from "antd";
-import { DatabaseOutlined } from "@ant-design/icons";
-import { getTables, getMetrics, getAnomalies } from "../api/client";
+import { Card, Table, Tag, Row, Col, Statistic, Space, Typography, Button, message } from "antd";
+import { DatabaseOutlined, CloudSyncOutlined } from "@ant-design/icons";
+import { getTables, getMetrics, getAnomalies, syncJackyun } from "../api/client";
 
 export default function DataLake() {
   const [tables, setTables] = useState<any[]>([]);
@@ -9,8 +9,9 @@ export default function DataLake() {
   const [anomalies, setAnomalies] = useState<any[]>([]);
   const [source, setSource] = useState<string>("");
   const [path, setPath] = useState<string>("");
+  const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
+  const reload = () => {
     getTables().then((d) => {
       setTables(d.tables || []);
       setSource(d.source || "");
@@ -18,7 +19,30 @@ export default function DataLake() {
     });
     getMetrics().then((d) => setMetrics(d.results || []));
     getAnomalies().then((d) => setAnomalies(d.results || []));
-  }, []);
+  };
+
+  useEffect(() => { reload(); }, []);
+
+  const doSync = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncJackyun();
+      if (!res.ok) {
+        message.error(res.error || "同步失败");
+        return;
+      }
+      const w = res.written || {};
+      message.success(
+        `吉客云已写入 ${w.backend}:商品 ${w.products ?? 0} / 销售 ${w.sales ?? 0}` +
+        (res.configured ? " (live)" : " (fixture)")
+      );
+      reload();
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || "同步失败");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // 按建模分层给表分组上色
   const layerOf = (t: string) =>
@@ -36,13 +60,22 @@ export default function DataLake() {
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
-        <Space>
+        <Space wrap>
           <DatabaseOutlined />
           <Typography.Text strong>数据源:</Typography.Text>
           <Tag color={source === "postgres" ? "green" : "orange"}>
             {source === "postgres" ? "PostgreSQL(主库)" : "DuckDB(本地降级)"}
           </Tag>
           <Typography.Text type="secondary">{path}</Typography.Text>
+          <Button
+            size="small"
+            type="primary"
+            icon={<CloudSyncOutlined />}
+            loading={syncing}
+            onClick={doSync}
+          >
+            同步吉客云
+          </Button>
         </Space>
       </Card>
 

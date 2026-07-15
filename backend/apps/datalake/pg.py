@@ -454,6 +454,90 @@ class PgLake:
              from_state, to_state, operator_role, json.dumps(payload, ensure_ascii=False)],
         )
 
+    def ingest_jackyun(self, goods: list[dict], trades: list[dict]) -> dict:
+        """把吉客云商品/日汇总写入 dim + dwd(src=jackyun),幂等 upsert。"""
+        products = shops = sales = 0
+        with self.connect() as con:
+            cur = con.cursor()
+            for g in goods:
+                sku = g.get("sku") or ""
+                if not sku:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO dim_product
+                        (sku, spu, product_name, category, brand, cost_price, list_price)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (sku) DO UPDATE SET
+                        spu = EXCLUDED.spu,
+                        product_name = EXCLUDED.product_name,
+                        category = EXCLUDED.category,
+                        brand = EXCLUDED.brand,
+                        cost_price = EXCLUDED.cost_price,
+                        list_price = EXCLUDED.list_price
+                    """,
+                    [
+                        sku, g.get("spu") or "", g.get("product_name") or sku,
+                        g.get("category") or "", g.get("brand") or "",
+                        g.get("cost_price") or 0, g.get("list_price") or 0,
+                    ],
+                )
+                products += 1
+            for t in trades:
+                shop_id = t.get("shop_id") or ""
+                sku = t.get("sku") or ""
+                if not shop_id or not sku:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO dim_shop (shop_id, shop_name, platform, brand, owner_role)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (shop_id) DO UPDATE SET
+                        shop_name = EXCLUDED.shop_name,
+                        platform = EXCLUDED.platform
+                    """,
+                    [
+                        shop_id, t.get("shop_name") or shop_id,
+                        t.get("platform") or "jackyun", "", "operator",
+                    ],
+                )
+                shops += 1
+                cur.execute(
+                    """
+                    INSERT INTO dim_date (dt, year, quarter, month, week, is_promo)
+                    SELECT %s::date,
+                           EXTRACT(YEAR FROM %s::date)::int,
+                           EXTRACT(QUARTER FROM %s::date)::int,
+                           EXTRACT(MONTH FROM %s::date)::int,
+                           EXTRACT(WEEK FROM %s::date)::int,
+                           FALSE
+                    ON CONFLICT (dt) DO NOTHING
+                    """,
+                    [t["dt"], t["dt"], t["dt"], t["dt"], t["dt"]],
+                )
+                cur.execute(
+                    """
+                    DELETE FROM dwd_sales_detail
+                    WHERE dt = %s::date AND shop_id = %s AND sku = %s AND src = 'jackyun'
+                    """,
+                    [t["dt"], shop_id, sku],
+                )
+                cur.execute(
+                    """
+                    INSERT INTO dwd_sales_detail
+                        (dt, shop_id, sku, gmv, orders, units, refund_amt, refund_orders, src)
+                    VALUES (%s::date,%s,%s,%s,%s,%s,%s,%s,'jackyun')
+                    """,
+                    [
+                        t["dt"], shop_id, sku,
+                        t.get("gmv") or 0, t.get("orders") or 0, t.get("units") or 0,
+                        t.get("refund_amt") or 0, t.get("refund_orders") or 0,
+                    ],
+                )
+                sales += 1
+            con.commit()
+        return {"products": products, "shops": shops, "sales": sales}
+
     def list_tables(self) -> list[dict]:
         rows = self.query(
             "SELECT table_name FROM information_schema.tables "

@@ -11,6 +11,7 @@ import {
   EyeOutlined,
 } from "@ant-design/icons";
 import RoundTable from "../components/RoundTable";
+import { brand } from "../theme/brand";
 import {
   listAgents, listMeetings, createMeeting, getMeeting, tickMeeting, interject,
   stopMeeting, previewGraphRefs, downloadDeliverable,
@@ -18,7 +19,7 @@ import {
 } from "../api/client";
 
 const KIND_META: Record<Deliverable["kind"], { label: string; color: string; icon: ReactNode }> = {
-  md: { label: "Markdown 方案", color: "purple", icon: <FileTextOutlined /> },
+  md: { label: "Markdown 方案", color: "gold", icon: <FileTextOutlined /> },
   html: { label: "HTML 分析报告", color: "geekblue", icon: <Html5Outlined /> },
   xlsx: { label: "Excel 指标表", color: "green", icon: <FileExcelOutlined /> },
 };
@@ -252,8 +253,8 @@ export default function Council() {
                 key={item.id}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "8px 10px", background: "rgba(8,10,20,0.5)", borderRadius: 8,
-                  border: "1px solid #2a2e42",
+                  padding: "8px 10px", background: "#f5f7fb", borderRadius: 8,
+                  border: `1px solid ${brand.borderLight}`,
                 }}
               >
                 <Space>
@@ -339,7 +340,7 @@ export default function Council() {
                     <Tag
                       key={q}
                       style={{ cursor: "pointer" }}
-                      color={question === q ? "purple" : "default"}
+                      color={question === q ? "gold" : "default"}
                       onClick={() => setQuestion(q)}
                     >
                       {q.length > 28 ? `${q.slice(0, 28)}…` : q}
@@ -498,13 +499,13 @@ export default function Council() {
           <Card size="small" title="讨论记录" styles={{ body: { padding: 0 } }}>
             <div
               ref={chatRef}
-              style={{ height: 460, overflowY: "auto", padding: 16, background: "rgba(8,10,20,0.6)" }}
+              style={{ height: 460, overflowY: "auto", padding: 16, background: "#f8fafc" }}
             >
               {messages.map((m) => (
                 <ChatBubble key={m.id} m={m} />
               ))}
             </div>
-            <div style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid #232636" }}>
+            <div style={{ display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${brand.border}` }}>
               <Input
                 placeholder={meeting?.status === "stopped" ? "会议已结束" : "插一句话,引导讨论方向…"}
                 value={draft}
@@ -545,7 +546,7 @@ export default function Council() {
           <iframe
             title="html-report"
             srcDoc={previewItem.content}
-            style={{ width: "100%", height: 520, border: "1px solid #2a2e42", borderRadius: 8, background: "#fff" }}
+            style={{ width: "100%", height: 520, border: `1px solid ${brand.borderLight}`, borderRadius: 8, background: "#fff" }}
           />
         ) : (
           <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", maxHeight: 500, overflow: "auto" }}>
@@ -575,7 +576,7 @@ function ChatBubble({ m }: { m: CouncilMessage }) {
         gap: 8,
       }}
     >
-      <Avatar style={{ background: "#161a2c", border: "1px solid #2a2e42", fontSize: 18 }}>
+      <Avatar style={{ background: brand.bgElevated, border: `1px solid ${brand.borderLight}`, fontSize: 18 }}>
         {m.emoji}
       </Avatar>
       <div style={{ maxWidth: "72%" }}>
@@ -587,9 +588,9 @@ function ChatBubble({ m }: { m: CouncilMessage }) {
             marginTop: 2,
             padding: "8px 12px",
             borderRadius: 10,
-            background: mine ? "linear-gradient(135deg,#b45cff,#ff53c8)" : "#1a1e30",
-            color: mine ? "#fff" : "#e7e9f3",
-            border: mine ? "none" : "1px solid #262a3e",
+            background: mine ? brand.gradientGold : brand.bgElevated,
+            color: mine ? "#fff" : brand.text,
+            border: mine ? "none" : `1px solid ${brand.border}`,
             boxShadow: "0 2px 8px rgba(0,0,0,.35)",
             lineHeight: 1.6,
           }}

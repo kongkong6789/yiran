@@ -37,20 +37,29 @@ class MockConnector(BaseConnector):
         }
 
 
-REGISTRY: dict[str, BaseConnector] = {
-    "kingdee": MockConnector("kingdee", "金蝶"),
-    "jackyun": MockConnector("jackyun", "吉客云"),
-    "wecom_sheet": MockConnector("wecom_sheet", "企业微信智能表格"),
-    "market_data": MockConnector("market_data", "飞瓜 / 蝉妈妈"),
-    "shop_backend": MockConnector("shop_backend", "店铺后台"),
-    "approval": MockConnector("approval", "内部审批系统"),
-    "internal": MockConnector("internal", "内部服务"),
-}
+_REGISTRY: dict[str, BaseConnector] | None = None
+
+
+def _registry() -> dict[str, BaseConnector]:
+    global _REGISTRY
+    if _REGISTRY is None:
+        from .jackyun import JackyunConnector
+
+        _REGISTRY = {
+            "kingdee": MockConnector("kingdee", "金蝶"),
+            "jackyun": JackyunConnector(),
+            "wecom_sheet": MockConnector("wecom_sheet", "企业微信智能表格"),
+            "market_data": MockConnector("market_data", "飞瓜 / 蝉妈妈"),
+            "shop_backend": MockConnector("shop_backend", "店铺后台"),
+            "approval": MockConnector("approval", "内部审批系统"),
+            "internal": MockConnector("internal", "内部服务"),
+        }
+    return _REGISTRY
 
 
 def get_connector(key: str) -> BaseConnector | None:
-    return REGISTRY.get(key)
+    return _registry().get(key)
 
 
 def list_connectors() -> list[dict]:
-    return [{"key": c.key, "name": c.name} for c in REGISTRY.values()]
+    return [{"key": c.key, "name": c.name} for c in _registry().values()]

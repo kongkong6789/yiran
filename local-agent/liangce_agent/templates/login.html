@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>良策本地 Agent · 登录</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>良策本地 Agent</h1>
+    <p class="muted">微信扫码登录 · MCP 配置保存在本机</p>
+    <p class="data-dir">数据目录：<code>{{ data_dir }}</code></p>
+
+    <div id="wechat-box" class="wechat-box hidden">
+      <iframe id="wechat-iframe" title="微信扫码登录" width="300" height="360" frameborder="0"></iframe>
+      <p class="muted">请使用微信扫描二维码</p>
+    </div>
+
+    <div id="dev-box" class="dev-box">
+      <button id="dev-login" class="btn primary">本地开发登录</button>
+      <p class="muted">未配置微信开放平台时使用；数据仍保存在本机用户目录</p>
+    </div>
+
+    <p id="error" class="error hidden"></p>
+  </main>
+  <script>
+    const wechatEnabled = {{ 'true' if wechat_enabled else 'false' }};
+    const allowDev = {{ 'true' if allow_dev_login else 'false' }};
+    const params = new URLSearchParams(location.search);
+    if (params.get('error')) {
+      const el = document.getElementById('error');
+      el.textContent = params.get('error');
+      el.classList.remove('hidden');
+    }
+
+    async function startWechat() {
+      const res = await fetch('/auth/wechat/start');
+      const data = await res.json();
+      if (data.mode === 'wechat' && data.qr_url) {
+        document.getElementById('wechat-box').classList.remove('hidden');
+        document.getElementById('wechat-iframe').src = data.qr_url;
+        const timer = setInterval(async () => {
+          const poll = await fetch('/auth/wechat/poll?state=' + encodeURIComponent(data.state));
+          const status = await poll.json();
+          if (status.status === 'ok') {
+            clearInterval(timer);
+            const claim = await fetch('/auth/wechat/claim', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ state: data.state }),
+            });
+            const claimed = await claim.json();
+            if (claimed.ok) location.href = '/app';
+            else {
+              document.getElementById('error').textContent = claimed.error || '登录态建立失败';
+              document.getElementById('error').classList.remove('hidden');
+            }
+          }
+          if (status.status === 'error') {
+            clearInterval(timer);
+            document.getElementById('error').textContent = status.error || '登录失败';
+            document.getElementById('error').classList.remove('hidden');
+          }
+        }, 1500);
+      }
+    }
+
+    document.getElementById('dev-login')?.addEventListener('click', async () => {
+      const res = await fetch('/auth/dev-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (data.ok) location.href = '/app';
+      else alert(data.error || '登录失败');
+    });
+
+    if (wechatEnabled) startWechat();
+    if (!allowDev) document.getElementById('dev-box')?.classList.add('hidden');
+  </script>
+</body>
+</html>

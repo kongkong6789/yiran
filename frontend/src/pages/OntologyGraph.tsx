@@ -11,13 +11,14 @@ import {
   DatabaseOutlined, ShareAltOutlined,
   FilterOutlined,
 } from "@ant-design/icons";
-import ForceGraph3D from "react-force-graph-3d";
-import * as THREE from "three";
+import ForceGraph2D from "react-force-graph-2d";
+import { forceCollide } from "d3-force";
 import {
   addObject, updateObject, deleteObject, addRelation, deleteRelation, updateRelation, upsertRelationCausal,
-  splitObject, mergeObjects, extractGraph, importFromAge, getAgeLiveGraph, getObjectData,
+  splitObject, mergeObjects, extractGraph, importFromAge, importFromDb, getAgeLiveGraph, getObjectData,
   type OntGraph, type OntObject, type OntRelation, type ObjectData,
 } from "../api/client";
+import { findSimpleLoops, pickLoopBatch, enumerateConnectedBatches } from "../utils/graphCycles";
 
 const PALETTE = [
   "#8ab4ff", "#ffa0c8", "#7dffd4", "#d8b4ff", "#ffd080",
@@ -39,22 +40,48 @@ type GNode = {
   color: string;
   x?: number;
   y?: number;
-  z?: number;
 };
 type GLink = { source: number | GNode; target: number | GNode; label: string; id: number };
 
 const ageGraphName = (workspace?: string) =>
   workspace ? `${workspace}_chunk_entity_relation` : "";
 
-const TOP_N_DEFAULT = 150;
+const TOP_N_DEFAULT = 90;
 const FULL_NODE_LIMIT = 10000;
 const FULL_EDGE_LIMIT = 20000;
 const SAMPLE_NODE_LIMIT = 1000;
 const SAMPLE_EDGE_LIMIT = 1500;
-const OVERVIEW_ZOOM_PADDING = 155;
-const OVERVIEW_CAMERA_PULL = 1.14;
+const OVERVIEW_ZOOM_PADDING = 130;
+const LOOPS_PER_BATCH = 5;
+const NODES_PER_BATCH = 100;
 
-type DisplayMode = "smart" | "full";
+type DisplayMode = "smart" | "loops" | "batch";
+
+function thinDenseHubEdges(relations: OntRelation[], maxSpokesPerHub = 10): OntRelation[] {
+  const degree = new Map<number, number>();
+  relations.forEach((r) => {
+    degree.set(r.source, (degree.get(r.source) || 0) + 1);
+    degree.set(r.target, (degree.get(r.target) || 0) + 1);
+  });
+  const kept = new Map<number, number>();
+  const sorted = [...relations].sort((a, b) => {
+    const da = Math.max(degree.get(a.source) || 0, degree.get(a.target) || 0);
+    const db = Math.max(degree.get(b.source) || 0, degree.get(b.target) || 0);
+    return db - da;
+  });
+  const out: OntRelation[] = [];
+  for (const r of sorted) {
+    const hubs = [r.source, r.target].filter((id) => (degree.get(id) || 0) > maxSpokesPerHub);
+    if (hubs.length === 0) {
+      out.push(r);
+      continue;
+    }
+    if (hubs.some((id) => (kept.get(id) || 0) >= maxSpokesPerHub)) continue;
+    hubs.forEach((id) => kept.set(id, (kept.get(id) || 0) + 1));
+    out.push(r);
+  }
+  return out;
+}
 
 export default function OntologyGraph() {
   const { message } = App.useApp();
@@ -83,6 +110,7 @@ export default function OntologyGraph() {
   const [extracting, setExtracting] = useState(false);
   // 数据底座
   const [importingAge, setImportingAge] = useState(false);
+  const [importingDb, setImportingDb] = useState(false);
   const [dataOpen, setDataOpen] = useState(false);
   const [dataLoading, setDataLoading] = useState(false);
   const [objData, setObjData] = useState<ObjectData | null>(null);
@@ -96,6 +124,7 @@ export default function OntologyGraph() {
   const [searchText, setSearchText] = useState("");
   const [otypeFilter, setOtypeFilter] = useState<string | null>(null);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("smart");
+  const [batchIndex, setBatchIndex] = useState(0);
   const [hoverNode, setHoverNode] = useState<GNode | null>(null);
 
   const fgRef = useRef<any>(null);
@@ -123,11 +152,12 @@ export default function OntologyGraph() {
 
   const handleDisplayModeChange = (mode: DisplayMode) => {
     setDisplayMode(mode);
+    setBatchIndex(0);
     didFitRef.current = false;
-    if (mode === "full") {
+    if (mode === "loops" || mode === "batch") {
       const total = graph?.meta?.objects ?? graph?.objects.length ?? 0;
       if (total > TOP_N_DEFAULT) {
-        message.info(`已切换为显示全部（${total} 个节点），加载中…`);
+        message.info(mode === "loops" ? "闭环浏览：正在加载图谱并识别闭环…" : "分批浏览：正在加载更多节点…");
         load(true, true);
       }
     }
@@ -157,12 +187,10 @@ export default function OntologyGraph() {
 
   const objById = (id: number | null) => graph?.objects.find((o) => o.id === id) || null;
 
-  const filtered = useMemo(() => {
+  const baseScope = useMemo(() => {
     if (!graph) return { objects: [] as OntObject[], relations: [] as OntRelation[] };
     let objects = graph.objects;
-    if (otypeFilter) {
-      objects = objects.filter((o) => o.otype === otypeFilter);
-    }
+    if (otypeFilter) objects = objects.filter((o) => o.otype === otypeFilter);
     const q = searchText.trim().toLowerCase();
     if (q) {
       objects = objects.filter(
@@ -170,15 +198,88 @@ export default function OntologyGraph() {
       );
     }
     const idSet = new Set(objects.map((o) => o.id));
-    let relations = graph.relations.filter((r) => idSet.has(r.source) && idSet.has(r.target));
+    const relations = graph.relations.filter((r) => idSet.has(r.source) && idSet.has(r.target));
+    return { objects, relations };
+  }, [graph, otypeFilter, searchText]);
 
-    if (displayMode === "smart" && objects.length > TOP_N_DEFAULT) {
+  const loopCandidates = useMemo(
+    () => findSimpleLoops(baseScope.relations, { maxLen: 6, maxLoops: 120 }),
+    [baseScope.relations],
+  );
+
+  const scopedDegree = useMemo(() => {
+    const degree = new Map<number, number>();
+    baseScope.relations.forEach((r) => {
+      degree.set(r.source, (degree.get(r.source) || 0) + 1);
+      degree.set(r.target, (degree.get(r.target) || 0) + 1);
+    });
+    return degree;
+  }, [baseScope.relations]);
+
+  const connectedNodeBatches = useMemo(
+    () => enumerateConnectedBatches(
+      baseScope.objects,
+      baseScope.relations,
+      NODES_PER_BATCH,
+      (id) => scopedDegree.get(id) || 0,
+    ),
+    [baseScope.objects, baseScope.relations, scopedDegree],
+  );
+
+  const loopBatchCount = Math.max(1, Math.ceil(loopCandidates.length / LOOPS_PER_BATCH));
+  const nodeBatchCount = Math.max(1, connectedNodeBatches.length);
+
+  useEffect(() => {
+    const maxPage = displayMode === "loops" ? loopBatchCount : nodeBatchCount;
+    if (batchIndex >= maxPage) setBatchIndex(Math.max(0, maxPage - 1));
+  }, [batchIndex, displayMode, loopBatchCount, nodeBatchCount]);
+
+  const filtered = useMemo(() => {
+    if (!graph) return { objects: [] as OntObject[], relations: [] as OntRelation[], loopCount: 0 };
+    let { objects, relations } = baseScope;
+    let loopCount = 0;
+
+    if (displayMode === "loops") {
+      if (loopCandidates.length === 0) {
+        const keep = connectedNodeBatches[batchIndex] ?? new Set<number>();
+        objects = objects.filter((o) => keep.has(o.id));
+        relations = relations.filter((r) => keep.has(r.source) && keep.has(r.target));
+      } else {
+        const batch = pickLoopBatch(loopCandidates, batchIndex, LOOPS_PER_BATCH);
+        loopCount = batch.loops.length;
+        const keepNodes = batch.nodeIds;
+        const keepRels = batch.relationIds;
+        objects = objects.filter((o) => keepNodes.has(o.id));
+        relations = relations.filter((r) => keepRels.has(r.id));
+      }
+      return { objects, relations, loopCount };
+    }
+
+    if (displayMode === "batch") {
+      const keep = connectedNodeBatches[batchIndex] ?? new Set<number>();
+      return {
+        objects: objects.filter((o) => keep.has(o.id)),
+        relations: relations.filter((r) => keep.has(r.source) && keep.has(r.target)),
+        loopCount: 0,
+      };
+    }
+
+    // smart
+    relations = thinDenseHubEdges(relations, 10);
+    const linked = new Set<number>();
+    relations.forEach((r) => {
+      linked.add(r.source);
+      linked.add(r.target);
+    });
+    objects = objects.filter((o) => linked.has(o.id));
+
+    if (objects.length > TOP_N_DEFAULT) {
       const degree = new Map<number, number>();
       relations.forEach((r) => {
         degree.set(r.source, (degree.get(r.source) || 0) + 1);
         degree.set(r.target, (degree.get(r.target) || 0) + 1);
       });
-      if (selected && idSet.has(selected)) {
+      if (selected && objects.some((o) => o.id === selected)) {
         const keep = new Set<number>([selected]);
         relations.forEach((r) => {
           if (r.source === selected) keep.add(r.target);
@@ -203,8 +304,8 @@ export default function OntologyGraph() {
         objects = objects.filter((o) => connectedIds.has(o.id));
       }
     }
-    return { objects, relations };
-  }, [graph, otypeFilter, searchText, displayMode, selected]);
+    return { objects, relations, loopCount: 0 };
+  }, [graph, baseScope, displayMode, selected, batchIndex, loopCandidates, connectedNodeBatches]);
 
   const fgData = useMemo(() => {
     const degree = new Map<number, number>();
@@ -232,7 +333,7 @@ export default function OntologyGraph() {
 
   useEffect(() => {
     didFitRef.current = false;
-  }, [fgData.nodes.length, fgData.links.length]);
+  }, [fgData.nodes.length, fgData.links.length, batchIndex, displayMode]);
 
   const neighborIds = useMemo(() => {
     if (!hoverNode && selected == null) return null;
@@ -245,14 +346,14 @@ export default function OntologyGraph() {
     return s;
   }, [hoverNode, selected, filtered.relations]);
 
-  const linkCurvature = displayMode === "full" && fgData.nodes.length > 350 ? 0.16 : 0.24;
+  const linkCurvature = 0;
 
   const otypes = useMemo(
     () => Array.from(new Set(filtered.objects.map((o) => o.otype))).sort(),
     [filtered.objects],
   );
 
-  const nodeR = (n: GNode) => 2.6 + Math.min(n.degree, 10) * 0.55;
+  const nodeR = (n: GNode) => 2 + Math.min(n.degree, 8) * 0.32;
 
   const nodeValFn = useCallback(
     (node: GNode) => {
@@ -262,11 +363,6 @@ export default function OntologyGraph() {
     },
     [selected, hoverNode],
   );
-
-  const resolveNode = useCallback((ref: number | GNode): GNode | null => {
-    if (typeof ref === "object") return ref;
-    return fgData.nodes.find((n) => n.id === ref) ?? null;
-  }, [fgData.nodes]);
 
   const nodeColorFn = useCallback(
     (node: GNode) => {
@@ -282,56 +378,37 @@ export default function OntologyGraph() {
 
   const linkColorFn = useCallback(
     (link: GLink) => {
-      const src = resolveNode(typeof link.source === "object" ? link.source.id : link.source);
-      const base = src?.color || "#b8c8ff";
-      if (!neighborIds) return base;
+      if (!neighborIds) return "rgba(184, 200, 255, 0.32)";
       const s = typeof link.source === "object" ? link.source.id : link.source;
       const t = typeof link.target === "object" ? link.target.id : link.target;
       if (neighborIds.has(s) && neighborIds.has(t)) return "#ffffff";
-      return "#9eb4e8";
+      return "rgba(158, 180, 232, 0.22)";
     },
-    [neighborIds, resolveNode],
+    [neighborIds],
   );
 
   const linkWidthFn = useCallback(
     (link: GLink) => {
-      if (!neighborIds) return 1.2;
+      if (!neighborIds) return 0.65;
       const s = typeof link.source === "object" ? link.source.id : link.source;
       const t = typeof link.target === "object" ? link.target.id : link.target;
-      return neighborIds.has(s) && neighborIds.has(t) ? 2.4 : 0.9;
+      return neighborIds.has(s) && neighborIds.has(t) ? 1.8 : 0.4;
     },
     [neighborIds],
   );
 
   const particleCountFn = useCallback(
     (link: GLink) => {
-      if (neighborIds) {
-        const s = typeof link.source === "object" ? link.source.id : link.source;
-        const t = typeof link.target === "object" ? link.target.id : link.target;
-        if (neighborIds.has(s) && neighborIds.has(t)) return 2;
-      }
-      return displayMode === "smart" ? 1 : 0;
+      if (!neighborIds) return 0;
+      const s = typeof link.source === "object" ? link.source.id : link.source;
+      const t = typeof link.target === "object" ? link.target.id : link.target;
+      return neighborIds.has(s) && neighborIds.has(t) ? 1 : 0;
     },
-    [neighborIds, displayMode],
+    [neighborIds],
   );
 
   const fitOverview = useCallback(() => {
-    const fg = fgRef.current;
-    if (!fg) return;
-    fg.zoomToFit(480, OVERVIEW_ZOOM_PADDING);
-    window.setTimeout(() => {
-      const pos = fg.cameraPosition();
-      if (!pos) return;
-      fg.cameraPosition(
-        {
-          x: pos.x * OVERVIEW_CAMERA_PULL,
-          y: pos.y * OVERVIEW_CAMERA_PULL,
-          z: pos.z * OVERVIEW_CAMERA_PULL,
-        },
-        undefined,
-        0,
-      );
-    }, 500);
+    fgRef.current?.zoomToFit(480, OVERVIEW_ZOOM_PADDING);
   }, []);
 
   const focusNode = (id: number) => {
@@ -341,13 +418,8 @@ export default function OntologyGraph() {
         if (attempt < 30) requestAnimationFrame(() => tryFocus(attempt + 1));
         return;
       }
-      const z = n.z ?? 0;
-      const dist = 90;
-      fgRef.current?.cameraPosition(
-        { x: n.x, y: n.y, z: z + dist },
-        { x: n.x, y: n.y, z },
-        700,
-      );
+      fgRef.current?.centerAt(n.x, n.y, 700);
+      fgRef.current?.zoom(Math.min(6, Math.max(2.5, 480 / Math.max(size.w, size.h) * 4)), 700);
     };
     tryFocus();
   };
@@ -355,21 +427,21 @@ export default function OntologyGraph() {
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg || fgData.nodes.length === 0) return;
-    fg.d3Force("charge")?.strength(-105);
-    fg.d3Force("link")?.distance(34);
-    fg.d3Force("center")?.strength(0.04);
+    const n = fgData.nodes.length;
+    const charge = -220 - Math.min(n, 180) * 2.2;
+    const linkDist = 72 + Math.min(n, 120) * 0.45;
 
-    const scene = fg.scene();
-    scene.fog = null;
-    if (!scene.userData.lightsAdded) {
-      scene.add(new THREE.AmbientLight(0xffffff, 2.0));
-      scene.userData.lightsAdded = true;
-    }
-    const renderer = fg.renderer();
-    if (renderer) {
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
-      renderer.toneMappingExposure = 1.6;
-    }
+    fg.d3Force("charge")?.strength(charge).distanceMax(720);
+    fg.d3Force("link")?.distance(linkDist).strength(0.55);
+    fg.d3Force("center")?.strength(0.018);
+    fg.d3Force(
+      "collide",
+      forceCollide<GNode>()
+        .radius((node: GNode) => nodeR(node) + 10)
+        .strength(0.85)
+        .iterations(2),
+    );
+    fg.d3ReheatSimulation();
   }, [fgData.nodes.length, fgData.links.length]);
 
   const handleNodeClick = (id: number) => {
@@ -482,7 +554,7 @@ export default function OntologyGraph() {
       }
       setEditingRel(null);
       message.success("因果元数据已保存");
-      await load(true, displayMode === "full", true);
+      await load(true, displayMode !== "smart", true);
     } catch (e: any) {
       const data = e?.response?.data;
       if (data?.need_import) {
@@ -518,6 +590,26 @@ export default function OntologyGraph() {
       message.error(msg);
     } finally {
       setImportingAge(false);
+    }
+  };
+
+  const doImportDb = async () => {
+    setImportingDb(true);
+    try {
+      const res = await importFromDb();
+      message.success(
+        `数仓导入完成:实体 ${res.total_entities}(湖 ${res.lake_entities}/公有 ${res.public_entities}),` +
+        `新增对象 ${res.created_objects}、关系 ${res.created_relations}`
+      );
+      await load(true, displayMode !== "smart");
+    } catch (e: any) {
+      const detail = e?.response?.data?.error || e?.response?.data?.detail;
+      const msg = e?.code === "ECONNABORTED"
+        ? "数仓导入超时,请稍后重试"
+        : detail || "从数仓导入失败(请确认 PostgreSQL 可用)";
+      message.error(msg);
+    } finally {
+      setImportingDb(false);
     }
   };
 
@@ -568,7 +660,20 @@ export default function OntologyGraph() {
   const graphRelationCount = meta?.relations ?? graph?.relations.length ?? 0;
 
   const isSampled = displayMode === "smart" && filtered.objects.length < graphObjectCount;
-  const isFullMode = displayMode === "full" && graphObjectCount > TOP_N_DEFAULT;
+  const isPagedMode = displayMode === "loops" || displayMode === "batch";
+  const pageTotal = displayMode === "loops" ? loopBatchCount : nodeBatchCount;
+  const pageLabel = displayMode === "loops"
+    ? `闭环 ${Math.min(batchIndex + 1, pageTotal)}/${pageTotal} · 本批 ${filtered.loopCount || 0} 个闭环`
+    : `分批 ${batchIndex + 1}/${pageTotal}`;
+
+  const goPrevBatch = () => {
+    setBatchIndex((i) => Math.max(0, i - 1));
+    didFitRef.current = false;
+  };
+  const goNextBatch = () => {
+    setBatchIndex((i) => Math.min(pageTotal - 1, i + 1));
+    didFitRef.current = false;
+  };
 
   return (
     <Row gutter={16}>
@@ -578,9 +683,9 @@ export default function OntologyGraph() {
           title={
             <Space size={8}>
               <span>AGE 图谱</span>
-              <Tag color="cyan">3D</Tag>
+              <Tag color="cyan">平面</Tag>
               {graph?.lightrag?.source_name && (
-                <Tag color="purple">{graph.lightrag.source_name}</Tag>
+                <Tag color="gold">{graph.lightrag.source_name}</Tag>
               )}
               {targetGraphName && (
                 <Tag color="geekblue">{targetGraphName}</Tag>
@@ -590,6 +695,14 @@ export default function OntologyGraph() {
           styles={{ body: { padding: 0 } }}
           extra={
             <Space wrap>
+              <Button
+                size="small"
+                loading={importingDb}
+                icon={<DatabaseOutlined />}
+                onClick={() => doImportDb()}
+              >
+                从数仓导入
+              </Button>
               <Button
                 size="small"
                 type="primary"
@@ -609,42 +722,42 @@ export default function OntologyGraph() {
                   { label: "连线", value: "connect" },
                 ]}
               />
-              <Button size="small" icon={<ReloadOutlined />} onClick={() => load(true, displayMode === "full")} loading={loading} />
+              <Button size="small" icon={<ReloadOutlined />} onClick={() => load(true, displayMode !== "smart")} loading={loading} />
               <Button size="small" onClick={fitOverview}>总览</Button>
             </Space>
           }
         >
-          <div style={{ padding: "10px 12px", borderBottom: "1px solid #1c1f2e", background: "rgba(8,10,18,0.6)" }}>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--lc-border)", background: "#f8fafc" }}>
             <Space wrap size={[12, 8]} style={{ width: "100%" }}>
               <Statistic
-                title={<span style={{ fontSize: 11, color: "#8b90ad" }}>PG 本图</span>}
+                title={<span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>PG 本图</span>}
                 value={pgVertices}
                 suffix={
-                  <span style={{ fontSize: 12, color: "#8b90ad" }}>
+                  <span style={{ fontSize: 12, color: "var(--lc-text-muted)" }}>
                     顶点 · {pgEdges} 边
                   </span>
                 }
-                valueStyle={{ fontSize: 18, color: "#59e5ff" }}
+                valueStyle={{ fontSize: 18, color: "var(--lc-navy)" }}
               />
               <Statistic
-                title={<span style={{ fontSize: 11, color: "#8b90ad" }}>Cypher 本图</span>}
+                title={<span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>Cypher 本图</span>}
                 value={graphObjectCount}
                 suffix={
-                  <span style={{ fontSize: 12, color: "#8b90ad" }}>
+                  <span style={{ fontSize: 12, color: "var(--lc-text-muted)" }}>
                     / {graphRelationCount} 关系
                   </span>
                 }
-                valueStyle={{ fontSize: 18, color: "#c4b5fd" }}
+                valueStyle={{ fontSize: 18, color: "var(--lc-accent-blue, #3D6FA8)" }}
               />
               <Statistic
-                title={<span style={{ fontSize: 11, color: "#8b90ad" }}>画布</span>}
+                title={<span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>画布</span>}
                 value={fgData.nodes.length}
                 suffix={
-                  <span style={{ fontSize: 12, color: "#8b90ad" }}>
+                  <span style={{ fontSize: 12, color: "var(--lc-text-muted)" }}>
                     / {fgData.links.length} 关系
                   </span>
                 }
-                valueStyle={{ fontSize: 18, color: "#e7e9f3" }}
+                valueStyle={{ fontSize: 18, color: "var(--lc-text)" }}
               />
               {meta?.scope && (
                 <Tag color="green" style={{ marginTop: 18 }}>AGE Cypher 直读</Tag>
@@ -674,9 +787,17 @@ export default function OntologyGraph() {
                 optionType="button"
                 options={[
                   { label: "智能抽样", value: "smart" },
-                  { label: "显示全部", value: "full" },
+                  { label: "闭环浏览", value: "loops" },
+                  { label: "分批浏览", value: "batch" },
                 ]}
               />
+              {isPagedMode && (
+                <Space size={4}>
+                  <Button size="small" disabled={batchIndex <= 0} onClick={goPrevBatch}>上一批</Button>
+                  <Tag>{pageLabel}</Tag>
+                  <Button size="small" disabled={batchIndex >= pageTotal - 1} onClick={goNextBatch}>下一批</Button>
+                </Space>
+              )}
             </Space>
             {meta && (
               <Typography.Text type="secondary" style={{ display: "block", marginTop: 6, fontSize: 12 }}>
@@ -712,18 +833,36 @@ export default function OntologyGraph() {
                 message={`智能抽样：展示 ${fgData.nodes.length} 个高连接节点（共 ${graphObjectCount}）；选中节点可展开邻域，或切换「显示全部」`}
               />
             )}
-            {isFullMode && (
+            {displayMode === "loops" && loopCandidates.length === 0 && (
               <Alert
                 style={{ marginTop: 8 }}
-                type="warning"
+                type="info"
                 showIcon
                 banner
-                message={`显示全部 ${fgData.nodes.length} 个节点 / ${fgData.links.length} 条关系；节点较多时可能卡顿，可切回「智能抽样」`}
+                message="当前子图未识别到闭环，已自动按节点分批展示（可切换「分批浏览」）"
+              />
+            )}
+            {displayMode === "loops" && loopCandidates.length > 0 && (
+              <Alert
+                style={{ marginTop: 8 }}
+                type="info"
+                showIcon
+                banner
+                message={`闭环浏览：共识别 ${loopCandidates.length} 个闭环，每批展示 ${LOOPS_PER_BATCH} 个 · 本画布 ${fgData.nodes.length} 节点`}
+              />
+            )}
+            {displayMode === "batch" && (
+              <Alert
+                style={{ marginTop: 8 }}
+                type="info"
+                showIcon
+                banner
+                message={`分批浏览：按连通子图扩展，每批约 ${NODES_PER_BATCH} 个节点 · 共 ${nodeBatchCount} 批 · 全图 ${baseScope.objects.length} 节点`}
               />
             )}
           </div>
           {mode === "connect" && (
-            <div style={{ padding: "6px 12px", background: "rgba(250,173,20,0.14)", color: "#ffd77a", fontSize: 12 }}>
+            <div style={{ padding: "6px 12px", background: "rgba(184,134,59,0.12)", color: "#8a6a35", fontSize: 12 }}>
               连线模式:先点起点,再点终点 —— {connectFrom ? `已选「${objById(connectFrom)?.name}」` : "请点起点"}
             </div>
           )}
@@ -733,7 +872,7 @@ export default function OntologyGraph() {
               position: "relative",
               height: "calc(100vh - 300px)",
               minHeight: 560,
-              background: "linear-gradient(160deg, #2a3468 0%, #1e2858 45%, #243060 100%)",
+              background: "linear-gradient(180deg, #f4f7fb 0%, #e8eef6 100%)",
               overflow: "hidden",
             }}
           >
@@ -742,26 +881,18 @@ export default function OntologyGraph() {
               style={{
                 position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0,
                 background: `
-                  radial-gradient(ellipse 90% 70% at 50% 42%, rgba(180,200,255,0.35) 0%, transparent 65%),
-                  radial-gradient(ellipse 55% 45% at 18% 78%, rgba(140,220,255,0.22) 0%, transparent 58%),
-                  radial-gradient(ellipse 45% 35% at 82% 22%, rgba(255,180,220,0.18) 0%, transparent 52%),
-                  radial-gradient(1.5px 1.5px at 10% 20%, rgba(255,255,255,0.85), transparent),
-                  radial-gradient(1.5px 1.5px at 30% 65%, rgba(255,255,255,0.65), transparent),
-                  radial-gradient(1px 1px at 55% 15%, rgba(255,255,255,0.75), transparent),
-                  radial-gradient(1.5px 1.5px at 72% 42%, rgba(255,255,255,0.6), transparent),
-                  radial-gradient(1px 1px at 88% 78%, rgba(255,255,255,0.7), transparent),
-                  radial-gradient(2px 2px at 45% 88%, rgba(200,230,255,0.8), transparent),
-                  radial-gradient(1px 1px at 15% 45%, rgba(255,255,255,0.55), transparent),
-                  radial-gradient(1.5px 1.5px at 95% 35%, rgba(255,255,255,0.65), transparent),
-                  transparent
+                  radial-gradient(ellipse 80% 60% at 50% 50%, rgba(61,111,168,0.08) 0%, transparent 70%),
+                  linear-gradient(rgba(26,39,64,0.04) 1px, transparent 1px),
+                  linear-gradient(90deg, rgba(26,39,64,0.04) 1px, transparent 1px)
                 `,
+                backgroundSize: "auto, 48px 48px, 48px 48px",
               }}
             />
             {loading && (
               <div style={{
                 position: "absolute", inset: 0, zIndex: 2,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: "rgba(6,8,16,0.55)",
+                background: "rgba(245,247,251,0.72)",
               }}>
                 <Spin tip="加载图谱…" />
               </div>
@@ -781,45 +912,34 @@ export default function OntologyGraph() {
                     fontSize: 11, pointerEvents: "none",
                   }}
                 >
-                  左键旋转 · 右键平移 · 滚轮缩放 · 点击节点选中
+                  拖动画布平移 · 滚轮缩放 · 点击节点选中 · 可拖动节点
                 </Typography.Text>
-                <ForceGraph3D
+                <ForceGraph2D
                   ref={fgRef}
                   width={size.w}
                   height={size.h}
                   graphData={fgData}
-                  backgroundColor="#243060"
-                  showNavInfo={false}
-                  enableNodeDrag={fgData.nodes.length < 100}
-                  rendererConfig={{ antialias: false, powerPreference: "high-performance" }}
+                  backgroundColor="transparent"
+                  enableNodeDrag={fgData.nodes.length < 200}
                   nodeId="id"
-                  nodeResolution={8}
                   nodeColor={nodeColorFn}
                   nodeVal={nodeValFn}
-                  nodeOpacity={0.95}
                   nodeLabel={(n) => {
                     const node = n as GNode;
-                    return `<div style="padding:6px 10px;background:rgba(8,10,22,0.94);border:1px solid #7d7aff;border-radius:8px;font-size:12px;color:#e7e9f3;max-width:240px;">
-                      <b style="color:#fff">${node.name}</b><br/><span style="color:#8b90ad">${node.otype}</span>
-                      ${node.degree ? `<br/><span style="color:#7df9ff">连接 ${node.degree}</span>` : ""}
+                    return `<div style="padding:6px 10px;background:#fff;border:1px solid #d7e0ec;border-radius:8px;font-size:12px;color:#1a2740;max-width:240px;box-shadow:0 4px 16px rgba(26,39,64,0.12);">
+                      <b style="color:#0b2144">${node.name}</b><br/><span style="color:#5c6b84">${node.otype}</span>
+                      ${node.degree ? `<br/><span style="color:#3d6fa8">连接 ${node.degree}</span>` : ""}
                     </div>`;
                   }}
                   linkColor={linkColorFn}
                   linkWidth={linkWidthFn}
-                  linkOpacity={0.92}
-                  linkResolution={4}
                   linkCurvature={linkCurvature}
-                  linkCurveRotation={(link: GLink) => {
-                    const s = typeof link.source === "object" ? link.source.id : link.source;
-                    const t = typeof link.target === "object" ? link.target.id : link.target;
-                    return (((s * 17 + t * 31) % 360) / 360) * Math.PI * 2;
-                  }}
                   linkDirectionalParticles={particleCountFn}
-                  linkDirectionalParticleWidth={2.2}
-                  linkDirectionalParticleSpeed={0.005}
+                  linkDirectionalParticleWidth={2}
+                  linkDirectionalParticleSpeed={0.004}
                   linkDirectionalParticleColor={() => "#c8e8ff"}
-                  linkDirectionalArrowLength={displayMode === "full" ? 2 : 2.8}
-                  linkDirectionalArrowRelPos={0.94}
+                  linkDirectionalArrowLength={displayMode === "batch" ? 3.5 : 4}
+                  linkDirectionalArrowRelPos={0.92}
                   linkDirectionalArrowColor={(link: GLink) => linkColorFn(link)}
                   onNodeHover={(n) => {
                     const id = (n as GNode | null)?.id ?? null;
@@ -833,10 +953,10 @@ export default function OntologyGraph() {
                     setHoverNode(null);
                     if (mode === "select") setSelected(null);
                   }}
-                  warmupTicks={30}
-                  cooldownTicks={50}
-                  d3AlphaDecay={0.06}
-                  d3VelocityDecay={0.45}
+                  warmupTicks={80}
+                  cooldownTicks={120}
+                  d3AlphaDecay={0.028}
+                  d3VelocityDecay={0.35}
                   onEngineStop={() => {
                     if (didFitRef.current) return;
                     didFitRef.current = true;
@@ -893,7 +1013,7 @@ export default function OntologyGraph() {
             {sel && (
               <Space direction="vertical" style={{ width: "100%" }} size={8}>
                 <div>
-                  <Tag color={sel.category === "physical" ? "blue" : "purple"}>
+                  <Tag color={sel.category === "physical" ? "blue" : "gold"}>
                     {sel.category === "physical" ? "物理" : "虚拟"}
                   </Tag>
                   <Tag>{sel.otype}</Tag>
@@ -975,7 +1095,7 @@ export default function OntologyGraph() {
                       ].filter(Boolean)}>
                       <span style={{ fontSize: 12 }}>
                         {s?.name} <Tag color="cyan">{r.label}</Tag> {t?.name}
-                        {r.is_causal_candidate && <Tag color="purple" style={{ marginLeft: 4 }}>因果</Tag>}
+                        {r.is_causal_candidate && <Tag color="gold" style={{ marginLeft: 4 }}>因果</Tag>}
                         {r.polarity && <Tag style={{ marginLeft: 2 }}>{r.polarity}</Tag>}
                       </span>
                     </List.Item>

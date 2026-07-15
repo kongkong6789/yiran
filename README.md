@@ -87,8 +87,12 @@ POST /api/orchestration/run/
 
 ## 后续可扩展
 
-- 接入真实 LLM(意图识别/生成),`.env` 配置 `LLM_API_KEY`
-- 第 2 层替换为 LightRAG,第 4 层替换为 LangGraph
-- 第 7 层各 connector 接真实业务系统 API
+- 接入真实 LLM(意图识别/生成),`.env` 配置 `LLM_API_KEY` ✅ 已支持(含 SOP 意图)
+- 吉客云只读同步 → DataLake(`.env` 配 `JACKYUN_*`,不配则用 fixture) ✅
+- 高风险动作审批流续跑 ✅(`/api/harness/approvals/`, `/api/orchestration/resume/`)
+- RAG 混合检索(AGE 实体 + Wiki + SOP 语料) ✅
+- Ontology「从数仓导入」UI ✅
+- 第 2 层替换为完整 LightRAG SDK,第 4 层替换为 LangGraph
+- 第 7 层其余 connector 接真实业务系统写 API
 - 用户体系与 RBAC 鉴权(当前骨架放开权限)
-- 高风险动作审批流与回滚
+- Loops 自动因果发现 / 模拟 / PDC
