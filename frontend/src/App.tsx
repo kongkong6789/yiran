@@ -7,6 +7,7 @@ import Home from "./pages/Home";
 import AgentChat from "./pages/AgentChat";
 import AgentConsole from "./pages/AgentConsole";
 import DataLake from "./pages/DataLake";
+import Accounts from "./pages/Accounts";
 import Audit from "./pages/Audit";
 import Agents from "./pages/Agents";
 import Council from "./pages/Council";
@@ -31,11 +32,11 @@ export default function App() {
           <Route path="knowledge" element={(
             <SectionHub
               title="知识库"
-              description="汇聚制度 SOP、业务文档与 RAG 检索结果。可从对话 Agent 或数据底座导入知识。"
+              description="汇聚制度 SOP、业务文档与检索结果。可从对话、数据或图谱导入知识。"
               links={[
-                { label: "对话 Agent", path: "/agent" },
-                { label: "数据底座", path: "/datalake" },
-                { label: "知识图谱", path: "/ontology" },
+                { label: "对话", path: "/agent" },
+                { label: "数据", path: "/datalake" },
+                { label: "图谱", path: "/ontology" },
               ]}
             />
           )} />
@@ -47,10 +48,10 @@ export default function App() {
           <Route path="my/knowledge" element={(
             <SectionHub
               title="我的知识库"
-              description="个人收藏与整理的知识条目(开发中)。当前可通过对话历史与 Skill 仓库管理个人资料。"
+              description="个人收藏与整理的知识条目(开发中)。当前可通过对话历史与技能管理个人资料。"
               links={[
-                { label: "对话 Agent", path: "/agent" },
-                { label: "技能库", path: "/skills" },
+                { label: "对话", path: "/agent" },
+                { label: "技能", path: "/skills" },
               ]}
             />
           )} />
@@ -58,17 +59,18 @@ export default function App() {
             <SectionHub
               title="我的收藏"
               description="收藏的文档、图谱节点与会话(开发中)。"
-              links={[{ label: "最近查看", path: "/my/recent" }]}
+              links={[{ label: "最近", path: "/my/recent" }]}
             />
           )} />
           <Route path="my/recent" element={(
             <SectionHub
-              title="最近查看"
+              title="最近"
               description="最近打开的文档、对话与图谱视图(开发中)。"
-              links={[{ label: "对话 Agent", path: "/agent" }]}
+              links={[{ label: "对话", path: "/agent" }]}
             />
           )} />
           <Route path="agents" element={<Agents />} />
+          <Route path="accounts" element={<Accounts />} />
           <Route path="loops" element={<Loops />} />
           <Route path="audit" element={<Audit />} />
         </Route>

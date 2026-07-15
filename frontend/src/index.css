@@ -89,18 +89,19 @@ body {
 .app-brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.12;
-  font-weight: 700;
+  justify-content: center;
+  line-height: 1.15;
+  font-weight: 750;
   font-size: 20px;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.02em;
   color: var(--lc-navy);
 }
 .app-brand-text small {
   margin-top: 3px;
   font-weight: 500;
   font-size: 11px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--lc-text-muted);
 }
 
@@ -167,6 +168,7 @@ body {
 }
 .app-topnav-brand {
   flex-shrink: 0;
+  align-items: center;
   margin-right: 10px;
   padding: 0 !important;
   cursor: pointer;
@@ -176,17 +178,13 @@ body {
   transform: translateY(-1px);
 }
 .app-topnav-brand .app-brand-logo {
-  width: 48px;
-  height: 48px;
-  padding: 4px;
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.9), transparent 55%),
-    linear-gradient(145deg, #f7f9fc, #e8eef6);
-  border: 1px solid rgba(215, 224, 236, 0.95);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 6px 16px rgba(26, 39, 64, 0.08);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
 }
 .app-topnav-menu {
   flex: 1;
@@ -467,8 +465,21 @@ body {
 }
 .agent-chat-row {
   display: flex;
+  align-items: flex-start;
   gap: 10px;
   max-width: 92%;
+}
+.agent-chat-row .ant-avatar {
+  flex: 0 0 32px;
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px;
+  align-self: flex-start;
+}
+.agent-chat-row .ant-avatar img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
 }
 .agent-chat-row.user {
   align-self: flex-end;
@@ -659,6 +670,28 @@ body {
   border: 1px solid var(--lc-border);
   overflow-x: auto;
 }
+.agent-md-mermaid {
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid var(--lc-border);
+  overflow-x: auto;
+}
+.agent-md-mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.agent-md-mermaid-fallback {
+  margin: 8px 0 14px;
+}
+.agent-md-mermaid-err {
+  font-size: 12px;
+  color: #b45309;
+  margin-bottom: 6px;
+}
 .agent-md-pre code {
   padding: 0;
   border: none;
@@ -695,6 +728,69 @@ body {
   background: #fff;
   border: 1px solid var(--lc-border);
   box-shadow: var(--lc-shadow);
+}
+.agent-md-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: min(640px, 100%);
+}
+.agent-md-section {
+  padding: 0;
+  border-top: 1px solid var(--lc-border-light);
+  background: #fff;
+}
+.agent-md-section.is-lead {
+  border-top: none;
+}
+.agent-md-section.is-single .agent-md-root {
+  padding: 12px 14px 14px;
+}
+.agent-md-section:not(.is-single) .agent-md-root {
+  padding: 12px 14px 14px;
+}
+.agent-md-section .agent-md-h1,
+.agent-md-section .agent-md-h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--lc-navy);
+}
+.agent-md-section.is-lead .agent-md-h1:first-child,
+.agent-md-section.is-lead .agent-md-h2:first-child {
+  margin: -12px -14px 12px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(11, 33, 68, 0.07), rgba(196, 146, 74, 0.1));
+  border-bottom: 1px solid rgba(196, 146, 74, 0.16);
+}
+.agent-md-section .agent-md-h3,
+.agent-md-section .agent-md-h4 {
+  margin: 0 0 8px;
+  padding-left: 0;
+  border-left: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.agent-md-section .agent-md-h3::before,
+.agent-md-section .agent-md-h4::before {
+  content: "";
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--lc-gold-light), var(--lc-gold));
+  flex-shrink: 0;
+}
+.agent-md-section .agent-md-table-wrap,
+.agent-md-section .agent-md-pre,
+.agent-md-section .agent-md-quote {
+  margin: 8px 0;
+  border-radius: 10px;
+}
+.agent-md-section .agent-md-p:last-child,
+.agent-md-section .agent-md-list:last-child {
+  margin-bottom: 0;
 }
 .agent-chat-input {
   display: flex;
@@ -1400,5 +1496,222 @@ body {
   .connectors-page,
   .skills-page {
     padding: 14px;
+  }
+}
+
+/* 品牌 Stock–Flow 回路 */
+.brand-sfd-card .ant-card-body {
+  padding: 16px 18px 18px;
+}
+.brand-sfd-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.brand-sfd-chip.ant-tag {
+  margin: 0;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.brand-sfd-chip.r1 { color: #8a6a35; background: rgba(196,146,74,0.12); border-color: rgba(184,134,59,0.28); }
+.brand-sfd-chip.r2 { color: #3d6fa8; background: rgba(61,111,168,0.1); border-color: rgba(61,111,168,0.24); }
+.brand-sfd-chip.b1 { color: #315efb; background: rgba(49,94,251,0.08); border-color: rgba(49,94,251,0.22); }
+.brand-sfd-chip.b2 { color: #b42318; background: rgba(180,35,24,0.08); border-color: rgba(180,35,24,0.22); }
+.brand-sfd-canvas-wrap {
+  position: relative;
+  border: 1px solid var(--lc-border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #eef3f8;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+}
+.brand-sfd-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 400px;
+  touch-action: none;
+  user-select: none;
+}
+.brand-sfd-svg.is-dragging {
+  cursor: grabbing;
+}
+.brand-sfd-node {
+  touch-action: none;
+}
+.brand-sfd-node.is-drag {
+  filter: drop-shadow(0 8px 16px rgba(11, 33, 68, 0.18));
+}
+.brand-sfd-zone {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.brand-sfd-flow-label {
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.brand-sfd-stock-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.brand-sfd-stock-sub {
+  font-size: 10px;
+  font-weight: 500;
+}
+.brand-sfd-stock-value {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.brand-sfd-badge {
+  font-size: 11px;
+  font-weight: 700;
+}
+.brand-sfd-legend {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.brand-sfd-legend > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fff, #f8fafc);
+  border: 1px solid var(--lc-border-light);
+}
+.brand-sfd-legend strong {
+  font-size: 12px;
+  color: var(--lc-navy);
+}
+.brand-sfd-legend span {
+  font-size: 12px;
+  color: var(--lc-text-muted);
+  line-height: 1.45;
+}
+@media (max-width: 900px) {
+  .brand-sfd-legend {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Loops Method · 品牌代理 8 Stock */
+.brand-agency-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+.brand-agency-chain-desc {
+  font-size: 12px;
+  font-weight: 600;
+}
+.brand-agency-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+  align-items: stretch;
+}
+.brand-agency-canvas {
+  min-width: 0;
+}
+.brand-agency-code {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.brand-agency-catalog {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--lc-border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fff, #f8fafc);
+  overflow: hidden;
+}
+.brand-agency-catalog-head {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--lc-border-light);
+}
+.brand-agency-catalog-head strong {
+  display: block;
+  font-size: 13px;
+  color: var(--lc-navy);
+}
+.brand-agency-catalog-head span {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--lc-text-muted);
+}
+.brand-agency-catalog-list {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  max-height: 520px;
+}
+.brand-agency-loop-row {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 8px 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.brand-agency-loop-row:hover,
+.brand-agency-loop-row.on {
+  background: rgba(61, 111, 168, 0.06);
+  border-color: rgba(61, 111, 168, 0.18);
+}
+.brand-agency-loop-row em {
+  flex: none;
+  width: 28px;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  color: #64748b;
+}
+.brand-agency-loop-row.kind-R em { color: #ea580c; }
+.brand-agency-loop-row.kind-B em { color: #2563eb; }
+.brand-agency-loop-row.kind-C em { color: #7c3aed; }
+.brand-agency-loop-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.brand-agency-loop-row b {
+  font-size: 12px;
+  font-weight: 650;
+  color: #1e293b;
+}
+.brand-agency-loop-row small {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+@media (max-width: 1100px) {
+  .brand-agency-layout {
+    grid-template-columns: 1fr;
+  }
+  .brand-agency-catalog-list {
+    max-height: 280px;
   }
 }

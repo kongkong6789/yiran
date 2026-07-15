@@ -9,14 +9,13 @@ import {
   MessageOutlined,
   BookOutlined,
   ThunderboltOutlined,
-  AppstoreOutlined,
+  ApiOutlined,
   BarChartOutlined,
-  FolderOutlined,
-  StarOutlined,
   ClockCircleOutlined,
   FlagOutlined,
   DownOutlined,
   UserOutlined,
+  ApartmentOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -25,38 +24,46 @@ import UserSettingsModal from "./UserSettingsModal";
 import BrandLogo from "./BrandLogo";
 import CollabUnreadBell from "./CollabUnreadBell";
 import { brand } from "../theme/brand";
-import { clearAuthToken, getMe, logout, type AuthUser } from "../api/client";
+import { clearAuthToken, getAuthToken, getMe, logout, type AuthUser } from "../api/client";
 
 const { Header, Content } = Layout;
 
 type NavItem = { key: string; icon: ReactNode; label: string };
 
-const MAIN_NAV: NavItem[] = [
-  { key: "/home", icon: <HomeOutlined />, label: "概览" },
-  { key: "/ontology", icon: <ShareAltOutlined />, label: "知识图谱" },
+/** 日常高频：先做事 */
+const WORK_NAV: NavItem[] = [
+  { key: "/home", icon: <HomeOutlined />, label: "总览" },
+  { key: "/agent", icon: <MessageOutlined />, label: "对话" },
+  { key: "/collab", icon: <AlertOutlined />, label: "协作" },
+  { key: "/console", icon: <FlagOutlined />, label: "任务" },
+];
+
+/** 沉淀与复用 */
+const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
-  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能库" },
+  { key: "/ontology", icon: <ShareAltOutlined />, label: "图谱" },
+  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
+  { key: "/my/recent", icon: <ClockCircleOutlined />, label: "最近" },
+];
+
+/** 业务能力与外部系统 */
+const CAPABILITY_NAV: NavItem[] = [
   { key: "/council", icon: <TeamOutlined />, label: "专家团" },
-  { key: "/console", icon: <FlagOutlined />, label: "任务中心" },
-  { key: "/connectors", icon: <AppstoreOutlined />, label: "应用中心" },
-  { key: "/datalake", icon: <BarChartOutlined />, label: "数据看板" },
+  { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
+  { key: "/datalake", icon: <BarChartOutlined />, label: "数据" },
 ];
 
-const MY_SPACE: NavItem[] = [
-  { key: "/agent", icon: <MessageOutlined />, label: "对话 Agent" },
-  { key: "/collab", icon: <AlertOutlined />, label: "协作风控" },
-  { key: "/my/knowledge", icon: <FolderOutlined />, label: "我的知识库" },
-  { key: "/my/favorites", icon: <StarOutlined />, label: "我的收藏" },
-  { key: "/my/recent", icon: <ClockCircleOutlined />, label: "最近查看" },
+/** 低频管理 */
+const ADMIN_NAV: NavItem[] = [
+  { key: "/accounts", icon: <UserOutlined />, label: "账号" },
+  { key: "/agents", icon: <ApartmentOutlined />, label: "对象" },
+  { key: "/loops", icon: <SyncOutlined />, label: "回路" },
+  { key: "/audit", icon: <SafetyCertificateOutlined />, label: "审计" },
 ];
 
-const ADVANCED_NAV: NavItem[] = [
-  { key: "/agents", icon: <TeamOutlined />, label: "对象管理" },
-  { key: "/loops", icon: <SyncOutlined />, label: "Loops 回路" },
-  { key: "/audit", icon: <SafetyCertificateOutlined />, label: "闸机审计" },
-];
+const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
 
-const ALL_NAV = [...MAIN_NAV, ...MY_SPACE, ...ADVANCED_NAV];
+const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/ontology", "/connectors"]);
 
 export default function AppLayout() {
   const nav = useNavigate();
@@ -75,34 +82,47 @@ export default function AppLayout() {
     nav("/login", { replace: true });
   };
 
-  const isFullBleed = ["/home", "/agent", "/collab", "/ontology", "/connectors"].includes(loc.pathname);
+  const isFullBleed = FULL_BLEED.has(loc.pathname);
 
   const selectedKeys = useMemo(() => {
     const hit = ALL_NAV.find((n) => loc.pathname === n.key || loc.pathname.startsWith(`${n.key}/`));
     return hit ? [hit.key] : [loc.pathname];
   }, [loc.pathname]);
 
+  const openKeys = useMemo(() => {
+    if (WORK_NAV.some((n) => selectedKeys.includes(n.key))) return ["work"];
+    if (KNOWLEDGE_NAV.some((n) => selectedKeys.includes(n.key))) return ["knowledge"];
+    if (CAPABILITY_NAV.some((n) => selectedKeys.includes(n.key))) return ["capability"];
+    if (ADMIN_NAV.some((n) => selectedKeys.includes(n.key))) return ["admin"];
+    return [];
+  }, [selectedKeys]);
+
   const menuItems = useMemo(() => [
     {
-      key: "platform",
-      label: "平台",
-      children: MAIN_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+      key: "work",
+      label: "工作",
+      children: WORK_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
     },
     {
-      key: "myspace",
-      label: "我的空间",
-      children: MY_SPACE.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+      key: "knowledge",
+      label: "知识",
+      children: KNOWLEDGE_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
     },
     {
-      key: "advanced",
-      label: "高级",
-      children: ADVANCED_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+      key: "capability",
+      label: "能力",
+      children: CAPABILITY_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+    },
+    {
+      key: "admin",
+      label: "管理",
+      children: ADMIN_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
     },
   ], []);
 
   const userMenu = {
     items: [
-      { key: "settings", label: "个人设置", icon: <UserOutlined /> },
+      { key: "settings", label: "个人信息", icon: <UserOutlined /> },
       { type: "divider" as const },
       { key: "logout", label: "退出登录", danger: true },
     ],
@@ -112,14 +132,26 @@ export default function AppLayout() {
     },
   };
 
+  const displayName = user?.display_name || user?.username || "未登录";
+
   return (
     <Layout className="app-shell-topnav" style={{ minHeight: "100vh" }}>
       <Header className="app-topnav">
-        <div className="app-brand app-topnav-brand" onClick={() => nav("/home")}>
-          <BrandLogo size={48} className="app-brand-logo" />
+        <div
+          className="app-brand app-topnav-brand"
+          onClick={() => nav("/home")}
+          role="link"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") nav("/home");
+          }}
+          title="回到总览"
+        >
+          <BrandLogo size={40} className="app-brand-logo" />
           {screens.md !== false && (
             <span className="app-brand-text">
-              良策 AI<small>Agent 执行平台</small>
+              良策
+              <small>智能协作工作台</small>
             </span>
           )}
         </div>
@@ -129,20 +161,31 @@ export default function AppLayout() {
           theme="light"
           mode="horizontal"
           selectedKeys={selectedKeys}
+          defaultOpenKeys={openKeys}
           items={menuItems}
-          onClick={(e) => nav(e.key)}
+          onClick={(e) => {
+            if (String(e.key).startsWith("/")) nav(e.key);
+          }}
         />
 
         <Space className="app-topnav-actions" size={8}>
           {user ? <CollabUnreadBell enabled /> : null}
           <Dropdown menu={userMenu} placement="bottomRight">
-            <button type="button" className="app-topnav-user">
-              <Avatar size={32} style={{ background: brand.gradientGold }}>
-                {(user?.username || "?")[0]?.toUpperCase()}
+            <button type="button" className="app-topnav-user" aria-label="打开账户菜单">
+              <Avatar
+                size={32}
+                src={
+                  user?.avatar_url
+                    ? `${user.avatar_url}${user.avatar_url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getAuthToken() || "")}`
+                    : undefined
+                }
+                style={{ background: brand.gradientGold }}
+              >
+                {displayName[0]?.toUpperCase()}
               </Avatar>
               {screens.sm !== false && (
                 <Typography.Text className="app-topnav-username">
-                  {user?.username || "未登录"}
+                  {displayName}
                 </Typography.Text>
               )}
               <DownOutlined style={{ fontSize: 10, opacity: 0.7 }} />
@@ -151,11 +194,13 @@ export default function AppLayout() {
         </Space>
       </Header>
 
-      <UserSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <UserSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={(u) => setUser(u)}
+      />
 
-      <Content
-        className={isFullBleed ? "app-content-bleed" : "app-content-padded"}
-      >
+      <Content className={isFullBleed ? "app-content-bleed" : "app-content-padded"}>
         <Outlet />
       </Content>
     </Layout>

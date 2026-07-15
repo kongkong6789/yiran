@@ -57,8 +57,11 @@ export default function Login() {
         <div className="login-brand">
           <BrandLogo size={72} />
           <Typography.Title level={3} style={{ margin: "14px 0 0", textAlign: "center" }}>
-            良策 AI 执行平台
+            良策
           </Typography.Title>
+          <Typography.Paragraph type="secondary" style={{ textAlign: "center", marginBottom: 0 }}>
+            智能协作工作台
+          </Typography.Paragraph>
         </div>
         <Typography.Paragraph type="secondary" style={{ textAlign: "center" }}>
           账号密码登录 · MCP 与对话配置均为个人私有

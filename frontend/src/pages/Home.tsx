@@ -21,7 +21,7 @@ const DOMAINS: Domain[] = [
     samples: ["客服话术规范", "品牌 FAQ", "交付标准", "售后指南"], share: 26,
   },
   {
-    name: "技能库", sub: "Skills", desc: "上传 · 启用 · 调用",
+    name: "技能", sub: "Skills", desc: "上传 · 启用 · 调用",
     color: "#4e84ff", route: "/skills", countLabel: "342 个节点",
     samples: ["蝉妈妈分析", "日报汇总", "价格监控", "企微同步"], share: 18,
   },
@@ -31,27 +31,27 @@ const DOMAINS: Domain[] = [
     samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 14,
   },
   {
-    name: "对话 Agent", sub: "Agent", desc: "RAG · MCP · Skill",
+    name: "对话", sub: "Chat", desc: "问答 · 文档 · 工具",
     color: "#315efb", route: "/agent", countLabel: "核心入口",
     samples: ["问答会话", "文档解读", "Skill 调度", "MCP 调用"], share: 12,
   },
   {
-    name: "应用中心", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
+    name: "连接", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
     color: "#ef5ba5", route: "/connectors", countLabel: "64 个节点",
     samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 8,
   },
   {
-    name: "数据看板", sub: "Data", desc: "指标 · 维度 · 汇总",
+    name: "数据", sub: "Data", desc: "指标 · 维度 · 汇总",
     color: "#31caa1", route: "/datalake", countLabel: "256 个节点",
     samples: ["订单明细", "用户标签", "GMV 指标", "退款率"], share: 10,
   },
   {
-    name: "任务中心", sub: "Console", desc: "编排 · 执行 · 审批",
+    name: "任务", sub: "Tasks", desc: "编排 · 执行 · 审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
-    samples: ["审批流", "编排任务", "执行记录", "闸机审计"], share: 7,
+    samples: ["审批流", "编排任务", "执行记录", "审计"], share: 7,
   },
   {
-    name: "知识图谱", sub: "Ontology", desc: "实体关系 · 因果推理",
+    name: "图谱", sub: "Graph", desc: "实体关系 · 因果推理",
     color: "#8b63ff", route: "/ontology", countLabel: "关系中枢",
     samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 5,
   },
@@ -313,29 +313,22 @@ export default function Home() {
       const selectedN = selectedId === node.id;
 
       if (node.type === "center") {
-        const halo = ctx.createRadialGradient(node.x, node.y, 12, node.x, node.y, 112);
-        halo.addColorStop(0, "rgba(255,255,255,.98)");
-        halo.addColorStop(0.35, "rgba(237,242,255,.98)");
-        halo.addColorStop(0.58, "rgba(218,227,255,.66)");
+        // Soft glow only — no hard white disc (avoids logo looking off-center in a ring)
+        const halo = ctx.createRadialGradient(node.x, node.y, 8, node.x, node.y, 96);
+        halo.addColorStop(0, "rgba(255,255,255,.72)");
+        halo.addColorStop(0.4, "rgba(228,235,255,.42)");
         halo.addColorStop(1, "rgba(177,194,255,0)");
         ctx.save();
-        ctx.shadowBlur = 34;
-        ctx.shadowColor = "rgba(92,122,255,.22)";
         ctx.beginPath();
-        ctx.arc(node.x, node.y, 86, 0, Math.PI * 2);
+        ctx.arc(node.x, node.y, 96, 0, Math.PI * 2);
         ctx.fillStyle = halo;
         ctx.fill();
-        ctx.shadowBlur = 0;
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, 58, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(255,255,255,.96)";
-        ctx.fill();
-        ctx.lineWidth = 5;
-        ctx.strokeStyle = "rgba(93,123,255,.14)";
-        ctx.stroke();
         const logo = logoRef.current;
         if (logo) {
-          ctx.drawImage(logo, node.x - 28, node.y - 28, 56, 56);
+          const size = 64;
+          ctx.shadowBlur = 18;
+          ctx.shadowColor = "rgba(26,39,64,.12)";
+          ctx.drawImage(logo, node.x - size / 2, node.y - size / 2, size, size);
         }
         ctx.restore();
         return;

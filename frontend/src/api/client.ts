@@ -43,6 +43,10 @@ export interface AuthUser {
   id: number;
   username: string;
   email: string;
+  display_name?: string;
+  bio?: string;
+  methodology?: string;
+  avatar_url?: string;
   is_staff?: boolean;
   is_superuser?: boolean;
 }
@@ -58,21 +62,109 @@ export const register = (body: { username: string; password: string; email?: str
 export const logout = () => api.post("/auth/logout/").then((r) => r.data);
 
 export const getMe = () =>
-  api.get<{ ok: boolean; user: AuthUser; settings: { llm_configured: boolean } }>("/auth/me/")
+  api.get<{
+    ok: boolean;
+    user: AuthUser;
+    settings: {
+      llm_configured: boolean;
+      display_name?: string;
+      bio?: string;
+      methodology?: string;
+      avatar_url?: string;
+    };
+  }>("/auth/me/").then((r) => r.data);
+
+export const changePassword = (body: { old_password: string; new_password: string }) =>
+  api.post<{ ok: boolean; token: string; user: AuthUser; error?: string }>("/auth/password/", body)
     .then((r) => r.data);
 
-export interface UserLlmSettings {
+export interface AdminUserRow {
+  id: number;
+  username: string;
+  email: string;
+  display_name: string;
+  is_active: boolean;
+  is_staff: boolean;
+  is_superuser: boolean;
+  has_usable_password: boolean;
+  date_joined: string | null;
+  last_login: string | null;
+}
+
+export const listAdminUsers = (q?: string) =>
+  api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
+    params: q ? { q } : {},
+  }).then((r) => r.data);
+
+export const createAdminUser = (body: {
+  username: string;
+  password: string;
+  email?: string;
+  display_name?: string;
+  is_staff?: boolean;
+}) =>
+  api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
+    "/auth/admin/users/",
+    body,
+  ).then((r) => r.data);
+
+export const updateAdminUser = (
+  id: number,
+  body: {
+    password?: string;
+    email?: string;
+    display_name?: string;
+    is_active?: boolean;
+    is_staff?: boolean;
+  },
+) =>
+  api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
+    `/auth/admin/users/${id}/`,
+    body,
+  ).then((r) => r.data);
+
+export interface UserProfileSettings {
+  display_name: string;
+  bio: string;
+  methodology: string;
+  avatar: string;
+  avatar_url: string;
   llm_api_key: string;
   llm_base_url: string;
   llm_model: string;
   configured: boolean;
 }
 
-export const getUserSettings = () =>
-  api.get<UserLlmSettings>("/auth/settings/").then((r) => r.data);
+/** @deprecated 使用 UserProfileSettings */
+export type UserLlmSettings = UserProfileSettings;
 
-export const updateUserSettings = (body: Partial<UserLlmSettings>) =>
-  api.put<{ ok: boolean; configured: boolean }>("/auth/settings/", body).then((r) => r.data);
+export const getUserSettings = () =>
+  api.get<UserProfileSettings>("/auth/settings/").then((r) => r.data);
+
+export const updateUserSettings = (
+  body: Partial<Omit<UserProfileSettings, "avatar" | "avatar_url" | "configured">>,
+) =>
+  api.put<{
+    ok: boolean;
+    configured: boolean;
+    user?: AuthUser;
+    display_name?: string;
+    bio?: string;
+    methodology?: string;
+    avatar_url?: string;
+  }>("/auth/settings/", body).then((r) => r.data);
+
+export const uploadUserAvatar = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post<{ ok: boolean; avatar: string; avatar_url: string; user: AuthUser }>(
+      "/auth/avatar/",
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } },
+    )
+    .then((r) => r.data);
+};
 
 // ================= Agent Skills =================
 export const getSkills = () =>
@@ -764,8 +856,11 @@ export interface CollabUserBrief {
   username: string;
   nickname?: string;
   display_name?: string;
+  avatar_url?: string;
+  bio?: string;
   online?: boolean;
   last_seen?: string | null;
+  date_joined?: string | null;
 }
 
 export interface CollabRoom {
@@ -776,6 +871,7 @@ export interface CollabRoom {
   status: "open" | "closed";
   risk_level: "green" | "yellow" | "red";
   summary?: string;
+  interject_enabled?: boolean;
   created_by: CollabUserBrief;
   participants: CollabUserBrief[];
   peer_online?: boolean | null;
@@ -793,6 +889,7 @@ export interface CollabRoom {
   };
   messages?: CollabMessage[];
   insights?: CollabInsight[];
+  has_more_before?: boolean;
   unread_count?: number;
   last_read_message_id?: number;
 }
@@ -813,7 +910,12 @@ export interface CollabMessage {
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   msg_type?: "user" | "system" | "ai";
+  ai_kind?: "" | "reply" | "interject" | "suggest";
+  status?: "normal" | "recalled" | "deleted";
+  risk_flag?: string;
+  risk_flag_level?: "" | "yellow" | "red";
   created_at: string;
+  updated_at?: string;
 }
 
 export interface CollabInsight {
@@ -828,6 +930,30 @@ export interface CollabInsight {
   evidence_message_ids: number[];
   draft_reply: string;
   created_at: string;
+}
+
+export interface CollabRoomStats {
+  ok: boolean;
+  room_id: string;
+  risk_level: "green" | "yellow" | "red";
+  interject_enabled: boolean;
+  message_count: number;
+  user_message_count: number;
+  ai_reply_count: number;
+  ai_interject_count: number;
+  attachment_count: number;
+  risk_counts: { green: number; yellow: number; red: number };
+  speaker_top: { name: string; count: number }[];
+  hourly: { hour: string; label: string; count: number }[];
+  alerts: {
+    id: number;
+    risk_level: string;
+    title: string;
+    advice: string;
+    evidence_message_ids: number[];
+    draft_reply: string;
+    created_at: string;
+  }[];
 }
 
 export const listCollabRooms = (params?: { status?: string }) =>
@@ -845,7 +971,10 @@ export const createCollabRoom = (body: {
 export const getCollabRoom = (id: string) =>
   api.get<CollabRoom>(`/collab/rooms/${id}/`).then((r) => r.data);
 
-export const updateCollabRoom = (id: string, body: { status?: string; title?: string }) =>
+export const updateCollabRoom = (
+  id: string,
+  body: { status?: string; title?: string; interject_enabled?: boolean },
+) =>
   api.patch<CollabRoom>(`/collab/rooms/${id}/`, body).then((r) => r.data);
 
 /** 删除整个协作会话 */
@@ -906,11 +1035,147 @@ export const updateCollabMemberNickname = (
     }>(`/collab/rooms/${id}/members/`, body)
     .then((r) => r.data);
 
-export const listCollabMessages = (id: string, afterId = 0) =>
-  api.get<{ count: number; results: CollabMessage[]; room: Partial<CollabRoom> }>(
-    `/collab/rooms/${id}/messages/`,
-    { params: afterId ? { after_id: afterId } : {} },
-  ).then((r) => r.data);
+export type CollabMessageQuery = {
+  afterId?: number;
+  beforeId?: number;
+  limit?: number;
+  lite?: boolean;
+  includeParticipants?: boolean;
+};
+
+export type CollabMessagePage = {
+  count: number;
+  results: CollabMessage[];
+  changed?: CollabMessage[];
+  has_more_before?: boolean;
+  room: Partial<CollabRoom>;
+};
+
+/** 兼容旧调用 listCollabMessages(id, afterId) */
+export const listCollabMessages = (id: string, opts: CollabMessageQuery | number = {}) => {
+  const o: CollabMessageQuery = typeof opts === "number" ? { afterId: opts } : opts;
+  const params: Record<string, string | number> = {};
+  if (o.afterId) params.after_id = o.afterId;
+  if (o.beforeId) params.before_id = o.beforeId;
+  if (o.limit) params.limit = o.limit;
+  if (o.lite) params.lite = "1";
+  if (o.includeParticipants === false) params.include_participants = "0";
+  if (o.includeParticipants === true) params.include_participants = "1";
+  return api
+    .get<CollabMessagePage>(`/collab/rooms/${id}/messages/`, { params })
+    .then((r) => r.data);
+};
+
+export const getCollabRoomPresence = (id: string) =>
+  api.get<{
+    ok: boolean;
+    id: string;
+    status: string;
+    risk_level: string;
+    updated_at: string;
+    online_count?: number;
+    peer_online?: boolean | null;
+    participants: CollabUserBrief[];
+    member_count?: number;
+    display_title?: string;
+  }>(`/collab/rooms/${id}/presence/`).then((r) => r.data);
+
+export type CollabSyncEvent = {
+  messages?: CollabMessage[];
+  changed?: CollabMessage[];
+  insights?: CollabInsight[];
+  room?: Partial<CollabRoom>;
+  after_id?: number;
+  after_insight_id?: number;
+};
+
+/** fetch + SSE（可带 Authorization，避免 EventSource 无法设 header） */
+export function openCollabRoomEvents(
+  roomId: string,
+  opts: {
+    afterId?: number;
+    afterInsightId?: number;
+    onSync?: (data: CollabSyncEvent) => void;
+    onError?: (err: unknown) => void;
+    onDone?: () => void;
+    signal?: AbortSignal;
+  },
+) {
+  const token = getAuthToken();
+  const qs = new URLSearchParams();
+  if (opts.afterId) qs.set("after_id", String(opts.afterId));
+  if (opts.afterInsightId) qs.set("after_insight_id", String(opts.afterInsightId));
+  const url = `/api/collab/rooms/${roomId}/events/${qs.toString() ? `?${qs}` : ""}`;
+
+  const run = async () => {
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          Accept: "text/event-stream",
+          ...(token ? { Authorization: `Token ${token}` } : {}),
+        },
+        signal: opts.signal,
+        credentials: "same-origin",
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`SSE ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split(/\n\n/);
+        buf = parts.pop() || "";
+        for (const block of parts) {
+          const lines = block.split(/\n/);
+          let dataLine = "";
+          let eventName = "message";
+          for (const line of lines) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+          }
+          if (!dataLine) continue;
+          let payload: CollabSyncEvent = {};
+          try {
+            payload = JSON.parse(dataLine);
+          } catch {
+            continue;
+          }
+          if (eventName === "sync") opts.onSync?.(payload);
+          if (eventName === "error") opts.onError?.(payload);
+          if (eventName === "reconnect") break;
+        }
+      }
+      opts.onDone?.();
+    } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") return;
+      opts.onError?.(err);
+    }
+  };
+
+  void run();
+}
+
+/** 撤回自己的消息（2 分钟内） */
+export const recallCollabMessage = (roomId: string, messageId: number) =>
+  api
+    .post<{ ok: boolean; action: string; message: CollabMessage; room: CollabRoom; error?: string }>(
+      `/collab/rooms/${roomId}/messages/${messageId}/`,
+      { action: "recall" },
+    )
+    .then((r) => r.data);
+
+/** 删除消息（软删除，会话内同步） */
+export const deleteCollabMessage = (roomId: string, messageId: number) =>
+  api
+    .delete<{ ok: boolean; action: string; message: CollabMessage; room: CollabRoom; error?: string }>(
+      `/collab/rooms/${roomId}/messages/${messageId}/`,
+    )
+    .then((r) => r.data);
 
 export const sendCollabMessage = (
   id: string,
@@ -928,8 +1193,10 @@ export const sendCollabMessage = (
         ok: boolean;
         message: CollabMessage;
         ai_message?: CollabMessage;
-        room: CollabRoom;
+        room: Partial<CollabRoom>;
         insight?: CollabInsight;
+        analyze_pending?: boolean;
+        ai_pending?: boolean;
       }>(`/collab/rooms/${id}/messages/`, form, { timeout: 120_000 })
       .then((r) => r.data);
   }
@@ -938,8 +1205,10 @@ export const sendCollabMessage = (
       ok: boolean;
       message: CollabMessage;
       ai_message?: CollabMessage;
-      room: CollabRoom;
+      room: Partial<CollabRoom>;
       insight?: CollabInsight;
+      analyze_pending?: boolean;
+      ai_pending?: boolean;
     }>(`/collab/rooms/${id}/messages/`, { content, analyze: analyze ? "1" : "0" }, { timeout: 120_000 })
     .then((r) => r.data);
 };
@@ -951,10 +1220,13 @@ export const listCollabInsights = (id: string, afterId = 0) =>
   ).then((r) => r.data);
 
 export const refreshCollabInsights = (id: string) =>
-  api.post<{ ok: boolean; insight: CollabInsight; room: CollabRoom }>(
+  api.post<{ ok: boolean; insight: CollabInsight; room: CollabRoom; ai_message?: CollabMessage }>(
     `/collab/rooms/${id}/insights/`,
     {},
   ).then((r) => r.data);
+
+export const getCollabRoomStats = (id: string) =>
+  api.get<CollabRoomStats>(`/collab/rooms/${id}/stats/`).then((r) => r.data);
 
 export const listCollabUsers = (q?: string) =>
   api.get<{ count: number; results: CollabUserBrief[] }>("/collab/users/", {

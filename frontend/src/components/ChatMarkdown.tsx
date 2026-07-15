@@ -2,9 +2,26 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getAuthToken } from "../api/client";
+import MermaidBlock from "./MermaidBlock";
 
 function isReportLike(content: string): boolean {
   return /分析报告|品牌分析|##\s*结论|###\s*结论|可落地建议|数据附录/.test(content);
+}
+
+/** 有标题 / 列表 / 表格 / 代码块时，适合块状 HTML 展示 */
+function looksBlocky(content: string): boolean {
+  return /(^|\n)\s{0,3}#{1,6}\s|(^|\n)\s*[-*+]\s+\S|(^|\n)\s*\d+\.\s+\S|```|\|[^\n]+\|/.test(content);
+}
+
+/** 按 ## / ### 切成独立区块，便于卡片式排版 */
+function splitIntoSections(md: string): string[] {
+  const trimmed = md.trim();
+  if (!trimmed) return [];
+  const chunks = trimmed
+    .split(/(?=^#{2,3}\s)/m)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return chunks.length > 1 ? chunks : [trimmed];
 }
 
 /** 附件图 URL 补 ?token=，便于 <img> 直链拉取 */
@@ -42,8 +59,12 @@ const mdComponents: Components = {
   th: ({ children }) => <th>{children}</th>,
   td: ({ children }) => <td>{children}</td>,
   code: ({ className, children }) => {
-    const isBlock = className?.includes("language-");
-    if (isBlock) {
+    const lang = /language-([\w-]+)/.exec(className || "")?.[1] || "";
+    const text = String(children ?? "").replace(/\n$/, "");
+    if (lang === "mermaid") {
+      return <MermaidBlock code={text} />;
+    }
+    if (className?.includes("language-")) {
       return (
         <pre className="agent-md-pre">
           <code className={className}>{children}</code>
@@ -65,24 +86,49 @@ const mdComponents: Components = {
 
 type Props = {
   content: string;
-  variant?: "default" | "auto" | "report";
+  /** default=行内排版；blocks=HTML 分块卡片；report=报告样式；auto=智能选择 */
+  variant?: "default" | "auto" | "report" | "blocks";
 };
 
-export default function ChatMarkdown({ content, variant = "auto" }: Props) {
-  const asReport = variant === "report" || (variant === "auto" && isReportLike(content));
-
-  const body = (
-    <div className={`agent-md-root${asReport ? " report" : ""}`}>
+function MdBody({ content, report }: { content: string; report?: boolean }) {
+  return (
+    <div className={`agent-md-root${report ? " report" : ""}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
         {content}
       </ReactMarkdown>
     </div>
   );
-
-  if (asReport) {
-    return <article className="agent-report-card">{body}</article>;
-  }
-  return body;
 }
 
-export { isReportLike };
+export default function ChatMarkdown({ content, variant = "auto" }: Props) {
+  const blocky = looksBlocky(content);
+  const asReport = variant === "report" || (variant === "auto" && isReportLike(content));
+  const asBlocks = variant === "blocks"
+    || asReport
+    || (variant === "auto" && blocky);
+
+  if (!asBlocks) {
+    return <MdBody content={content} />;
+  }
+
+  const sections = splitIntoSections(content);
+  const multi = sections.length > 1;
+
+  return (
+    <article className={`agent-report-card agent-md-blocks${asReport ? " is-report" : ""}`}>
+      {multi ? (
+        sections.map((sec, i) => (
+          <section key={i} className={`agent-md-section${i === 0 ? " is-lead" : ""}`}>
+            <MdBody content={sec} report={asReport} />
+          </section>
+        ))
+      ) : (
+        <section className="agent-md-section is-lead is-single">
+          <MdBody content={content} report={asReport} />
+        </section>
+      )}
+    </article>
+  );
+}
+
+export { isReportLike, looksBlocky };

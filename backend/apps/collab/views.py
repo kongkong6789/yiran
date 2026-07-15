@@ -1,7 +1,9 @@
 """协作风控 API。"""
 from __future__ import annotations
 
+import logging
 import mimetypes
+import threading
 
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -12,6 +14,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
+logger = logging.getLogger(__name__)
+
 from apps.core.attachments import (
     attachment_public_meta,
     process_uploaded_files,
@@ -19,8 +23,10 @@ from apps.core.attachments import (
     resolve_attachment_path_any,
 )
 
-from .analyze import analyze_room_messages, max_risk
+from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk
+from .interject import maybe_interject
 from .mentions import (
+    collab_skill_hits,
     get_collab_ai_user,
     has_ai_mention,
     parse_mentions,
@@ -28,6 +34,10 @@ from .mentions import (
 )
 from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
 from .presence import presence_map, touch_presence
+from collections import Counter
+from datetime import timedelta
+
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -36,13 +46,45 @@ def _is_admin(user) -> bool:
     return bool(getattr(user, "is_authenticated", False) and (user.is_staff or user.is_superuser))
 
 
-def _user_brief(user, *, presence: dict | None = None, nickname: str | None = None) -> dict:
+def _profile_map(user_ids: list[int]) -> dict[int, dict]:
+    """批量取个人资料，避免 N+1。"""
+    if not user_ids:
+        return {}
+    try:
+        from apps.core.models import UserSettings
+
+        rows = UserSettings.objects.filter(user_id__in=user_ids).only(
+            "user_id", "display_name", "bio", "avatar",
+        )
+        out: dict[int, dict] = {}
+        for r in rows:
+            out[r.user_id] = {
+                "display_name": (r.display_name or "").strip(),
+                "bio": r.bio or "",
+                "avatar_url": r.avatar_url,
+            }
+        return out
+    except Exception:
+        return {}
+
+
+def _user_brief(
+    user,
+    *,
+    presence: dict | None = None,
+    nickname: str | None = None,
+    profile: dict | None = None,
+) -> dict:
     nick = (nickname or "").strip()
+    profile = profile or {}
+    profile_name = (profile.get("display_name") or "").strip()
     info = {
         "id": user.id,
         "username": user.username,
         "nickname": nick,
-        "display_name": nick or user.username,
+        "display_name": nick or profile_name or user.username,
+        "avatar_url": profile.get("avatar_url") or "",
+        "bio": profile.get("bio") or "",
         "online": False,
         "last_seen": None,
     }
@@ -72,6 +114,7 @@ def _unread_count_for(user, room: CollabRoom, *, last_read_id: int | None = None
     return (
         CollabMessage.objects.filter(room=room, id__gt=int(last_read_id or 0))
         .exclude(sender_id=user.id)
+        .exclude(status="deleted")
         .count()
     )
 
@@ -89,6 +132,28 @@ def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> i
     return row.last_read_message_id
 
 
+def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
+    """发送响应用轻量房间态，避免每次拉全员资料。"""
+    member_ids = list(
+        CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
+    )
+    pmap = presence_map(member_ids)
+    online_count = sum(1 for uid in member_ids if pmap.get(uid, {}).get("online"))
+    peer_online = None
+    if room.room_kind == "dm" and viewer is not None:
+        peer_id = next((uid for uid in member_ids if uid != viewer.id), None)
+        peer_online = bool(pmap.get(peer_id or 0, {}).get("online"))
+    return {
+        "id": str(room.id),
+        "status": room.status,
+        "risk_level": room.risk_level,
+        "updated_at": room.updated_at.isoformat(),
+        "online_count": online_count,
+        "peer_online": peer_online,
+        "unread_count": 0,
+    }
+
+
 def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=None) -> dict:
     participant_rows = list(room.participants.select_related("user").all())
     users = [p.user for p in participant_rows]
@@ -96,9 +161,15 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
     if room.created_by_id not in ids:
         ids.append(room.created_by_id)
     pmap = presence_map(ids)
+    profiles = _profile_map(ids)
     nick_by_id = {p.user_id: (p.nickname or "").strip() for p in participant_rows}
     members = [
-        _user_brief(p.user, presence=pmap, nickname=p.nickname)
+        _user_brief(
+            p.user,
+            presence=pmap,
+            nickname=p.nickname,
+            profile=profiles.get(p.user_id),
+        )
         for p in participant_rows
     ]
     display_title = room.title
@@ -128,7 +199,13 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         "status": room.status,
         "risk_level": room.risk_level,
         "summary": room.summary,
-        "created_by": _user_brief(room.created_by, presence=pmap, nickname=created_nick),
+        "interject_enabled": bool(getattr(room, "interject_enabled", True)),
+        "created_by": _user_brief(
+            room.created_by,
+            presence=pmap,
+            nickname=created_nick,
+            profile=profiles.get(room.created_by_id),
+        ),
         "participants": members,
         "member_count": len(members),
         "peer_online": peer_online,
@@ -146,7 +223,12 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
                 viewer, room, last_read_id=viewer_part.last_read_message_id,
             )
             payload["last_read_message_id"] = viewer_part.last_read_message_id or 0
-    last = room.messages.select_related("sender").order_by("-id").first()
+    last = (
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .order_by("-id")
+        .first()
+    )
     if last:
         preview = (last.content or "").strip()
         if not preview and last.attachments:
@@ -167,13 +249,28 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
             "created_at": last.created_at.isoformat(),
         }
     if include_messages:
+        # 仅最近窗口，完整历史走 messages/?before_id= 分页
+        msg_rows = list(
+            room.messages.select_related("sender")
+            .exclude(status="deleted")
+            .order_by("-id")[:50]
+        )
+        msg_rows.reverse()
+        sender_ids = list({m.sender_id for m in msg_rows})
+        msg_profiles = _profile_map(sender_ids)
         payload["messages"] = [
-            _message_payload(m, nickname_map=nick_by_id)
-            for m in room.messages.select_related("sender").all()[:200]
+            _message_payload(m, nickname_map=nick_by_id, profile_map=msg_profiles)
+            for m in msg_rows
         ]
+        oldest_id = msg_rows[0].id if msg_rows else 0
+        payload["has_more_before"] = bool(
+            oldest_id
+            and room.messages.exclude(status="deleted").filter(id__lt=oldest_id).exists()
+        )
         payload["insights"] = [
-            _insight_payload(i) for i in room.insights.all()[:30]
+            _insight_payload(i) for i in room.insights.order_by("-id")[:30]
         ]
+        payload["insights"].reverse()
     return payload
 
 
@@ -206,7 +303,12 @@ def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabR
     return room
 
 
-def _message_payload(msg: CollabMessage, *, nickname_map: dict[int, str] | None = None) -> dict:
+def _message_payload(
+    msg: CollabMessage,
+    *,
+    nickname_map: dict[int, str] | None = None,
+    profile_map: dict[int, dict] | None = None,
+) -> dict:
     nick = ""
     if nickname_map is not None:
         nick = (nickname_map.get(msg.sender_id) or "").strip()
@@ -214,16 +316,24 @@ def _message_payload(msg: CollabMessage, *, nickname_map: dict[int, str] | None 
         # 单条消息场景：按需查群昵称
         row = CollabParticipant.objects.filter(room_id=msg.room_id, user_id=msg.sender_id).first()
         nick = (row.nickname or "").strip() if row else ""
-    sender_brief = _user_brief(msg.sender, nickname=nick)
+    profile = None
+    if profile_map is not None:
+        profile = profile_map.get(msg.sender_id)
+    elif msg.msg_type != "ai":
+        profile = _profile_map([msg.sender_id]).get(msg.sender_id)
+    sender_brief = _user_brief(msg.sender, nickname=nick, profile=profile)
     if msg.msg_type == "ai":
         sender_brief = {
             **sender_brief,
             "username": "良策AI",
             "nickname": "",
             "display_name": "良策AI",
+            "avatar_url": "",
             "online": True,
         }
-    return {
+    msg_status = getattr(msg, "status", None) or "normal"
+    updated = getattr(msg, "updated_at", None) or msg.created_at
+    base = {
         "id": msg.id,
         "room_id": str(msg.room_id),
         "sender": sender_brief,
@@ -231,8 +341,40 @@ def _message_payload(msg: CollabMessage, *, nickname_map: dict[int, str] | None 
         "attachments": msg.attachments or [],
         "mentions": msg.mentions or [],
         "msg_type": msg.msg_type or "user",
+        "ai_kind": (msg.ai_kind or "") if msg.msg_type == "ai" else "",
+        "status": msg_status,
+        "risk_flag": (getattr(msg, "risk_flag", None) or "") if msg_status == "normal" else "",
+        "risk_flag_level": (getattr(msg, "risk_flag_level", None) or "") if msg_status == "normal" else "",
         "created_at": msg.created_at.isoformat(),
+        "updated_at": updated.isoformat(),
     }
+    if msg_status == "recalled":
+        who = sender_brief.get("display_name") or sender_brief.get("username") or "有人"
+        if msg.msg_type == "ai":
+            who = "良策AI"
+        base.update({
+            "content": f"{who} 撤回了一条消息",
+            "attachments": [],
+            "mentions": [],
+            "msg_type": "system",
+            "ai_kind": "",
+        })
+    elif msg_status == "deleted":
+        base.update({
+            "content": "",
+            "attachments": [],
+            "mentions": [],
+        })
+    return base
+
+
+def _can_moderate_room(user, room: CollabRoom) -> bool:
+    if _is_admin(user):
+        return True
+    return room.created_by_id == user.id
+
+
+RECALL_WINDOW = timedelta(seconds=120)
 
 
 def _message_analysis_text(msg: CollabMessage) -> str:
@@ -264,7 +406,9 @@ def _insight_payload(row: CollabInsight) -> dict:
 
 def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
     rows = list(
-        room.messages.select_related("sender").order_by("-id")[:24]
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .order_by("-id")[:24]
     )
     rows.reverse()
     messages = [
@@ -288,11 +432,80 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
         evidence_message_ids=data.get("evidence_message_ids") or [],
         draft_reply=data.get("draft_reply") or "",
     )
+    apply_message_risk_flags(room, data, fallback_messages=rows)
     room.risk_level = max_risk(room.risk_level, data["risk_level"])
     if data.get("analysis"):
         room.summary = data["analysis"][:500]
     room.save(update_fields=["risk_level", "summary", "updated_at"])
     return insight
+
+
+def _run_analysis_async(room_id, user_id: int, *, had_ai_reply: bool = False) -> None:
+    """旁路分析放到后台，避免拖慢每条消息的发送响应。"""
+    try:
+        room = CollabRoom.objects.get(id=room_id)
+        user = User.objects.filter(id=user_id).first()
+        insight = _run_analysis(room, llm_user=user)
+        if insight and not had_ai_reply:
+            maybe_interject(room, insight)
+    except Exception:
+        logger.exception("collab background analysis failed room=%s", room_id)
+
+
+def _run_ai_reply_async(
+    room_id,
+    user_id: int,
+    trigger_content: str,
+    mentions: list,
+    *,
+    also_analyze: bool = True,
+) -> None:
+    """@AI / Skill 回复放到后台，经 SSE 推送，发送接口立刻返回。"""
+    ai_ok = False
+    try:
+        room = CollabRoom.objects.get(id=room_id)
+        user = User.objects.filter(id=user_id).first()
+        recent = list(room.messages.select_related("sender").order_by("-id")[:20])
+        recent.reverse()
+        transcript = [
+            {
+                "username": ("良策AI" if m.msg_type == "ai" else m.sender.username),
+                "content": m.content or "",
+                "msg_type": m.msg_type,
+            }
+            for m in recent
+        ]
+        try:
+            reply = reply_ai_mention(
+                room_title=room.title,
+                transcript=transcript,
+                trigger_content=trigger_content,
+                llm_user=user,
+                mentions=mentions,
+                interject_enabled=bool(getattr(room, "interject_enabled", True)),
+            )
+        except Exception as exc:
+            reply = (
+                f"召唤到了，但生成回复时出错：{exc}。"
+                "请稍后重试，或换个问法再 @AI / Skill。"
+            )[:2000]
+        ai_user = get_collab_ai_user()
+        CollabMessage.objects.create(
+            room=room,
+            sender=ai_user,
+            content=reply,
+            attachments=[],
+            mentions=[],
+            msg_type="ai",
+            ai_kind="reply",
+        )
+        room.save(update_fields=["updated_at"])
+        ai_ok = True
+    except Exception:
+        logger.exception("collab background AI reply failed room=%s", room_id)
+
+    if also_analyze:
+        _run_analysis_async(room_id, user_id, had_ai_reply=ai_ok)
 
 
 @api_view(["GET", "POST"])
@@ -397,6 +610,12 @@ def room_detail(request, room_id):
         title = request.data.get("title")
         if title is not None:
             room.title = str(title).strip()[:120] or room.title
+        if "interject_enabled" in request.data:
+            raw = request.data.get("interject_enabled")
+            if isinstance(raw, bool):
+                room.interject_enabled = raw
+            else:
+                room.interject_enabled = str(raw).strip().lower() in ("1", "true", "yes", "on")
         if new_status == "closed":
             room.status = "closed"
             # 结束时再析一场
@@ -524,7 +743,11 @@ def room_members(request, room_id):
             )
         body = {
             "ok": True,
-            "participant": _user_brief(target, nickname=nickname),
+            "participant": _user_brief(
+                target,
+                nickname=nickname,
+                profile=_profile_map([target.id]).get(target.id),
+            ),
             "room": _room_payload(room, include_messages=False, viewer=request.user),
         }
         if tip:
@@ -587,9 +810,12 @@ def room_members(request, room_id):
         room.save(update_fields=["updated_at"])
 
         still_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+        removed_profiles = _profile_map([u.id for u in removed])
         payload = {
             "ok": True,
-            "removed": [_user_brief(u) for u in removed],
+            "removed": [
+                _user_brief(u, profile=removed_profiles.get(u.id)) for u in removed
+            ],
             "removed_count": len(removed),
             "message": _message_payload(system_msg),
             "left": not still_member,
@@ -635,9 +861,10 @@ def room_members(request, room_id):
     )
     room.save(update_fields=["updated_at"])
 
+    added_profiles = _profile_map([u.id for u in added])
     return Response({
         "ok": True,
-        "added": [_user_brief(u) for u in added],
+        "added": [_user_brief(u, profile=added_profiles.get(u.id)) for u in added],
         "added_count": len(added),
         "message": _message_payload(system_msg),
         "room": _room_payload(room, include_messages=False, viewer=request.user),
@@ -721,101 +948,297 @@ def room_messages(request, room_id):
         )
         room.save(update_fields=["updated_at"])
 
-        ai_msg = None
-        if has_ai_mention(mentions):
-            try:
-                recent = list(
-                    room.messages.select_related("sender").order_by("-id")[:20]
-                )
-                recent.reverse()
-                transcript = [
-                    {
-                        "username": (
-                            "良策AI" if m.msg_type == "ai" else m.sender.username
-                        ),
-                        "content": m.content or "",
-                        "msg_type": m.msg_type,
-                    }
-                    for m in recent
-                ]
-                reply = reply_ai_mention(
-                    room_title=room.title,
-                    transcript=transcript,
-                    trigger_content=content,
-                    llm_user=request.user,
-                    mentions=mentions,
-                )
-                ai_user = get_collab_ai_user()
-                ai_msg = CollabMessage.objects.create(
-                    room=room,
-                    sender=ai_user,
-                    content=reply,
-                    attachments=[],
-                    mentions=[],
-                    msg_type="ai",
-                )
-                room.save(update_fields=["updated_at"])
-            except Exception as exc:
-                # 仍给出可看见的回复，避免“没反应”
-                try:
-                    ai_user = get_collab_ai_user()
-                    ai_msg = CollabMessage.objects.create(
-                        room=room,
-                        sender=ai_user,
-                        content=(
-                            f"召唤到了，但生成回复时出错：{exc}。"
-                            "请稍后重试，或换个问法再 @AI。"
-                        )[:2000],
-                        attachments=[],
-                        mentions=[],
-                        msg_type="ai",
-                    )
-                    room.save(update_fields=["updated_at"])
-                except Exception:
-                    ai_msg = None
-
-        insight = None
+        need_ai_reply = has_ai_mention(mentions) or (
+            "@" in content and collab_skill_hits(content, request.user)
+        )
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
-        if analyze:
-            try:
-                insight = _run_analysis(room, llm_user=request.user)
-            except Exception:
-                insight = None
+        # @AI 与旁路分析都后台跑，发送只落库用户消息
+        if need_ai_reply:
+            threading.Thread(
+                target=_run_ai_reply_async,
+                args=(room.id, request.user.id, content, mentions),
+                kwargs={"also_analyze": analyze},
+                daemon=True,
+            ).start()
+        elif analyze:
+            threading.Thread(
+                target=_run_analysis_async,
+                args=(room.id, request.user.id),
+                kwargs={"had_ai_reply": False},
+                daemon=True,
+            ).start()
 
-        body = {
+        return Response({
             "ok": True,
             "message": _message_payload(msg),
-            "room": _room_payload(room, viewer=request.user),
-        }
-        if ai_msg:
-            body["ai_message"] = _message_payload(ai_msg)
-        if insight:
-            body["insight"] = _insight_payload(insight)
-        return Response(body, status=201)
+            "room": _room_payload_lite(room, viewer=request.user),
+            "analyze_pending": bool(analyze),
+            "ai_pending": bool(need_ai_reply),
+        }, status=201)
 
     after_id = int(request.query_params.get("after_id") or 0)
-    qs = room.messages.select_related("sender").order_by("id")
-    if after_id > 0:
-        qs = qs.filter(id__gt=after_id)
-    rows = list(qs[:200])
-    room_view = _room_payload(room, viewer=request.user)
+    before_id = int(request.query_params.get("before_id") or 0)
+    try:
+        limit = int(request.query_params.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 100))
+    lite = str(request.query_params.get("lite") or "").lower() in ("1", "true", "yes")
+    include_participants = str(
+        request.query_params.get("include_participants")
+        or ("0" if lite or after_id or before_id else "1")
+    ).lower() in ("1", "true", "yes")
+
+    base = room.messages.select_related("sender")
+    has_more_before = False
+    if before_id > 0:
+        # 历史上拉：取更旧的一页，正序返回
+        qs = base.exclude(status="deleted").filter(id__lt=before_id).order_by("-id")
+        rows = list(qs[:limit])
+        has_more_before = len(rows) == limit and base.exclude(status="deleted").filter(
+            id__lt=rows[-1].id if rows else before_id,
+        ).exists()
+        rows.reverse()
+    elif after_id > 0:
+        # 增量：新消息
+        qs = base.filter(id__gt=after_id).order_by("id")
+        rows = list(qs[:limit])
+        oldest_loaded = after_id
+        has_more_before = base.exclude(status="deleted").filter(id__lt=oldest_loaded).exists()
+    else:
+        # 首屏：最近窗口
+        qs = base.exclude(status="deleted").order_by("-id")
+        rows = list(qs[:limit])
+        has_more_before = len(rows) == limit and base.exclude(status="deleted").filter(
+            id__lt=rows[-1].id if rows else 0,
+        ).exists()
+        rows.reverse()
+
     nick_map = _nickname_map(room)
-    # 正在拉取消息 = 正在看此会话，标记已读到最新
-    if CollabParticipant.objects.filter(room=room, user=request.user).exists():
-        _mark_room_read(request.user, room)
-    return Response({
-        "count": len(rows),
-        "results": [_message_payload(m, nickname_map=nick_map) for m in rows],
-        "room": {
-            "id": str(room.id),
-            "status": room.status,
-            "risk_level": room.risk_level,
-            "updated_at": room.updated_at.isoformat(),
+    # 轮询/SSE 同步撤回/删除（已落在 after_id 之前的消息）
+    changed = []
+    changed_rows: list[CollabMessage] = []
+    if after_id > 0:
+        changed_rows = list(
+            room.messages.select_related("sender")
+            .filter(
+                id__lte=after_id,
+                updated_at__gte=timezone.now() - timedelta(minutes=3),
+            )
+            .order_by("-updated_at")[:40]
+        )
+    sender_ids = list({m.sender_id for m in rows} | {m.sender_id for m in changed_rows})
+    msg_profiles = _profile_map(sender_ids)
+    if changed_rows:
+        changed = [
+            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            for m in changed_rows
+        ]
+
+    room_meta: dict = {
+        "id": str(room.id),
+        "status": room.status,
+        "risk_level": room.risk_level,
+        "updated_at": room.updated_at.isoformat(),
+        "unread_count": 0,
+    }
+    if include_participants:
+        room_view = _room_payload(room, viewer=request.user)
+        room_meta.update({
             "peer_online": room_view.get("peer_online"),
             "online_count": room_view.get("online_count"),
             "participants": room_view.get("participants"),
-            "unread_count": 0,
-        },
+        })
+    else:
+        # 轻量：只算在线人数，不带完整成员列表
+        member_ids = list(
+            CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
+        )
+        pmap = presence_map(member_ids)
+        online_count = sum(1 for uid in member_ids if pmap.get(uid, {}).get("online"))
+        peer_online = None
+        if room.room_kind == "dm":
+            peer_id = next((uid for uid in member_ids if uid != request.user.id), None)
+            peer_online = bool(pmap.get(peer_id or 0, {}).get("online"))
+        room_meta["online_count"] = online_count
+        room_meta["peer_online"] = peer_online
+
+    # 正在拉取消息 = 正在看此会话，标记已读到最新（历史上拉不刷已读）
+    if before_id <= 0 and CollabParticipant.objects.filter(room=room, user=request.user).exists():
+        _mark_room_read(request.user, room)
+
+    return Response({
+        "count": len(rows),
+        "results": [
+            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            for m in rows
+        ],
+        "changed": changed,
+        "has_more_before": has_more_before,
+        "room": room_meta,
+    })
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def room_message_detail(request, room_id, message_id):
+    """撤回（POST action=recall）或删除（DELETE）单条消息。"""
+    touch_presence(request.user)
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+    msg = get_object_or_404(CollabMessage, id=message_id, room=room)
+    if (msg.status or "normal") == "deleted":
+        return Response({"ok": False, "error": "消息已删除"}, status=400)
+
+    is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
+    if not is_member and not _is_admin(request.user):
+        return Response({"ok": False, "error": "旁观者无法操作消息"}, status=403)
+
+    nick_map = _nickname_map(room)
+
+    if request.method == "DELETE":
+        # 删除：本人可删自己的用户消息；群主/管理员可删他人；AI 消息成员/管理员可删
+        own = msg.sender_id == request.user.id and msg.msg_type == "user"
+        ai_ok = msg.msg_type == "ai" and (is_member or _is_admin(request.user))
+        mod_ok = _can_moderate_room(request.user, room) and msg.msg_type != "system"
+        if msg.msg_type == "system" and (msg.status or "") != "recalled":
+            return Response({"ok": False, "error": "系统消息不可删除"}, status=400)
+        # 撤回后的灰条允许删除
+        if (msg.status or "") == "recalled":
+            if not (own or mod_ok or _is_admin(request.user)):
+                return Response({"ok": False, "error": "无权删除该消息"}, status=403)
+        elif not (own or ai_ok or mod_ok):
+            return Response({"ok": False, "error": "无权删除该消息"}, status=403)
+        msg.status = "deleted"
+        msg.content = ""
+        msg.attachments = []
+        msg.mentions = []
+        msg.risk_flag = ""
+        msg.risk_flag_level = ""
+        msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
+        room.save(update_fields=["updated_at"])
+        return Response({
+            "ok": True,
+            "action": "deleted",
+            "message": _message_payload(msg, nickname_map=nick_map),
+            "room": _room_payload(room, viewer=request.user),
+        })
+
+    # POST → recall
+    action = str(request.data.get("action") or "recall").strip().lower()
+    if action != "recall":
+        return Response({"ok": False, "error": "未知操作"}, status=400)
+    if msg.msg_type != "user":
+        return Response({"ok": False, "error": "仅可撤回自己发送的消息"}, status=400)
+    if msg.sender_id != request.user.id:
+        return Response({"ok": False, "error": "只能撤回自己的消息"}, status=403)
+    if (msg.status or "normal") == "recalled":
+        return Response({"ok": False, "error": "消息已撤回"}, status=400)
+    if timezone.now() - msg.created_at > RECALL_WINDOW:
+        return Response({"ok": False, "error": "超过2分钟，无法撤回"}, status=400)
+    msg.status = "recalled"
+    msg.content = ""
+    msg.attachments = []
+    msg.mentions = []
+    msg.risk_flag = ""
+    msg.risk_flag_level = ""
+    msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
+    room.save(update_fields=["updated_at"])
+    return Response({
+        "ok": True,
+        "action": "recalled",
+        "message": _message_payload(msg, nickname_map=nick_map),
+        "room": _room_payload(room, viewer=request.user),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def room_stats(request, room_id):
+    """当前会话 BI：风险计数、活跃度、AI 互动、时段分布、最近告警。"""
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    nick_map = _nickname_map(room)
+    msgs = list(
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .order_by("id")[:2000]
+    )
+    insights = list(room.insights.order_by("-id")[:40])
+
+    user_msgs = [m for m in msgs if m.msg_type == "user"]
+    ai_msgs = [m for m in msgs if m.msg_type == "ai"]
+    reply_n = sum(1 for m in ai_msgs if (m.ai_kind or "") not in ("interject", "suggest"))
+    interject_n = sum(1 for m in ai_msgs if (m.ai_kind or "") in ("interject", "suggest"))
+    attach_n = sum(len(m.attachments or []) for m in msgs)
+
+    speaker = Counter()
+    for m in user_msgs:
+        name = nick_map.get(m.sender_id) or m.sender.username
+        speaker[name] += 1
+    speaker_top = [
+        {"name": name, "count": count}
+        for name, count in speaker.most_common(6)
+    ]
+
+    risk_counts = {"green": 0, "yellow": 0, "red": 0}
+    for ins in insights:
+        key = (ins.risk_level or "green").lower()
+        if key in risk_counts:
+            risk_counts[key] += 1
+
+    # 近 24h 按时区本地整点聚合（避免 UTC 显示成 06:00 这类错位）
+    now = timezone.now()
+    since = now - timedelta(hours=24)
+    local_now = timezone.localtime(now)
+    base = local_now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23)
+    hour_map: Counter = Counter()
+    for m in user_msgs:
+        if m.created_at < since:
+            continue
+        slot_t = timezone.localtime(m.created_at).replace(minute=0, second=0, microsecond=0)
+        if slot_t >= base:
+            hour_map[slot_t] += 1
+    hourly = []
+    for i in range(24):
+        slot = base + timedelta(hours=i)
+        hourly.append({
+            "hour": slot.isoformat(),
+            "label": slot.strftime("%H:00"),
+            "count": int(hour_map.get(slot, 0)),
+        })
+
+    alerts = [
+        {
+            "id": ins.id,
+            "risk_level": ins.risk_level,
+            "title": ins.title,
+            "advice": (ins.advice or "")[:160],
+            "evidence_message_ids": ins.evidence_message_ids or [],
+            "draft_reply": (ins.draft_reply or "")[:200],
+            "created_at": ins.created_at.isoformat(),
+        }
+        for ins in insights
+        if (ins.risk_level or "").lower() in ("yellow", "red")
+    ][:20]
+
+    return Response({
+        "ok": True,
+        "room_id": str(room.id),
+        "risk_level": room.risk_level,
+        "interject_enabled": bool(room.interject_enabled),
+        "message_count": len(msgs),
+        "user_message_count": len(user_msgs),
+        "ai_reply_count": reply_n,
+        "ai_interject_count": interject_n,
+        "attachment_count": attach_n,
+        "risk_counts": risk_counts,
+        "speaker_top": speaker_top,
+        "hourly": hourly,
+        "alerts": alerts,
     })
 
 
@@ -831,7 +1254,20 @@ def room_insights(request, room_id):
             insight = _run_analysis(room, llm_user=request.user)
         except Exception as exc:
             return Response({"ok": False, "error": str(exc)}, status=500)
-        return Response({"ok": True, "insight": _insight_payload(insight), "room": _room_payload(room, viewer=request.user)})
+        # 手动刷新也可插嘴（若冷却允许）
+        ai_msg = None
+        try:
+            ai_msg = maybe_interject(room, insight)
+        except Exception:
+            ai_msg = None
+        body = {
+            "ok": True,
+            "insight": _insight_payload(insight),
+            "room": _room_payload(room, viewer=request.user),
+        }
+        if ai_msg:
+            body["ai_message"] = _message_payload(ai_msg)
+        return Response(body)
 
     after_id = int(request.query_params.get("after_id") or 0)
     qs = room.insights.order_by("id")
@@ -852,17 +1288,36 @@ def room_insights(request, room_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    """供创建会话时选择对方账号。"""
+    """供创建会话时选择对方账号。新注册靠前；排除 AI 机器人。"""
+    from .mentions import AI_USERNAMES
+
     touch_presence(request.user)
     q = str(request.query_params.get("q") or "").strip()
-    qs = User.objects.filter(is_active=True).exclude(id=request.user.id)
+    qs = (
+        User.objects.filter(is_active=True)
+        .exclude(id=request.user.id)
+        .exclude(username__in=AI_USERNAMES)
+    )
     if q:
-        qs = qs.filter(Q(username__icontains=q) | Q(email__icontains=q))
-    rows = list(qs.order_by("username")[:50])
-    pmap = presence_map([u.id for u in rows])
+        qs = qs.filter(
+            Q(username__icontains=q)
+            | Q(email__icontains=q)
+            | Q(settings__display_name__icontains=q)
+        ).distinct()
+    # 新账号优先，便于通讯录立刻看到刚注册的人
+    rows = list(qs.order_by("-date_joined", "username")[:200])
+    ids = [u.id for u in rows]
+    pmap = presence_map(ids)
+    profiles = _profile_map(ids)
     return Response({
         "count": len(rows),
-        "results": [_user_brief(u, presence=pmap) for u in rows],
+        "results": [
+            {
+                **_user_brief(u, presence=pmap, profile=profiles.get(u.id)),
+                "date_joined": u.date_joined.isoformat() if u.date_joined else None,
+            }
+            for u in rows
+        ],
     })
 
 
