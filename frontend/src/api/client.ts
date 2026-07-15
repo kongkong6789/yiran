@@ -261,7 +261,7 @@ export interface OntGraph {
   source?: string;
 }
 
-export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; refresh?: 1 }) =>
+export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; focus_age_id?: number; refresh?: 1 }) =>
   api.get<OntGraph>("/ontology/graph/age-live/", { params }).then((r) => r.data);
 
 export const getGraph = (params?: { scope?: "age" | "all" }) =>
