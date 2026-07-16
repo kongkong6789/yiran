@@ -48,7 +48,7 @@ INSTALLED_APPS = [
     "apps.mcp",
     "apps.skills",
     "apps.collab",
-    "apps.commerce",
+    "apps.knowledge",
 ]
 
 MIDDLEWARE = [
@@ -82,14 +82,25 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# 用户/权限元数据用 SQLite;业务大数据用 DuckDB(见 apps.datalake)
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+# Django 主库:配置 POSTGRES_HOST/POSTGRES_DB 时使用 PostgreSQL;否则回退 SQLite。
+if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "HOST": os.getenv("POSTGRES_HOST"),
+            "PORT": os.getenv("POSTGRES_PORT", "5432"),
+            "NAME": os.getenv("POSTGRES_DB"),
+            "USER": os.getenv("POSTGRES_USER", "postgres"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
+        }
     }
-}
-
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 # DuckDB 数据底座文件路径
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(BASE_DIR / "data" / "datalake.duckdb"))
 
