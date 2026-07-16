@@ -17,3 +17,6 @@ frontend/tsconfig.tsbuildinfo
 # 编辑器
 .vscode/
 .idea/
+
+# Superpowers visual brainstorming artifacts
+.superpowers/
