@@ -154,7 +154,8 @@ def run_chat(
 
     user_block = message or "(用户仅上传了附件,请结合附件内容回答)"
     if reference_blocks:
-        user_block = f"参考资料:\n{'\n\n'.join(reference_blocks)}\n\n用户问题:{user_block}"
+        references = "\n\n".join(reference_blocks)
+        user_block = f"参考资料:\n{references}\n\n用户问题:{user_block}"
 
     clean_history = [
         {"role": item["role"], "content": str(item["content"])}
