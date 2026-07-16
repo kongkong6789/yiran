@@ -262,10 +262,10 @@ def admin_users(request):
     }, status=201)
 
 
-@api_view(["PATCH"])
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def admin_user_detail(request, user_id: int):
-    """管理员：改密 / 启停 / 角色。"""
+    """管理员：改密 / 启停 / 角色 / 删除。"""
     denied = _require_staff(request.user)
     if denied:
         return denied
@@ -275,6 +275,21 @@ def admin_user_detail(request, user_id: int):
         return Response({"ok": False, "error": "用户不存在"}, status=404)
     if target.is_superuser and not request.user.is_superuser:
         return Response({"ok": False, "error": "不能修改超级管理员"}, status=403)
+
+    if request.method == "DELETE":
+        if target.id == request.user.id:
+            return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)
+        if target.is_superuser and not request.user.is_superuser:
+            return Response({"ok": False, "error": "不能删除超级管理员"}, status=403)
+        if target.is_superuser:
+            other_supers = User.objects.filter(is_superuser=True).exclude(id=target.id).count()
+            if other_supers < 1:
+                return Response({"ok": False, "error": "不能删除唯一的超级管理员"}, status=400)
+        username = target.username
+        Token.objects.filter(user=target).delete()
+        target.delete()
+        return Response({"ok": True, "deleted": username})
+
     if target.id == request.user.id and request.data.get("is_active") is False:
         return Response({"ok": False, "error": "不能停用自己的账号"}, status=400)
 

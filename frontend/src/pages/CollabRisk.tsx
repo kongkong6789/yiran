@@ -26,6 +26,7 @@ import {
   recallCollabMessage,
   deleteCollabMessage,
   refreshCollabInsights,
+  checkCollabDraft,
   sendCollabMessage,
   updateCollabMemberNickname,
   updateCollabRoom,
@@ -34,6 +35,7 @@ import {
   type CollabMessage,
   type CollabRoom,
   type CollabRoomStats,
+  type CollabDraftTip,
   type CollabUserBrief,
   type UserSkillItem,
 } from "../api/client";
@@ -610,6 +612,15 @@ export default function CollabRisk() {
   const [roomStats, setRoomStats] = useState<CollabRoomStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [draft, setDraft] = useState("");
+  const draftRef = useRef("");
+  draftRef.current = draft;
+  const [draftCoach, setDraftCoach] = useState<{
+    level: string;
+    tips: CollabDraftTip[];
+    label: string;
+    advice: string;
+  } | null>(null);
+  const [draftCoachLoading, setDraftCoachLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
@@ -627,6 +638,9 @@ export default function CollabRisk() {
   const [nickOpen, setNickOpen] = useState(false);
   const [nickDrafts, setNickDrafts] = useState<Record<string, string>>({});
   const [nickSaving, setNickSaving] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [creating, setCreating] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
@@ -640,6 +654,8 @@ export default function CollabRisk() {
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<any>(null);
+  const draftCoachSeq = useRef(0);
+  const draftCoachTimer = useRef<number | null>(null);
   const messagesRef = useRef<CollabMessage[]>([]);
   const insightsRef = useRef<CollabInsight[]>([]);
   const contactKeywordRef = useRef("");
@@ -1129,6 +1145,46 @@ export default function CollabRisk() {
     setNickOpen(true);
   };
 
+  const openRenameModal = () => {
+    if (!activeRoom) return;
+    setRenameTitle((activeRoom.title || "").trim());
+    setRenameOpen(true);
+  };
+
+  const handleRenameGroup = async () => {
+    if (!activeId || !activeRoom) return;
+    const next = renameTitle.trim();
+    if (!next) {
+      message.warning("群名不能为空");
+      return;
+    }
+    if (next === (activeRoom.title || "").trim()) {
+      setRenameOpen(false);
+      return;
+    }
+    setRenaming(true);
+    try {
+      const room = await updateCollabRoom(activeId, { title: next });
+      setActiveRoom((prev) => (prev ? { ...prev, ...room, messages: undefined, insights: undefined } : room));
+      setRooms((prev) => prev.map((r) => (
+        r.id === activeId ? { ...r, ...room, messages: undefined, insights: undefined } : r
+      )));
+      if (room.messages?.length) {
+        setMessages((prev) => {
+          const last = room.messages![room.messages!.length - 1];
+          if (prev.some((m) => m.id === last.id)) return prev;
+          return [...prev, last];
+        });
+      }
+      setRenameOpen(false);
+      message.success("群名已更新");
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || "修改群名失败");
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const handleSaveNicknames = async () => {
     if (!activeId || !activeRoom || !me) return;
     const canEditOthers = Boolean(me.is_staff || activeRoom.created_by?.id === me.id);
@@ -1298,7 +1354,15 @@ export default function CollabRisk() {
     const content = draft.trim();
     const files = pendingFiles.map((p) => p.file);
     const previews = pendingFiles.map((p) => p.preview);
+    // 发出后立刻停掉草稿分析（含进行中的请求）
+    draftCoachSeq.current += 1;
+    if (draftCoachTimer.current) {
+      window.clearTimeout(draftCoachTimer.current);
+      draftCoachTimer.current = null;
+    }
     setDraft("");
+    setDraftCoach(null);
+    setDraftCoachLoading(false);
     setPendingFiles([]);
     const ok = await sendPlainMessage(content, files);
     if (!ok) {
@@ -1311,6 +1375,88 @@ export default function CollabRisk() {
       previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
     }
   };
+
+  const runDraftCoach = useCallback(async (roomId: string, text: string) => {
+    const trimmed = (text || "").trim();
+    if (!trimmed) {
+      setDraftCoach(null);
+      setDraftCoachLoading(false);
+      return;
+    }
+    const seq = ++draftCoachSeq.current;
+    setDraftCoachLoading(true);
+    try {
+      const res = await checkCollabDraft(roomId, trimmed);
+      if (seq !== draftCoachSeq.current) return;
+      // 消息已发出 / 输入框已清空：不再展示改写
+      if (!draftRef.current.trim()) {
+        setDraftCoach(null);
+        return;
+      }
+      if (!res.ok) {
+        setDraftCoach(null);
+        return;
+      }
+      if (!res.tips?.length && !res.examples?.length) {
+        setDraftCoach(null);
+        return;
+      }
+      const tips = (res.tips || []).map((t, i) => ({
+        ...t,
+        example: t.example || res.examples?.[i] || "",
+      })).filter((t) => t.example);
+      if (!tips.length) {
+        setDraftCoach(null);
+        return;
+      }
+      setDraftCoach({
+        level: res.level || "info",
+        tips,
+        label: res.label || tips[0]?.label || "可改写",
+        advice: res.advice || tips[0]?.advice || "",
+      });
+    } catch {
+      if (seq === draftCoachSeq.current) setDraftCoach(null);
+    } finally {
+      if (seq === draftCoachSeq.current) setDraftCoachLoading(false);
+    }
+  }, []);
+
+  const onDraftChange = (value: string, caret: number) => {
+    setDraft(value);
+    syncMentionFromCaret(value, caret);
+
+    if (draftCoachTimer.current) {
+      window.clearTimeout(draftCoachTimer.current);
+      draftCoachTimer.current = null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed || !activeId) {
+      setDraftCoach(null);
+      setDraftCoachLoading(false);
+      return;
+    }
+
+    // 停手约 3 秒后，结合最近发言分析这句话能否优化
+    draftCoachTimer.current = window.setTimeout(() => {
+      void runDraftCoach(activeId, trimmed);
+    }, 3000);
+  };
+
+  useEffect(() => {
+    setDraftCoach(null);
+    setDraftCoachLoading(false);
+    draftCoachSeq.current += 1;
+    if (draftCoachTimer.current) {
+      window.clearTimeout(draftCoachTimer.current);
+      draftCoachTimer.current = null;
+    }
+  }, [activeId]);
+
+  useEffect(() => () => {
+    if (draftCoachTimer.current) window.clearTimeout(draftCoachTimer.current);
+  }, []);
 
   const askAiAboutMessage = async (m: CollabMessage) => {
     if (sending) {
@@ -1910,6 +2056,16 @@ export default function CollabRisk() {
                       ({activeRoom.participants.length}人)
                     </Typography.Text>
                   ) : null}
+                  {activeRoom.room_kind === "group" && isParticipant && activeRoom.status === "open" ? (
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<EditOutlined />}
+                      style={{ marginLeft: 4, paddingInline: 4 }}
+                      onClick={openRenameModal}
+                      aria-label="修改群名"
+                    />
+                  ) : null}
                 </Typography.Title>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   <span className={roomPeerOnline(activeRoom) ? "collab-status-on" : "collab-status-off"}>
@@ -1932,6 +2088,14 @@ export default function CollabRisk() {
                     placement="bottomRight"
                     menu={{
                       items: [
+                        activeRoom.room_kind === "group" && isParticipant
+                          ? {
+                              key: "rename",
+                              icon: <EditOutlined />,
+                              label: "修改群名",
+                              onClick: openRenameModal,
+                            }
+                          : null,
                         activeRoom.room_kind === "group"
                           ? {
                               key: "nicks",
@@ -2251,7 +2415,50 @@ export default function CollabRisk() {
                   e.target.value = "";
                 }}
               />
-              <div className="agent-chat-composer collab-agent-composer">
+              <div className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}`}>
+                {(draftCoach || draftCoachLoading) && (
+                  <div className={`collab-draft-examples level-${draftCoach?.level || "info"}`}>
+                    <span className="collab-draft-examples-title">
+                      {draftCoachLoading && !draftCoach
+                        ? "正在生成改写…"
+                        : draftCoach?.level === "yellow" || draftCoach?.level === "red"
+                          ? (draftCoach?.advice || draftCoach?.label || "发送前请注意")
+                          : "试试这样说"}
+                    </span>
+                    <div className="collab-draft-examples-list">
+                      {(draftCoach?.tips || []).map((t) => (
+                        <button
+                          key={`${t.label}-${t.example}`}
+                          type="button"
+                          className={`collab-draft-example-chip kind-${t.kind || "optimize"}`}
+                          title={t.advice || "点击填入输入框"}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            const next = (t.example || "").trim();
+                            if (!next) return;
+                            setDraft(next);
+                            setDraftCoach(null);
+                            setTimeout(() => {
+                              try {
+                                const el = composerRef.current?.resizableTextArea?.textArea as HTMLTextAreaElement | undefined;
+                                el?.focus();
+                                el?.setSelectionRange(next.length, next.length);
+                              } catch {
+                                /* ignore */
+                              }
+                            }, 0);
+                          }}
+                        >
+                          <em>{t.label || "示例"}</em>
+                          <strong>{t.example}</strong>
+                        </button>
+                      ))}
+                      {draftCoachLoading && !draftCoach ? (
+                        <span className="collab-draft-examples-loading">稍等一下</span>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
                 {mention && mentionOptions.length > 0 && (
                   <div className="collab-mention-menu" role="listbox">
                     {mentionOptions.map((opt, idx) => (
@@ -2283,8 +2490,7 @@ export default function CollabRisk() {
                   value={draft}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setDraft(value);
-                    syncMentionFromCaret(value, e.target.selectionStart ?? value.length);
+                    onDraftChange(value, e.target.selectionStart ?? value.length);
                   }}
                   onClick={(e) => {
                     const el = e.target as HTMLTextAreaElement;
@@ -2301,7 +2507,7 @@ export default function CollabRisk() {
                       ? "旁观模式，仅可查看"
                       : activeRoom.status === "closed"
                         ? "会话已结束"
-                        : "输入消息… 用 @ 提及成员 / @AI，Enter 发送"
+                        : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
                   }
                   autoSize={{ minRows: 2, maxRows: 6 }}
                   disabled={!isParticipant || activeRoom.status === "closed" || sending}
@@ -2527,6 +2733,25 @@ export default function CollabRisk() {
             />
           </div>
         </Space>
+      </Modal>
+
+      <Modal
+        title="修改群名"
+        open={renameOpen}
+        onCancel={() => setRenameOpen(false)}
+        onOk={() => void handleRenameGroup()}
+        confirmLoading={renaming}
+        okText="保存"
+        destroyOnClose
+      >
+        <Input
+          value={renameTitle}
+          onChange={(e) => setRenameTitle(e.target.value)}
+          maxLength={120}
+          placeholder="输入新的群名称"
+          onPressEnter={() => { if (!renaming) void handleRenameGroup(); }}
+          autoFocus
+        />
       </Modal>
 
       <Modal
@@ -3182,6 +3407,79 @@ const css = `
 }
 .collab-agent-composer {
   position: relative;
+}
+.collab-agent-composer.has-coach {
+  margin-top: 8px;
+}
+.collab-draft-examples {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f4f7fb;
+  border: 1px solid #e4ebf4;
+}
+.collab-draft-examples.level-yellow {
+  background: #fff8e8;
+  border-color: #f0c060;
+}
+.collab-draft-examples.level-yellow .collab-draft-examples-title {
+  color: #ad6800;
+}
+.collab-draft-examples.level-red {
+  background: #fff2f0;
+  border-color: #ffccc7;
+}
+.collab-draft-examples.level-red .collab-draft-examples-title {
+  color: #cf1322;
+}
+.collab-draft-examples-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5c6b84;
+  margin-bottom: 8px;
+}
+.collab-draft-examples-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.collab-draft-example-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #d7e2ef;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, background .15s;
+}
+.collab-draft-example-chip:hover {
+  border-color: #C4924A;
+  box-shadow: 0 4px 12px rgba(11, 33, 68, 0.06);
+  background: #fffdf8;
+}
+.collab-draft-example-chip em {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a6a35;
+}
+.collab-draft-example-chip strong {
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #172033;
+}
+.collab-draft-example-chip.kind-warn em { color: #d48806; }
+.collab-draft-example-chip.kind-risk em { color: #cf1322; }
+.collab-draft-examples-loading {
+  font-size: 12px;
+  color: #8b96a8;
 }
 .collab-composer-hint {
   font-size: 12px;

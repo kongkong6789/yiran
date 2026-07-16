@@ -123,6 +123,11 @@ export const updateAdminUser = (
     body,
   ).then((r) => r.data);
 
+export const deleteAdminUser = (id: number) =>
+  api
+    .delete<{ ok: boolean; deleted?: string; error?: string }>(`/auth/admin/users/${id}/`)
+    .then((r) => r.data);
+
 export interface UserProfileSettings {
   display_name: string;
   bio: string;
@@ -498,6 +503,14 @@ export interface Agent {
   created_at: string;
 }
 
+export interface CouncilHuman {
+  id: number;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  kind?: "human";
+}
+
 export interface CouncilMessage {
   id: number;
   speaker_type: "agent" | "user" | "system";
@@ -513,15 +526,24 @@ export interface Meeting {
   id: number;
   title: string;
   question: string;
-  status: "active" | "paused" | "stopped";
+  intro?: string;
+  scheduled_at?: string | null;
+  duration_minutes?: number;
+  started_at?: string | null;
+  status: "draft" | "active" | "paused" | "stopped";
   round: number;
   context_summary: string;
   participants: Agent[];
+  human_participants?: CouncilHuman[];
   created_at: string;
   message_count?: number;
   has_deliverable?: boolean;
   deliverable_title?: string | null;
   graph_ref_count?: number;
+  agent_count?: number;
+  human_count?: number;
+  agent_names?: string[];
+  human_names?: string[];
 }
 
 export interface Deliverable {
@@ -565,9 +587,95 @@ export const deleteAgent = (id: number) =>
 
 export const createMeeting = (body: {
   title?: string;
-  question: string;
+  intro?: string;
+  question?: string;
   agent_ids: number[];
-}) => api.post<Meeting>("/council/meetings/", body).then((r) => r.data);
+  user_ids?: number[];
+  scheduled_at?: string | null;
+  duration_minutes?: number;
+  start_now?: boolean;
+}) =>
+  api
+    .post<{ meeting: Meeting; messages: CouncilMessage[] }>("/council/meetings/", body, {
+      timeout: 30_000,
+    })
+    .then((r) => r.data);
+
+export const startMeeting = (id: number) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null }>(`/council/meetings/${id}/start/`)
+    .then((r) => r.data);
+
+export const pauseMeeting = (id: number) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null }>(`/council/meetings/${id}/pause/`)
+    .then((r) => r.data);
+
+/** 批量暂停进行中的会议；不传 ids 则暂停全部 active */
+export const pauseActiveMeetings = (meeting_ids?: number[]) =>
+  api
+    .post<{ ok: boolean; paused_count: number; results: Meeting[] }>(
+      "/council/meetings/pause-active/",
+      meeting_ids ? { meeting_ids } : {},
+    )
+    .then((r) => r.data);
+
+export const inviteMeetingParticipants = (
+  id: number,
+  body: { agent_ids?: number[]; user_ids?: number[] },
+) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null; invited_count?: number }>(
+      `/council/meetings/${id}/invite/`,
+      body,
+    )
+    .then((r) => r.data);
+
+export type CouncilInvite = {
+  invite_id: number;
+  meeting_id: number;
+  title: string;
+  question: string;
+  status: string;
+  inviter_name: string;
+  created_at?: string | null;
+};
+
+export const listPendingCouncilInvites = () =>
+  api
+    .get<{ count: number; results: CouncilInvite[] }>("/council/invites/pending/")
+    .then((r) => r.data);
+
+export const ackCouncilInvite = (inviteId: number, action: "seen" | "join" | "dismiss") =>
+  api
+    .post<{ ok: boolean; invite: CouncilInvite }>(`/council/invites/${inviteId}/ack/`, { action })
+    .then((r) => r.data);
+
+/** 用户级通知 WebSocket（会议邀请等） */
+export function openUserNotifySocket(opts: {
+  onInvite?: (data: CouncilInvite) => void;
+  onOpen?: () => void;
+  onClose?: (ev: CloseEvent) => void;
+}): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/notify/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as { event?: string; data?: CouncilInvite };
+      if (packet.event === "council_invite" && packet.data) opts.onInvite?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
 
 export const listMeetings = () =>
   api.get<{ count: number; results: Meeting[] }>("/council/meetings/").then((r) => r.data);
@@ -603,6 +711,43 @@ export const pollMessages = (id: number, after: number) =>
     )
     .then((r) => r.data);
 
+/** 圆桌会议 WebSocket（对方消息 / 状态实时推送） */
+export function openCouncilMeetingSocket(
+  meetingId: number,
+  opts: {
+    onMessages?: (data: { status?: string; round?: number; results?: CouncilMessage[] }) => void;
+    onStatus?: (data: { status?: string; round?: number }) => void;
+    onOpen?: () => void;
+    onClose?: (ev: CloseEvent) => void;
+    onError?: (err: Event) => void;
+  },
+): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // 开发环境直连后端 :8000，避开 Vite 对 WebSocket 代理经常失败的问题（局域网同主机名）
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/council/meetings/${meetingId}/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onerror = (e) => opts.onError?.(e);
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as {
+        event?: string;
+        data?: { status?: string; round?: number; results?: CouncilMessage[] };
+      };
+      if (packet.event === "messages" && packet.data) opts.onMessages?.(packet.data);
+      if (packet.event === "status" && packet.data) opts.onStatus?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
+
 export const tickMeeting = (id: number) =>
   api
     .post<{ stopped: boolean; messages: CouncilMessage[] }>(
@@ -613,7 +758,13 @@ export const tickMeeting = (id: number) =>
     .then((r) => r.data);
 
 export const interject = (id: number, text: string) =>
-  api.post<CouncilMessage>(`/council/meetings/${id}/interject/`, { text }).then((r) => r.data);
+  api
+    .post<{ message: CouncilMessage; replies?: CouncilMessage[] }>(
+      `/council/meetings/${id}/interject/`,
+      { text },
+      { timeout: 45_000 },
+    )
+    .then((r) => r.data);
 
 export const stopMeeting = (id: number) =>
   api
@@ -1203,7 +1354,38 @@ export type CollabSyncEvent = {
   after_insight_id?: number;
 };
 
-/** fetch + SSE（可带 Authorization，避免 EventSource 无法设 header） */
+/** 协作会话 WebSocket（开发环境直连 :8000） */
+export function openCollabRoomSocket(
+  roomId: string,
+  opts: {
+    onSync?: (data: CollabSyncEvent) => void;
+    onOpen?: () => void;
+    onClose?: (ev: CloseEvent) => void;
+    onError?: (err: Event) => void;
+  },
+): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/collab/rooms/${roomId}/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onerror = (e) => opts.onError?.(e);
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as { event?: string; data?: CollabSyncEvent };
+      if (packet.event === "sync" && packet.data) opts.onSync?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
+
+/** @deprecated 保留兼容；新逻辑走 WebSocket */
 export function openCollabRoomEvents(
   roomId: string,
   opts: {
@@ -1261,7 +1443,11 @@ export function openCollabRoomEvents(
           }
           if (eventName === "sync") opts.onSync?.(payload);
           if (eventName === "error") opts.onError?.(payload);
-          if (eventName === "reconnect") break;
+          if (eventName === "reconnect") {
+            try { await reader.cancel(); } catch { /* ignore */ }
+            opts.onDone?.();
+            return;
+          }
         }
       }
       opts.onDone?.();
@@ -1338,6 +1524,28 @@ export const refreshCollabInsights = (id: string) =>
     `/collab/rooms/${id}/insights/`,
     {},
   ).then((r) => r.data);
+
+export type CollabDraftTip = {
+  kind: "tip" | "optimize" | "warn" | "risk" | string;
+  level: "info" | "yellow" | "red" | "green" | string;
+  label: string;
+  advice: string;
+  /** 可一键写入输入框的改写示例 */
+  example?: string;
+};
+
+export const checkCollabDraft = (id: string, text: string) =>
+  api
+    .post<{
+      ok: boolean;
+      level: string;
+      tips: CollabDraftTip[];
+      examples?: string[];
+      label: string;
+      advice: string;
+      error?: string;
+    }>(`/collab/rooms/${id}/draft-check/`, { text }, { timeout: 20_000 })
+    .then((r) => r.data);
 
 export const getCollabRoomStats = (id: string) =>
   api.get<CollabRoomStats>(`/collab/rooms/${id}/stats/`).then((r) => r.data);

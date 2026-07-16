@@ -11,13 +11,15 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { PlusOutlined, ReloadOutlined, KeyOutlined } from "@ant-design/icons";
+import { PlusOutlined, ReloadOutlined, KeyOutlined, DeleteOutlined } from "@ant-design/icons";
 import {
   createAdminUser,
+  deleteAdminUser,
   getMe,
   listAdminUsers,
   updateAdminUser,
   type AdminUserRow,
+  type AuthUser,
 } from "../api/client";
 
 function fmtTime(v?: string | null) {
@@ -37,6 +39,7 @@ export default function Accounts() {
   const [createForm] = Form.useForm();
   const [pwdForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
+  const [me, setMe] = useState<AuthUser | null>(null);
 
   const load = async (q = keyword) => {
     setLoading(true);
@@ -54,6 +57,7 @@ export default function Accounts() {
   useEffect(() => {
     getMe()
       .then((res) => {
+        setMe(res.user);
         setIsStaffSelf(!!(res.user.is_staff || res.user.is_superuser));
         if (res.user.is_staff || res.user.is_superuser) void load();
       })
@@ -115,6 +119,30 @@ export default function Accounts() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDelete = (row: AdminUserRow) => {
+    if (me && row.id === me.id) {
+      message.warning("不能删除自己的账号");
+      return;
+    }
+    modal.confirm({
+      title: `删除账号「${row.username}」？`,
+      content: "删除后无法恢复，该账号的登录态也会失效。",
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await deleteAdminUser(row.id);
+          message.success("账号已删除");
+          await load();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || "删除失败");
+          throw e;
+        }
+      },
+    });
   };
 
   if (!isStaffSelf) {
@@ -225,20 +253,32 @@ export default function Accounts() {
           },
           {
             title: "操作",
-            width: 120,
+            width: 180,
             render: (_: unknown, r) => (
-              <Button
-                type="link"
-                size="small"
-                icon={<KeyOutlined />}
-                onClick={() => {
-                  setTarget(r);
-                  pwdForm.resetFields();
-                  setPwdOpen(true);
-                }}
-              >
-                改密码
-              </Button>
+              <Space size={0}>
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<KeyOutlined />}
+                  onClick={() => {
+                    setTarget(r);
+                    pwdForm.resetFields();
+                    setPwdOpen(true);
+                  }}
+                >
+                  改密码
+                </Button>
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={!!(me && r.id === me.id)}
+                  onClick={() => handleDelete(r)}
+                >
+                  删除
+                </Button>
+              </Space>
             ),
           },
         ]}

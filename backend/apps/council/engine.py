@@ -7,19 +7,29 @@
 stop 时产出最终方案文件。
 """
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 from .models import Meeting, Message, AgentProfile, Deliverable
 from . import llm
 from . import knowledge
 from . import deliverables_gen
+from . import realtime as ws
 
 # 每场会议的知识资料在会中不变,缓存避免每轮重复查 DuckDB/RAG
 _KB_CACHE: dict[int, str] = {}
 
 
+def _kb_cached_only(m: Meeting) -> str:
+    """仅用已缓存知识，不阻塞拉图谱/数仓（@ 回复提速）。"""
+    return _KB_CACHE.get(m.id, "")
+
+
 def _kb_for(m: Meeting) -> str:
     if m.id not in _KB_CACHE:
-        _KB_CACHE[m.id] = knowledge.gather_knowledge(m.question)
+        try:
+            _KB_CACHE[m.id] = knowledge.gather_knowledge(m.question)
+        except Exception:
+            _KB_CACHE[m.id] = ""
     return _KB_CACHE[m.id]
 
 
@@ -35,23 +45,331 @@ def _agent_system_prompt(agent: AgentProfile, question: str) -> str:
     )
 
 
-def start_meeting(title: str, question: str, agent_ids: list[int]) -> Meeting:
+def start_meeting(
+    title: str,
+    question: str,
+    agent_ids: list[int],
+    user_ids: list[int] | None = None,
+    *,
+    intro: str = "",
+    scheduled_at=None,
+    duration_minutes: int = 60,
+    start_now: bool = True,
+) -> Meeting:
+    from django.contrib.auth import get_user_model
+    from django.utils import timezone
+
+    User = get_user_model()
+    q = (question or "").strip() or (intro or "").strip() or (title or "").strip() or "圆桌讨论"
+    status = Meeting.Status.ACTIVE if start_now else Meeting.Status.DRAFT
     m = Meeting.objects.create(
-        title=title or question[:30],
-        question=question,
-        status=Meeting.Status.ACTIVE,
+        title=(title or q[:30]).strip() or "圆桌会议",
+        question=q,
+        intro=(intro or "").strip(),
+        scheduled_at=scheduled_at,
+        duration_minutes=max(15, int(duration_minutes or 60)),
+        status=status,
+        started_at=timezone.now() if start_now else None,
     )
     m.participants.set(AgentProfile.objects.filter(id__in=agent_ids))
-    Message.objects.create(
-        meeting=m, speaker_type=Message.Speaker.SYSTEM, speaker_name="系统", emoji="📌",
-        content=f"会议开始,核心问题:{question}", round=0,
-    )
+    users = list(User.objects.filter(id__in=(user_ids or [])))
+    if users:
+        m.human_participants.set(users)
+
+    agent_names = "、".join(f"{a.emoji}{a.name}" for a in m.participants.all()) or "无"
+    human_names = "、".join(_display_name(u) for u in users) or "无"
+    if start_now:
+        sys_msg = Message.objects.create(
+            meeting=m, speaker_type=Message.Speaker.SYSTEM, speaker_name="系统", emoji="📌",
+            content=(
+                f"会议开始，核心问题：{q}\n"
+                f"AI 对象：{agent_names}\n"
+                f"参会同事：{human_names}"
+            ),
+            round=0,
+        )
+        ws.publish_messages(m, [_msg_dict(sys_msg)])
+        ws.publish_status(m)
+    else:
+        sys_msg = Message.objects.create(
+            meeting=m, speaker_type=Message.Speaker.SYSTEM, speaker_name="系统", emoji="📝",
+            content=(
+                f"会议草稿已保存：{m.title}\n"
+                f"AI 对象：{agent_names}\n"
+                f"参会同事：{human_names}\n"
+                "待主持人点击「开始会议」后正式讨论。"
+            ),
+            round=0,
+        )
+        ws.publish_messages(m, [_msg_dict(sys_msg)])
+        ws.publish_status(m)
     return m
+
+
+def activate_meeting(m: Meeting) -> Meeting:
+    """草稿/暂停 → 进行中。"""
+    from django.utils import timezone
+
+    if m.status == Meeting.Status.ACTIVE:
+        return m
+    if m.status == Meeting.Status.STOPPED:
+        raise ValueError("会议已结束，无法再次开始")
+
+    was_paused = m.status == Meeting.Status.PAUSED
+    m.status = Meeting.Status.ACTIVE
+    if not m.started_at:
+        m.started_at = timezone.now()
+    m.save(update_fields=["status", "started_at"])
+
+    if was_paused:
+        sys_msg = Message.objects.create(
+            meeting=m,
+            speaker_type=Message.Speaker.SYSTEM,
+            speaker_name="系统",
+            emoji="▶️",
+            content="会议已恢复，继续讨论。",
+            round=m.round,
+        )
+        ws.publish_messages(m, [_msg_dict(sys_msg)])
+        ws.publish_status(m)
+        return m
+
+    agent_names = "、".join(f"{a.emoji}{a.name}" for a in m.participants.all()) or "无"
+    human_names = "、".join(_display_name(u) for u in m.human_participants.all()) or "无"
+    sys_msg = Message.objects.create(
+        meeting=m,
+        speaker_type=Message.Speaker.SYSTEM,
+        speaker_name="系统",
+        emoji="▶️",
+        content=(
+            f"会议正式开始，核心问题：{m.question}\n"
+            f"AI 对象：{agent_names}\n"
+            f"参会同事：{human_names}"
+        ),
+        round=m.round,
+    )
+    ws.publish_messages(m, [_msg_dict(sys_msg)])
+    ws.publish_status(m)
+    return m
+
+
+def pause_meeting(m: Meeting) -> Meeting:
+    """进行中 → 已暂停（可稍后恢复，不生成结束产物）。"""
+    if m.status == Meeting.Status.PAUSED:
+        return m
+    if m.status == Meeting.Status.STOPPED:
+        raise ValueError("会议已结束，无法暂停")
+    if m.status == Meeting.Status.DRAFT:
+        raise ValueError("待开始的会议无需暂停，可直接保留在列表")
+
+    m.status = Meeting.Status.PAUSED
+    m.save(update_fields=["status"])
+    sys_msg = Message.objects.create(
+        meeting=m,
+        speaker_type=Message.Speaker.SYSTEM,
+        speaker_name="系统",
+        emoji="⏸",
+        content="会议已暂停，可稍后从列表恢复。",
+        round=m.round,
+    )
+    ws.publish_messages(m, [_msg_dict(sys_msg)])
+    ws.publish_status(m)
+    return m
+
+
+def pause_active_meetings(*, meeting_ids: list[int] | None = None) -> list[Meeting]:
+    """批量暂停进行中的会议。meeting_ids 为空则暂停全部 active。"""
+    qs = Meeting.objects.filter(status=Meeting.Status.ACTIVE)
+    if meeting_ids:
+        qs = qs.filter(id__in=meeting_ids)
+    paused = []
+    for m in qs:
+        pause_meeting(m)
+        paused.append(m)
+    return paused
+
+
+def _display_name(user) -> str:
+    try:
+        settings = user.settings  # OneToOne UserSettings
+        name = (getattr(settings, "display_name", None) or "").strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return user.get_username()
+
+
+def invite_participants(
+    m: Meeting,
+    agent_ids: list[int] | None = None,
+    user_ids: list[int] | None = None,
+) -> tuple[Meeting, list]:
+    """会中继续拉 Agent / 同事入会。返回 (meeting, 新加入的同事列表)。"""
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    added_agents = []
+    added_users = []
+
+    if agent_ids:
+        qs = AgentProfile.objects.filter(id__in=agent_ids).exclude(
+            id__in=m.participants.values_list("id", flat=True)
+        )
+        for a in qs:
+            m.participants.add(a)
+            added_agents.append(a)
+
+    if user_ids:
+        qs = User.objects.filter(id__in=user_ids).exclude(
+            id__in=m.human_participants.values_list("id", flat=True)
+        )
+        for u in qs:
+            m.human_participants.add(u)
+            added_users.append(u)
+
+    bits = []
+    if added_agents:
+        bits.append("AI：" + "、".join(f"{a.emoji}{a.name}" for a in added_agents))
+    if added_users:
+        bits.append("同事：" + "、".join(_display_name(u) for u in added_users))
+    if bits:
+        sys_msg = Message.objects.create(
+            meeting=m,
+            speaker_type=Message.Speaker.SYSTEM,
+            speaker_name="系统",
+            emoji="➕",
+            content="新成员加入：" + "；".join(bits),
+            round=m.round,
+        )
+        ws.publish_messages(m, [_msg_dict(sys_msg)])
+    return m, added_users
+
+
+def interject(m: Meeting, text: str, speaker_name: str | None = None) -> dict:
+    """用户插话。仅当文中 @ 了参会 Agent（或 @所有人）时，才触发对应 Agent 回复。"""
+    name = (speaker_name or "").strip() or "我"
+    msg = Message.objects.create(
+        meeting=m, speaker_type=Message.Speaker.USER, speaker_name=name, emoji="🧑",
+        content=text, round=m.round,
+    )
+    # 立刻推送给会议室其他人（不必等 Agent 回复）
+    ws.publish_messages(m, [_msg_dict(msg)])
+
+    # 普通发送：本地启发式压缩纪要，不调 LLM，保证秒回
+    m.context_summary = llm.compress_context(
+        m.question, m.context_summary, _recent_contents(m), allow_llm=False,
+    )
+    m.save(update_fields=["context_summary"])
+
+    replies: list[dict] = []
+    if m.status == Meeting.Status.ACTIVE:
+        parts = list(m.participants.all())
+        mentioned = _mentioned_agents(text, parts)
+        if mentioned:
+            # 不阻塞查图谱；有缓存才带资料。多 Agent 并发回复。
+            kb = _kb_cached_only(m)
+            recent = _recent_contents(m)
+            summary = m.context_summary
+            m.round += 1
+            round_no = m.round
+
+            def _gen(agent: AgentProfile) -> tuple[AgentProfile, str]:
+                return agent, _reply_to_mention(
+                    agent, m.question, summary, recent, text, kb, round_no,
+                )
+
+            with ThreadPoolExecutor(max_workers=min(6, len(mentioned))) as pool:
+                generated = list(pool.map(_gen, mentioned))
+
+            for agent, content in generated:
+                agent_msg = Message.objects.create(
+                    meeting=m,
+                    speaker_type=Message.Speaker.AGENT,
+                    speaker_name=agent.name,
+                    emoji=agent.emoji,
+                    agent=agent,
+                    content=content,
+                    round=round_no,
+                )
+                replies.append(_msg_dict(agent_msg))
+
+            m.context_summary = llm.compress_context(
+                m.question, m.context_summary, _recent_contents(m), allow_llm=False,
+            )
+            m.save(update_fields=["round", "context_summary"])
+            if replies:
+                ws.publish_messages(m, replies)
+
+    return {"message": _msg_dict(msg), "replies": replies}
 
 
 def _recent_contents(m: Meeting, limit: int = 8) -> list[str]:
     msgs = m.messages.exclude(speaker_type=Message.Speaker.SYSTEM).order_by("-id")[:limit]
     return [f"{x.speaker_name}:{x.content}" for x in reversed(list(msgs))]
+
+
+def _mentioned_agents(text: str | None, parts: list[AgentProfile]) -> list[AgentProfile]:
+    """解析 @Agent名 / @所有人，返回需要回复的 Agent 列表（去重保序）。"""
+    if not text or not parts:
+        return []
+    if re.search(r"@(?:所有人|全体|全体成员|everyone|all)\b", text, flags=re.IGNORECASE):
+        return list(parts)
+    found: list[AgentProfile] = []
+    seen: set[int] = set()
+    for agent in parts:
+        name = (agent.name or "").strip()
+        if not name:
+            continue
+        if re.search(rf"@{re.escape(name)}(?:\s|$|[，,。.!！？?])", text) or f"@{name}" in text:
+            if agent.id not in seen:
+                seen.add(agent.id)
+                found.append(agent)
+    return found
+
+
+def _mentioned_agent_index(text: str | None, parts: list[AgentProfile]) -> int | None:
+    """兼容旧逻辑：返回第一个被 @ 的 Agent 下标。"""
+    mentioned = _mentioned_agents(text, parts)
+    if not mentioned:
+        return None
+    target_id = mentioned[0].id
+    for i, agent in enumerate(parts):
+        if agent.id == target_id:
+            return i
+    return None
+
+
+def _reply_to_mention(
+    agent: AgentProfile,
+    question: str,
+    context_summary: str,
+    recent: list[str],
+    user_text: str,
+    kb: str,
+    round_no: int,
+) -> str:
+    """被 @ 后针对用户这句话作答（不主动空转发言）。"""
+    system = (
+        f"你叫{agent.name},角色是{agent.role or '通用顾问'},专长:{agent.expertise or '综合'}。"
+        f"{(agent.persona or '')[:240]}\n"
+        f"圆桌议题：「{question}」。用户 @ 了你，直接回答，2～3 句，不要分析过程。"
+    )
+    # 控制 prompt 体积，降低延迟
+    recent_tail = "\n".join(recent[-4:])
+    summary_tail = (context_summary or "")[-400:]
+    user = (
+        (f"参考资料(节选):\n{kb[:600]}\n\n" if kb else "")
+        + (f"纪要:\n{summary_tail}\n\n" if summary_tail else "")
+        + (f"最近发言:\n{recent_tail}\n\n" if recent_tail else "")
+        + f"用户说:\n{user_text}\n\n请回复。"
+    )
+    content = llm.chat(
+        system, user, temperature=0.5, max_tokens=180, model=llm.fast_model(), timeout=12,
+    )
+    if not content:
+        content = llm.mock_speak(question, agent.name, agent.role, round_no, None, user_text)
+    return content
 
 
 def tick(m: Meeting) -> dict:
@@ -63,19 +381,22 @@ def tick(m: Meeting) -> dict:
     if not parts:
         return {"stopped": True, "message": None}
 
-    idx = m.next_speaker_idx % len(parts)
-    agent = parts[idx]
-    m.round += 1
-
-    # 最近一位非系统发言者(用于"接话/反驳")
-    last = m.messages.exclude(speaker_type=Message.Speaker.SYSTEM).order_by("-id").first()
-    prev_name = last.speaker_name if last and last.agent_id != agent.id else None
-
-    # 最近一条用户插嘴(作为提示)
+    # 最近一条用户插嘴(作为提示)；若刚点名 @Agent 且对方尚未接话，优先让其发言
     last_user = (
         m.messages.filter(speaker_type=Message.Speaker.USER).order_by("-id").first()
     )
     user_hint = last_user.content if last_user else None
+    last_any = m.messages.exclude(speaker_type=Message.Speaker.SYSTEM).order_by("-id").first()
+    mentioned_idx = None
+    if last_user and last_any and last_any.id == last_user.id:
+        mentioned_idx = _mentioned_agent_index(user_hint, parts)
+    idx = mentioned_idx if mentioned_idx is not None else (m.next_speaker_idx % len(parts))
+    agent = parts[idx]
+    m.round += 1
+
+    # 最近一位非系统发言者(用于"接话/反驳")
+    last = last_any
+    prev_name = last.speaker_name if last and last.agent_id != agent.id else None
 
     # 汇聚知识:RAG 文档 + DuckDB 业务数据
     kb = knowledge.gather_knowledge(m.question)
@@ -111,6 +432,7 @@ def tick(m: Meeting) -> dict:
     if m.next_speaker_idx == 0:
         _refresh_deliverable(m, draft=True)
 
+    ws.publish_messages(m, [_msg_dict(msg)])
     return {"stopped": False, "message": _msg_dict(msg)}
 
 
@@ -184,19 +506,9 @@ def tick_round(m: Meeting) -> dict:
     if round_no % 3 == 0:
         _refresh_deliverable(m, draft=True)
 
-    return {"stopped": False, "messages": [_msg_dict(x) for x in created]}
-
-
-def interject(m: Meeting, text: str) -> dict:
-    msg = Message.objects.create(
-        meeting=m, speaker_type=Message.Speaker.USER, speaker_name="我", emoji="🧑",
-        content=text, round=m.round,
-    )
-    m.context_summary = llm.compress_context(
-        m.question, m.context_summary, _recent_contents(m)
-    )
-    m.save(update_fields=["context_summary"])
-    return _msg_dict(msg)
+    payload = [_msg_dict(x) for x in created]
+    ws.publish_messages(m, payload)
+    return {"stopped": False, "messages": payload}
 
 
 def _all_points(m: Meeting) -> list[str]:
@@ -279,10 +591,12 @@ def stop(m: Meeting) -> dict:
 
     m.status = Meeting.Status.STOPPED
     m.save(update_fields=["status"])
-    Message.objects.create(
+    sys_msg = Message.objects.create(
         meeting=m, speaker_type=Message.Speaker.SYSTEM, speaker_name="系统", emoji="✅",
         content="会议结束,正在生成方案(Markdown)、HTML 分析报告与 Excel 指标表…", round=m.round,
     )
+    ws.publish_messages(m, [_msg_dict(sys_msg)])
+    ws.publish_status(m)
     items = _generate_final_deliverables(m)
     _KB_CACHE.pop(m.id, None)
 

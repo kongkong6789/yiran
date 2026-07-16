@@ -24,6 +24,7 @@ DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -31,6 +32,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # 第三方
+    "channels",
     "rest_framework",
     "rest_framework.authtoken",
     "corsheaders",
@@ -81,6 +83,13 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
+
+# 圆桌/聊天 WebSocket（单进程开发用内存层；多进程部署请换 Redis）
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
 
 # 用户/权限元数据用 SQLite;业务大数据用 DuckDB(见 apps.datalake)
 DATABASES = {

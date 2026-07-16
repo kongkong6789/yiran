@@ -2,7 +2,9 @@ import { useEffect, useRef } from "react";
 import {
   getCollabRoomPresence,
   getCollabRoomStats,
-  openCollabRoomEvents,
+  listCollabMessages,
+  listCollabInsights,
+  openCollabRoomSocket,
   type CollabInsight,
   type CollabMessage,
   type CollabRoom,
@@ -18,12 +20,12 @@ type Args = {
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
   setRoomStats: React.Dispatch<React.SetStateAction<CollabRoomStats | null>>;
-  participantsEqual: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
+  /** 兼容旧调用，当前未使用 */
+  participantsEqual?: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
 };
 
 /**
- * SSE 接收消息增量；成员/在线态走独立低频 presence。
- * 取代原 2.5s 全量轮询。
+ * 即时通信：WebSocket 推送 + 短轮询兜底。
  */
 export function useCollabRoomLive({
   roomId,
@@ -33,26 +35,50 @@ export function useCollabRoomLive({
   mergeInsights,
   patchRoomMeta,
   setRoomStats,
-  participantsEqual,
 }: Args) {
   const aliveRef = useRef(true);
+  const afterMsgRef = useRef(0);
+  const afterInsightRef = useRef(0);
 
   useEffect(() => {
     aliveRef.current = true;
     if (!roomId) return;
 
-    let abort: AbortController | null = null;
+    let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let presenceTimer: number | null = null;
+    let pollTimer: number | null = null;
+    let pingTimer: number | null = null;
     let stopped = false;
+
+    afterMsgRef.current = messagesRef.current.reduce(
+      (max, m) => (m.id > 0 && m.id > max ? m.id : max),
+      0,
+    );
+    afterInsightRef.current = insightsRef.current.reduce(
+      (max, i) => (i.id > max ? i.id : max),
+      0,
+    );
 
     const applySync = (data: CollabSyncEvent) => {
       if (!aliveRef.current) return;
+      if (typeof data.after_id === "number" && data.after_id > afterMsgRef.current) {
+        afterMsgRef.current = data.after_id;
+      }
+      if (typeof data.after_insight_id === "number" && data.after_insight_id > afterInsightRef.current) {
+        afterInsightRef.current = data.after_insight_id;
+      }
       if (data.messages?.length || data.changed?.length) {
         mergeMessages(data.messages || [], data.changed);
+        for (const m of data.messages || []) {
+          if (m.id > afterMsgRef.current) afterMsgRef.current = m.id;
+        }
       }
       if (data.insights?.length) {
         mergeInsights(data.insights);
+        for (const i of data.insights) {
+          if (i.id > afterInsightRef.current) afterInsightRef.current = i.id;
+        }
       }
       if (data.room) {
         patchRoomMeta(data.room);
@@ -82,35 +108,75 @@ export function useCollabRoomLive({
       }
     };
 
+    const pollOnce = async () => {
+      if (!aliveRef.current || stopped) return;
+      const cursor = Math.max(
+        afterMsgRef.current,
+        messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
+      );
+      const insightCursor = Math.max(
+        afterInsightRef.current,
+        insightsRef.current.reduce((max, i) => (i.id > max ? i.id : max), 0),
+      );
+      try {
+        const [page, insights] = await Promise.all([
+          listCollabMessages(roomId, {
+            afterId: cursor > 0 ? cursor : undefined,
+            limit: 50,
+            lite: true,
+            includeParticipants: false,
+          }),
+          listCollabInsights(roomId, insightCursor > 0 ? insightCursor : 0),
+        ]);
+        if (!aliveRef.current) return;
+        const incoming = page.results || [];
+        const changed = page.changed || [];
+        if (incoming.length || changed.length) {
+          applySync({
+            messages: incoming,
+            changed,
+            after_id: incoming.length ? incoming[incoming.length - 1].id : cursor,
+            room: page.room,
+          });
+        }
+        const newInsights = insights.results || [];
+        if (newInsights.length) {
+          applySync({
+            insights: newInsights,
+            after_insight_id: newInsights[newInsights.length - 1].id,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
     const connect = () => {
       if (stopped) return;
-      abort?.abort();
-      abort = new AbortController();
-      const lastMsgId = messagesRef.current.reduce(
-        (max, m) => (m.id > 0 && m.id > max ? m.id : max),
-        0,
+      try { ws?.close(); } catch { /* ignore */ }
+      afterMsgRef.current = Math.max(
+        afterMsgRef.current,
+        messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
       );
-      const lastInsightId = insightsRef.current.reduce(
-        (max, i) => (i.id > max ? i.id : max),
-        0,
+      afterInsightRef.current = Math.max(
+        afterInsightRef.current,
+        insightsRef.current.reduce((max, i) => (i.id > max ? i.id : max), 0),
       );
-      openCollabRoomEvents(roomId, {
-        afterId: lastMsgId > 0 ? lastMsgId : 0,
-        afterInsightId: lastInsightId > 0 ? lastInsightId : 0,
-        signal: abort.signal,
+      ws = openCollabRoomSocket(roomId, {
         onSync: applySync,
-        onDone: () => {
+        onClose: (ev) => {
           if (stopped) return;
+          if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) return;
           if (reconnectTimer) window.clearTimeout(reconnectTimer);
-          reconnectTimer = window.setTimeout(connect, 800);
-        },
-        onError: () => {
-          if (stopped) return;
-          if (reconnectTimer) window.clearTimeout(reconnectTimer);
-          // 406/网络失败退避，避免打爆后端
-          reconnectTimer = window.setTimeout(connect, 5000);
+          reconnectTimer = window.setTimeout(connect, 1500);
         },
       });
+      if (pingTimer) window.clearInterval(pingTimer);
+      pingTimer = window.setInterval(() => {
+        if (ws?.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
+        }
+      }, 25000);
     };
 
     const refreshPresence = async () => {
@@ -132,16 +198,29 @@ export function useCollabRoomLive({
       }
     };
 
-    connect();
+    const startTimer = window.setTimeout(() => {
+      if (stopped) return;
+      afterMsgRef.current = Math.max(
+        afterMsgRef.current,
+        messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
+      );
+      connect();
+      void pollOnce();
+      pollTimer = window.setInterval(() => { void pollOnce(); }, 2500);
+    }, 400);
+
     refreshPresence();
     presenceTimer = window.setInterval(refreshPresence, 20000);
 
     return () => {
       stopped = true;
       aliveRef.current = false;
-      abort?.abort();
+      window.clearTimeout(startTimer);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (presenceTimer) window.clearInterval(presenceTimer);
+      if (pollTimer) window.clearInterval(pollTimer);
+      if (pingTimer) window.clearInterval(pingTimer);
+      try { ws?.close(); } catch { /* ignore */ }
     };
   }, [
     roomId,
@@ -151,6 +230,5 @@ export function useCollabRoomLive({
     mergeInsights,
     patchRoomMeta,
     setRoomStats,
-    participantsEqual,
   ]);
 }

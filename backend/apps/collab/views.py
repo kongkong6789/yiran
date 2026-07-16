@@ -23,7 +23,8 @@ from apps.core.attachments import (
     resolve_attachment_path_any,
 )
 
-from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk
+from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk, _HARD_RISK_RE
+from .draft_coach import analyze_draft
 from .interject import maybe_interject
 from .mentions import (
     collab_skill_hits,
@@ -34,6 +35,7 @@ from .mentions import (
 )
 from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
 from .presence import presence_map, touch_presence
+from . import ws_push
 from collections import Counter
 from datetime import timedelta
 
@@ -437,6 +439,17 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
     if data.get("analysis"):
         room.summary = data["analysis"][:500]
     room.save(update_fields=["risk_level", "summary", "updated_at"])
+    ws_push.publish_sync(
+        room.id,
+        insights=[_insight_payload(insight)],
+        room={
+            "id": str(room.id),
+            "status": room.status,
+            "risk_level": room.risk_level,
+            "updated_at": room.updated_at.isoformat(),
+            "summary": room.summary or "",
+        },
+    )
     return insight
 
 
@@ -490,7 +503,7 @@ def _run_ai_reply_async(
                 "请稍后重试，或换个问法再 @AI / Skill。"
             )[:2000]
         ai_user = get_collab_ai_user()
-        CollabMessage.objects.create(
+        ai_msg = CollabMessage.objects.create(
             room=room,
             sender=ai_user,
             content=reply,
@@ -500,6 +513,16 @@ def _run_ai_reply_async(
             ai_kind="reply",
         )
         room.save(update_fields=["updated_at"])
+        ws_push.publish_sync(
+            room.id,
+            messages=[_message_payload(ai_msg)],
+            room={
+                "id": str(room.id),
+                "status": room.status,
+                "risk_level": room.risk_level,
+                "updated_at": room.updated_at.isoformat(),
+            },
+        )
         ai_ok = True
     except Exception:
         logger.exception("collab background AI reply failed room=%s", room_id)
@@ -608,8 +631,14 @@ def room_detail(request, room_id):
             return Response({"ok": False, "error": "会话已结束"}, status=400)
         new_status = str(request.data.get("status") or "").strip()
         title = request.data.get("title")
+        title_changed = False
         if title is not None:
-            room.title = str(title).strip()[:120] or room.title
+            new_title = str(title).strip()[:120]
+            if not new_title:
+                return Response({"ok": False, "error": "群名不能为空"}, status=400)
+            if new_title != room.title:
+                room.title = new_title
+                title_changed = True
         if "interject_enabled" in request.data:
             raw = request.data.get("interject_enabled")
             if isinstance(raw, bool):
@@ -624,6 +653,23 @@ def room_detail(request, room_id):
             except Exception:
                 pass
         room.save()
+        if title_changed and room.room_kind == "group":
+            tip = CollabMessage.objects.create(
+                room=room,
+                sender=request.user,
+                content=f"{request.user.username} 将群名改为「{room.title}」",
+                attachments=[],
+                mentions=[],
+                msg_type="system",
+            )
+            room.save(update_fields=["updated_at"])
+            payload = _room_payload(room, include_messages=False, viewer=request.user)
+            ws_push.publish_sync(
+                room.id,
+                messages=[_message_payload(tip)],
+                room=payload,
+            )
+            return Response(_room_payload(room, include_messages=True, viewer=request.user))
         return Response(_room_payload(room, include_messages=True, viewer=request.user))
 
     # 打开会话详情视为已读
@@ -900,12 +946,16 @@ def room_messages(request, room_id):
             )
         else:
             tip = None
+        tip_payload = _message_payload(tip) if tip else None
+        room_payload = _room_payload(room, include_messages=True, viewer=request.user)
+        if tip_payload:
+            ws_push.publish_sync(room.id, messages=[tip_payload], room=room_payload)
         return Response({
             "ok": True,
             "cleared_messages": msg_count,
             "cleared_insights": insight_count,
-            "message": _message_payload(tip) if tip else None,
-            "room": _room_payload(room, include_messages=True, viewer=request.user),
+            "message": tip_payload,
+            "room": room_payload,
         })
 
     if request.method == "POST":
@@ -946,7 +996,16 @@ def room_messages(request, room_id):
             mentions=mentions,
             msg_type="user",
         )
+        # 硬红线即时落标，不等后台 LLM 分析，前端立刻能画红线
+        if content and _HARD_RISK_RE.search(content):
+            from .analyze import infer_risk_label
+            msg.risk_flag = infer_risk_label(content, level="red") or "危险发言"
+            msg.risk_flag_level = "red"
+            msg.save(update_fields=["risk_flag", "risk_flag_level", "updated_at"])
         room.save(update_fields=["updated_at"])
+        msg_payload = _message_payload(msg)
+        room_lite = _room_payload_lite(room, viewer=request.user)
+        ws_push.publish_sync(room.id, messages=[msg_payload], room=room_lite)
 
         need_ai_reply = has_ai_mention(mentions) or (
             "@" in content and collab_skill_hits(content, request.user)
@@ -970,8 +1029,8 @@ def room_messages(request, room_id):
 
         return Response({
             "ok": True,
-            "message": _message_payload(msg),
-            "room": _room_payload_lite(room, viewer=request.user),
+            "message": msg_payload,
+            "room": room_lite,
             "analyze_pending": bool(analyze),
             "ai_pending": bool(need_ai_reply),
         }, status=201)
@@ -1118,11 +1177,14 @@ def room_message_detail(request, room_id, message_id):
         msg.risk_flag_level = ""
         msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
         room.save(update_fields=["updated_at"])
+        payload = _message_payload(msg, nickname_map=nick_map)
+        room_payload = _room_payload(room, viewer=request.user)
+        ws_push.publish_sync(room.id, changed=[payload], room=room_payload)
         return Response({
             "ok": True,
             "action": "deleted",
-            "message": _message_payload(msg, nickname_map=nick_map),
-            "room": _room_payload(room, viewer=request.user),
+            "message": payload,
+            "room": room_payload,
         })
 
     # POST → recall
@@ -1145,11 +1207,14 @@ def room_message_detail(request, room_id, message_id):
     msg.risk_flag_level = ""
     msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
     room.save(update_fields=["updated_at"])
+    payload = _message_payload(msg, nickname_map=nick_map)
+    room_payload = _room_payload(room, viewer=request.user)
+    ws_push.publish_sync(room.id, changed=[payload], room=room_payload)
     return Response({
         "ok": True,
         "action": "recalled",
-        "message": _message_payload(msg, nickname_map=nick_map),
-        "room": _room_payload(room, viewer=request.user),
+        "message": payload,
+        "room": room_payload,
     })
 
 
@@ -1283,6 +1348,41 @@ def room_insights(request, room_id):
         "results": [_insight_payload(i) for i in rows],
         "room_risk_level": room.risk_level,
     })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def room_draft_check(request, room_id):
+    """输入框句号触发：结合最近几条消息，给草稿即时提示（不落库、不插嘴）。"""
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    text = str(request.data.get("text") or "").strip()
+    if not text:
+        return Response({"ok": True, "level": "green", "tips": [], "label": "", "advice": ""})
+
+    rows = list(
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .order_by("-id")[:10]
+    )
+    rows.reverse()
+    recent = [
+        {
+            "id": m.id,
+            "username": "良策AI" if m.msg_type == "ai" else m.sender.username,
+            "content": _message_analysis_text(m),
+            "msg_type": m.msg_type,
+        }
+        for m in rows
+    ]
+    try:
+        result = analyze_draft(text, recent, llm_user=request.user)
+    except Exception as exc:
+        logger.exception("draft check failed room=%s", room_id)
+        return Response({"ok": False, "error": str(exc)}, status=500)
+    return Response(result)
 
 
 @api_view(["GET"])

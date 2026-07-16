@@ -9,6 +9,7 @@ urlpatterns = [
     path("rooms/<uuid:room_id>/events/", realtime.room_events, name="collab-room-events"),
     path("rooms/<uuid:room_id>/presence/", realtime.room_presence, name="collab-room-presence"),
     path("rooms/<uuid:room_id>/insights/", views.room_insights, name="collab-room-insights"),
+    path("rooms/<uuid:room_id>/draft-check/", views.room_draft_check, name="collab-room-draft-check"),
     path("rooms/<uuid:room_id>/members/", views.room_members, name="collab-room-members"),
     path("rooms/<uuid:room_id>/stats/", views.room_stats, name="collab-room-stats"),
     path("rooms/<uuid:room_id>/read/", views.room_mark_read, name="collab-room-read"),
