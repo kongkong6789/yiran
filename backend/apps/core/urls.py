@@ -24,4 +24,13 @@ urlpatterns = [
         name="agent-chat-session-detail",
     ),
     path("audit-logs/", views.audit_logs, name="audit-logs"),
+    path("task-results/", views.task_results, name="task-results"),
+    path("task-results/<str:trace_id>/", views.task_result_detail, name="task-result-detail"),
+    path("task-results/<str:trace_id>/export/", views.task_result_export, name="task-result-export"),
+    path("task-results/<str:trace_id>/follow-ups/", views.task_result_follow_up, name="task-result-follow-up"),
+    path("task-results/<str:trace_id>/attention/<str:item_id>/resolve/", views.task_attention_resolve, name="task-attention-resolve"),
+    path("tasks/", views.work_tasks, name="work-tasks"),
+    path("tasks/<str:trace_id>/", views.work_task_detail, name="work-task-detail"),
+    path("tasks/<str:trace_id>/artifacts/<int:artifact_id>/preview/", views.work_task_artifact_preview, name="work-task-artifact-preview"),
+    path("tasks/<str:trace_id>/artifacts/<int:artifact_id>/download/", views.work_task_artifact_download, name="work-task-artifact-download"),
 ]

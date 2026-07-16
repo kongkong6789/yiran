@@ -356,7 +356,7 @@ export default function Home() {
         ctx.restore();
       }
 
-      if ((hovered || selectedN) && node.type !== "center") {
+      if (hovered || selectedN) {
         ctx.fillStyle = "#56627a";
         ctx.font = "600 12px PingFang SC, Microsoft YaHei, sans-serif";
         ctx.textAlign = "center";

@@ -1,5 +1,5 @@
-import { Avatar, Form, Input, Modal, Tabs, Upload, message } from "antd";
-import { CameraOutlined, UserOutlined } from "@ant-design/icons";
+import { Avatar, Form, Input, Modal, Tabs, Tag, Upload, message } from "antd";
+import { CameraOutlined, MobileOutlined, UserOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import {
   changePassword,
@@ -11,7 +11,20 @@ import {
   uploadUserAvatar,
   type AuthUser,
   type UserProfileSettings,
+  type UserWeComBindingSummary,
 } from "../api/client";
+
+const BINDING_STATUS_COLOR: Record<string, string> = {
+  matched: "success",
+  pending: "default",
+  not_found: "warning",
+  invalid_phone: "error",
+  duplicate_phone: "error",
+  conflict: "error",
+  permission_denied: "error",
+  retry_waiting: "processing",
+  disabled: "default",
+};
 
 type Props = {
   open: boolean;
@@ -29,11 +42,15 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [username, setUsername] = useState("");
+  const [phoneMasked, setPhoneMasked] = useState("");
+  const [wecomBinding, setWecomBinding] = useState<UserWeComBindingSummary | null>(null);
+  const [phoneTouched, setPhoneTouched] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
     pwdForm.resetFields();
+    setPhoneTouched(false);
     Promise.all([getUserSettings(), getMe()])
       .then(([data, me]) => {
         const profile = data as UserProfileSettings;
@@ -41,7 +58,10 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
           display_name: profile.display_name || "",
           bio: profile.bio || "",
           methodology: profile.methodology || "",
+          phone: "",
         });
+        setPhoneMasked(profile.phone_masked || "");
+        setWecomBinding(profile.wecom_binding || null);
         llmForm.setFieldsValue({
           llm_api_key: profile.llm_api_key === "***" ? "" : profile.llm_api_key,
           llm_base_url: profile.llm_base_url,
@@ -108,10 +128,16 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
       if ((llm as any).llm_api_key) {
         body.llm_api_key = (llm as any).llm_api_key;
       }
+      if (phoneTouched) {
+        body.phone = profile.phone ?? "";
+      }
       const res = await updateUserSettings(body);
       setDisplayName(profile.display_name || "");
+      if (res.phone_masked !== undefined) setPhoneMasked(res.phone_masked);
+      if (res.wecom_binding) setWecomBinding(res.wecom_binding);
       if (res.user) onSaved?.(res.user);
 
+      const syncHint = res.wecom_sync_triggered ? "，企业微信账号绑定同步已触发" : "";
       if (wantsPwd) {
         const pwdRes = await changePassword({
           old_password: pwd.old_password,
@@ -119,9 +145,9 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
         });
         if (pwdRes.token) setAuthToken(pwdRes.token);
         if (pwdRes.user) onSaved?.(pwdRes.user);
-        message.success("个人信息与密码已保存");
+        message.success(`个人信息与密码已保存${syncHint}`);
       } else {
-        message.success("个人信息已保存");
+        message.success(`个人信息已保存${syncHint}`);
       }
       onClose();
     } catch (e: any) {
@@ -184,6 +210,38 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
                 >
                   <Input placeholder="例如：阿东" maxLength={64} showCount />
                 </Form.Item>
+                <Form.Item
+                  label="手机号"
+                  name="phone"
+                  extra={
+                    <>
+                      {phoneMasked ? <>当前：{phoneMasked} · </> : null}
+                      用于自动匹配企业微信成员；保存后将触发一次账号绑定同步
+                    </>
+                  }
+                >
+                  <Input
+                    prefix={<MobileOutlined />}
+                    placeholder={phoneMasked ? "输入新手机号以更新，留空可清除" : "13800000000 或 +8613800000000"}
+                    maxLength={32}
+                    onChange={() => setPhoneTouched(true)}
+                    allowClear
+                  />
+                </Form.Item>
+                {wecomBinding && (
+                  <div className="user-profile-wecom-binding">
+                    <span>企业微信绑定</span>
+                    <Tag color={BINDING_STATUS_COLOR[wecomBinding.status] || "default"}>
+                      {wecomBinding.statusLabel}
+                    </Tag>
+                    {wecomBinding.weComUserId ? (
+                      <small>UserID：{wecomBinding.weComUserId}</small>
+                    ) : null}
+                    {wecomBinding.failureReason ? (
+                      <small className="user-profile-wecom-binding-error">{wecomBinding.failureReason}</small>
+                    ) : null}
+                  </div>
+                )}
                 <Form.Item label="个性签名" name="bio">
                   <Input.TextArea
                     placeholder="一句话介绍自己，例如：对口径负责，对结果较真"
@@ -293,6 +351,26 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
           font-size: 12px;
           color: #8b96a8;
           margin-top: 4px;
+        }
+        .user-profile-wecom-binding {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px;
+          margin: -4px 0 16px;
+          padding: 10px 12px;
+          border-radius: 10px;
+          background: #f6f8fb;
+          font-size: 13px;
+        }
+        .user-profile-wecom-binding > span:first-child {
+          color: #5c6778;
+        }
+        .user-profile-wecom-binding small {
+          color: #8b96a8;
+        }
+        .user-profile-wecom-binding-error {
+          color: #cf4f4f !important;
         }
       `}</style>
     </Modal>

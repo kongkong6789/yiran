@@ -2,6 +2,11 @@ from django.db import models
 
 
 class AgentProfile(models.Model):
+    class ExecutionRole(models.TextChoices):
+        OPERATOR = "operator", "操作员"
+        MANAGER = "manager", "主管"
+        DIRECTOR = "director", "总监"
+
     """对象 Agent:一个有人设/专长的参会角色。"""
 
     name = models.CharField("名称", max_length=64)
@@ -10,7 +15,20 @@ class AgentProfile(models.Model):
     role = models.CharField("角色/人设", max_length=128, blank=True)
     expertise = models.CharField("专长", max_length=200, blank=True)
     persona = models.TextField("人设描述(系统提示)", blank=True)
+    execution_role = models.CharField(
+        "执行权限角色",
+        max_length=16,
+        choices=ExecutionRole.choices,
+        default=ExecutionRole.OPERATOR,
+    )
+    is_active = models.BooleanField("可用于任务执行", default=True)
+    quota_limit = models.PositiveBigIntegerField("任务额度上限", default=10000)
+    quota_used = models.PositiveBigIntegerField("已使用额度", default=0)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
+
+    @property
+    def quota_remaining(self) -> int:
+        return max(0, self.quota_limit - self.quota_used)
 
     class Meta:
         verbose_name = "对象 Agent"

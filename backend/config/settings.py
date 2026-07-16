@@ -20,8 +20,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure-key-change-me")
+WECOM_CONFIG_ENCRYPTION_KEY = os.getenv("WECOM_CONFIG_ENCRYPTION_KEY", "")
+WECOM_BINDING_CONFIG_USER_ID = int(os.getenv("WECOM_BINDING_CONFIG_USER_ID", "0") or 0)
+WECOM_BINDING_ASYNC_ENABLED = os.getenv("WECOM_BINDING_ASYNC_ENABLED", "true").lower() == "true"
+WECOM_CALLBACK_BASE_URL = os.getenv("WECOM_CALLBACK_BASE_URL", "").strip().rstrip("/")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
-ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",")
+ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -49,6 +53,7 @@ INSTALLED_APPS = [
     "apps.skills",
     "apps.collab",
     "apps.commerce",
+    "apps.wecom",
 ]
 
 MIDDLEWARE = [
@@ -82,7 +87,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# 用户/权限元数据用 SQLite;业务大数据用 DuckDB(见 apps.datalake)
+# 本地 SQLite 仅作为未配置 PostgreSQL 时的显式开发回退；下方会按环境变量切换 ORM 主库。
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -119,18 +124,25 @@ REST_FRAMEWORK = {
 }
 
 # 前后端分离跨域
-if DEBUG:
+if DEBUG and not os.getenv("CORS_ALLOWED_ORIGINS", "").strip():
     # 开发环境放开:允许局域网内任意来源直接访问后端
     CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = False
 else:
-    CORS_ALLOWED_ORIGINS = os.getenv(
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
+    ).split(",") if origin.strip()]
     CORS_ALLOW_CREDENTIALS = True
 
-# 数据底座 PostgreSQL(业务数据建模);未配置或连不上时自动降级 DuckDB
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "",
+).split(",") if origin.strip()]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = os.getenv("USE_X_FORWARDED_HOST", "true").lower() == "true"
+
+# PostgreSQL 连接参数同时供 Django ORM 主库与数据湖模块使用。
 # 支持 POSTGRES_* 与旧版 PG_* 两种环境变量名
 def _pg_env(*keys: str, default: str = "") -> str:
     for key in keys:
@@ -147,6 +159,29 @@ PG_DB = _pg_env("POSTGRES_DB", "PG_DB")
 PG_USER = _pg_env("POSTGRES_USER", "PG_USER", default="postgres")
 PG_PASSWORD = _pg_env("POSTGRES_PASSWORD", "PG_PASSWORD")
 PG_SCHEMA = _pg_env("POSTGRES_SCHEMA", "PG_SCHEMA", default="lake")
+
+# PostgreSQL is the Django ORM primary database whenever it is configured.
+# SQLite remains available only as an explicit local fallback.
+DATABASE_ENGINE = os.getenv("DATABASE_ENGINE", "").strip().lower()
+USE_POSTGRESQL = DATABASE_ENGINE in {"postgres", "postgresql"} or (
+    DATABASE_ENGINE == "" and bool(PG_HOST and PG_DB)
+)
+if USE_POSTGRESQL:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": PG_DB,
+            "USER": PG_USER,
+            "PASSWORD": PG_PASSWORD,
+            "HOST": PG_HOST,
+            "PORT": PG_PORT,
+            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,
+            "OPTIONS": {
+                "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
+            },
+        }
+    }
 
 # LightRAG / AGE 图谱
 LIGHTRAG_SOURCE_ID = os.getenv("LIGHTRAG_SOURCE_ID", "")

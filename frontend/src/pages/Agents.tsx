@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Card, Row, Col, Form, Input, Button, Space, Avatar, Popconfirm,
-  message, Empty, Tag, Alert, Modal, AutoComplete, Collapse,
+  message, Empty, Tag, Alert, Modal, AutoComplete, Collapse, InputNumber, Select, Switch,
 } from "antd";
 import { DeleteOutlined, PlusOutlined, EditOutlined } from "@ant-design/icons";
 import { listAgents, createAgent, updateAgent, deleteAgent, type Agent } from "../api/client";
@@ -27,6 +27,7 @@ export default function Agents() {
     setEditEmoji(a.emoji);
     editForm.setFieldsValue({
       name: a.name, group: a.group, role: a.role, expertise: a.expertise, persona: a.persona,
+      execution_role: a.execution_role, is_active: a.is_active, quota_limit: a.quota_limit,
     });
   };
 
@@ -70,6 +71,9 @@ export default function Agents() {
             <div style={{ marginTop: 2 }}>
               {a.role && <Tag color="blue">{a.role}</Tag>}
               {a.expertise && <Tag>{a.expertise}</Tag>}
+              <Tag color={a.status === "available" ? "success" : "default"}>
+                {a.status === "available" ? "任务可用" : a.status === "disabled" ? "已停用" : "额度已用尽"}
+              </Tag>
             </div>
             {a.persona && (
               <div style={{ color: "#9096b3", fontSize: 12, marginTop: 4 }}>{a.persona}</div>
@@ -147,6 +151,19 @@ export default function Agents() {
             <Form.Item name="persona" label="人设描述(可选,作为系统提示)">
               <Input.TextArea rows={3} placeholder="描述该 Agent 的立场、说话风格、关注点" />
             </Form.Item>
+            <Form.Item name="execution_role" label="任务执行权限" initialValue="operator">
+              <Select options={[
+                { value: "operator", label: "操作员（1 万额度）" },
+                { value: "manager", label: "主管（10 万额度）" },
+                { value: "director", label: "总监（100 万额度）" },
+              ]} />
+            </Form.Item>
+            <Form.Item name="quota_limit" label="任务额度上限" initialValue={10000}>
+              <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="is_active" label="允许用于任务执行" valuePropName="checked" initialValue>
+              <Switch />
+            </Form.Item>
             <Button type="primary" icon={<PlusOutlined />} onClick={submit} block>
               创建
             </Button>
@@ -208,6 +225,19 @@ export default function Agents() {
           </Form.Item>
           <Form.Item name="persona" label="人设描述(可选,作为系统提示)">
             <Input.TextArea rows={3} placeholder="描述该 Agent 的立场、说话风格、关注点" />
+          </Form.Item>
+          <Form.Item name="execution_role" label="任务执行权限">
+            <Select options={[
+              { value: "operator", label: "操作员（1 万额度）" },
+              { value: "manager", label: "主管（10 万额度）" },
+              { value: "director", label: "总监（100 万额度）" },
+            ]} />
+          </Form.Item>
+          <Form.Item name="quota_limit" label="任务额度上限">
+            <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="is_active" label="允许用于任务执行" valuePropName="checked">
+            <Switch />
           </Form.Item>
         </Form>
       </Modal>
