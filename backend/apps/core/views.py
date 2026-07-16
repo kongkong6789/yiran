@@ -16,7 +16,8 @@ from .attachments import (
     resolve_attachment_path,
     resolve_attachment_path_any,
 )
-from .models import AuditLog, ChatMessage, ChatSession
+from .chat_runs import cancel_run
+from .models import AuditLog, ChatMessage, ChatRun, ChatSession
 
 
 def _is_admin(user) -> bool:
@@ -64,6 +65,24 @@ def agent_models(request):
     from apps.council import images as image_svc
 
     return Response(image_svc.list_gateway_models())
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def agent_chat_run_cancel(request, run_id):
+    run = ChatRun.objects.filter(id=run_id, user=request.user).first()
+    if run is None:
+        return Response({"ok": False, "error": "对话执行不存在"}, status=404)
+    try:
+        run = cancel_run(run)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=409)
+    return Response({
+        "ok": True,
+        "cancelled": True,
+        "run_id": str(run.id),
+        "conversation_id": str(run.session_id),
+    })
 
 
 @api_view(["POST"])

@@ -15,6 +15,11 @@ urlpatterns = [
     path("auth/avatar/", auth_views.upload_avatar, name="auth-avatar-upload"),
     path("auth/avatars/<str:stored_id>/", auth_views.serve_avatar, name="auth-avatar-serve"),
     path("agent/chat/", views.agent_chat, name="agent-chat"),
+    path(
+        "agent/runs/<uuid:run_id>/cancel/",
+        views.agent_chat_run_cancel,
+        name="agent-chat-run-cancel",
+    ),
     path("agent/models/", views.agent_models, name="agent-models"),
     path("agent/attachments/<str:stored_id>/", views.agent_attachment, name="agent-attachment"),
     path("agent/sessions/", views.chat_sessions, name="agent-chat-sessions"),

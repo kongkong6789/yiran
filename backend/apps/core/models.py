@@ -49,6 +49,58 @@ class ChatMessage(models.Model):
         return f"{self.role}: {self.content[:40]}"
 
 
+class ChatRun(models.Model):
+    """一次可取消的 Agent 对话执行。"""
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "运行中"
+        CANCELLED = "cancelled", "已暂停"
+        COMPLETED = "completed", "已完成"
+        FAILED = "failed", "失败"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "auth.User",
+        related_name="chat_runs",
+        on_delete=models.CASCADE,
+        verbose_name="用户",
+    )
+    session = models.ForeignKey(
+        ChatSession,
+        related_name="runs",
+        on_delete=models.CASCADE,
+        verbose_name="会话",
+    )
+    status = models.CharField(
+        "状态",
+        max_length=16,
+        choices=Status.choices,
+        default=Status.RUNNING,
+        db_index=True,
+    )
+    cancel_message = models.OneToOneField(
+        ChatMessage,
+        related_name="cancelled_run",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="暂停消息",
+    )
+    error = models.TextField("错误", blank=True, default="")
+    cancelled_at = models.DateTimeField("暂停时间", null=True, blank=True)
+    finished_at = models.DateTimeField("结束时间", null=True, blank=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        verbose_name = "对话执行"
+        verbose_name_plural = "对话执行"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.id}:{self.status}"
+
+
 class UserSettings(models.Model):
     """用户个人资料与 LLM 密钥,与账号绑定。"""
 
