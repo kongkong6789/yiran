@@ -1,5 +1,6 @@
 from pathlib import Path
 import mimetypes
+import uuid
 
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -8,8 +9,10 @@ from rest_framework.decorators import api_view, parser_classes, permission_class
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from django.utils import timezone
 
 from .agent_chat import run_chat
+from .chat_runs import ChatRunCancelled, cancel_run, is_run_cancelled
 from .attachments import (
     attachment_public_meta,
     process_uploaded_files,
@@ -91,6 +94,13 @@ def agent_chat_run_cancel(request, run_id):
 def agent_chat(request):
     """对话 Agent:按登录用户隔离会话与 MCP 配置。"""
     message = str(request.data.get("message") or "").strip()
+    raw_run_id = str(request.data.get("run_id") or "").strip()
+    try:
+        run_id = uuid.UUID(raw_run_id)
+    except (TypeError, ValueError, AttributeError):
+        return Response({"ok": False, "error": "run_id 必须是有效 UUID"}, status=400)
+    if ChatRun.objects.filter(id=run_id).exists():
+        return Response({"ok": False, "error": "run_id 已被使用"}, status=409)
 
     try:
         attachments = process_uploaded_files(
@@ -130,6 +140,12 @@ def agent_chat(request):
         content=display,
         meta=user_meta,
     )
+    run = ChatRun.objects.create(
+        id=run_id,
+        user=request.user,
+        session=session,
+    )
+    cancel_check = lambda: is_run_cancelled(run.id)
 
     skill_ids = request.data.get("skill_ids") or []
     if isinstance(skill_ids, str):
@@ -145,13 +161,38 @@ def agent_chat(request):
             skill_ids=skill_ids,
             attachments=attachments,
             model=model,
+            cancel_check=cancel_check,
         )
+    except ChatRunCancelled:
+        return Response({
+            "ok": False,
+            "cancelled": True,
+            "run_id": str(run.id),
+            "conversation_id": str(session.id),
+            "conversation_title": session.title,
+        })
     except Exception as exc:
         import logging
         logging.getLogger(__name__).exception("agent_chat failed")
+        ChatRun.objects.filter(
+            id=run.id,
+            status=ChatRun.Status.RUNNING,
+        ).update(
+            status=ChatRun.Status.FAILED,
+            error=str(exc),
+            finished_at=timezone.now(),
+        )
         return Response({"ok": False, "error": str(exc)}, status=500)
 
     if result.get("ok") and result.get("reply"):
+        if cancel_check():
+            return Response({
+                "ok": False,
+                "cancelled": True,
+                "run_id": str(run.id),
+                "conversation_id": str(session.id),
+                "conversation_title": session.title,
+            })
         ChatMessage.objects.create(
             session=session,
             role="assistant",
@@ -170,8 +211,26 @@ def agent_chat(request):
             session.title = (message or attachments[0]["name"])[:40]
         session.save(update_fields=["title", "updated_at"])
 
+    if result.get("ok"):
+        ChatRun.objects.filter(
+            id=run.id,
+            status=ChatRun.Status.RUNNING,
+        ).update(
+            status=ChatRun.Status.COMPLETED,
+            finished_at=timezone.now(),
+        )
+    else:
+        ChatRun.objects.filter(
+            id=run.id,
+            status=ChatRun.Status.RUNNING,
+        ).update(
+            status=ChatRun.Status.FAILED,
+            error=str(result.get("error") or "对话失败"),
+            finished_at=timezone.now(),
+        )
     result["conversation_id"] = str(session.id)
     result["conversation_title"] = session.title
+    result["run_id"] = str(run.id)
     result["attachments"] = _attachment_meta(attachments)
     code = 200 if result.get("ok") else 400
     return Response(result, status=code)
