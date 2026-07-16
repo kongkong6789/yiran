@@ -1011,6 +1011,20 @@ body {
 .agent-chat-send-circle:disabled {
   opacity: 0.45;
 }
+.agent-chat-stop-circle {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  background: #7d899b !important;
+  border: 1px solid rgba(68, 82, 104, 0.18) !important;
+  box-shadow: 0 4px 14px rgba(26, 39, 64, 0.14);
+}
+.agent-chat-stop-circle:not(:disabled):hover {
+  background: #667386 !important;
+}
+.agent-chat-stop-circle:disabled {
+  opacity: 0.72;
+}
 .agent-chat-model-dropdown .ant-select-item-group {
   color: var(--lc-text-muted);
   font-size: 12px;

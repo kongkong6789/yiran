@@ -5,10 +5,11 @@ import {
 } from "antd";
 import {
   BulbOutlined, DeleteOutlined, HistoryOutlined, PaperClipOutlined,
-  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, UserOutlined,
+  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, StopOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
   agentChat,
+  cancelAgentChatRun,
   deleteAgentChatSession,
   getAgentChatSession,
   getAgentChatSessions,
@@ -116,6 +117,18 @@ const QUICK_PROMPTS = [
   "帮我梳理采购补货的 SOP 步骤",
 ];
 
+function createRunId() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+const PAUSED_REPLY = "已暂停本次生成。";
+type RunState = "idle" | "running" | "cancelling";
+
 export default function AgentChat() {
   const { message } = App.useApp();
   const [me, setMe] = useState<AuthUser | null>(null);
@@ -125,7 +138,7 @@ export default function AgentChat() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
   const [draft, setDraft] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [runState, setRunState] = useState<RunState>("idle");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState(() => {
     try {
@@ -142,8 +155,11 @@ export default function AgentChat() {
   > | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const cancellingRunIdRef = useRef<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
 
+  const loading = runState !== "idle";
   const selectedKind = kindOfModel(selectedModel, modelPresets);
   const activeSession = sessions.find((s) => s.id === activeId) || null;
   const viewingOthers = Boolean(
@@ -341,6 +357,57 @@ export default function AgentChat() {
     });
   };
 
+  const appendPausedMessage = useCallback((runId: string) => {
+    setMessages((prev) => {
+      const alreadyPresent = prev.some((item) => (
+        item.role === "assistant"
+        && item.meta?.run_id === runId
+        && item.meta?.cancelled === true
+      ));
+      if (alreadyPresent) return prev;
+      return [...prev, {
+        role: "assistant",
+        content: PAUSED_REPLY,
+        meta: { run_id: runId, cancelled: true },
+      }];
+    });
+  }, []);
+
+  const pauseActiveRun = async () => {
+    const runId = activeRunIdRef.current;
+    if (!runId || cancellingRunIdRef.current === runId) return;
+
+    cancellingRunIdRef.current = runId;
+    setRunState("cancelling");
+    try {
+      let result: Awaited<ReturnType<typeof cancelAgentChatRun>> | undefined;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        try {
+          result = await cancelAgentChatRun(runId);
+          break;
+        } catch (error: any) {
+          if (error?.response?.status !== 404 || attempt === 3) throw error;
+          await new Promise((resolve) => window.setTimeout(resolve, 100));
+        }
+      }
+      if (!result) return;
+      if (result.conversation_id) setActiveId(result.conversation_id);
+      appendPausedMessage(runId);
+      if (activeRunIdRef.current === runId) {
+        activeRunIdRef.current = null;
+        setRunState("idle");
+      }
+      await loadSessions();
+    } catch (error: any) {
+      if (activeRunIdRef.current === runId) {
+        setRunState("running");
+        message.error(error?.response?.data?.error || "暂停失败，请重试");
+      }
+    } finally {
+      if (cancellingRunIdRef.current === runId) cancellingRunIdRef.current = null;
+    }
+  };
+
   const send = async (text?: string) => {
     if (viewingOthers) {
       message.warning("正在查看其他用户的对话，仅可浏览，请先「新对话」再发送");
@@ -369,7 +436,9 @@ export default function AgentChat() {
     }]);
     setDraft("");
     setPendingFiles([]);
-    setLoading(true);
+    const runId = createRunId();
+    activeRunIdRef.current = runId;
+    setRunState("running");
 
     try {
       const model = selectedModel.trim();
@@ -377,11 +446,18 @@ export default function AgentChat() {
         message.warning(`当前模型「${model}」是对话型；带图识图请用对话模型试，改图/生图请换「生图」分组`);
       }
       const res = await agentChat({
+        run_id: runId,
         message: content,
         conversation_id: activeId || undefined,
         files: files.length ? files : undefined,
         model: model || undefined,
       });
+      if (res.cancelled) {
+        if (res.conversation_id) setActiveId(res.conversation_id);
+        appendPausedMessage(runId);
+        return;
+      }
+      if (activeRunIdRef.current !== runId) return;
       if (!res.ok || !res.reply) {
         message.error(res.error || "对话失败");
         return;
@@ -418,9 +494,14 @@ export default function AgentChat() {
       });
       await loadSessions();
     } catch (error: any) {
-      message.error(error?.response?.data?.error || "请求失败，请检查后端服务");
+      if (activeRunIdRef.current === runId) {
+        message.error(error?.response?.data?.error || "请求失败，请检查后端服务");
+      }
     } finally {
-      setLoading(false);
+      if (activeRunIdRef.current === runId) {
+        activeRunIdRef.current = null;
+        setRunState("idle");
+      }
     }
   };
 
@@ -624,7 +705,9 @@ export default function AgentChat() {
             <div className="agent-chat-row assistant">
               <Avatar size={32} icon={<RobotOutlined />} style={{ background: brand.gradientGold }} />
               <div className="agent-chat-bubble">
-                <Spin size="small" /> <span style={{ marginLeft: 8, color: "var(--lc-text-muted)" }}>正在检索资料并思考…</span>
+                <Spin size="small" /> <span style={{ marginLeft: 8, color: "var(--lc-text-muted)" }}>
+                  {runState === "cancelling" ? "正在暂停…" : "正在检索资料并思考…"}
+                </span>
               </div>
             </div>
           )}
@@ -741,16 +824,18 @@ export default function AgentChat() {
                     aria-label="上传附件"
                   />
                 </Tooltip>
-                <Tooltip title="发送">
+                <Tooltip title={loading ? (runState === "cancelling" ? "正在暂停" : "暂停生成") : "发送"}>
                   <Button
-                    className="agent-chat-send-circle"
+                    className={loading ? "agent-chat-stop-circle" : "agent-chat-send-circle"}
                     type="primary"
                     shape="circle"
-                    icon={<SendOutlined />}
-                    loading={loading}
-                    disabled={viewingOthers || (!draft.trim() && pendingFiles.length === 0)}
-                    onClick={() => send()}
-                    aria-label="发送"
+                    icon={loading ? <StopOutlined /> : <SendOutlined />}
+                    loading={runState === "cancelling"}
+                    disabled={viewingOthers || (loading
+                      ? runState === "cancelling"
+                      : (!draft.trim() && pendingFiles.length === 0))}
+                    onClick={loading ? pauseActiveRun : () => send()}
+                    aria-label={runState === "cancelling" ? "正在暂停" : loading ? "暂停生成" : "发送"}
                   />
                 </Tooltip>
               </div>

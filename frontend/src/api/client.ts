@@ -239,6 +239,8 @@ export interface AgentChatSession {
 
 export interface AgentChatResult {
   ok: boolean;
+  cancelled?: boolean;
+  run_id?: string;
   reply?: string;
   error?: string;
   conversation_id?: string;
@@ -347,6 +349,7 @@ export interface ActionContract {
 
 // ---- API 封装 ----
 export const agentChat = (body: {
+  run_id: string;
   message: string;
   conversation_id?: string;
   skill_ids?: string[];
@@ -355,6 +358,7 @@ export const agentChat = (body: {
 }) => {
   if (body.files?.length) {
     const form = new FormData();
+    form.append("run_id", body.run_id);
     form.append("message", body.message);
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.model) form.append("model", body.model);
@@ -364,6 +368,14 @@ export const agentChat = (body: {
   }
   return api.post<AgentChatResult>("/agent/chat/", body, { timeout: 120_000 }).then((r) => r.data);
 };
+
+export const cancelAgentChatRun = (runId: string) =>
+  api.post<{
+    ok: boolean;
+    cancelled: boolean;
+    run_id: string;
+    conversation_id?: string;
+  }>(`/agent/runs/${runId}/cancel/`, {}).then((r) => r.data);
 
 export const getAgentModels = () =>
   api.get<{
@@ -1402,4 +1414,3 @@ export const markCollabRoomRead = (id: string, upToId?: number) =>
       upToId ? { up_to_id: upToId } : {},
     )
     .then((r) => r.data);
-
