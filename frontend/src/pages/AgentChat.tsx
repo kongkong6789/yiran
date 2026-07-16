@@ -5,7 +5,7 @@ import {
 } from "antd";
 import {
   BulbOutlined, DeleteOutlined, HistoryOutlined, PaperClipOutlined,
-  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, StopOutlined, UserOutlined,
+  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
   agentChat,
@@ -658,7 +658,10 @@ export default function AgentChat() {
             const isUser = item.role === "user";
             const isBlocks = !isUser && (isReportLike(item.content) || looksBlocky(item.content));
             return (
-              <div key={item.id || index} className={`agent-chat-row ${isUser ? "user" : "assistant"}`}>
+              <div
+                key={item.id ? `server-${item.id}` : `local-${index}`}
+                className={`agent-chat-row ${isUser ? "user" : "assistant"}`}
+              >
                 <Avatar
                   size={32}
                   src={isUser && me?.avatar_url
@@ -796,7 +799,7 @@ export default function AgentChat() {
                   options={modelSelectOptions}
                   optionLabelProp="label"
                   popupMatchSelectWidth={false}
-                  popupClassName="agent-chat-model-dropdown"
+                  classNames={{ popup: { root: "agent-chat-model-dropdown" } }}
                   suffixIcon={null}
                   showSearch
                   loading={modelsLoading}
@@ -835,7 +838,7 @@ export default function AgentChat() {
                     className={loading ? "agent-chat-stop-circle" : "agent-chat-send-circle"}
                     type="primary"
                     shape="circle"
-                    icon={loading ? <StopOutlined /> : <SendOutlined />}
+                    icon={loading ? <span className="agent-chat-stop-glyph" aria-hidden="true" /> : <SendOutlined />}
                     loading={runState === "cancelling"}
                     disabled={viewingOthers || (loading
                       ? runState === "cancelling"

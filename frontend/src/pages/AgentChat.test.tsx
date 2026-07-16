@@ -123,6 +123,7 @@ describe("AgentChat pause control", () => {
     expect(body.run_id).toMatch(/^[0-9a-f-]{36}$/i);
 
     const pause = await screen.findByRole("button", { name: "暂停生成" });
+    expect(pause.querySelector(".agent-chat-stop-glyph")).not.toBeNull();
     fireEvent.click(pause);
     fireEvent.click(pause);
 
@@ -166,5 +167,43 @@ describe("AgentChat pause control", () => {
     expect(await screen.findByText("已自动上传并启用。")).toBeInTheDocument();
     expect(screen.getByText("已生成 Skill · GMV 复盘流程")).toBeInTheDocument();
     expect(screen.getByTestId("skill-picker")).toHaveAttribute("data-refresh-key", "1");
+  });
+
+  it("keeps server and optimistic message keys distinct", async () => {
+    const user = userEvent.setup();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(getAgentChatSessions).mockResolvedValue({
+      count: 1,
+      results: [{
+        id: "conversation-1",
+        title: "已有会话",
+        created_at: "2026-07-16T00:00:00Z",
+        updated_at: "2026-07-16T00:00:00Z",
+      }],
+      is_admin: false,
+    });
+    vi.mocked(getAgentChatSession).mockResolvedValue({
+      id: "conversation-1",
+      title: "已有会话",
+      created_at: "2026-07-16T00:00:00Z",
+      updated_at: "2026-07-16T00:00:00Z",
+      messages: [
+        { id: 1, role: "user", content: "第一条消息" },
+        { id: 2, role: "assistant", content: "第二条消息" },
+      ],
+    });
+    vi.mocked(agentChat).mockReturnValue(new Promise(() => undefined));
+    renderChat();
+
+    expect(await screen.findByText("第二条消息")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText(/今天帮你做些什么/);
+    await user.type(input, "第三条消息");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(1));
+
+    const duplicateKeyWarning = consoleError.mock.calls.some((args) => (
+      args.map(String).join(" ").includes("same key")
+    ));
+    expect(duplicateKeyWarning).toBe(false);
   });
 });
