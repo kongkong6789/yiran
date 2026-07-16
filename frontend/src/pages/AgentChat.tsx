@@ -151,8 +151,9 @@ export default function AgentChat() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [lastMeta, setLastMeta] = useState<Pick<
     AgentChatResult,
-    "llm" | "llm_model" | "knowledge_hit" | "refs" | "mcp" | "skills" | "skill_scripts"
+    "llm" | "llm_model" | "knowledge_hit" | "refs" | "mcp" | "skills" | "skill_scripts" | "created_skill"
   > | null>(null);
+  const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
@@ -491,7 +492,9 @@ export default function AgentChat() {
         mcp: res.mcp,
         skills: res.skills || res.refs?.skills,
         skill_scripts: res.skill_scripts,
+        created_skill: res.created_skill,
       });
+      if (res.created_skill) setSkillRefreshKey((value) => value + 1);
       await loadSessions();
     } catch (error: any) {
       if (activeRunIdRef.current === runId) {
@@ -620,6 +623,9 @@ export default function AgentChat() {
                     {s.error ? ` · ${s.error.slice(0, 24)}` : ""}
                   </Tag>
                 ))}
+                {lastMeta.created_skill && (
+                  <Tag color="success">已生成 Skill · {lastMeta.created_skill.name}</Tag>
+                )}
               </>
             )}
             <Button icon={<PlusOutlined />} onClick={newChat}>新对话</Button>
@@ -809,7 +815,7 @@ export default function AgentChat() {
                 <Tag className={`agent-chat-kind-tag kind-${selectedKind}`}>
                   {kindTag(selectedKind)}
                 </Tag>
-                <ChatSkillPicker onSelect={insertSkill} />
+                <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
                 <ChatConnectorPicker onSelect={insertConnector} />
               </div>
               <div className="agent-chat-composer-right">

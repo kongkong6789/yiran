@@ -237,6 +237,18 @@ export interface AgentChatSession {
   messages?: AgentChatMessage[];
 }
 
+export interface CreatedSkillItem {
+  asset_id: number;
+  personal_id: number;
+  skill_id: string;
+  name: string;
+  description: string;
+  visibility: "private" | "shared";
+  enabled: boolean;
+  package_kind: "single" | "package";
+  storage: "cos" | "local";
+}
+
 export interface AgentChatResult {
   ok: boolean;
   cancelled?: boolean;
@@ -245,6 +257,8 @@ export interface AgentChatResult {
   error?: string;
   conversation_id?: string;
   conversation_title?: string;
+  created_skill?: CreatedSkillItem;
+  skill_generation_failed?: boolean;
   llm?: boolean;
   llm_model?: string;
   llm_error?: string;
@@ -301,6 +315,7 @@ export interface UserSkillItem {
 export interface SkillAssetItem {
   id: number;
   skill_id: string;
+  visibility: "shared" | "private";
   name: string;
   description: string;
   original_filename: string;

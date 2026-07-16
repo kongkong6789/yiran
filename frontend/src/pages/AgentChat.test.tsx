@@ -15,7 +15,9 @@ import {
 } from "../api/client";
 
 vi.mock("../components/ChatSkillPicker", () => ({
-  default: () => <button type="button">技能</button>,
+  default: ({ refreshKey = 0 }: { refreshKey?: number }) => (
+    <button type="button" data-testid="skill-picker" data-refresh-key={refreshKey}>技能</button>
+  ),
 }));
 vi.mock("../components/ChatConnectorPicker", () => ({
   default: () => <button type="button">连接器</button>,
@@ -135,5 +137,34 @@ describe("AgentChat pause control", () => {
       conversation_id: "conversation-1",
     });
     await waitFor(() => expect(screen.queryAllByText("已暂停本次生成。")).toHaveLength(1));
+  });
+
+  it("shows the generated private Skill and refreshes the Skill picker", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentChat).mockResolvedValue({
+      ok: true,
+      reply: "已自动上传并启用。",
+      run_id: "24d5c6ff-c083-41b9-9e34-56b98d9b0b91",
+      created_skill: {
+        asset_id: 9,
+        personal_id: 10,
+        skill_id: "gmv-review-12345678",
+        name: "GMV 复盘流程",
+        description: "复用 GMV 复盘流程",
+        visibility: "private",
+        enabled: true,
+        package_kind: "package",
+        storage: "local",
+      },
+    });
+    renderChat();
+
+    const input = await screen.findByPlaceholderText(/今天帮你做些什么/);
+    await user.type(input, "把这次对话打包成一个 skill 并自动上传平台");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByText("已自动上传并启用。")).toBeInTheDocument();
+    expect(screen.getByText("已生成 Skill · GMV 复盘流程")).toBeInTheDocument();
+    expect(screen.getByTestId("skill-picker")).toHaveAttribute("data-refresh-key", "1");
   });
 });

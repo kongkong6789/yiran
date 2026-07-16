@@ -13,13 +13,17 @@ from django.utils import timezone
 
 from .agent_chat import run_chat
 from .chat_runs import ChatRunCancelled, cancel_run, is_run_cancelled
+from .conversation_skill import (
+    ConversationSkillError,
+    build_conversation_skill,
+    is_conversation_skill_request,
+)
 from .attachments import (
     attachment_public_meta,
     process_uploaded_files,
     resolve_attachment_path,
     resolve_attachment_path_any,
 )
-from .chat_runs import cancel_run
 from .models import AuditLog, ChatMessage, ChatRun, ChatSession
 
 
@@ -134,7 +138,7 @@ def agent_chat(request):
     if attachments:
         names = "、".join(a["name"] for a in attachments)
         display = f"{message}\n\n[附件: {names}]".strip() if message else f"[附件: {names}]"
-    ChatMessage.objects.create(
+    user_message = ChatMessage.objects.create(
         session=session,
         role="user",
         content=display,
@@ -154,15 +158,57 @@ def agent_chat(request):
     model = str(request.data.get("model") or "").strip() or None
 
     try:
-        result = run_chat(
-            message,
-            history,
-            user=request.user,
-            skill_ids=skill_ids,
-            attachments=attachments,
-            model=model,
-            cancel_check=cancel_check,
-        )
+        if is_conversation_skill_request(message):
+            try:
+                created_skill = build_conversation_skill(
+                    request.user,
+                    session,
+                    exclude_message_id=user_message.id,
+                    cancel_check=cancel_check,
+                    model=model,
+                )
+                result = {
+                    "ok": True,
+                    "reply": (
+                        f"已将这次对话提炼为 Skill「{created_skill['name']}」，"
+                        "已自动上传到平台并启用（仅你可见）。\n\n"
+                        f"Skill ID：`{created_skill['skill_id']}`"
+                    ),
+                    "llm": True,
+                    "llm_model": model or "",
+                    "knowledge_hit": False,
+                    "created_skill": created_skill,
+                }
+            except ChatRunCancelled:
+                raise
+            except ConversationSkillError as exc:
+                result = {
+                    "ok": True,
+                    "reply": f"Skill 自动生成失败：{exc}",
+                    "llm": False,
+                    "knowledge_hit": False,
+                    "skill_generation_failed": True,
+                }
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("conversation skill packaging failed")
+                result = {
+                    "ok": True,
+                    "reply": "Skill 自动生成失败：上传或保存时发生异常，请稍后重试。",
+                    "llm": False,
+                    "knowledge_hit": False,
+                    "skill_generation_failed": True,
+                }
+        else:
+            result = run_chat(
+                message,
+                history,
+                user=request.user,
+                skill_ids=skill_ids,
+                attachments=attachments,
+                model=model,
+                cancel_check=cancel_check,
+            )
     except ChatRunCancelled:
         return Response({
             "ok": False,
@@ -205,6 +251,8 @@ def agent_chat(request):
                 "refs": result.get("refs") or {},
                 "skills": result.get("skills") or [],
                 "attachments": result.get("attachments") or [],
+                "created_skill": result.get("created_skill"),
+                "skill_generation_failed": bool(result.get("skill_generation_failed")),
             },
         )
         if session.title == "新对话":
