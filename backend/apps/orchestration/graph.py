@@ -120,10 +120,15 @@ def _execute_action(action_name: str, payload: dict) -> dict:
     return connector.execute(action_name, payload) if connector else {"ok": False}
 
 
-def run_sop(text: str, payload: dict | None = None, role: str = "operator") -> dict:
+def run_sop(
+    text: str,
+    payload: dict | None = None,
+    role: str = "operator",
+    trace_id: str | None = None,
+) -> dict:
     """执行一次完整 SOP 编排,返回逐节点轨迹与最终结论。"""
     payload = payload or {}
-    trace_id = uuid.uuid4().hex[:12]
+    trace_id = (trace_id or uuid.uuid4().hex[:12]).strip()[:64]
     steps = []
 
     steps.append(_step("固定流程开头", "done", f"接收到请求: {text}", {"trace_id": trace_id}))

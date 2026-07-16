@@ -8,6 +8,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from "antd";
@@ -21,6 +22,8 @@ import {
   type AdminUserRow,
   type AuthUser,
 } from "../api/client";
+import WeComBindingManager from "../features/wecom-bindings/WeComBindingManager";
+import WeComNotificationManager from "../features/wecom-bindings/WeComNotificationManager";
 
 function fmtTime(v?: string | null) {
   if (!v) return "—";
@@ -34,12 +37,15 @@ export default function Accounts() {
   const [keyword, setKeyword] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [pwdOpen, setPwdOpen] = useState(false);
+  const [phoneOpen, setPhoneOpen] = useState(false);
   const [target, setTarget] = useState<AdminUserRow | null>(null);
   const [saving, setSaving] = useState(false);
   const [createForm] = Form.useForm();
   const [pwdForm] = Form.useForm();
+  const [phoneForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
   const [me, setMe] = useState<AuthUser | null>(null);
+  const [activeTab, setActiveTab] = useState("accounts");
 
   const load = async (q = keyword) => {
     setLoading(true);
@@ -89,6 +95,7 @@ export default function Accounts() {
         password: values.password,
         email: values.email || "",
         display_name: values.display_name || "",
+        phone: values.phone || "",
         is_staff: !!values.is_staff,
       });
       message.success("账号已创建");
@@ -165,7 +172,7 @@ export default function Accounts() {
             列出全部登录账号；密码入库后不可回读，可在此新建或重置。
           </Typography.Text>
         </div>
-        <Space wrap>
+        {activeTab === "accounts" ? <Space wrap>
           <Input.Search
             allowClear
             placeholder="搜用户名 / 邮箱"
@@ -178,8 +185,16 @@ export default function Accounts() {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             新建账号
           </Button>
-        </Space>
+        </Space> : null}
       </Space>
+
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
+        { key: "accounts", label: "平台账号" },
+        { key: "wecom", label: "企业微信账号绑定" },
+        { key: "wecom-notifications", label: "通知重试" },
+      ]} />
+
+      {activeTab === "wecom" ? <WeComBindingManager /> : activeTab === "wecom-notifications" ? <WeComNotificationManager /> : <>
 
       <Table
         rowKey="id"
@@ -204,6 +219,12 @@ export default function Accounts() {
             title: "邮箱",
             dataIndex: "email",
             render: (v: string) => v || "—",
+          },
+          {
+            title: "手机号",
+            dataIndex: "phone_masked",
+            width: 130,
+            render: (v: string) => v || "未填写",
           },
           {
             title: "密码",
@@ -253,7 +274,7 @@ export default function Accounts() {
           },
           {
             title: "操作",
-            width: 180,
+            width: 250,
             render: (_: unknown, r) => (
               <Space size={0}>
                 <Button
@@ -267,6 +288,17 @@ export default function Accounts() {
                   }}
                 >
                   改密码
+                </Button>
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => {
+                    setTarget(r);
+                    phoneForm.resetFields();
+                    setPhoneOpen(true);
+                  }}
+                >
+                  改手机号
                 </Button>
                 <Button
                   type="link"
@@ -302,6 +334,9 @@ export default function Accounts() {
           </Form.Item>
           <Form.Item label="邮箱" name="email">
             <Input placeholder="可选" />
+          </Form.Item>
+          <Form.Item label="手机号" name="phone" help="用于自动匹配企业微信成员">
+            <Input placeholder="例如 13800000000" />
           </Form.Item>
           <Form.Item
             label="初始密码"
@@ -344,6 +379,20 @@ export default function Accounts() {
           </Typography.Text>
         </Form>
       </Modal>
+
+      <Modal title={target ? `修改手机号 · ${target.username}` : "修改手机号"} open={phoneOpen}
+        onCancel={() => { setPhoneOpen(false); setTarget(null); }} okText="保存并匹配"
+        onOk={async () => {
+          if (!target) return;
+          const values = await phoneForm.validateFields();
+          setSaving(true);
+          try { await updateAdminUser(target.id, { phone: values.phone || "" }); message.success("手机号已保存，匹配任务已触发"); setPhoneOpen(false); setTarget(null); await load(); }
+          catch (e: any) { message.error(e?.response?.data?.error || "保存失败"); }
+          finally { setSaving(false); }
+        }} confirmLoading={saving} destroyOnClose>
+        <Form form={phoneForm} layout="vertical"><Form.Item name="phone" label="新手机号" help="留空可清除；页面和日志仅展示脱敏号码"><Input placeholder="13800000000 或 +8613800000000" /></Form.Item></Form>
+      </Modal>
+      </>}
     </div>
   );
 }

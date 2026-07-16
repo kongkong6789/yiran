@@ -4,16 +4,13 @@ from rest_framework import status
 from django.shortcuts import get_object_or_404
 
 from .models import AgentProfile, Meeting, Deliverable, MeetingInvite
+from .serializers import AgentProfileSerializer
 from . import engine, llm, graph_knowledge
 from . import invites as invite_svc
 
 
 def _agent_dict(a: AgentProfile) -> dict:
-    return {
-        "id": a.id, "name": a.name, "emoji": a.emoji, "group": a.group or "未分类",
-        "role": a.role, "expertise": a.expertise, "persona": a.persona,
-        "created_at": a.created_at.isoformat(),
-    }
+    return AgentProfileSerializer(a).data
 
 
 def _human_dict(u) -> dict:
@@ -37,14 +34,11 @@ def _human_dict(u) -> dict:
 @api_view(["GET", "POST"])
 def agents(request):
     if request.method == "POST":
-        d = request.data
-        if not d.get("name"):
-            return Response({"error": "name 必填"}, status=status.HTTP_400_BAD_REQUEST)
-        a = AgentProfile.objects.create(
-            name=d.get("name"), emoji=d.get("emoji") or "🤖",
-            group=d.get("group") or "未分类",
-            role=d.get("role", ""), expertise=d.get("expertise", ""),
-            persona=d.get("persona", ""),
+        serializer = AgentProfileSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        a = serializer.save(
+            emoji=serializer.validated_data.get("emoji") or "🤖",
+            group=serializer.validated_data.get("group") or "未分类",
         )
         return Response(_agent_dict(a), status=status.HTTP_201_CREATED)
     data = [_agent_dict(a) for a in AgentProfile.objects.all()]
@@ -57,12 +51,10 @@ def agent_detail(request, agent_id: int):
     if request.method == "DELETE":
         a.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-    d = request.data
-    for f in ("name", "emoji", "group", "role", "expertise", "persona"):
-        if f in d:
-            setattr(a, f, d[f])
-    a.save()
-    return Response(_agent_dict(a))
+    serializer = AgentProfileSerializer(a, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
 
 
 def _meeting_dict(m: Meeting, *, brief: bool = False) -> dict:

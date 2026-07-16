@@ -17,6 +17,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import UserSettings
+from apps.wecom.phone import mask_phone
 
 User = get_user_model()
 
@@ -30,6 +31,25 @@ def _profiles_root() -> Path:
     return root
 
 
+def _wecom_binding_summary(user) -> dict:
+    from apps.wecom.models import UserWeComBinding
+
+    binding = UserWeComBinding.objects.filter(platform_user=user).first()
+    if not binding:
+        return {
+            "status": "pending",
+            "statusLabel": "待匹配",
+            "weComUserId": "",
+            "failureReason": "",
+        }
+    return {
+        "status": binding.status,
+        "statusLabel": binding.get_status_display(),
+        "weComUserId": binding.wecom_userid or "",
+        "failureReason": binding.failure_reason or "",
+    }
+
+
 def _settings_payload(row: UserSettings) -> dict:
     return {
         "display_name": row.display_name or "",
@@ -41,6 +61,8 @@ def _settings_payload(row: UserSettings) -> dict:
         "llm_base_url": row.llm_base_url or "",
         "llm_model": row.llm_model or "",
         "configured": bool(row.llm_api_key),
+        "phone_masked": mask_phone(row.phone),
+        "wecom_binding": _wecom_binding_summary(row.user),
     }
 
 
@@ -67,6 +89,7 @@ def register(request):
     username = str(request.data.get("username") or "").strip()
     password = str(request.data.get("password") or "")
     email = str(request.data.get("email") or "").strip()
+    phone = str(request.data.get("phone") or "").strip()
     if not username or not password:
         return Response({"ok": False, "error": "用户名和密码不能为空"}, status=400)
     if User.objects.filter(username=username).exists():
@@ -77,7 +100,7 @@ def register(request):
         return Response({"ok": False, "error": " ".join(exc.messages)}, status=400)
 
     user = User.objects.create_user(username=username, password=password, email=email)
-    UserSettings.objects.create(user=user)
+    UserSettings.objects.create(user=user, phone=phone)
     token, _ = Token.objects.get_or_create(user=user)
     return Response({"ok": True, "token": token.key, "user": _user_payload(user)}, status=201)
 
@@ -141,10 +164,16 @@ def user_settings(request):
         settings.llm_base_url = str(body.get("llm_base_url") or "").strip()
     if body.get("llm_model") is not None:
         settings.llm_model = str(body.get("llm_model") or "").strip()
+    phone_updated = False
+    if "phone" in body:
+        settings.phone = str(body.get("phone") or "").strip()[:32]
+        phone_updated = True
     settings.save()
+    wecom_sync_triggered = phone_updated and bool(getattr(settings, "_wecom_phone_changed", False))
     return Response({
         "ok": True,
         "configured": bool(settings.llm_api_key),
+        "wecom_sync_triggered": wecom_sync_triggered,
         "user": _user_payload(request.user, settings),
         **{k: v for k, v in _settings_payload(settings).items() if k != "llm_api_key"},
         "llm_api_key": "***" if settings.llm_api_key else "",
@@ -212,6 +241,7 @@ def _admin_user_row(user) -> dict:
         "has_usable_password": user.has_usable_password(),
         "date_joined": user.date_joined.isoformat() if user.date_joined else None,
         "last_login": user.last_login.isoformat() if user.last_login else None,
+        "phone_masked": mask_phone(settings.phone),
     }
 
 
@@ -236,6 +266,7 @@ def admin_users(request):
     email = str(request.data.get("email") or "").strip()
     is_staff = bool(request.data.get("is_staff"))
     display_name = str(request.data.get("display_name") or "").strip()[:64]
+    phone = str(request.data.get("phone") or "").strip()[:32]
     if not username or not password:
         return Response({"ok": False, "error": "用户名和密码不能为空"}, status=400)
     if User.objects.filter(username=username).exists():
@@ -251,7 +282,7 @@ def admin_users(request):
         email=email,
         is_staff=is_staff,
     )
-    settings = UserSettings.objects.create(user=user, display_name=display_name)
+    settings = UserSettings.objects.create(user=user, display_name=display_name, phone=phone)
     row = _admin_user_row(user)
     # 仅创建当下回显一次明文，便于管理员抄录；库内仍为哈希
     return Response({
@@ -325,6 +356,11 @@ def admin_user_detail(request, user_id: int):
         settings, _ = UserSettings.objects.get_or_create(user=target)
         settings.display_name = str(body.get("display_name") or "").strip()[:64]
         settings.save(update_fields=["display_name", "updated_at"])
+    if "phone" in body:
+        settings, _ = UserSettings.objects.get_or_create(user=target)
+        settings.phone = str(body.get("phone") or "").strip()[:32]
+        # 使用完整 save，确保手机号标准化和绑定事件同步执行。
+        settings.save()
 
     if update_fields:
         target.save(update_fields=list(dict.fromkeys(update_fields)))

@@ -1,7 +1,9 @@
 import axios from "axios";
 
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+
 export const api = axios.create({
-  baseURL: "/api",
+  baseURL: configuredApiBaseUrl || "/api",
   timeout: 20000,
 });
 
@@ -89,6 +91,7 @@ export interface AdminUserRow {
   has_usable_password: boolean;
   date_joined: string | null;
   last_login: string | null;
+  phone_masked: string;
 }
 
 export const listAdminUsers = (q?: string) =>
@@ -102,6 +105,7 @@ export const createAdminUser = (body: {
   email?: string;
   display_name?: string;
   is_staff?: boolean;
+  phone?: string;
 }) =>
   api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     "/auth/admin/users/",
@@ -116,6 +120,7 @@ export const updateAdminUser = (
     display_name?: string;
     is_active?: boolean;
     is_staff?: boolean;
+    phone?: string;
   },
 ) =>
   api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
@@ -128,6 +133,15 @@ export const deleteAdminUser = (id: number) =>
     .delete<{ ok: boolean; deleted?: string; error?: string }>(`/auth/admin/users/${id}/`)
     .then((r) => r.data);
 
+export type WeComBindingStatus = "pending" | "matched" | "not_found" | "invalid_phone" | "duplicate_phone" | "conflict" | "permission_denied" | "retry_waiting" | "disabled";
+
+export interface UserWeComBindingSummary {
+  status: WeComBindingStatus;
+  statusLabel: string;
+  weComUserId: string;
+  failureReason: string;
+}
+
 export interface UserProfileSettings {
   display_name: string;
   bio: string;
@@ -138,7 +152,58 @@ export interface UserProfileSettings {
   llm_base_url: string;
   llm_model: string;
   configured: boolean;
+  phone_masked?: string;
+  wecom_binding?: UserWeComBindingSummary;
 }
+
+export interface WeComBindingRow {
+  id: number;
+  platformUserId: number;
+  platformUser: string;
+  phoneMasked: string;
+  weComUserId: string;
+  weComMember: string;
+  status: WeComBindingStatus;
+  statusLabel: string;
+  source: string;
+  sourceLabel: string;
+  matchedAt: string | null;
+  verifiedAt: string | null;
+  nextRetryAt: string | null;
+  failureReason: string;
+  retry_count: number;
+}
+
+export interface WeComBindingSyncJob {
+  id: number;
+  status: string;
+  source: string;
+  scanned_count: number;
+  matched_count: number;
+  not_found_count: number;
+  invalid_phone_count: number;
+  duplicate_phone_count: number;
+  conflict_count: number;
+  permission_denied_count: number;
+  retry_waiting_count: number;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export const listWeComBindings = (params?: { q?: string; status?: string; page?: number; page_size?: number }) =>
+  api.get<{ ok: boolean; count: number; results: WeComBindingRow[] }>("/wecom/bindings/", { params }).then((r) => r.data);
+export const syncWeComBindings = () =>
+  api.post<{ ok: boolean; job: WeComBindingSyncJob }>("/wecom/bindings/sync/", {}).then((r) => r.data);
+export const matchWeComBinding = (userId: number) =>
+  api.post<{ ok: boolean; binding: WeComBindingRow }>(`/wecom/bindings/${userId}/match/`, {}).then((r) => r.data);
+export const manualWeComBinding = (platformUserId: number, weComUserId: string) =>
+  api.post<{ ok: boolean; binding: WeComBindingRow }>("/wecom/bindings/manual/", { platformUserId, weComUserId }).then((r) => r.data);
+export const deleteWeComBinding = (bindingId: number) =>
+  api.delete<{ ok: boolean }>(`/wecom/bindings/${bindingId}/`).then((r) => r.data);
+export const listWeComBindingJobs = () =>
+  api.get<{ ok: boolean; results: WeComBindingSyncJob[] }>("/wecom/bindings/sync-jobs/").then((r) => r.data);
+export const listWeComBindingLogs = (bindingId: number) =>
+  api.get<{ ok: boolean; results: Array<{ id: number; action: string; status: string; message: string; actorName: string; created_at: string }> }>(`/wecom/bindings/${bindingId}/logs/`).then((r) => r.data);
 
 /** @deprecated 使用 UserProfileSettings */
 export type UserLlmSettings = UserProfileSettings;
@@ -147,11 +212,16 @@ export const getUserSettings = () =>
   api.get<UserProfileSettings>("/auth/settings/").then((r) => r.data);
 
 export const updateUserSettings = (
-  body: Partial<Omit<UserProfileSettings, "avatar" | "avatar_url" | "configured">>,
+  body: Partial<Omit<UserProfileSettings, "avatar" | "avatar_url" | "configured" | "wecom_binding">> & {
+    phone?: string;
+  },
 ) =>
   api.put<{
     ok: boolean;
     configured: boolean;
+    wecom_sync_triggered?: boolean;
+    phone_masked?: string;
+    wecom_binding?: UserWeComBindingSummary;
     user?: AuthUser;
     display_name?: string;
     bio?: string;
@@ -334,6 +404,7 @@ export interface SopResult {
   result?: Record<string, unknown>;
   missing?: string[];
   schema?: Record<string, string>;
+  executor?: Agent;
   steps: SopStep[];
 }
 
@@ -394,6 +465,8 @@ export const runSop = (body: {
   text: string;
   payload?: Record<string, unknown>;
   role?: string;
+  agent_id?: number;
+  trace_id?: string;
 }) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
 
 export const resumeSop = (body: {
@@ -500,6 +573,12 @@ export interface Agent {
   role: string;
   expertise: string;
   persona: string;
+  execution_role: "operator" | "manager" | "director";
+  is_active: boolean;
+  quota_limit: number;
+  quota_used: number;
+  quota_remaining: number;
+  status: "available" | "disabled" | "quota_exhausted";
   created_at: string;
 }
 
@@ -577,7 +656,31 @@ export interface GraphWriteback {
 }
 
 export const listAgents = () =>
-  api.get<{ results: Agent[]; llm: boolean }>("/council/agents/").then((r) => r.data);
+  api.get<{ results: Partial<Agent>[]; llm: boolean }>("/council/agents/").then((r) => ({
+    ...r.data,
+    results: (r.data.results || []).map((row) => {
+      const quotaLimit = Number(row.quota_limit ?? 10000);
+      const quotaUsed = Number(row.quota_used ?? 0);
+      const quotaRemaining = Number(row.quota_remaining ?? Math.max(0, quotaLimit - quotaUsed));
+      const isActive = row.is_active !== false;
+      return {
+        id: Number(row.id),
+        name: String(row.name || "未命名智能体"),
+        emoji: String(row.emoji || "🤖"),
+        group: String(row.group || "未分类"),
+        role: String(row.role || ""),
+        expertise: String(row.expertise || ""),
+        persona: String(row.persona || ""),
+        execution_role: row.execution_role || "operator",
+        is_active: isActive,
+        quota_limit: quotaLimit,
+        quota_used: quotaUsed,
+        quota_remaining: quotaRemaining,
+        status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
+        created_at: String(row.created_at || ""),
+      } satisfies Agent;
+    }),
+  }));
 export const createAgent = (body: Partial<Agent>) =>
   api.post<Agent>("/council/agents/", body).then((r) => r.data);
 export const updateAgent = (id: number, body: Partial<Agent>) =>
