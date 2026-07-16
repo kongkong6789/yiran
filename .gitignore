@@ -17,3 +17,4 @@ frontend/tsconfig.tsbuildinfo
 # 编辑器
 .vscode/
 .idea/
+.worktrees/
