@@ -29,6 +29,7 @@ import {
 } from "antd";
 import {
   ApiOutlined,
+  ArrowLeftOutlined,
   AuditOutlined,
   BranchesOutlined,
   CheckCircleOutlined,
@@ -38,16 +39,20 @@ import {
   DeleteOutlined,
   DeploymentUnitOutlined,
   EyeOutlined,
+  FileExcelOutlined,
   FileSearchOutlined,
   FolderOpenOutlined,
   InboxOutlined,
   GoldOutlined,
   LockOutlined,
   NodeIndexOutlined,
+  MoreOutlined,
   PlayCircleOutlined,
+  PlusOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
+  SortAscendingOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
 
@@ -294,6 +299,9 @@ export default function Knowledge() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [detailTemplateId, setDetailTemplateId] = useState<string | null>(null);
+  const [detailSearch, setDetailSearch] = useState("");
+  const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
+  const [detailPageSize, setDetailPageSize] = useState(10);
   const [processedFile, setProcessedFile] = useState<KnowledgeTemplateFile | null>(null);
   const [deletedTemplateFiles, setDeletedTemplateFiles] = useState<Record<string, string[]>>({});
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
@@ -317,6 +325,17 @@ export default function Knowledge() {
   const detailFiles: KnowledgeTemplateFile[] = detailTemplate
     ? [...(templateFileDetails[detailTemplate.id] ?? []).filter((file) => !deletedNames.includes(file.name)), ...detailUploadedFiles]
     : [];
+  const detailTypeOptions = useMemo(() => ["全部", ...Array.from(new Set(detailFiles.map((file) => file.kind)))], [detailFiles]);
+  const filteredDetailFiles = useMemo(() => {
+    const keyword = detailSearch.trim().toLowerCase();
+    return detailFiles.filter((file) => {
+      const typeOk = detailTypeFilter === "全部" || file.kind === detailTypeFilter;
+      const keywordOk = !keyword || `${file.name} ${file.kind} ${file.source}`.toLowerCase().includes(keyword);
+      return typeOk && keywordOk;
+    });
+  }, [detailFiles, detailSearch, detailTypeFilter]);
+  const detailTotalChars = filteredDetailFiles.reduce((sum, file) => sum + Math.max(file.chunks, 1) * 58, 0);
+  const detailReadyCount = filteredDetailFiles.filter((file) => file.status === "ready").length;
   const selectedSourceObjects = sources.filter((item) => selectedSources.includes(item.id));
   const readiness = Math.round((selectedTemplate.readiness + selectedTemplate.evidenceCoverage + (requireCitation ? 8 : 0) + (selectedSources.length * 6) + (uploadFiles.length * 4)) / 3);
 
@@ -396,7 +415,119 @@ export default function Knowledge() {
   return (
     <div className="knowledge-console">
       <style>{styles}</style>
-      <section className="knowledge-head">
+      {detailTemplate ? (
+        <section className="knowledge-doc-window">
+          <div className="doc-window-topbar">
+            <Button icon={<ArrowLeftOutlined />} onClick={() => setDetailTemplateId(null)}>返回知识库配置</Button>
+            <Space wrap>
+              <Tag color={kindColor(detailTemplate.kind)}>{detailTemplate.category}</Tag>
+              <Tag>{engineLabels[detailTemplate.strategy]}</Tag>
+              <Tag>{visibilityLabels[detailTemplate.visibility]}</Tag>
+              <Button type="primary" onClick={() => { applyTemplate(detailTemplate.id); message.success("已选用该知识库模板"); }}>选用这个模板</Button>
+            </Space>
+          </div>
+
+          <div className="doc-window-header">
+            <div>
+              <Title level={3}>文档</Title>
+              <Paragraph>
+                {detailTemplate.name} 的所有文件都在这里显示，整个知识库都可以链接到 Dify 引用或通过 Chat 插件进行索引。
+                <a onClick={() => message.info("后续可跳转到知识库索引说明文档")}> 了解更多↗</a>
+              </Paragraph>
+            </div>
+            <div className="doc-window-summary">
+              <div><b>{filteredDetailFiles.length}</b><span>文件</span></div>
+              <div><b>{detailReadyCount}</b><span>可用</span></div>
+              <div><b>{(detailTotalChars / 1000).toFixed(1)}k</b><span>字符数</span></div>
+            </div>
+          </div>
+
+          <div className="doc-toolbar">
+            <Select
+              value={detailTypeFilter}
+              onChange={setDetailTypeFilter}
+              options={detailTypeOptions.map((item) => ({ label: item, value: item }))}
+              suffixIcon={null}
+              className="doc-filter"
+            />
+            <Input prefix={<SearchOutlined />} value={detailSearch} onChange={(event) => setDetailSearch(event.target.value)} placeholder="搜索" allowClear />
+            <Button icon={<SortAscendingOutlined />}>排序：上传时间</Button>
+            <span className="doc-toolbar-spacer" />
+            <Button icon={<SettingOutlined />}>元数据</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>添加文件</Button>
+          </div>
+
+          <div className="doc-table-wrap">
+            <table className="doc-table">
+              <thead>
+                <tr>
+                  <th className="check-col"><input type="checkbox" aria-label="选择全部文件" /></th>
+                  <th className="index-col">#</th>
+                  <th>名称</th>
+                  <th>分段模式</th>
+                  <th>字符数</th>
+                  <th>召回次数 ↓</th>
+                  <th>上传时间 ↓</th>
+                  <th>状态</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDetailFiles.length ? filteredDetailFiles.map((file, index) => {
+                  const statusText = file.status === "ready" ? "可用" : file.status === "review" ? "待复核" : "待接入";
+                  const chars = Math.max(file.chunks, 1) * 58;
+                  const recallCount = file.status === "ready" ? index * 3 : 0;
+                  return (
+                    <tr key={`${file.name}-${index}`}>
+                      <td className="check-col"><input type="checkbox" aria-label={`选择 ${file.name}`} /></td>
+                      <td className="index-col">{index + 1}</td>
+                      <td>
+                        <button className="doc-name" onClick={() => setProcessedFile(file)}>
+                          <span className="file-type-icon"><FileExcelOutlined /></span>
+                          <span>{file.name}</span>
+                        </button>
+                        <div className="doc-source">{file.source}</div>
+                      </td>
+                      <td><span className="segment-pill">通用</span></td>
+                      <td>{chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : chars}</td>
+                      <td>{recallCount}</td>
+                      <td>2026-07-16 14:{String(22 + index).padStart(2, "0")}</td>
+                      <td><span className={`doc-status ${file.status}`}>{statusText}</span></td>
+                      <td>
+                        <Space size={10}>
+                          <Switch size="small" checked={file.status !== "suggested"} />
+                          <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => setProcessedFile(file)} />
+                          <Popconfirm title="从当前知识库配置中移除这个文件？" okText="移除" cancelText="取消" onConfirm={() => removeKnowledgeFile(file)}>
+                            <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                          </Popconfirm>
+                          <Button size="small" type="text" icon={<MoreOutlined />} />
+                        </Space>
+                      </td>
+                    </tr>
+                  );
+                }) : (
+                  <tr>
+                    <td colSpan={9}>
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无匹配文件" />
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="doc-pagination">
+            <Space>
+              <Button disabled>‹</Button>
+              <span>1 / 1</span>
+              <Button disabled>›</Button>
+            </Space>
+            <span className="page-number">1</span>
+            <Segmented value={detailPageSize} onChange={(value) => setDetailPageSize(Number(value))} options={[10, 25, 50]} />
+          </div>
+        </section>
+      ) : (
+        <>      <section className="knowledge-head">
         <div className="knowledge-head-copy">
           <span className="eyebrow">Knowledge Platform</span>
           <Title level={2}>企业知识中台配置</Title>
@@ -630,8 +761,10 @@ export default function Knowledge() {
           </div>
         </Col>
       </Row>
+        </>
+      )}
 
-      <Drawer title={detailTemplate?.name || "方案模板详情"} width={720} open={Boolean(detailTemplate)} onClose={() => setDetailTemplateId(null)} extra={detailTemplate ? <Button type="primary" onClick={() => { applyTemplate(detailTemplate.id); setDetailTemplateId(null); }}>选用这个模板</Button> : null}>
+      <Drawer title={detailTemplate?.name || "方案模板详情"} width={720} open={false} onClose={() => setDetailTemplateId(null)} extra={detailTemplate ? <Button type="primary" onClick={() => { applyTemplate(detailTemplate.id); setDetailTemplateId(null); }}>选用这个模板</Button> : null}>
         {detailTemplate ? (
           <Space direction="vertical" size={18} style={{ width: "100%" }}>
             <div>
@@ -993,6 +1126,213 @@ const styles = `
   color: #fff;
   font-style: normal;
   font-size: 12px;
+}
+.knowledge-doc-window {
+  min-height: calc(100vh - 104px);
+  padding: 26px 28px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+}
+.doc-window-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.doc-window-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+}
+.doc-window-header h3 {
+  margin: 0 0 4px;
+  color: #06142a;
+  font-size: 24px;
+  line-height: 1.2;
+}
+.doc-window-header p {
+  margin: 0;
+  color: #526079;
+  font-size: 14px;
+}
+.doc-window-header a {
+  color: #155eef;
+  cursor: pointer;
+  font-weight: 600;
+}
+.doc-window-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 88px);
+  gap: 8px;
+}
+.doc-window-summary div {
+  padding: 10px;
+  border: 1px solid #e7ebf2;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.doc-window-summary b,
+.doc-window-summary span {
+  display: block;
+}
+.doc-window-summary b {
+  color: #0f172a;
+  font-size: 18px;
+  line-height: 1.15;
+}
+.doc-window-summary span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+.doc-toolbar {
+  display: grid;
+  grid-template-columns: 200px minmax(220px, 1fr) auto minmax(12px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  margin: 22px 0 20px;
+}
+.doc-toolbar .ant-input-affix-wrapper,
+.doc-toolbar .ant-select-selector,
+.doc-toolbar .ant-btn {
+  height: 40px;
+  border-radius: 8px !important;
+}
+.doc-filter .ant-select-selector {
+  min-width: 200px;
+}
+.doc-toolbar-spacer {
+  min-width: 12px;
+}
+.doc-table-wrap {
+  min-height: 520px;
+  overflow-x: auto;
+  border-top: 1px solid #eef2f7;
+}
+.doc-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  color: #13213b;
+  font-size: 14px;
+}
+.doc-table th,
+.doc-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: middle;
+}
+.doc-table th {
+  color: #56627a;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.doc-table tr:hover td {
+  background: #fbfdff;
+}
+.doc-table input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #cfd6e1;
+  border-radius: 5px;
+  accent-color: #155eef;
+}
+.check-col {
+  width: 34px;
+}
+.index-col {
+  width: 36px;
+  color: #64748b;
+}
+.doc-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 440px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0f1f3a;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.doc-name:hover span:last-child {
+  color: #155eef;
+}
+.file-type-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: #18a957;
+  color: #ffffff;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.doc-source {
+  margin-left: 27px;
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+.segment-pill {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid #dbe3ef;
+  border-radius: 7px;
+  color: #475569;
+  background: #ffffff;
+  font-size: 12px;
+}
+.doc-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #0f9f6e;
+  font-weight: 600;
+}
+.doc-status::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #31c48d;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+.doc-status.review { color: #b7791f; }
+.doc-status.review::before { background: #f6c453; }
+.doc-status.suggested { color: #64748b; }
+.doc-status.suggested::before { background: #cbd5e1; }
+.doc-pagination {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px 30px 0;
+}
+.doc-pagination > :last-child {
+  justify-self: end;
+}
+.page-number {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #f1f5f9;
+  color: #1e293b;
 }
 .config-json {
   white-space: pre-wrap;
