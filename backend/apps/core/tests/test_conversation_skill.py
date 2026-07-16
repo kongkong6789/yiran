@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 
+from apps.core.chat_runs import ChatRunCancelled
 from apps.core.conversation_skill import (
     ConversationSkillError,
     build_conversation_skill,
@@ -68,6 +69,7 @@ class ConversationSkillBuilderTests(TestCase):
 
     def test_recognizes_explicit_conversation_packaging_intent(self):
         self.assertTrue(is_conversation_skill_request("把这次对话打包成一个 skill 并自动上传平台"))
+        self.assertTrue(is_conversation_skill_request("帮我打包成一个 skill 并自动上传平台"))
         self.assertTrue(is_conversation_skill_request("总结当前聊天记录，生成技能"))
         self.assertFalse(is_conversation_skill_request("帮我写一个查询 GMV 的 SQL"))
         self.assertFalse(is_conversation_skill_request("平台现在有哪些 skill？"))
@@ -173,3 +175,43 @@ class ConversationSkillBuilderTests(TestCase):
 
         with self.assertRaisesMessage(ConversationSkillError, "至少完成一轮"):
             build_conversation_skill(self.user, self.session)
+
+    @patch("apps.core.conversation_skill.save_skill_asset_from_bytes")
+    @patch("apps.core.conversation_skill.extract_skill_from_upload")
+    @patch("apps.core.conversation_skill.llm.chat_messages_result")
+    def test_cancelled_after_validation_does_not_start_upload(
+        self,
+        mocked_llm,
+        mocked_extract,
+        mocked_save,
+    ):
+        self.add_message("user", "复盘 GMV")
+        self.add_message("assistant", "已完成复盘")
+        mocked_llm.return_value = {
+            "content": json.dumps(VALID_LLM_PAYLOAD, ensure_ascii=False),
+            "error": "",
+            "configured": True,
+            "model": "test-model",
+        }
+        cancelled = False
+
+        def validate_then_cancel(*_args, **_kwargs):
+            nonlocal cancelled
+            cancelled = True
+            return {
+                "package_files": [
+                    ("SKILL.md", b"skill"),
+                    ("references/workflow-summary.md", b"summary"),
+                ],
+            }
+
+        mocked_extract.side_effect = validate_then_cancel
+
+        with self.assertRaises(ChatRunCancelled):
+            build_conversation_skill(
+                self.user,
+                self.session,
+                cancel_check=lambda: cancelled,
+            )
+
+        mocked_save.assert_not_called()

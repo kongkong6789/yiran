@@ -304,6 +304,10 @@ export default function AgentChat() {
   }, [messages, loading]);
 
   const newChat = () => {
+    if (loading) {
+      message.warning("请先暂停当前生成，再新建对话");
+      return;
+    }
     setActiveId(null);
     setMessages([]);
     setDraft("");
@@ -453,12 +457,12 @@ export default function AgentChat() {
         files: files.length ? files : undefined,
         model: model || undefined,
       });
+      if (activeRunIdRef.current !== runId) return;
       if (res.cancelled) {
         if (res.conversation_id) setActiveId(res.conversation_id);
         appendPausedMessage(runId);
         return;
       }
-      if (activeRunIdRef.current !== runId) return;
       if (!res.ok || !res.reply) {
         message.error(res.error || "对话失败");
         return;
@@ -520,6 +524,7 @@ export default function AgentChat() {
               <Select
                 allowClear
                 size="small"
+                disabled={loading}
                 placeholder="用户"
                 style={{ width: 96 }}
                 value={userFilter}
@@ -536,6 +541,7 @@ export default function AgentChat() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={newChat}
+                disabled={loading}
                 aria-label="新建对话"
               />
             </Tooltip>
@@ -549,10 +555,13 @@ export default function AgentChat() {
               key={item.id}
               className={`agent-chat-session ${activeId === item.id ? "active" : ""}`}
               role="button"
-              tabIndex={0}
-              onClick={() => setActiveId(item.id)}
+              tabIndex={loading ? -1 : 0}
+              aria-disabled={loading}
+              onClick={() => {
+                if (!loading) setActiveId(item.id);
+              }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") setActiveId(item.id);
+                if (!loading && event.key === "Enter") setActiveId(item.id);
               }}
             >
               <div>
@@ -576,6 +585,7 @@ export default function AgentChat() {
                   size="small"
                   icon={<DeleteOutlined />}
                   onClick={(event) => event.stopPropagation()}
+                  disabled={loading}
                   aria-label={`删除对话：${item.title}`}
                 />
               </Popconfirm>
@@ -628,7 +638,7 @@ export default function AgentChat() {
                 )}
               </>
             )}
-            <Button icon={<PlusOutlined />} onClick={newChat}>新对话</Button>
+            <Button icon={<PlusOutlined />} onClick={newChat} disabled={loading}>新对话</Button>
           </Space>
         </div>
 

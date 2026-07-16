@@ -33,6 +33,7 @@ SOURCE_TERMS = (
 )
 SKILL_TERMS = ("skill", "技能")
 ACTION_TERMS = ("打包", "生成", "创建", "整理", "总结", "提炼", "package", "create", "build")
+UPLOAD_TERMS = ("上传", "启用", "安装", "平台", "upload", "enable", "install")
 
 REQUIRED_SECTIONS = (
     ("## 目标", "## goal"),
@@ -58,9 +59,12 @@ def is_conversation_skill_request(text: str) -> bool:
     normalized = (text or "").strip().lower()
     return bool(
         normalized
-        and any(term in normalized for term in SOURCE_TERMS)
         and any(term in normalized for term in SKILL_TERMS)
         and any(term in normalized for term in ACTION_TERMS)
+        and (
+            any(term in normalized for term in SOURCE_TERMS)
+            or any(term in normalized for term in UPLOAD_TERMS)
+        )
     )
 
 
@@ -234,6 +238,8 @@ def build_conversation_skill(
         paths = sorted(path for path, _ in validated.get("package_files") or [])
         if paths != ["SKILL.md", "references/workflow-summary.md"]:
             raise ConversationSkillError("生成的 Skill 包目录结构无效")
+        if cancel_check and cancel_check():
+            raise ChatRunCancelled()
         with transaction.atomic():
             asset, personal = save_skill_asset_from_bytes(
                 user,

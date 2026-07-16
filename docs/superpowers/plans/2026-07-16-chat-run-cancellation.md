@@ -375,4 +375,3 @@ Start Django and Vite, open `/agent`, send a prompt that takes several seconds, 
 git add backend frontend
 git commit -m "fix: harden chat pause flow"
 ```
-

@@ -1,5 +1,5 @@
 import { App as AntApp } from "antd";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -205,5 +205,75 @@ describe("AgentChat pause control", () => {
       args.map(String).join(" ").includes("same key")
     ));
     expect(duplicateKeyWarning).toBe(false);
+  });
+
+  it("keeps conversation navigation locked while a run is active", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentChat).mockReturnValue(new Promise(() => undefined));
+    renderChat();
+
+    const input = await screen.findByPlaceholderText(/今天帮你做些什么/);
+    await user.type(input, "生成一份经营复盘");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(agentChat).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "新建对话" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /新对话/ })).toBeDisabled();
+    expect(screen.getByText("生成一份经营复盘")).toBeInTheDocument();
+  });
+
+  it("ignores a cancelled response that arrives after starting a new chat", async () => {
+    const user = userEvent.setup();
+    const request = deferred<{
+      ok: boolean;
+      cancelled: boolean;
+      run_id: string;
+      conversation_id: string;
+    }>();
+    vi.mocked(agentChat).mockReturnValue(request.promise);
+    vi.mocked(cancelAgentChatRun).mockImplementation(async (runId) => ({
+      ok: true,
+      cancelled: true,
+      run_id: runId,
+      conversation_id: "conversation-1",
+    }));
+    vi.mocked(getAgentChatSession).mockResolvedValue({
+      id: "conversation-1",
+      title: "经营复盘",
+      created_at: "2026-07-16T00:00:00Z",
+      updated_at: "2026-07-16T00:00:00Z",
+      messages: [{
+        id: 7,
+        role: "assistant",
+        content: "已暂停本次生成。",
+        meta: { cancelled: true },
+      }],
+    });
+    renderChat();
+
+    const input = await screen.findByPlaceholderText(/今天帮你做些什么/);
+    await user.type(input, "生成一份经营复盘");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "暂停生成" }));
+    expect(await screen.findByText("已暂停本次生成。")).toBeInTheDocument();
+
+    const newChat = screen.getByRole("button", { name: "新建对话" });
+    await waitFor(() => expect(newChat).toBeEnabled());
+    await user.click(newChat);
+    expect(screen.queryByText("已暂停本次生成。")).not.toBeInTheDocument();
+
+    const runId = vi.mocked(agentChat).mock.calls[0][0].run_id;
+    await act(async () => {
+      request.resolve({
+        ok: false,
+        cancelled: true,
+        run_id: runId,
+        conversation_id: "conversation-1",
+      });
+      await request.promise;
+    });
+
+    expect(screen.queryByText("已暂停本次生成。")).not.toBeInTheDocument();
+    expect(screen.getByText("开始一个新对话")).toBeInTheDocument();
   });
 });
