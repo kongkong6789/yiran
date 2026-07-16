@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "apps.mcp",
     "apps.skills",
     "apps.collab",
+    "apps.commerce",
 ]
 
 MIDDLEWARE = [

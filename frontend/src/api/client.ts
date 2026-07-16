@@ -677,6 +677,120 @@ export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; 
 
 export const getGraph = (params?: { scope?: "age" | "all" }) =>
   api.get<OntGraph>("/ontology/graph/", { params: { scope: params?.scope ?? "age" } }).then((r) => r.data);
+
+/** 电商经营 Ontology 契约（知行一期迁入） */
+export type CommerceSchema = {
+  source: string;
+  phase: number;
+  object_types: {
+    key: string;
+    label: string;
+    description: string;
+    key_properties: string[];
+    sensitivity: string;
+    loop_level?: string | null;
+    category: string;
+  }[];
+  relation_types: { key: string; label: string; description: string }[];
+  loop_level_object: Record<string, string>;
+  containment_chain: {
+    parent_key: string;
+    child_key: string;
+    parent_label: string;
+    child_label: string;
+    label: string;
+  }[];
+  samples?: {
+    objects: {
+      id: number;
+      otype: string;
+      name: string;
+      category: string;
+      attributes: Record<string, unknown>;
+    }[];
+    contain_relations: {
+      id: number;
+      label: string;
+      source: string;
+      target: string;
+    }[];
+  };
+  fusion?: {
+    name: string;
+    source_path: string;
+    phase: number;
+    phase_title: string;
+    done: string[];
+    pending: string[];
+  };
+};
+export const getCommerceSchema = () =>
+  api.get<CommerceSchema>("/ontology/commerce-schema/").then((r) => r.data);
+
+// ---- 经营融合工作台（知行二～五期）----
+export const getCommerceOverview = () =>
+  api.get<{
+    name: string;
+    source_path: string;
+    phases: { id: number; title: string; status: string; items: string[] }[];
+    runtime: Record<string, unknown>;
+  }>("/commerce/overview/").then((r) => r.data);
+
+export const getCommerceFactsHealth = () =>
+  api.get<{
+    status: string;
+    duckdb: { available: boolean; path: string; table_count: number; tables: { schema?: string; name: string }[]; error?: string };
+    postgres: { available: boolean; table_count: number; tables: Record<string, unknown>[]; error?: string };
+    connectors: { id: string; name: string; status: string; note: string }[];
+    guidance: string[];
+  }>("/commerce/facts/health/").then((r) => r.data);
+
+export const simulateCommerceLoops = (body?: {
+  model_id?: string;
+  periods?: number;
+  interventions?: Record<string, number[]>;
+}) => api.post<{
+  model_name: string;
+  periods: number;
+  trajectory: { period: number; values: Record<string, number>; labels: Record<string, string> }[];
+  final: Record<string, number>;
+  uncertainty_metadata?: { note?: string };
+}>("/commerce/loops/simulate/", body || {}).then((r) => r.data);
+
+export const getCommerceEvidence = () =>
+  api.get<{
+    nodes: { id: string; type: string; label: string; summary?: string }[];
+    edges: { id: string; source: string; target: string; type: string; label?: string }[];
+    counts: { nodes: number; edges: number };
+    warnings: string[];
+  }>("/commerce/evidence/").then((r) => r.data);
+
+export const getCommerceGovernance = () =>
+  api.get<{
+    external_writes_enabled: boolean;
+    policy: { default: string; modes: string[] };
+    approvals: { pending_count: number; items: Record<string, unknown>[]; error?: string };
+    mcp: { servers: { id: number; name: string; enabled: boolean }[]; error?: string };
+    tool_gates: { tool: string; action: string; requires_approval: boolean }[];
+  }>("/commerce/governance/").then((r) => r.data);
+
+export const runCommerceCouncil = (body: { decision_context: string; domain?: string; evidence?: string }) =>
+  api.post<{
+    summary: string;
+    votes: { member: string; stance: string; reason: string }[];
+    kill_criteria: string[];
+    panel: { id: string; name: string; focus: string }[];
+  }>("/commerce/council/", body).then((r) => r.data);
+
+export const getCommerceAgents = () =>
+  api.get<{
+    supervisors: { id: string; title: string }[];
+    agents: { id: string; team: string; title: string; desc: string }[];
+    integration: { chat_path: string; hint: string };
+    counts: { agents: number; supervisors: number };
+  }>("/commerce/agents/").then((r) => r.data);
+
+
 export const addObject = (body: Partial<OntObject>) =>
   api.post<OntObject>("/ontology/graph/objects/", body).then((r) => r.data);
 export const updateObject = (id: number, body: Partial<OntObject>) =>

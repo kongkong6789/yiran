@@ -13,6 +13,8 @@ import Agents from "./pages/Agents";
 import Council from "./pages/Council";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
+import CommerceHub from "./pages/CommerceHub";
+import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
 import SkillsPage from "./pages/SkillsPage";
 import CollabRisk from "./pages/CollabRisk";
@@ -42,6 +44,10 @@ export default function App() {
           )} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="council" element={<Council />} />
+          <Route path="commerce" element={<CommerceHub />} />
+          <Route path="commerce/bench" element={<CommerceFusion />} />
+          <Route path="commerce/loops" element={<Loops />} />
+          <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
           <Route path="console" element={<AgentConsole />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="datalake" element={<DataLake />} />
@@ -71,7 +77,6 @@ export default function App() {
           )} />
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
-          <Route path="loops" element={<Loops />} />
           <Route path="audit" element={<Audit />} />
         </Route>
       </Route>

@@ -13,12 +13,23 @@ from .models import OntObject, OntRelation
 from .signals import suppress_ontology_sync
 from apps.council import llm
 from apps.datalake import age as age_svc
+from .commerce_schema import preset_types_for_ui
 
-# 前端预设类型(草图内容)
-PRESET_TYPES = {
+# 前端预设类型：草图基础 + 电商经营类型（知行一期迁入）
+_BASE_PRESETS = {
     "physical": ["时间", "空间", "物体", "人", "电脑", "工位"],
     "virtual": ["岗位", "流程", "客户"],
 }
+
+
+def _merged_presets() -> dict:
+    commerce = preset_types_for_ui()
+    physical = list(dict.fromkeys([*_BASE_PRESETS["physical"], *commerce["physical"]]))
+    virtual = list(dict.fromkeys([*_BASE_PRESETS["virtual"], *commerce["virtual"]]))
+    return {"physical": physical, "virtual": virtual}
+
+
+PRESET_TYPES = _merged_presets()
 
 
 def _obj(o: OntObject) -> dict:

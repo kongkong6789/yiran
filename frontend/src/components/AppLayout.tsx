@@ -16,6 +16,7 @@ import {
   DownOutlined,
   UserOutlined,
   ApartmentOutlined,
+  ShopOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -46,6 +47,13 @@ const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/my/recent", icon: <ClockCircleOutlined />, label: "最近" },
 ];
 
+/** 经营（知行迁入 · 统一分类） */
+const COMMERCE_NAV: NavItem[] = [
+  { key: "/commerce", icon: <ShopOutlined />, label: "经营首页" },
+  { key: "/commerce/loops", icon: <SyncOutlined />, label: "回路图谱" },
+  { key: "/commerce/bench", icon: <BarChartOutlined />, label: "经营工作台" },
+];
+
 /** 业务能力与外部系统 */
 const CAPABILITY_NAV: NavItem[] = [
   { key: "/council", icon: <TeamOutlined />, label: "专家团" },
@@ -57,13 +65,12 @@ const CAPABILITY_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { key: "/accounts", icon: <UserOutlined />, label: "账号" },
   { key: "/agents", icon: <ApartmentOutlined />, label: "对象" },
-  { key: "/loops", icon: <SyncOutlined />, label: "回路" },
   { key: "/audit", icon: <SafetyCertificateOutlined />, label: "审计" },
 ];
 
-const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
+const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
 
-const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/ontology", "/connectors"]);
+const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/ontology", "/connectors", "/commerce/loops"]);
 
 export default function AppLayout() {
   const nav = useNavigate();
@@ -85,13 +92,16 @@ export default function AppLayout() {
   const isFullBleed = FULL_BLEED.has(loc.pathname);
 
   const selectedKeys = useMemo(() => {
-    const hit = ALL_NAV.find((n) => loc.pathname === n.key || loc.pathname.startsWith(`${n.key}/`));
+    // 更长路径优先，避免 /commerce 抢走 /commerce/loops、/commerce/bench
+    const ordered = [...ALL_NAV].sort((a, b) => b.key.length - a.key.length);
+    const hit = ordered.find((n) => loc.pathname === n.key || loc.pathname.startsWith(`${n.key}/`));
     return hit ? [hit.key] : [loc.pathname];
   }, [loc.pathname]);
 
   const openKeys = useMemo(() => {
     if (WORK_NAV.some((n) => selectedKeys.includes(n.key))) return ["work"];
     if (KNOWLEDGE_NAV.some((n) => selectedKeys.includes(n.key))) return ["knowledge"];
+    if (COMMERCE_NAV.some((n) => selectedKeys.includes(n.key))) return ["commerce"];
     if (CAPABILITY_NAV.some((n) => selectedKeys.includes(n.key))) return ["capability"];
     if (ADMIN_NAV.some((n) => selectedKeys.includes(n.key))) return ["admin"];
     return [];
@@ -107,6 +117,11 @@ export default function AppLayout() {
       key: "knowledge",
       label: "知识",
       children: KNOWLEDGE_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+    },
+    {
+      key: "commerce",
+      label: "经营",
+      children: COMMERCE_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
     },
     {
       key: "capability",

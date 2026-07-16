@@ -6,6 +6,8 @@ urlpatterns = [
     # 动作契约(第5层原有)
     path("objects/", views.objects, name="ontology-objects"),
     path("actions/", views.actions, name="ontology-actions"),
+    # 电商经营契约（知行一期）
+    path("commerce-schema/", views.commerce_schema, name="ontology-commerce-schema"),
     # 本体 ER 图谱
     path("graph/", graph_views.graph, name="ont-graph"),
     path("graph/objects/", graph_views.objects, name="ont-graph-objects"),
