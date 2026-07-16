@@ -2,58 +2,40 @@ import { useMemo, useState } from "react";
 import type { UploadFile } from "antd";
 import {
   App as AntApp,
-  Badge,
   Button,
   Card,
   Col,
   Drawer,
   Empty,
-  Flex,
   Form,
   Input,
   List,
   Popconfirm,
-  Progress,
   Row,
   Segmented,
   Select,
-  Slider,
   Space,
   Statistic,
   Switch,
-  Tabs,
   Tag,
   Timeline,
   Typography,
   Upload,
 } from "antd";
 import {
-  ApiOutlined,
   ArrowLeftOutlined,
-  AuditOutlined,
-  BranchesOutlined,
-  CheckCircleOutlined,
-  CloudUploadOutlined,
-  ControlOutlined,
   DatabaseOutlined,
   DeleteOutlined,
-  DeploymentUnitOutlined,
   EyeOutlined,
   FileExcelOutlined,
   FileSearchOutlined,
-  FolderOpenOutlined,
   InboxOutlined,
-  GoldOutlined,
-  LockOutlined,
   NodeIndexOutlined,
   MoreOutlined,
-  PlayCircleOutlined,
   PlusOutlined,
-  SafetyCertificateOutlined,
   SearchOutlined,
   SettingOutlined,
   SortAscendingOutlined,
-  ThunderboltOutlined,
 } from "@ant-design/icons";
 
 const { Title, Text, Paragraph } = Typography;
@@ -275,12 +257,6 @@ function kindColor(kind: TemplateKind) {
   return kind === "graph" ? "blue" : kind === "hybrid" ? "gold" : kind === "evidence" ? "green" : kind === "compiled" ? "purple" : "default";
 }
 
-function stateBadge(state: KnowledgeSource["state"]) {
-  if (state === "ready") return <Badge status="success" text="可召回" />;
-  if (state === "syncing") return <Badge status="processing" text="同步中" />;
-  return <Badge status="warning" text="待复核" />;
-}
-
 export default function Knowledge() {
   const { message } = AntApp.useApp();
   const [query, setQuery] = useState("");
@@ -291,10 +267,10 @@ export default function Knowledge() {
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
   const [requireCitation, setRequireCitation] = useState(true);
   const [extractGraph, setExtractGraph] = useState(true);
-  const [chunkSize, setChunkSize] = useState(900);
-  const [topK, setTopK] = useState(8);
-  const [selectedSources, setSelectedSources] = useState<string[]>(["policy", "graph", "crm"]);
-  const [projectName, setProjectName] = useState("UNOVE 经营知识中台");
+  const [chunkSize] = useState(900);
+  const [topK] = useState(8);
+  const [selectedSources] = useState<string[]>(["policy", "graph", "crm"]);
+  const [projectName] = useState("UNOVE 经营知识中台");
   const [objective, setObjective] = useState("把制度、业务图谱、经营指标和会议资料配置成可追问、可审计、可复用的企业知识应用。");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -337,7 +313,6 @@ export default function Knowledge() {
   const detailTotalChars = filteredDetailFiles.reduce((sum, file) => sum + Math.max(file.chunks, 1) * 58, 0);
   const detailReadyCount = filteredDetailFiles.filter((file) => file.status === "ready").length;
   const selectedSourceObjects = sources.filter((item) => selectedSources.includes(item.id));
-  const readiness = Math.round((selectedTemplate.readiness + selectedTemplate.evidenceCoverage + (requireCitation ? 8 : 0) + (selectedSources.length * 6) + (uploadFiles.length * 4)) / 3);
 
   const configDraft = useMemo(() => ({
     project_name: projectName,
@@ -527,240 +502,71 @@ export default function Knowledge() {
           </div>
         </section>
       ) : (
-        <>      <section className="knowledge-head">
-        <div className="knowledge-head-copy">
-          <span className="eyebrow">Knowledge Platform</span>
-          <Title level={2}>企业知识中台配置</Title>
-          <Paragraph>
-            用方案模板组织资料、权限、检索策略和发布审核，把知识库从“文件夹”变成可治理的业务应用。
-          </Paragraph>
-          <div className="hero-badges">
-            <span>模板驱动</span>
-            <span>权限继承</span>
-            <span>RAG / GraphRAG</span>
-            <span>可审计发布</span>
-          </div>
-        </div>
-        <div className="knowledge-head-panel">
-          <div className="head-metrics">
-            <div><b>{templates.length}</b><span>方案模板</span></div>
-            <div><b>{selectedSourceObjects.length}</b><span>资料源</span></div>
-            <div><b>{uploadFiles.length}</b><span>上传文件</span></div>
-          </div>
-          <Space wrap className="head-actions">
-            <Button icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>接入资料</Button>
-            <Button icon={<PlayCircleOutlined />} onClick={() => setDrawerOpen(true)}>配置草案</Button>
-            <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => message.success("配置已保存为本地草案")}>保存</Button>
-          </Space>
-        </div>
-      </section>
-
-      <Row gutter={[16, 16]}>
-        <Col xs={24} xl={16}>
-          <Tabs
-            defaultActiveKey="templates"
-            items={[
-              {
-                key: "templates",
-                label: <span><GoldOutlined /> 方案模板</span>,
-                children: (
-                  <div className="template-workspace">
-                    <div className="template-toolbar">
-                      <Input prefix={<SearchOutlined />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索客户、制度、客服、图谱、指标..." />
-                      <Segmented value={category} onChange={(value) => setCategory(String(value))} options={categories} />
-                    </div>
-                    <div className="custom-file-entry">
-                      <div>
-                        <Text strong>自定义资料包</Text>
-                        <Paragraph className="muted">没有合适模板时，先上传自己的知识文件，系统会沿用当前检索、权限和审核策略生成入库草案。</Paragraph>
-                        {uploadFiles.length ? <Text type="secondary">已选择 {uploadFiles.length} 个文件：{uploadFiles.slice(0, 3).map((file) => file.name).join("、")}{uploadFiles.length > 3 ? "..." : ""}</Text> : <Text type="secondary">还没有选择自定义文件</Text>}
-                      </div>
-                      <Space wrap>
-                        <Button icon={<GoldOutlined />} onClick={() => applyTemplate("blank")}>使用空白模板</Button>
-                        <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>选择自定义文件</Button>
-                      </Space>
-                    </div>
-                    <div className="template-grid">
-                      {visibleTemplates.map((template) => (
-                        <article
-                          key={template.id}
-                          className={`template-card ${template.id === selectedTemplate.id ? "active" : ""}`}
-                          onClick={() => applyTemplate(template.id)}
-                          onDoubleClick={() => setDetailTemplateId(template.id)}
-                          title="单击选用，双击查看详情"
-                        >
-                          <span className="template-card-head">
-                            <Tag color={kindColor(template.kind)}>{template.category}</Tag>
-                            <Text type="secondary">{template.owner}</Text>
-                          </span>
-                          <b>{template.name}</b>
-                          <small>{template.headline}</small>
-                          <span className="template-tags">
-                            {template.outputs.slice(0, 3).map((item) => <Tag key={item}>{item}</Tag>)}
-                          </span>
-                          <Text type="secondary" className="template-open-hint">双击查看详情和文件</Text>
-                        </article>
-                      ))}
-                    </div>
-                    {visibleTemplates.length === 0 ? <Empty description="没有匹配的方案模板" /> : null}
-                  </div>
-                ),
-              },
-              {
-                key: "scope",
-                label: <span><FolderOpenOutlined /> 知识范围</span>,
-                children: (
-                  <div className="config-section">
-                    <Row gutter={[16, 16]}>
-                      <Col xs={24} md={12}>
-                        <Form layout="vertical">
-                          <Form.Item label="应用名称">
-                            <Input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-                          </Form.Item>
-                          <Form.Item label="业务目标">
-                            <Input.TextArea rows={4} value={objective} onChange={(event) => setObjective(event.target.value)} />
-                          </Form.Item>
-                          <Form.Item label="发布范围">
-                            <Segmented value={visibility} onChange={(value) => setVisibility(value as Visibility)} options={[{ label: "个人", value: "private" }, { label: "团队", value: "team" }, { label: "公司", value: "company" }]} />
-                          </Form.Item>
-                        </Form>
-                      </Col>
-                      <Col xs={24} md={12}>
-                        <List
-                          className="source-list"
-                          dataSource={sources}
-                          renderItem={(source) => (
-                            <List.Item
-                              actions={[<Switch key="select" checked={selectedSources.includes(source.id)} onChange={(checked) => setSelectedSources((prev) => checked ? [...prev, source.id] : prev.filter((id) => id !== source.id))} />]}
-                            >
-                              <List.Item.Meta
-                                avatar={<DatabaseOutlined />}
-                                title={<Space><span>{source.name}</span>{stateBadge(source.state)}</Space>}
-                                description={`${source.type} / ${visibilityLabels[source.scope]} / ${source.records.toLocaleString()} 条 / ${source.freshness}`}
-                              />
-                            </List.Item>
-                          )}
-                        />
-                      </Col>
-                    </Row>
-                  </div>
-                ),
-              },
-              {
-                key: "strategy",
-                label: <span><ControlOutlined /> 检索策略</span>,
-                children: (
-                  <div className="config-section strategy-grid">
-                    <Card title="召回引擎" extra={<ApiOutlined />}>
-                      <Select value={engine} onChange={setEngine} style={{ width: "100%" }} options={Object.entries(engineLabels).map(([value, label]) => ({ value, label }))} />
-                      <div className="switch-row"><span>回答必须带引用</span><Switch checked={requireCitation} onChange={setRequireCitation} /></div>
-                      <div className="switch-row"><span>抽取实体关系</span><Switch checked={extractGraph} onChange={setExtractGraph} /></div>
-                    </Card>
-                    <Card title="切块与召回" extra={<FileSearchOutlined />}>
-                      <Text>Chunk Size: {chunkSize}</Text>
-                      <Slider min={300} max={1600} step={100} value={chunkSize} onChange={(value) => setChunkSize(Number(value))} />
-                      <Text>Top K: {topK}</Text>
-                      <Slider min={3} max={20} value={topK} onChange={(value) => setTopK(Number(value))} />
-                    </Card>
-                    <Card title="推荐处理链路" extra={<BranchesOutlined />}>
-                      <Timeline
-                        items={["资料解析", "权限标注", "切块入库", extractGraph ? "实体关系抽取" : "跳过图谱抽取", "向量召回", requireCitation ? "引用校验" : "摘要生成"].map((step) => ({ children: step }))}
-                      />
-                    </Card>
-                  </div>
-                ),
-              },
-              {
-                key: "governance",
-                label: <span><SafetyCertificateOutlined /> 权限与审核</span>,
-                children: (
-                  <div className="config-section governance-grid">
-                    <Card title="发布治理" extra={<AuditOutlined />}>
-                      <Form layout="vertical">
-                        <Form.Item label="审核策略">
-                          <Select value={reviewPolicy} onChange={setReviewPolicy} options={Object.entries(reviewLabels).map(([value, label]) => ({ value, label }))} />
-                        </Form.Item>
-                        <Form.Item label="负责人">
-                          <Input value={selectedTemplate.owner} readOnly />
-                        </Form.Item>
-                      </Form>
-                    </Card>
-                    <Card title="发布门禁" extra={<LockOutlined />}>
-                      <List
-                        dataSource={[
-                          { label: "公司级发布", ok: visibility !== "company" || reviewPolicy === "required" },
-                          { label: "证据引用", ok: requireCitation || selectedTemplate.kind === "compiled" },
-                          { label: "来源可见性", ok: selectedSourceObjects.length > 0 },
-                          { label: "审计留痕", ok: true },
-                        ]}
-                        renderItem={(item) => <List.Item><Space><CheckCircleOutlined className={item.ok ? "ok" : "warn"} />{item.label}</Space></List.Item>}
-                      />
-                    </Card>
-                  </div>
-                ),
-              },
-              {
-                key: "eval",
-                label: <span><DeploymentUnitOutlined /> 评测发布</span>,
-                children: (
-                  <div className="config-section eval-grid">
-                    <Card title="样例问题">
-                      <Input.TextArea rows={3} value={selectedTemplate.sampleQuestion} readOnly />
-                    </Card>
-                    <Card title="发布检查">
-                      <Progress percent={Math.min(100, readiness)} status={readiness >= 85 ? "success" : "active"} />
-                      <Paragraph className="muted">综合模板成熟度、证据覆盖、资料接入和治理策略生成。达到 85 分建议进入团队试运行。</Paragraph>
-                    </Card>
-                  </div>
-                ),
-              },
-            ]}
-          />
-        </Col>
-
-        <Col xs={24} xl={8}>
-          <div className="preview-stack">
-            <Card title="当前知识应用" extra={<SettingOutlined />}>
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                <div>
-                  <Text type="secondary">模板</Text>
-                  <Title level={4}>{selectedTemplate.name}</Title>
-                  <Paragraph>{selectedTemplate.headline}</Paragraph>
-                </div>
-                <Flex gap={8} wrap="wrap">
-                  <Tag color="blue">{engineLabels[engine]}</Tag>
-                  <Tag color="green">{visibilityLabels[visibility]}</Tag>
-                  <Tag color="gold">{reviewLabels[reviewPolicy]}</Tag>
-                  {requireCitation ? <Tag>引用必需</Tag> : null}
-                  {extractGraph ? <Tag>图谱抽取</Tag> : null}
-                </Flex>
+        <>
+          <section className="kb-dify-home">
+            <div className="dify-topline">
+              <Title level={2}>知识库</Title>
+              <Space size={22} className="api-status">
+                <span><NodeIndexOutlined /> 外部知识库 API</span>
+                <span><i /> 服务 API</span>
               </Space>
-            </Card>
+            </div>
 
-            <Row gutter={[12, 12]}>
-              <Col span={8}><Card><Statistic title="资料源" value={selectedSourceObjects.length} /></Card></Col>
-              <Col span={8}><Card><Statistic title="上传" value={uploadFiles.length} /></Card></Col>
-              <Col span={8}><Card><Statistic title="就绪" value={Math.min(100, readiness)} suffix="%" /></Card></Col>
-            </Row>
+            <div className="dify-toolbar">
+              <Select
+                value={category}
+                onChange={(value) => setCategory(String(value))}
+                options={categories.map((item) => ({ label: item === "全部" ? "标签" : item, value: item }))}
+                className="tag-filter"
+              />
+              <Input prefix={<SearchOutlined />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" allowClear className="dify-search" />
+              <label className="all-kb-check">
+                <input type="checkbox" />
+                <span>所有知识库</span>
+                <small>?</small>
+              </label>
+              <span className="toolbar-spacer" />
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => { applyTemplate("blank"); setUploadOpen(true); }}>创建</Button>
+            </div>
 
-            <Card title="召回链路" extra={<NodeIndexOutlined />}>
-              <div className="pipeline">
-                {["上传/同步", "解析切块", "向量化", extractGraph ? "图谱抽取" : "权限标注", "检索重排", "答案引用"].map((step, index) => (
-                  <div key={step}>
-                    <i>{index + 1}</i>
-                    <span>{step}</span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-
-            <Card title="输出能力" extra={<ThunderboltOutlined />}>
-              <Space wrap>{selectedTemplate.outputs.map((item) => <Tag key={item}>{item}</Tag>)}</Space>
-              <Paragraph className="muted">限制：{selectedTemplate.limitations.join(" ")}</Paragraph>
-            </Card>
-          </div>
-        </Col>
-      </Row>
+            <div className="dify-card-grid">
+              {visibleTemplates.map((template) => {
+                const templateFiles = templateFileDetails[template.id] ?? [];
+                const fileCount = templateFiles.length + (template.id === selectedTemplate.id ? uploadFiles.length : 0);
+                const appCount = template.kind === "hybrid" ? 1 : 0;
+                const updatedMinutes = 18 + Math.max(0, templates.findIndex((item) => item.id === template.id)) * 4;
+                return (
+                  <article
+                    key={template.id}
+                    className={`dify-kb-card ${template.id === selectedTemplate.id ? "active" : ""}`}
+                    onClick={() => applyTemplate(template.id)}
+                    onDoubleClick={() => setDetailTemplateId(template.id)}
+                    title="双击打开知识库文档"
+                  >
+                    <div className="dify-card-mainrow">
+                      <div className="dify-kb-icon"><DatabaseOutlined /></div>
+                      <div className="dify-title-block">
+                        <h3>{template.name}</h3>
+                        <div className="dify-subline">
+                          <span>通用</span>
+                          <span>经济 · 倒排索引</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="dify-desc">useful for when you want to answer queries about the {template.name} knowledge base</p>
+                    <button className="add-tag" onClick={(event) => { event.stopPropagation(); message.info("后续可接入标签管理"); }}>◇ 添加标签</button>
+                    <div className="dify-card-footer">
+                      <span><FileSearchOutlined /> {fileCount}</span>
+                      <span><DatabaseOutlined /> {appCount}</span>
+                      <span>/</span>
+                      <span>更新于 {updatedMinutes} 分钟前</span>
+                    </div>
+                  </article>
+                );
+              })}
+              {visibleTemplates.length === 0 ? <Empty description="没有匹配的知识库" /> : null}
+            </div>
+          </section>
         </>
       )}
 
@@ -939,22 +745,219 @@ export default function Knowledge() {
 const styles = `
 .knowledge-console {
   min-height: calc(100vh - 96px);
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  color: #172033;
+  color: #0f1f3a;
 }
 .knowledge-console::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(180deg, rgba(14, 116, 144, 0.08), rgba(255,255,255,0) 32%),
-    linear-gradient(90deg, rgba(245, 158, 11, 0.08), rgba(255,255,255,0) 42%);
-  z-index: 0;
+  content: none;
 }
 .knowledge-console > * { position: relative; z-index: 1; }
+.kb-dify-home {
+  min-height: calc(100vh - 96px);
+  padding: 2px 4px 40px;
+  background: #f4f6fa;
+}
+.dify-topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.dify-topline h2 {
+  margin: 0;
+  color: #06142a;
+  font-size: 26px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+.api-status {
+  color: #4b5870;
+  font-size: 14px;
+}
+.api-status span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.api-status i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #20c76f;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.10);
+}
+.dify-toolbar {
+  display: grid;
+  grid-template-columns: 140px 250px auto minmax(24px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.dify-toolbar .ant-select-selector,
+.dify-toolbar .ant-input-affix-wrapper,
+.dify-toolbar .ant-btn {
+  height: 40px;
+  border-radius: 9px !important;
+}
+.dify-toolbar .ant-select-selector,
+.dify-toolbar .ant-input-affix-wrapper {
+  border-color: #d9e0eb !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+.tag-filter .ant-select-selector {
+  background: #e9eef5 !important;
+  border-color: #e9eef5 !important;
+}
+.dify-search {
+  width: 250px;
+}
+.all-kb-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 40px;
+  color: #4b5870;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.all-kb-check input {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  accent-color: #155eef;
+}
+.all-kb-check small {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid #c7d0df;
+  color: #8a95a7;
+  font-size: 10px;
+}
+.toolbar-spacer {
+  min-width: 20px;
+}
+.dify-toolbar .ant-btn-primary {
+  min-width: 102px;
+  background: #155eef;
+  border-color: #155eef;
+  box-shadow: 0 10px 20px rgba(21, 94, 239, 0.18);
+}
+.dify-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+  gap: 14px;
+  align-items: start;
+}
+.dify-kb-card {
+  min-height: 162px;
+  padding: 16px;
+  border: 1px solid #e4e9f2;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  cursor: pointer;
+  transition: border-color .18s, box-shadow .18s, transform .18s;
+}
+.dify-kb-card:hover {
+  border-color: #b8c7e4;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+.dify-kb-card.active {
+  border-color: #d8e1f1;
+}
+.dify-card-mainrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.dify-kb-icon {
+  position: relative;
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #eef4ff;
+  color: #155eef;
+  font-size: 21px;
+}
+.dify-kb-icon::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #20c76f;
+}
+.dify-title-block {
+  min-width: 0;
+  padding-top: 0;
+}
+.dify-title-block h3 {
+  max-width: 220px;
+  margin: 0 0 3px;
+  overflow: hidden;
+  color: #0f1f3a;
+  font-size: 16px;
+  line-height: 1.3;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dify-subline {
+  display: flex;
+  gap: 8px;
+  color: #506078;
+  font-size: 12px;
+}
+.dify-desc {
+  display: -webkit-box;
+  min-height: 36px;
+  margin: 11px 0 7px;
+  overflow: hidden;
+  color: #52617a;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.add-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8b95a7;
+  font-size: 13px;
+  cursor: pointer;
+}
+.add-tag:hover {
+  color: #155eef;
+}
+.dify-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: #8a95a7;
+  font-size: 12px;
+}
+.dify-card-footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .knowledge-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
@@ -1355,14 +1358,241 @@ const styles = `
 .ant-drawer .ant-drawer-body { background: transparent; }
 .ant-drawer .ant-card { border-radius: 8px; border-color: rgba(15,23,42,0.08); box-shadow: 0 8px 24px rgba(15,23,42,0.06); }
 @media (max-width: 1100px) {
-  .knowledge-head { grid-template-columns: 1fr; }
+  .kb-home-layout { grid-template-columns: 1fr; }
+  .kb-detail-panel { position: static; }
+  .kb-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kb-home-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.kb-home-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding: 22px 24px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+.kb-home-header h2 {
+  margin: 8px 0 6px;
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1.2;
+}
+.kb-home-header p {
+  max-width: 760px;
+  margin: 0;
+  color: #64748b;
+}
+.kb-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.kb-overview-grid div {
+  padding: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+.kb-overview-grid b,
+.kb-overview-grid span,
+.kb-overview-grid small {
+  display: block;
+}
+.kb-overview-grid b {
+  color: #0f172a;
+  font-size: 24px;
+  line-height: 1;
+}
+.kb-overview-grid span {
+  margin-top: 8px;
+  color: #334155;
+  font-weight: 700;
+}
+.kb-overview-grid small {
+  margin-top: 4px;
+  color: #94a3b8;
+  line-height: 1.45;
+}
+.kb-home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  align-items: start;
+}
+.kb-list-panel,
+.kb-detail-panel .ant-card {
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+.kb-list-panel {
+  padding: 16px;
+}
+.kb-list-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.kb-list-toolbar h4 {
+  margin: 0 0 4px;
+  color: #0f172a;
+}
+.kb-toolbar-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) auto;
+  gap: 10px;
+  align-items: center;
+}
+.kb-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kb-row-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: #fbfdff;
+  cursor: pointer;
+  transition: border-color .18s, box-shadow .18s, background .18s, transform .18s;
+}
+.kb-row-card:hover {
+  border-color: rgba(21, 94, 239, 0.35);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+.kb-row-card.active {
+  border-color: rgba(15, 118, 110, 0.48);
+  background: linear-gradient(180deg, #ffffff, #f0fdfa);
+}
+.kb-card-icon {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #eef6ff;
+  color: #155eef;
+  font-size: 20px;
+}
+.kb-card-main {
+  min-width: 0;
+}
+.kb-card-titleline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.kb-card-titleline b {
+  color: #0f172a;
+  font-size: 16px;
+}
+.kb-row-card p {
+  margin: 7px 0 8px;
+  color: #64748b;
+  line-height: 1.5;
+}
+.kb-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+.kb-card-meta span::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  vertical-align: 2px;
+}
+.kb-health {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.kb-health.good { background: #dcfce7; color: #15803d; }
+.kb-health.warn { background: #fef3c7; color: #b45309; }
+.kb-health.draft { background: #e2e8f0; color: #475569; }
+.kb-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.kb-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: sticky;
+  top: 84px;
+}
+.kb-detail-panel h4 {
+  margin: 0 0 6px;
+}
+.kb-mini-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.kb-mini-stats div {
+  padding: 10px;
+  border: 1px solid rgba(15,23,42,0.08);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.kb-mini-stats b,
+.kb-mini-stats span {
+  display: block;
+}
+.kb-mini-stats b {
+  color: #0f172a;
+  font-size: 18px;
+}
+.kb-mini-stats span {
+  color: #64748b;
+  font-size: 12px;
+}
+.pipeline.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.pipeline.compact div {
+  padding: 8px;
+}
+.knowledge-head { grid-template-columns: 1fr; }
   .knowledge-head-panel { gap: 12px; }
   .head-actions { justify-content: flex-start; }
 }
 @media (max-width: 900px) {
-  .custom-file-entry { flex-direction: column; align-items: stretch; }
-  .template-toolbar { grid-template-columns: 1fr; }
-  .preview-stack { position: static; }
-  .head-metrics { grid-template-columns: 1fr; }
+  .dify-topline, .dify-toolbar { grid-template-columns: 1fr; align-items: stretch; }
+  .dify-search { width: 100%; }
+  .dify-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
+  gap: 14px;
+  align-items: start;
 }
 `;
