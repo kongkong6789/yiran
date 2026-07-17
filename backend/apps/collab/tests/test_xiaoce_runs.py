@@ -1,7 +1,9 @@
 import uuid
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from apps.collab.mentions import get_xiaoce_bot_user
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
@@ -43,6 +45,20 @@ class XiaoceRunTests(TestCase):
             CollabMessage.objects.filter(content="已暂停本次生成。").count(),
             1,
         )
+
+    def test_cancel_lock_does_not_join_nullable_message(self):
+        run = self.make_run()
+
+        with CaptureQueriesContext(connection) as captured:
+            cancel_xiaoce_run(run)
+
+        lock_query = next(
+            query["sql"]
+            for query in captured.captured_queries
+            if "collab_xiaocerun" in query["sql"].lower()
+            and query["sql"].lstrip().upper().startswith("SELECT")
+        )
+        self.assertNotIn("LEFT OUTER JOIN", lock_query.upper())
 
     def test_cancelled_run_cannot_save_reply(self):
         run = self.make_run()

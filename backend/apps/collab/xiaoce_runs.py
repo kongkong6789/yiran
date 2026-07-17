@@ -65,7 +65,7 @@ def _complete_locked_run(
 def cancel_xiaoce_run(run: XiaoceRun) -> XiaoceRun:
     locked = (
         XiaoceRun.objects.select_for_update()
-        .select_related("room", "cancel_message")
+        .select_related("room")
         .get(id=run.id)
     )
     if locked.status == XiaoceRun.Status.COMPLETED:
