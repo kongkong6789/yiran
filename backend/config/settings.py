@@ -193,8 +193,13 @@ if USE_POSTGRESQL:
     }
 
 # LightRAG / AGE 图谱
+# AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...
+# 未配置时回退 POSTGRES_*
 LIGHTRAG_SOURCE_ID = os.getenv("LIGHTRAG_SOURCE_ID", "")
 LIGHTRAG_WORKSPACE = os.getenv("LIGHTRAG_WORKSPACE", "")
+AGE_PG_HOST = _pg_env("AGE_POSTGRES_HOST", "AGE_PG_HOST", default=PG_HOST)
+AGE_PG_PORT = int(_pg_env("AGE_POSTGRES_PORT", "AGE_PG_PORT", default=str(PG_PORT)))
+AGE_PG_DB = _pg_env("AGE_POSTGRES_DB", "AGE_PG_DB", default=PG_DB)
 
 # LLM 配置(意图识别/生成),无 key 时降级为规则引擎
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")

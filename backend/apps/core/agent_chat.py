@@ -256,7 +256,7 @@ def run_chat(
             "max_tokens": max_tokens,
             "temperature": 0.4 if doc_mode else 0.6,
             "llm_user": user,
-            "timeout": 90 if image_parts else 45,
+            "timeout": 90,
         }
         tried_models: list[str] = []
         if image_parts:
