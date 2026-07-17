@@ -1250,6 +1250,40 @@ export interface CollabUserBrief {
   bot_id?: string;
 }
 
+export interface XiaoceProgressStep {
+  code: string;
+  label: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  tool_count: number;
+  detail: string;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface XiaoceRun {
+  id: string;
+  status: "running" | "cancelled" | "completed" | "failed";
+  room_id: string;
+  current_stage: string;
+  progress_steps: XiaoceProgressStep[];
+  error_code: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreatedSkillItem {
+  asset_id: number;
+  personal_id: number;
+  skill_id: string;
+  name: string;
+  description?: string;
+  visibility: "private" | "shared";
+  enabled: boolean;
+  package_kind: "single" | "package";
+  storage: "cos" | "local";
+}
+
 export interface CollabRoom {
   id: string;
   title: string;
@@ -1279,6 +1313,7 @@ export interface CollabRoom {
   has_more_before?: boolean;
   unread_count?: number;
   last_read_message_id?: number;
+  active_xiaoce_run?: XiaoceRun | null;
 }
 
 export interface CollabMessage {
@@ -1296,6 +1331,15 @@ export interface CollabMessage {
     url?: string;
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
+  meta?: {
+    run_id?: string;
+    process_steps?: XiaoceProgressStep[];
+    process_status?: XiaoceRun["status"];
+    cancelled?: boolean;
+    error_code?: string;
+    error_message?: string;
+    created_skill?: CreatedSkillItem;
+  };
   msg_type?: "user" | "system" | "ai";
   ai_kind?: "" | "reply" | "interject" | "suggest" | "xiaoce";
   status?: "normal" | "recalled" | "deleted";
@@ -1465,6 +1509,7 @@ export const getCollabRoomPresence = (id: string) =>
     participants: CollabUserBrief[];
     member_count?: number;
     display_title?: string;
+    active_xiaoce_run?: XiaoceRun | null;
   }>(`/collab/rooms/${id}/presence/`).then((r) => r.data);
 
 export type CollabSyncEvent = {
@@ -1472,6 +1517,7 @@ export type CollabSyncEvent = {
   changed?: CollabMessage[];
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
+  xiaoce_runs?: XiaoceRun[];
   after_id?: number;
   after_insight_id?: number;
 };
@@ -1604,11 +1650,13 @@ export const sendCollabMessage = (
   content: string,
   analyze = true,
   files?: File[],
+  runId?: string,
 ) => {
   if (files?.length) {
     const form = new FormData();
     form.append("content", content || "");
     form.append("analyze", analyze ? "1" : "0");
+    if (runId) form.append("run_id", runId);
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -1619,6 +1667,7 @@ export const sendCollabMessage = (
         insight?: CollabInsight;
         analyze_pending?: boolean;
         ai_pending?: boolean;
+        xiaoce_run?: XiaoceRun;
       }>(`/collab/rooms/${id}/messages/`, form, { timeout: 120_000 })
       .then((r) => r.data);
   }
@@ -1631,9 +1680,24 @@ export const sendCollabMessage = (
       insight?: CollabInsight;
       analyze_pending?: boolean;
       ai_pending?: boolean;
-    }>(`/collab/rooms/${id}/messages/`, { content, analyze: analyze ? "1" : "0" }, { timeout: 120_000 })
+      xiaoce_run?: XiaoceRun;
+    }>(
+      `/collab/rooms/${id}/messages/`,
+      { content, analyze: analyze ? "1" : "0", ...(runId ? { run_id: runId } : {}) },
+      { timeout: 120_000 },
+    )
     .then((r) => r.data);
 };
+
+export const cancelXiaoceRun = (roomId: string, runId: string) =>
+  api.post<{
+    ok: boolean;
+    xiaoce_run: XiaoceRun;
+    active_xiaoce_run: null;
+    message: CollabMessage;
+    room: Partial<CollabRoom>;
+  }>(`/collab/rooms/${roomId}/xiaoce-runs/${runId}/cancel/`, {})
+    .then((r) => r.data);
 
 export const listCollabInsights = (id: string, afterId = 0) =>
   api.get<{ count: number; results: CollabInsight[]; room_risk_level: string }>(
@@ -1732,4 +1796,3 @@ export const markCollabRoomRead = (id: string, upToId?: number) =>
       upToId ? { up_to_id: upToId } : {},
     )
     .then((r) => r.data);
-
