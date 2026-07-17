@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import threading
 
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db import transaction
+from django.db.models import Avg, Q, Sum
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -38,8 +40,23 @@ from .mentions import (
     reply_ai_mention,
     xiaoce_bot_brief,
 )
-from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
+from .models import (
+    CollabInsight,
+    CollabMessage,
+    CollabMessageRead,
+    CollabParticipant,
+    CollabReadSession,
+    CollabRoom,
+)
 from .presence import presence_map, touch_presence
+from .summary import (
+    SummaryLLMConfigurationError,
+    SummaryLLMError,
+    create_summary,
+    summary_model_status,
+    summary_payload,
+    summary_suggestion,
+)
 from . import ws_push
 from collections import Counter
 from datetime import timedelta
@@ -81,6 +98,7 @@ def _user_brief(
     presence: dict | None = None,
     nickname: str | None = None,
     profile: dict | None = None,
+    last_read_message_id: int | None = None,
 ) -> dict:
     nick = (nickname or "").strip()
     profile = profile or {}
@@ -94,6 +112,8 @@ def _user_brief(
         "bio": profile.get("bio") or "",
         "kind": "bot" if is_xiaoce_bot_user(user) else "human",
     }
+    if last_read_message_id is not None:
+        info["last_read_message_id"] = int(last_read_message_id or 0)
     if is_xiaoce_bot_user(user):
         info["bot_id"] = "xiaoce"
         info["display_name"] = nick or profile_name or XIAOCE_BOT_DISPLAY
@@ -135,16 +155,44 @@ def _unread_count_for(user, room: CollabRoom, *, last_read_id: int | None = None
 
 
 def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> int:
-    row = CollabParticipant.objects.filter(room=room, user=user).first()
-    if not row:
-        return 0
-    if up_to_id is None:
-        up_to_id = room.messages.order_by("-id").values_list("id", flat=True).first() or 0
-    up_to_id = int(up_to_id or 0)
-    if up_to_id > (row.last_read_message_id or 0):
+    with transaction.atomic():
+        row = (
+            CollabParticipant.objects.select_for_update()
+            .filter(room=room, user=user)
+            .first()
+        )
+        if not row:
+            return 0
+        if up_to_id is None:
+            up_to_id = room.messages.order_by("-id").values_list("id", flat=True).first() or 0
+        up_to_id = int(up_to_id or 0)
+        previous_id = int(row.last_read_message_id or 0)
+        if up_to_id <= previous_id:
+            return previous_id
+
+        now = timezone.now()
+        newly_read = list(
+            room.messages
+            .filter(id__gt=previous_id, id__lte=up_to_id)
+            .exclude(sender=user)
+            .exclude(status="deleted")
+            .only("id", "created_at")
+        )
+        CollabMessageRead.objects.bulk_create(
+            [
+                CollabMessageRead(
+                    room=room,
+                    message=msg,
+                    user=user,
+                    latency_ms=max(0, int((now - msg.created_at).total_seconds() * 1000)),
+                )
+                for msg in newly_read
+            ],
+            ignore_conflicts=True,
+        )
         row.last_read_message_id = up_to_id
         row.save(update_fields=["last_read_message_id"])
-    return row.last_read_message_id
+        return row.last_read_message_id
 
 
 def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
@@ -184,6 +232,7 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
             presence=pmap,
             nickname=p.nickname,
             profile=profiles.get(p.user_id),
+            last_read_message_id=p.last_read_message_id,
         )
         for p in participant_rows
     ]
@@ -266,15 +315,21 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
     if include_messages:
         # 仅最近窗口，完整历史走 messages/?before_id= 分页
         msg_rows = list(
-            room.messages.select_related("sender")
+            room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .exclude(status="deleted")
             .order_by("-id")[:50]
         )
         msg_rows.reverse()
         sender_ids = list({m.sender_id for m in msg_rows})
         msg_profiles = _profile_map(sender_ids)
+        read_states = _message_read_state_map(room, msg_rows, nickname_map=nick_by_id)
         payload["messages"] = [
-            _message_payload(m, nickname_map=nick_by_id, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_by_id,
+                profile_map=msg_profiles,
+                read_state=read_states.get(m.id),
+            )
             for m in msg_rows
         ]
         oldest_id = msg_rows[0].id if msg_rows else 0
@@ -318,11 +373,43 @@ def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabR
     return room
 
 
+def _message_read_state_map(
+    room: CollabRoom,
+    messages: list[CollabMessage],
+    *,
+    nickname_map: dict[int, str] | None = None,
+) -> dict[int, dict]:
+    """用参与者已读游标批量计算群消息的已读/未读状态。"""
+    if room.room_kind != "group" or not messages:
+        return {}
+    parts = list(room.participants.select_related("user").all())
+    names = nickname_map or {p.user_id: (p.nickname or "").strip() for p in parts}
+    out: dict[int, dict] = {}
+    for msg in messages:
+        eligible = [p for p in parts if p.user_id != msg.sender_id]
+        readers = [p for p in eligible if int(p.last_read_message_id or 0) >= msg.id]
+        unread = [p for p in eligible if int(p.last_read_message_id or 0) < msg.id]
+        out[msg.id] = {
+            "reader_count": len(readers),
+            "unread_count": len(unread),
+            "read_by": [
+                names.get(p.user_id) or p.user.username
+                for p in readers[:12]
+            ],
+            "unread_by": [
+                names.get(p.user_id) or p.user.username
+                for p in unread[:12]
+            ],
+        }
+    return out
+
+
 def _message_payload(
     msg: CollabMessage,
     *,
     nickname_map: dict[int, str] | None = None,
     profile_map: dict[int, dict] | None = None,
+    read_state: dict | None = None,
 ) -> dict:
     nick = ""
     if nickname_map is not None:
@@ -366,6 +453,36 @@ def _message_payload(
         "created_at": msg.created_at.isoformat(),
         "updated_at": updated.isoformat(),
     }
+    quoted = getattr(msg, "reply_to", None)
+    if quoted is not None:
+        quoted_status = getattr(quoted, "status", None) or "normal"
+        quoted_name = (
+            (nickname_map or {}).get(quoted.sender_id)
+            or quoted.sender.username
+            or "成员"
+        )
+        quoted_content = (quoted.content or "").strip()
+        if quoted_status == "recalled":
+            quoted_content = "原消息已撤回"
+        elif quoted_status == "deleted":
+            quoted_content = "原消息已删除"
+        elif not quoted_content and quoted.attachments:
+            quoted_content = "[附件]"
+        base["reply_to"] = {
+            "id": quoted.id,
+            "sender": {
+                "id": quoted.sender_id,
+                "username": quoted.sender.username,
+                "display_name": quoted_name,
+            },
+            "content": quoted_content[:240],
+            "status": quoted_status,
+            "attachment_count": len(quoted.attachments or []),
+        }
+    else:
+        base["reply_to"] = None
+    if read_state is not None:
+        base["read_state"] = read_state
     if msg_status == "recalled":
         who = sender_brief.get("display_name") or sender_brief.get("username") or "有人"
         if msg.msg_type == "ai":
@@ -376,6 +493,7 @@ def _message_payload(
             "mentions": [],
             "msg_type": "system",
             "ai_kind": "",
+            "reply_to": None,
         })
     elif msg_status == "deleted":
         base.update({
@@ -789,7 +907,7 @@ def room_detail(request, room_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def room_mark_read(request, room_id):
-    """将会话标记为已读。"""
+    """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
     if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
@@ -799,11 +917,42 @@ def room_mark_read(request, room_id):
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
     last_id = _mark_room_read(request.user, room, up_to_id=up_to)
+    raw_session = str(request.data.get("session_id") or "").strip()
+    session_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_session)[:64]
+    try:
+        active_ms = int(request.data.get("active_duration_ms") or 0)
+    except (TypeError, ValueError):
+        active_ms = 0
+    active_ms = max(0, min(active_ms, 5 * 60 * 1000))
+    ended = str(request.data.get("ended") or "").lower() in ("1", "true", "yes")
+    session_payload = None
+    if session_id:
+        session, _ = CollabReadSession.objects.get_or_create(
+            room=room,
+            user=request.user,
+            session_key=session_id,
+        )
+        session.active_duration_ms = int(session.active_duration_ms or 0) + active_ms
+        session.up_to_message_id = max(int(session.up_to_message_id or 0), int(last_id or 0))
+        if ended:
+            session.ended_at = timezone.now()
+        session.save(update_fields=[
+            "active_duration_ms",
+            "up_to_message_id",
+            "ended_at",
+            "last_active_at",
+        ])
+        session_payload = {
+            "session_id": session.session_key,
+            "active_duration_ms": session.active_duration_ms,
+            "ended": bool(session.ended_at),
+        }
     return Response({
         "ok": True,
         "last_read_message_id": last_id,
         "unread_count": 0,
         "room_id": str(room.id),
+        "session": session_payload,
     })
 
 
@@ -1040,6 +1189,7 @@ def room_messages(request, room_id):
         is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
         if not is_member and not _is_admin(request.user):
             return Response({"ok": False, "error": "仅成员可清空聊天记录"}, status=403)
+        summary_count, _ = room.summaries.all().delete()
         msg_count, _ = room.messages.all().delete()
         insight_count, _ = room.insights.all().delete()
         room.risk_level = "green"
@@ -1065,6 +1215,7 @@ def room_messages(request, room_id):
             "ok": True,
             "cleared_messages": msg_count,
             "cleared_insights": insight_count,
+            "cleared_summaries": summary_count,
             "message": tip_payload,
             "room": room_payload,
         })
@@ -1098,10 +1249,24 @@ def room_messages(request, room_id):
             .values_list("user__username", flat=True)
         )
         mentions = parse_mentions(content, member_names)
+        reply_to = None
+        raw_reply_to = request.data.get("reply_to_id")
+        if raw_reply_to not in (None, ""):
+            if not str(raw_reply_to).isdigit():
+                return Response({"ok": False, "error": "引用消息无效"}, status=400)
+            reply_to = (
+                room.messages.select_related("sender")
+                .filter(id=int(raw_reply_to))
+                .exclude(status="deleted")
+                .first()
+            )
+            if reply_to is None:
+                return Response({"ok": False, "error": "引用消息不存在或已删除"}, status=400)
 
         msg = CollabMessage.objects.create(
             room=room,
             sender=request.user,
+            reply_to=reply_to,
             content=content,
             attachments=attachments_meta,
             mentions=mentions,
@@ -1114,7 +1279,11 @@ def room_messages(request, room_id):
             msg.risk_flag_level = "red"
             msg.save(update_fields=["risk_flag", "risk_flag_level", "updated_at"])
         room.save(update_fields=["updated_at"])
-        msg_payload = _message_payload(msg)
+        msg_payload = _message_payload(
+            msg,
+            nickname_map=_nickname_map(room),
+            read_state=_message_read_state_map(room, [msg]).get(msg.id),
+        )
         room_lite = _room_payload_lite(room, viewer=request.user)
         ws_push.publish_sync(room.id, messages=[msg_payload], room=room_lite)
 
@@ -1170,7 +1339,7 @@ def room_messages(request, room_id):
         or ("0" if lite or after_id or before_id else "1")
     ).lower() in ("1", "true", "yes")
 
-    base = room.messages.select_related("sender")
+    base = room.messages.select_related("sender", "reply_to", "reply_to__sender")
     has_more_before = False
     if before_id > 0:
         # 历史上拉：取更旧的一页，正序返回
@@ -1201,7 +1370,7 @@ def room_messages(request, room_id):
     changed_rows: list[CollabMessage] = []
     if after_id > 0:
         changed_rows = list(
-            room.messages.select_related("sender")
+            room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .filter(
                 id__lte=after_id,
                 updated_at__gte=timezone.now() - timedelta(minutes=3),
@@ -1211,8 +1380,18 @@ def room_messages(request, room_id):
     sender_ids = list({m.sender_id for m in rows} | {m.sender_id for m in changed_rows})
     msg_profiles = _profile_map(sender_ids)
     if changed_rows:
+        changed_read_states = _message_read_state_map(
+            room,
+            changed_rows,
+            nickname_map=nick_map,
+        )
         changed = [
-            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_map,
+                profile_map=msg_profiles,
+                read_state=changed_read_states.get(m.id),
+            )
             for m in changed_rows
         ]
 
@@ -1248,10 +1427,16 @@ def room_messages(request, room_id):
     if before_id <= 0 and CollabParticipant.objects.filter(room=room, user=request.user).exists():
         _mark_room_read(request.user, room)
 
+    read_states = _message_read_state_map(room, rows, nickname_map=nick_map)
     return Response({
         "count": len(rows),
         "results": [
-            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_map,
+                profile_map=msg_profiles,
+                read_state=read_states.get(m.id),
+            )
             for m in rows
         ],
         "changed": changed,
@@ -1412,6 +1597,27 @@ def room_stats(request, room_id):
         if (ins.risk_level or "").lower() in ("yellow", "red")
     ][:20]
 
+    read_agg = room.message_reads.aggregate(
+        avg_latency_ms=Avg("latency_ms"),
+    )
+    session_agg = room.read_sessions.aggregate(
+        total_active_ms=Sum("active_duration_ms"),
+        avg_active_ms=Avg("active_duration_ms"),
+    )
+    unique_readers = room.message_reads.values("user_id").distinct().count()
+    messages_today = sum(
+        1 for m in user_msgs
+        if timezone.localdate(m.created_at) == timezone.localdate(now)
+    )
+    seven_days_ago = now - timedelta(days=7)
+    messages_7d = sum(1 for m in user_msgs if m.created_at >= seven_days_ago)
+    latest_summary = (
+        room.summaries
+        .select_related("start_message", "end_message", "created_by")
+        .order_by("-id")
+        .first()
+    )
+
     return Response({
         "ok": True,
         "room_id": str(room.id),
@@ -1426,7 +1632,75 @@ def room_stats(request, room_id):
         "speaker_top": speaker_top,
         "hourly": hourly,
         "alerts": alerts,
+        "messages_today": messages_today,
+        "messages_7d": messages_7d,
+        "read_metrics": {
+            "receipt_count": room.message_reads.count(),
+            "unique_readers": unique_readers,
+            "avg_read_latency_ms": int(read_agg.get("avg_latency_ms") or 0),
+            "total_active_read_ms": int(session_agg.get("total_active_ms") or 0),
+            "avg_session_read_ms": int(session_agg.get("avg_active_ms") or 0),
+            "session_count": room.read_sessions.count(),
+        },
+        "summary_model": summary_model_status(request.user),
+        "summary_suggestion": summary_suggestion(room),
+        "latest_summary": summary_payload(latest_summary),
     })
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def room_summaries(request, room_id):
+    """查看纪要/总结提醒，或按智能窗口生成一版新纪要。"""
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    if request.method == "GET":
+        rows = list(
+            room.summaries
+            .select_related("start_message", "end_message", "created_by")
+            .order_by("-id")[:10]
+        )
+        return Response({
+            "ok": True,
+            "model": summary_model_status(request.user),
+            "suggestion": summary_suggestion(room),
+            "latest": summary_payload(rows[0]) if rows else None,
+            "results": [summary_payload(row) for row in rows],
+        })
+
+    def _optional_int(key: str, default: int | None = None) -> int | None:
+        raw = request.data.get(key)
+        if raw in (None, ""):
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        row = create_summary(
+            room,
+            user=request.user,
+            range_mode=str(request.data.get("range_mode") or "auto"),
+            message_count=_optional_int("message_count", 20) or 20,
+            minutes=_optional_int("minutes", 60) or 60,
+            start_message_id=_optional_int("start_message_id"),
+            end_message_id=_optional_int("end_message_id"),
+        )
+    except SummaryLLMConfigurationError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    except SummaryLLMError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=502)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({
+        "ok": True,
+        "summary": summary_payload(row),
+        "model": summary_model_status(request.user),
+        "suggestion": summary_suggestion(room),
+    }, status=201)
 
 
 @api_view(["GET", "POST"])

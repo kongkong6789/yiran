@@ -1,6 +1,5 @@
 import { Layout, Menu, Grid, Space, Typography, Avatar, Dropdown } from "antd";
 import {
-  AlertOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
   ShareAltOutlined,
@@ -38,8 +37,7 @@ type NavItem = { key: string; icon: ReactNode; label: string };
 /** 日常高频：先做事 */
 const WORK_NAV: NavItem[] = [
   { key: "/home", icon: <HomeOutlined />, label: "首页" },
-  { key: "/collab", icon: <AlertOutlined />, label: "团队聊天" },
-  { key: "/council", icon: <TeamOutlined />, label: "圆桌会议" },
+  { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
   { key: "/console", icon: <FlagOutlined />, label: "办流程" },
   { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
 ];
