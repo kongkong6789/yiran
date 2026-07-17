@@ -3598,6 +3598,535 @@ body {
   word-break: break-all;
 }
 
+/* NAS 文件资源管理器 */
+.nas-explorer-drawer .ant-drawer-header {
+  min-height: 62px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--lc-line);
+}
+.nas-explorer-drawer .ant-drawer-body {
+  overflow: hidden;
+  padding: 0;
+}
+.nas-drawer-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.nas-drawer-title .anticon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--lc-line);
+  border-radius: 7px;
+}
+.nas-explorer {
+  display: flex;
+  height: calc(100vh - 63px);
+  min-height: 560px;
+  flex-direction: column;
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+}
+.nas-explorer-commandbar {
+  display: grid;
+  grid-template-columns: auto minmax(260px, 1fr) minmax(190px, 280px);
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--lc-line);
+}
+.nas-explorer-nav-buttons {
+  display: flex;
+  align-items: center;
+}
+.nas-explorer-nav-buttons .ant-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+.nas-explorer-address {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 36px;
+  padding: 0 5px 0 11px;
+  border: 1px solid var(--lc-line);
+  border-radius: 6px;
+  background: var(--lc-surface);
+}
+.nas-explorer-address > .anticon {
+  flex: 0 0 auto;
+  margin-right: 8px;
+}
+.nas-explorer-breadcrumbs {
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+.nas-explorer-breadcrumbs span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.nas-explorer-breadcrumbs i {
+  margin: 0 2px;
+  color: var(--lc-muted);
+  font-style: normal;
+}
+.nas-explorer-breadcrumbs button {
+  overflow: hidden;
+  max-width: 150px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--lc-ink);
+  cursor: pointer;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-explorer-breadcrumbs button:hover {
+  background: var(--lc-hover);
+}
+.nas-explorer-search .ant-input {
+  font-size: 12px;
+}
+.nas-explorer-actionbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--lc-line);
+  background: color-mix(in srgb, var(--lc-ink) 2%, var(--lc-surface));
+}
+.nas-explorer-actionbar > div {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.nas-explorer-actionbar .ant-btn {
+  font-size: 12px;
+}
+.nas-explorer-actionbar .ant-segmented-item-label {
+  font-size: 11px;
+}
+.nas-explorer-workspace {
+  display: grid;
+  overflow: hidden;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 190px minmax(360px, 1fr) 280px;
+}
+.nas-explorer-sidebar {
+  overflow-y: auto;
+  padding: 12px 8px;
+  border-right: 1px solid var(--lc-line);
+  background: color-mix(in srgb, var(--lc-ink) 2%, var(--lc-surface));
+}
+.nas-explorer-sidebar-label {
+  display: block;
+  padding: 8px 10px 5px;
+  color: var(--lc-muted) !important;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.nas-explorer-sidebar button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lc-ink);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.nas-explorer-sidebar button:hover,
+.nas-explorer-sidebar button.is-active {
+  background: var(--lc-hover);
+}
+.nas-explorer-sidebar button.is-active {
+  font-weight: 700;
+}
+.nas-explorer-sidebar button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-explorer-main {
+  position: relative;
+  overflow: auto;
+  min-width: 0;
+  padding: 8px;
+  background: var(--lc-surface);
+}
+.nas-explorer-main > .ant-empty {
+  margin-top: 16vh;
+}
+.nas-explorer-loading {
+  padding: 16px;
+}
+.nas-explorer-connect-state {
+  display: flex;
+  width: min(430px, 90%);
+  min-height: 100%;
+  margin: 0 auto;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+.nas-explorer-connect-state > span:first-child {
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  margin-bottom: 4px;
+  border: 1px solid var(--lc-line);
+  border-radius: 16px;
+  background: var(--lc-hover);
+  font-size: 28px;
+}
+.nas-explorer-connect-state h4 {
+  margin: 0 !important;
+}
+.nas-explorer-connect-state > .ant-typography {
+  max-width: 360px;
+}
+.nas-file-view--details {
+  min-width: 650px;
+}
+.nas-file-list-head,
+.nas-file-view--details .nas-file-item {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(150px, 0.9fr) minmax(110px, 0.7fr) 86px;
+  align-items: center;
+}
+.nas-file-list-head {
+  position: sticky;
+  z-index: 2;
+  top: -8px;
+  min-height: 34px;
+  padding: 0 10px 0 42px;
+  border-bottom: 1px solid var(--lc-line);
+  background: var(--lc-surface);
+  color: var(--lc-muted);
+  font-size: 10px;
+}
+.nas-file-item {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--lc-ink);
+  cursor: default;
+  font-family: inherit;
+}
+.nas-file-view--details .nas-file-item {
+  position: relative;
+  min-height: 38px;
+  padding: 3px 10px 3px 42px;
+  border-radius: 4px;
+  text-align: left;
+}
+.nas-file-view--details .nas-file-item-icon {
+  position: absolute;
+  left: 13px;
+  top: 8px;
+  width: 22px;
+  font-size: 18px;
+}
+.nas-file-item:hover {
+  background: var(--lc-hover);
+}
+.nas-file-item.is-selected {
+  border-color: var(--lc-line);
+  background: var(--lc-hover);
+}
+.nas-file-item-name,
+.nas-file-item-modified,
+.nas-file-item-type,
+.nas-file-item-size {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nas-file-item-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+.nas-file-item-modified,
+.nas-file-item-type,
+.nas-file-item-size {
+  color: var(--lc-muted);
+}
+.nas-file-item-size {
+  text-align: right;
+}
+.nas-file-item-icon--folder {
+  color: var(--lc-ink);
+}
+.nas-file-view--icons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-auto-rows: minmax(126px, auto);
+  align-content: start;
+  gap: 8px;
+}
+.nas-file-view--icons .nas-file-item {
+  display: flex;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 126px;
+  padding: 12px 8px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: 7px;
+  text-align: center;
+}
+.nas-file-view--icons .nas-file-item-icon {
+  font-size: 38px;
+}
+.nas-file-view--icons .nas-file-item-name {
+  display: -webkit-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  overflow: hidden;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.nas-preview-media {
+  display: grid;
+  overflow: hidden;
+  min-height: 180px;
+  margin-top: 14px;
+  place-items: center;
+  border: 1px solid var(--lc-line);
+  border-radius: 8px;
+  background: var(--lc-surface);
+}
+.nas-preview-media img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+.nas-preview-media--pdf {
+  height: 420px;
+}
+.nas-preview-media--pdf iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.nas-preview-actions {
+  flex-wrap: wrap;
+}
+.nas-file-view--icons .nas-file-item-modified,
+.nas-file-view--icons .nas-file-item-type,
+.nas-file-view--icons .nas-file-item-size {
+  display: none;
+}
+.nas-explorer-preview {
+  overflow-y: auto;
+  padding: 18px;
+  border-left: 1px solid var(--lc-line);
+  background: color-mix(in srgb, var(--lc-ink) 2%, var(--lc-surface));
+}
+.nas-explorer-preview.has-selection {
+  text-align: center;
+}
+.nas-preview-icon {
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  margin: 10px auto 12px;
+  border: 1px solid var(--lc-line);
+  border-radius: 12px;
+  background: var(--lc-surface);
+  font-size: 32px;
+}
+.nas-explorer-preview h5 {
+  margin: 0 0 18px !important;
+}
+.nas-preview-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  text-align: left;
+}
+.nas-preview-meta div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+}
+.nas-preview-meta span {
+  color: var(--lc-muted);
+}
+.nas-preview-meta b {
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.nas-preview-content {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--lc-line);
+  text-align: left;
+}
+.nas-preview-content pre {
+  overflow: auto;
+  max-height: 250px;
+  margin: 8px 0;
+  padding: 10px;
+  border: 1px solid var(--lc-line);
+  border-radius: 6px;
+  background: var(--lc-surface);
+  color: var(--lc-ink);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nas-preview-actions {
+  display: flex;
+  margin-top: 18px;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.nas-preview-empty {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+.nas-preview-empty > .anticon {
+  font-size: 24px;
+  opacity: 0.5;
+}
+.nas-explorer-statusbar {
+  display: flex;
+  min-height: 30px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--lc-line);
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--lc-muted);
+  font-size: 10px;
+}
+.nas-settings-panel {
+  width: min(720px, 100%) !important;
+  margin: 0 auto;
+  padding: 24px 8px 48px;
+}
+
+@media (max-width: 960px) {
+  .nas-explorer-commandbar {
+    grid-template-columns: auto minmax(220px, 1fr);
+  }
+  .nas-explorer-search {
+    grid-column: 1 / -1;
+  }
+  .nas-explorer-workspace {
+    grid-template-columns: 160px minmax(340px, 1fr);
+  }
+  .nas-explorer-preview {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .nas-explorer-drawer {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  .nas-explorer-drawer .ant-drawer-header {
+    padding: 10px 12px;
+  }
+  .nas-explorer-drawer .ant-drawer-extra .ant-btn:first-child {
+    display: none;
+  }
+  .nas-explorer {
+    min-height: 480px;
+  }
+  .nas-explorer-commandbar {
+    grid-template-columns: 1fr;
+  }
+  .nas-explorer-nav-buttons {
+    display: none;
+  }
+  .nas-explorer-actionbar > div:first-child,
+  .nas-explorer-actionbar .ant-tag,
+  .nas-explorer-actionbar .ant-segmented-item-label {
+    display: none;
+  }
+  .nas-explorer-actionbar {
+    justify-content: flex-end;
+  }
+  .nas-explorer-workspace {
+    display: block;
+  }
+  .nas-explorer-sidebar {
+    display: none;
+  }
+  .nas-explorer-main {
+    height: 100%;
+  }
+  .nas-file-view--details {
+    min-width: 0;
+  }
+  .nas-file-list-head {
+    display: none;
+  }
+  .nas-file-view--details .nas-file-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 52px;
+    padding-left: 46px;
+  }
+  .nas-file-view--details .nas-file-item-icon {
+    top: 13px;
+    font-size: 22px;
+  }
+  .nas-file-item-modified,
+  .nas-file-item-type {
+    display: none;
+  }
+  .nas-explorer-statusbar span:last-child {
+    display: none;
+  }
+}
+
 @media (max-width: 1280px) {
   .mcp-dock-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }

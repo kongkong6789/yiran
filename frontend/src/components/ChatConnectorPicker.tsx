@@ -170,5 +170,8 @@ export function connectorPrompt(server: McpServer): string {
   if (server.id === "kingdee") {
     return "请通过金蝶连接器帮我查询：";
   }
+  if (server.id === "nas") {
+    return "请从 NAS 读取这个路径并分析：`/共享目录/文件名`";
+  }
   return `请通过「${server.name}」连接器帮我：`;
 }

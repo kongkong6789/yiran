@@ -565,6 +565,7 @@ def agent_chat(request):
                 "refs": result.get("refs") or {},
                 "skills": result.get("skills") or [],
                 "attachments": result.get("attachments") or [],
+                "nas_files": result.get("nas_files") or [],
             },
         )
         if session.title == "新对话":
@@ -573,7 +574,7 @@ def agent_chat(request):
 
     result["conversation_id"] = str(session.id)
     result["conversation_title"] = session.title
-    result["attachments"] = _attachment_meta(attachments)
+    result.setdefault("attachments", _attachment_meta(attachments))
     code = 200 if result.get("ok") else 400
     return Response(result, status=code)
 

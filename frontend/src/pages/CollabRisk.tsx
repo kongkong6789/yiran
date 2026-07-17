@@ -50,7 +50,7 @@ import XiaoceProcess from "../components/XiaoceProcess";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabRoundTable from "../components/CollabRoundTable";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
 import { createXiaoceRunId, isXiaoceRoom, mergeXiaoceRunSnapshot } from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
@@ -626,6 +626,8 @@ export default function CollabRisk({
 }: CollabRiskProps) {
   const { message } = App.useApp();
   const { mode, setMode } = useThemeMode();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [me, setMe] = useState<AuthUser | null>(null);
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
@@ -683,6 +685,7 @@ export default function CollabRisk({
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<any>(null);
+  const botRoomRequestRef = useRef<ReturnType<typeof createCollabRoom> | null>(null);
   const draftCoachSeq = useRef(0);
   const draftCoachTimer = useRef<number | null>(null);
   const messagesRef = useRef<CollabMessage[]>([]);
@@ -839,7 +842,8 @@ export default function CollabRisk({
   useEffect(() => {
     getMe().then((r) => setMe(r.user)).catch(() => setMe(null));
     const roomFromQuery = searchParams.get("room");
-    loadRooms(!roomFromQuery);
+    const botFromQuery = searchParams.get("bot");
+    loadRooms(!roomFromQuery && !botFromQuery);
     listCollabUsers()
       .then((d) => setContacts(d.results || []))
       .catch(() => setContacts([]));
@@ -858,28 +862,42 @@ export default function CollabRisk({
   useEffect(() => {
     const bot = searchParams.get("bot");
     if (bot !== "xiaoce" && bot !== "小策bot") return;
+    const nasPrompt = (location.state as { nasPrompt?: string } | null)?.nasPrompt?.trim() || "";
     setSiderTab("contacts");
-    setSearchParams({}, { replace: true });
     let cancelled = false;
+    const roomRequest = botRoomRequestRef.current || createCollabRoom({
+      peer_username: "小策bot",
+      room_kind: "dm",
+    });
+    botRoomRequestRef.current = roomRequest;
     (async () => {
       setCreating(true);
       try {
-        const room = await createCollabRoom({
-          peer_username: "小策bot",
-          room_kind: "dm",
-        });
+        const room = await roomRequest;
         if (cancelled) return;
         await loadRooms();
         setActiveId(room.id);
         setSiderTab("chats");
+        if (nasPrompt) {
+          setDraft(nasPrompt);
+          window.setTimeout(() => composerRef.current?.focus?.(), 0);
+        }
+        const nextParams = new URLSearchParams(searchParams);
+        nextParams.delete("bot");
+        const suffix = nextParams.toString();
+        navigate(`${location.pathname}${suffix ? `?${suffix}` : ""}`, {
+          replace: true,
+          state: null,
+        });
       } catch (e: any) {
         if (!cancelled) message.error(e?.response?.data?.error || "打开小策bot 失败");
       } finally {
+        if (botRoomRequestRef.current === roomRequest) botRoomRequestRef.current = null;
         if (!cancelled) setCreating(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [searchParams, setSearchParams, loadRooms, message]);
+  }, [location.pathname, location.state, loadRooms, message, navigate, searchParams]);
 
   useEffect(() => {
     if (!activeId) return;

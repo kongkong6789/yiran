@@ -566,6 +566,13 @@ export interface AgentChatResult {
     is_image?: boolean;
     url?: string;
   }[];
+  nas_files?: {
+    name: string;
+    path: string;
+    native_path: string;
+    size: number;
+    download_url: string;
+  }[];
 }
 
 export interface UserSkillItem {
@@ -776,6 +783,53 @@ export const probeMcpServer = (id: string) =>
     transport?: string;
     note?: string;
   }>(`/mcp/servers/${id}/probe/`).then((r) => r.data);
+
+export interface NasFileEntry {
+  name: string;
+  path: string;
+  kind: "folder" | "file";
+  size: number | null;
+  modified_at: string;
+  extension: string;
+  mime_type: string;
+  previewable: boolean;
+  preview_kind: "text" | "image" | "pdf" | "none";
+  native_path: string;
+  download_url: string;
+  preview_url: string;
+}
+
+export interface NasDirectoryResult {
+  root_name: string;
+  current_path: string;
+  current_native_path: string;
+  parent_path: string | null;
+  entries: NasFileEntry[];
+  count: number;
+  truncated: boolean;
+  read_only: boolean;
+}
+
+export interface NasFilePreview {
+  name: string;
+  path: string;
+  size: number;
+  modified_at: string;
+  mime_type: string;
+  previewable: boolean;
+  preview_kind: "text" | "image" | "pdf" | "none";
+  native_path: string;
+  download_url: string;
+  preview_url: string;
+  content: string;
+  truncated: boolean;
+}
+
+export const getNasDirectory = (path = "/") =>
+  api.get<NasDirectoryResult>("/mcp/servers/nas/files/", { params: { path } }).then((r) => r.data);
+
+export const getNasFilePreview = (path: string) =>
+  api.get<NasFilePreview>("/mcp/servers/nas/files/preview/", { params: { path } }).then((r) => r.data);
 
 // ================= 多 Agent 圆桌会议 =================
 export interface Agent {

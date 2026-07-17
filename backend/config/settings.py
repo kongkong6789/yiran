@@ -206,7 +206,9 @@ if USE_POSTGRESQL:
             "PASSWORD": PG_PASSWORD,
             "HOST": PG_HOST,
             "PORT": PG_PORT,
-            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
+            # 本地 runserver 会为并发请求创建线程；默认不复用连接，避免低连接数
+            # PostgreSQL 在页面并发加载时出现 "too many clients"。生产环境可显式调大。
+            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "0")),
             "CONN_HEALTH_CHECKS": True,
             "OPTIONS": {
                 "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
