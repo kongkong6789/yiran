@@ -187,6 +187,10 @@ export default function WorkTodos() {
       form.setFields([{ name: "platformAssigneeIds", errors: ["请至少选择一位平台负责人或企业微信负责人"] }]);
       return;
     }
+    if (values.syncToWeCom && !wecomContactIds.length) {
+      form.setFields([{ name: "wecomContactIds", errors: ["请选择至少一位需要同步的企业微信负责人"] }]);
+      return;
+    }
     setSaving(true);
     try {
       const response = await createWeComTodo({
@@ -198,9 +202,6 @@ export default function WorkTodos() {
       else if (response.syncStatus === "synced") message.success("平台待办已创建并同步到企业微信");
       else if (response.syncStatus === "pending") message.success("平台待办已创建，正在同步企业微信");
       else message.success("平台待办已创建");
-      if (response.skippedPlatformAssigneeNames?.length) {
-        message.info(`${response.skippedPlatformAssigneeNames.join("、")} 未绑定企业微信，仅接收平台待办`);
-      }
       form.resetFields(); setDescriptionOpen(false); setCreateOpen(false); setView("created");
     } catch (error) { message.error(errorText(error)); } finally { setSaving(false); }
   };
@@ -419,7 +420,13 @@ export default function WorkTodos() {
 
           {syncToWeCom && (
             <div className="work-todo-wecom-recipient-box">
-              <Form.Item name="wecomContactIds" label="企业微信通讯录负责人（可选）" extra="可直接分配给没有平台账号的企业微信成员。">
+              <Form.Item
+                name="wecomContactIds"
+                label="企业微信负责人"
+                required
+                extra="这里只选择需要收到企业微信待办的人；平台负责人不会被自动加入。"
+                rules={[{ required: true, message: "请选择至少一位需要同步的企业微信负责人" }]}
+              >
                 <Select
                   mode="multiple"
                   showSearch
@@ -455,7 +462,7 @@ export default function WorkTodos() {
                 />
               </Form.Item>
               {contactsError && <Alert type="warning" showIcon message={contactsError} action={<Button type="link" size="small" onClick={() => { setWeComContacts([]); setContactsError(""); setContactsLoaded(false); }}>重新读取</Button>} />}
-              {!contactsError && <Alert type="info" showIcon message="可直接通知没有平台账号的企微成员；同一成员从两处重复选择时会自动去重。" />}
+              {!contactsError && <Alert type="info" showIcon message="企业微信待办只会发送给这里明确选择的成员。" />}
             </div>
           )}
         </Form>

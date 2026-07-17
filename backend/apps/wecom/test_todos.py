@@ -76,12 +76,16 @@ class WeComTodoTests(APITestCase):
         platform_list = self.client.get("/api/wecom/todos/?view=assigned")
         self.assertEqual(platform_list.status_code, 200)
         denied_sync = self.client.post("/api/wecom/todos/", {
-            "title": "仅保留平台", "assigneeIds": [self.member.id], "syncToWeCom": True,
+            "title": "仅保留平台", "assigneeIds": [self.member.id],
+            "wecomContactIds": [self.wecom_only_contact.id], "syncToWeCom": True,
         }, format="json")
         self.assertEqual(denied_sync.status_code, 201)
         self.assertEqual(denied_sync.data["syncStatus"], WorkTodo.SyncStatus.PENDING)
         process_due_work_todo_syncs()
-        self.assertEqual(WorkTodo.objects.get().sync_error_code, "not_authorized")
+        self.assertEqual(
+            WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM).sync_error_code,
+            "not_authorized",
+        )
         config.allowed_users.add(self.member)
         with patch("apps.wecom.todo_sync_service.WeComCliClient") as client_class:
             client_class.return_value.list_todos.return_value = []
@@ -143,14 +147,18 @@ class WeComTodoTests(APITestCase):
         self.client.force_authenticate(self.owner)
         response = self.client.post("/api/wecom/todos/", {
             "title": "跟进客户", "assigneeIds": [self.member.id], "remindTypes": [0],
+            "wecomContactIds": [self.bound_contact.id],
             "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["syncStatus"], WorkTodo.SyncStatus.PENDING)
         process_due_work_todo_syncs()
-        row = WorkTodo.objects.get()
+        platform_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.PLATFORM)
+        row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM)
+        self.assertEqual(platform_row.assignee, self.member)
+        self.assertFalse(platform_row.sync_requested)
         self.assertEqual(row.organization, self.organization)
-        self.assertEqual(row.assignee, self.member)
+        self.assertEqual(row.wecom_contact, self.bound_contact)
         self.assertEqual(row.wecom_todo_id, "native-todo-id")
         self.assertEqual(row.sync_status, WorkTodo.SyncStatus.SYNCED)
         self.assertEqual(row.wecom_todo_userid, "todo-scoped-member-id")
@@ -165,13 +173,17 @@ class WeComTodoTests(APITestCase):
         response = self.client.post("/api/wecom/todos/", {
             "title": "逾期待办",
             "platformAssigneeIds": [self.member.id],
+            "wecomContactIds": [self.bound_contact.id],
             "dueAt": (timezone.now() - timedelta(hours=1)).isoformat(),
             "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
         process_due_work_todo_syncs()
         self.assertEqual(client_class.return_value.create_todo.call_args.kwargs["end_time"], "")
-        self.assertEqual(WorkTodo.objects.get().sync_status, WorkTodo.SyncStatus.SYNCED)
+        self.assertEqual(
+            WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM).sync_status,
+            WorkTodo.SyncStatus.SYNCED,
+        )
 
     def test_platform_only_todo_does_not_require_wecom_config_or_binding(self):
         WeComCliConfig.objects.all().delete()
@@ -186,17 +198,14 @@ class WeComTodoTests(APITestCase):
         self.assertEqual(row.sync_status, WorkTodo.SyncStatus.NOT_REQUESTED)
         self.assertEqual(row.wecom_todo_id, "")
 
-    def test_unbound_platform_assignee_keeps_platform_todo_when_sync_is_enabled(self):
+    def test_sync_requires_explicit_wecom_contact(self):
         self.client.force_authenticate(self.owner)
         response = self.client.post("/api/wecom/todos/", {
             "title": "仅平台接收", "platformAssigneeIds": [self.owner.id], "syncToWeCom": True,
         }, format="json")
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["skippedPlatformAssigneeNames"], ["todo-owner"])
-        row = WorkTodo.objects.get()
-        self.assertEqual(row.assignee, self.owner)
-        self.assertFalse(row.sync_requested)
-        self.assertEqual(row.sync_status, WorkTodo.SyncStatus.NOT_REQUESTED)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("wecomContactIds", response.data)
+        self.assertEqual(WorkTodo.objects.count(), 0)
 
     @patch("apps.wecom.todo_sync_service.WeComCliClient")
     def test_wecom_contact_without_platform_account_can_receive_todo(self, client_class):
@@ -221,9 +230,33 @@ class WeComTodoTests(APITestCase):
         self.assertNotIn("wecom-only-id", rendered)
 
     @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_bound_platform_assignee_is_not_implicitly_added_to_wecom_todo(self, client_class):
+        client_class.return_value.search_todo_userid.return_value = "todo-scoped-wecom-only-id"
+        client_class.return_value.create_todo.return_value = "explicit-recipient-todo"
+        self.client.force_authenticate(self.owner)
+        response = self.client.post("/api/wecom/todos/", {
+            "title": "企微仅通知明确联系人",
+            "platformAssigneeIds": [self.member.id],
+            "wecomContactIds": [self.wecom_only_contact.id],
+            "syncToWeCom": True,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201)
+        process_due_work_todo_syncs()
+        platform_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.PLATFORM)
+        self.assertFalse(platform_row.sync_requested)
+        self.assertEqual(platform_row.sync_status, WorkTodo.SyncStatus.NOT_REQUESTED)
+        self.assertEqual(
+            client_class.return_value.create_todo.call_args.kwargs["follower_ids"],
+            ["todo-scoped-wecom-only-id"],
+        )
+        created = self.client.get("/api/wecom/todos/?view=created&status=pending")
+        self.assertEqual(created.data["results"][0]["syncStatus"], WorkTodo.SyncStatus.SYNCED)
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
     def test_mixed_recipients_deduplicate_bound_wecom_contact(self, client_class):
         client_class.return_value.search_todo_userid.side_effect = lambda name: {
-            "todo-member": "todo-scoped-member-id",
+            "杨晓东": "todo-scoped-member-id",
             "企微同事": "todo-scoped-wecom-only-id",
         }.get(name, "")
         client_class.return_value.create_todo.return_value = "mixed-todo"
@@ -235,34 +268,36 @@ class WeComTodoTests(APITestCase):
             "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(WorkTodo.objects.count(), 3)
+        self.assertEqual(WorkTodo.objects.count(), 4)
         process_due_work_todo_syncs()
         follower_ids = client_class.return_value.create_todo.call_args.kwargs["follower_ids"]
         self.assertCountEqual(follower_ids, ["todo-scoped-member-id", "todo-scoped-wecom-only-id"])
         self.assertEqual(len(follower_ids), len(set(follower_ids)))
         created = self.client.get("/api/wecom/todos/?view=created&status=pending")
-        self.assertEqual(created.data["results"][0]["syncStatus"], "partial")
+        self.assertEqual(created.data["results"][0]["syncStatus"], WorkTodo.SyncStatus.SYNCED)
 
     @patch("apps.wecom.todo_sync_service.WeComCliClient")
     def test_out_of_bot_scope_recipient_does_not_block_valid_recipient(self, client_class):
         client_class.return_value.search_todo_userid.side_effect = lambda name: (
-            "todo-scoped-member-id" if name == "todo-member" else ""
+            "todo-scoped-member-id" if name == "杨晓东" else ""
         )
         client_class.return_value.create_todo.return_value = "partial-native-todo"
         self.client.force_authenticate(self.owner)
         response = self.client.post("/api/wecom/todos/", {
             "title": "部分负责人可触达",
             "platformAssigneeIds": [self.member.id],
-            "wecomContactIds": [self.wecom_only_contact.id],
+            "wecomContactIds": [self.bound_contact.id, self.wecom_only_contact.id],
             "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
         process_due_work_todo_syncs()
         platform_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.PLATFORM)
-        wecom_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM)
-        self.assertEqual(platform_row.sync_status, WorkTodo.SyncStatus.SYNCED)
-        self.assertEqual(wecom_row.sync_status, WorkTodo.SyncStatus.FAILED)
-        self.assertEqual(wecom_row.sync_error_code, "todo_user_not_in_scope")
+        valid_wecom_row = WorkTodo.objects.get(wecom_contact=self.bound_contact)
+        invalid_wecom_row = WorkTodo.objects.get(wecom_contact=self.wecom_only_contact)
+        self.assertEqual(platform_row.sync_status, WorkTodo.SyncStatus.NOT_REQUESTED)
+        self.assertEqual(valid_wecom_row.sync_status, WorkTodo.SyncStatus.SYNCED)
+        self.assertEqual(invalid_wecom_row.sync_status, WorkTodo.SyncStatus.FAILED)
+        self.assertEqual(invalid_wecom_row.sync_error_code, "todo_user_not_in_scope")
         self.assertEqual(client_class.return_value.create_todo.call_args.kwargs["follower_ids"], ["todo-scoped-member-id"])
         created = self.client.get("/api/wecom/todos/?view=created&status=pending")
         self.assertEqual(created.data["results"][0]["syncStatus"], "partial")
@@ -291,11 +326,12 @@ class WeComTodoTests(APITestCase):
         client_class.return_value.create_todo.side_effect = WeComCliError("network_error", "企业微信暂时不可用。")
         self.client.force_authenticate(self.owner)
         response = self.client.post("/api/wecom/todos/", {
-            "title": "需要重试", "assigneeIds": [self.member.id], "syncToWeCom": True,
+            "title": "需要重试", "assigneeIds": [self.member.id],
+            "wecomContactIds": [self.bound_contact.id], "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
         process_due_work_todo_syncs()
-        row = WorkTodo.objects.get()
+        row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM)
         self.assertEqual(row.sync_status, WorkTodo.SyncStatus.FAILED)
         self.assertIsNotNone(row.sync_next_retry_at)
 

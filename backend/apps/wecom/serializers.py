@@ -321,13 +321,16 @@ class WorkTodoCreateSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=200, allow_blank=False)
     description = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
     assigneeIds = serializers.ListField(
-        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="旧版兼容字段，仅表示平台负责人；新接入请使用 platformAssigneeIds。",
     )
     platformAssigneeIds = serializers.ListField(
-        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="平台负责人 ID，仅创建平台待办，不会自动加入企业微信待办。",
     )
     wecomContactIds = serializers.ListField(
-        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="企业微信通讯录 contactId，精确决定企业微信待办参与人。",
     )
     dueAt = serializers.DateTimeField(required=False, allow_null=True)
     priority = serializers.ChoiceField(
@@ -343,6 +346,8 @@ class WorkTodoCreateSerializer(serializers.Serializer):
         contact_ids = list(dict.fromkeys(attrs.get("wecomContactIds", [])))
         if not platform_ids and not contact_ids:
             raise serializers.ValidationError("请至少选择一位平台负责人或企业微信负责人。")
+        if attrs.get("syncToWeCom") and not contact_ids:
+            raise serializers.ValidationError({"wecomContactIds": "开启企业微信同步后，请至少选择一位企业微信负责人。"})
         if contact_ids and not attrs.get("syncToWeCom"):
             raise serializers.ValidationError({"wecomContactIds": "企业微信负责人必须开启企业微信待办同步。"})
         attrs["platformAssigneeIds"] = platform_ids

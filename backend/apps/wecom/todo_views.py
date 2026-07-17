@@ -171,8 +171,11 @@ def todo_members(request):
 
 
 def _sync_status(rows: list[WorkTodo]) -> str:
+    sync_rows = [row for row in rows if row.sync_requested]
+    if not sync_rows:
+        return WorkTodo.SyncStatus.NOT_REQUESTED
     statuses_by_recipient: dict[str, set[str]] = defaultdict(set)
-    for row in rows:
+    for row in sync_rows:
         name = (_display_name(row.assignee) if row.assignee_id else row.recipient_name or "企业微信成员")
         statuses_by_recipient[name.strip().casefold()].add(row.sync_status)
 
@@ -194,11 +197,6 @@ def _sync_status(rows: list[WorkTodo]) -> str:
         return "partial"
     if WorkTodo.SyncStatus.FAILED in effective_statuses:
         return WorkTodo.SyncStatus.FAILED
-    if (
-        WorkTodo.SyncStatus.SYNCED in effective_statuses
-        and WorkTodo.SyncStatus.NOT_REQUESTED in effective_statuses
-    ):
-        return "partial"
     if WorkTodo.SyncStatus.SYNCED in effective_statuses:
         return WorkTodo.SyncStatus.SYNCED
     return WorkTodo.SyncStatus.NOT_REQUESTED
@@ -391,26 +389,11 @@ def todos(request):
     )) if api_config else []
     if contact_ids and len(contacts) != len(contact_ids):
         return Response({"ok": False, "detail": "部分企业微信负责人不存在、已停用或不属于当前企业。"}, status=400)
-    bindings = {
-        binding.platform_user_id: binding
-        for binding in UserWeComBinding.objects.filter(
-            platform_user_id__in=assignee_ids,
-            status=UserWeComBinding.Status.MATCHED,
-            wecom_userid__isnull=False,
-            wecom_config__organization=organization,
-        )
-    }
-    selected_bound_wecom_ids = {str(binding.wecom_userid) for binding in bindings.values()}
-    contacts = [contact for contact in contacts if contact.wecom_userid not in selected_bound_wecom_ids]
     sync_group_id = uuid.uuid4()
     created = []
-    skipped_sync_names = []
     with transaction.atomic():
         for assignee_id in assignee_ids:
             assignee = memberships[assignee_id]
-            should_sync = bool(sync_requested and assignee_id in bindings)
-            if sync_requested and not should_sync:
-                skipped_sync_names.append(_display_name(assignee))
             row = WorkTodo.objects.create(
                 organization=organization,
                 creator=request.user,
@@ -423,9 +406,9 @@ def todos(request):
                 due_at=data.get("dueAt"),
                 remind_types=data["remindTypes"] or [0],
                 sync_group_id=sync_group_id,
-                sync_requested=should_sync,
-                sync_status=WorkTodo.SyncStatus.PENDING if should_sync else WorkTodo.SyncStatus.NOT_REQUESTED,
-                sync_next_retry_at=timezone.now() if should_sync else None,
+                sync_requested=False,
+                sync_status=WorkTodo.SyncStatus.NOT_REQUESTED,
+                sync_next_retry_at=None,
             )
             created.append(str(row.public_id))
         for contact in contacts:
@@ -456,7 +439,7 @@ def todos(request):
                 "wecom_contact_count": len(contacts),
             },
             decision=AuditLog.Decision.ALLOW,
-            result={"created": True, "sync_requested": sync_requested, "sync_skipped_count": len(skipped_sync_names)},
+            result={"created": True, "sync_requested": sync_requested, "wecom_recipient_count": len(contacts)},
         )
     queued = any(row.sync_requested for row in WorkTodo.objects.filter(sync_group_id=sync_group_id))
     sync_result = (
@@ -469,7 +452,7 @@ def todos(request):
         "ids": created,
         "syncStatus": sync_result["syncStatus"],
         "syncDetail": sync_result["detail"],
-        "skippedPlatformAssigneeNames": skipped_sync_names,
+        "skippedPlatformAssigneeNames": [],
         "detail": "平台待办已创建。" if not queued else "平台待办已创建，企业微信同步状态已记录。",
     }, status=201)
 

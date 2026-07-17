@@ -213,6 +213,8 @@ python manage.py sync_wecom_contacts --max-age-hours 24
 - 任务会在 SOP 开始前创建，执行节点完成后持续通过 PATCH 写回进度和时间线；“我发出的 / 我收到的”页面每 2 秒静默刷新一次。
 - `GET /api/tasks/{trace_id}/artifacts/{artifact_id}/preview/`：在线预览 Markdown 或 JSON 任务产物。
 - `GET /api/tasks/{trace_id}/artifacts/{artifact_id}/download/`：下载任务产物；仅任务发起人和已绑定的平台负责人可访问。
+
+完整接口说明：[工作任务 API](docs/work-tasks-api.md)。
 - `GET /api/council/agents/`：返回“管理 → 对象”中真实保存的智能体，任务页直接使用该列表，不再维护前端假数据。
 - `POST /api/orchestration/run/`：任务页通过 `agent_id` 指定真实智能体；后端校验智能体是否存在、是否启用、额度是否可用，并使用其执行权限运行 SOP。
 
@@ -242,7 +244,7 @@ POST /api/orchestration/run/
 - Loops 自动因果发现 / 模拟 / PDC
 # 企业微信原生待办（wecom-cli）
 
-“工作 → 待办”以 PostgreSQL 中的 `WorkTodo` 作为主数据。负责人支持两种来源：`platformAssigneeIds` 是平台企业成员，始终会收到平台待办，未绑定企业微信时默认不推送企微；`wecomContactIds` 是当前企业通讯录缓存中的联系人，即使没有平台账号也可以直接接收企业微信原生待办。两种来源可混选，同一企业微信成员会按 UserID 在服务端去重。创建时始终先保存平台记录，`syncToWeCom=true` 时再使用企业微信官方 `wecom-cli` 创建原生待办；企微失败不会回滚平台记录，并会保存失败原因、重试次数和下次重试时间。企业管理员在“能力 → 连接 → 企业微信 → 智能机器人 / CLI”中按企业配置 Bot ID 和 Secret，并可选择企业全员、指定成员或仅管理员使用；Secret 仅加密保存在服务端。页面及接口不会返回企业微信 UserID 或原始待办 ID。
+“工作 → 待办”以 PostgreSQL 中的 `WorkTodo` 作为主数据。负责人严格分为两种来源：`platformAssigneeIds` 只决定平台负责人，不会自动加入企业微信待办；`wecomContactIds` 使用通讯录接口返回的 `contactId`，精确决定企业微信原生待办参与人。`syncToWeCom=true` 时必须至少提供一项 `wecomContactIds`。两种来源可混选，同名成员在页面聚合展示。创建时始终先保存平台记录，再使用企业微信官方 `wecom-cli` 创建原生待办；企微失败不会回滚平台记录，并会保存失败原因、重试次数和下次重试时间。企业管理员在“能力 → 连接 → 企业微信 → 智能机器人 / CLI”中按企业配置 Bot ID 和 Secret，并可选择企业全员、指定成员或仅管理员使用；Secret 仅加密保存在服务端。页面及接口不会返回企业微信 UserID 或原始待办 ID。
 
 自建应用通讯录 `wecom_userid` 与待办机器人参与人 ID 是两个独立标识。同步前服务端必须通过机器人 `search_todo_userid` 按负责人姓名解析待办 ID，并加密保存到 `WorkTodo.wecom_todo_userid_encrypted`；创建、状态更新和反向同步只使用该待办 ID。搜索不到的成员单独记录为“不在机器人待办成员范围”，不会阻断同一任务中其他可触达负责人。平台已过期的截止时间仍保留，但不会作为无效的企微 `end_time` 提交。
 
@@ -254,4 +256,6 @@ POST /api/orchestration/run/
 - `POST /api/wecom/todos/status/`：先更新平台状态；已启用企微同步时立即同步企业微信
 - `POST /api/wecom/todos/{id}/sync/`：重新同步失败的企业微信待办
 - `DELETE /api/wecom/todos/{id}/`：仅创建人可删除；已同步时先删除企业微信原生待办，再删除平台记录
+
+完整接口说明：[工作待办 API](docs/work-todos-api.md)。
 - `python manage.py process_wecom_queue --watch --interval 30`：持久补偿失败同步，并每 5 分钟反向刷新企微完成状态
