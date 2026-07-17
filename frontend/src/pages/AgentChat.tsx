@@ -4,8 +4,8 @@ import {
   Typography,
 } from "antd";
 import {
-  BulbOutlined, DeleteOutlined, HistoryOutlined, PaperClipOutlined,
-  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, UserOutlined,
+  BulbOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
+  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
   agentChat,
@@ -26,7 +26,12 @@ import {
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import ChatMarkdown, { isReportLike, looksBlocky } from "../components/ChatMarkdown";
-import { brand } from "../theme/brand";
+import {
+  getChatThemeStorage,
+  persistChatTheme,
+  readChatTheme,
+  type ChatTheme,
+} from "./agentChatTheme";
 
 const { TextArea } = Input;
 
@@ -118,6 +123,9 @@ const QUICK_PROMPTS = [
 
 export default function AgentChat() {
   const { message } = App.useApp();
+  const [chatTheme, setChatTheme] = useState<ChatTheme>(() => (
+    readChatTheme(getChatThemeStorage())
+  ));
   const [me, setMe] = useState<AuthUser | null>(null);
   const [sessions, setSessions] = useState<AgentChatSession[]>([]);
   const [isAdminView, setIsAdminView] = useState(false);
@@ -143,6 +151,14 @@ export default function AgentChat() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
+
+  useEffect(() => {
+    persistChatTheme(getChatThemeStorage(), chatTheme);
+    document.body.dataset.agentChatTheme = chatTheme;
+    return () => {
+      delete document.body.dataset.agentChatTheme;
+    };
+  }, [chatTheme]);
 
   const selectedKind = kindOfModel(selectedModel, modelPresets);
   const activeSession = sessions.find((s) => s.id === activeId) || null;
@@ -425,7 +441,7 @@ export default function AgentChat() {
   };
 
   return (
-    <div className="agent-chat-shell">
+    <div className="agent-chat-shell" data-chat-theme={chatTheme}>
       <aside className="agent-chat-history">
         <div className="agent-chat-history-head">
           <Typography.Text strong>
@@ -438,6 +454,7 @@ export default function AgentChat() {
                 size="small"
                 placeholder="用户"
                 style={{ width: 96 }}
+                popupClassName="agent-chat-user-filter-dropdown"
                 value={userFilter}
                 options={userOptions}
                 onChange={(v) => {
@@ -480,6 +497,7 @@ export default function AgentChat() {
               </div>
               <Popconfirm
                 title="删除这条对话？"
+                overlayClassName="agent-chat-popconfirm"
                 onConfirm={(event) => {
                   event?.stopPropagation();
                   removeSession(item.id);
@@ -503,9 +521,9 @@ export default function AgentChat() {
       <div className="agent-chat-page">
         <div className="agent-chat-header">
           <Space>
-            <Avatar size={40} style={{ background: brand.gradientGold }} icon={<RobotOutlined />} />
+            <Avatar size={36} className="agent-chat-avatar-assistant" icon={<RobotOutlined />} />
             <div>
-              <Typography.Title level={4} style={{ margin: 0 }}>对话</Typography.Title>
+              <Typography.Title level={4} style={{ margin: 0 }}>经营决策顾问</Typography.Title>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 {viewingOthers
                   ? `管理员只读预览 · ${activeSession?.username || "用户"} 的对话`
@@ -541,17 +559,32 @@ export default function AgentChat() {
                 ))}
               </>
             )}
+            <div className="agent-chat-theme-switch" role="group" aria-label="对话主题">
+              <Tooltip title="白色主题">
+                <button
+                  type="button"
+                  className={chatTheme === "light" ? "active" : ""}
+                  aria-label="切换为白色主题"
+                  aria-pressed={chatTheme === "light"}
+                  onClick={() => setChatTheme("light")}
+                >
+                  <SunOutlined />
+                </button>
+              </Tooltip>
+              <Tooltip title="黑色主题">
+                <button
+                  type="button"
+                  className={chatTheme === "dark" ? "active" : ""}
+                  aria-label="切换为黑色主题"
+                  aria-pressed={chatTheme === "dark"}
+                  onClick={() => setChatTheme("dark")}
+                >
+                  <MoonOutlined />
+                </button>
+              </Tooltip>
+            </div>
             <Button icon={<PlusOutlined />} onClick={newChat}>新对话</Button>
           </Space>
-        </div>
-
-        <div className="agent-chat-quick">
-          <BulbOutlined style={{ color: brand.gold }} />
-          {QUICK_PROMPTS.map((prompt) => (
-            <Button key={prompt} size="small" type="dashed" onClick={() => send(prompt)} disabled={loading || viewingOthers}>
-              {prompt}
-            </Button>
-          ))}
         </div>
 
         <div className="agent-chat-body">
@@ -566,6 +599,19 @@ export default function AgentChat() {
               <Typography.Text type="secondary">
                 粘贴企业微信文档链接，我会通过已配置的 MCP 读取并回答。
               </Typography.Text>
+              <div className="agent-chat-empty-prompts">
+                <BulbOutlined className="agent-chat-quick-icon" />
+                {QUICK_PROMPTS.map((prompt) => (
+                  <Button
+                    key={prompt}
+                    size="small"
+                    onClick={() => send(prompt)}
+                    disabled={loading || viewingOthers}
+                  >
+                    {prompt}
+                  </Button>
+                ))}
+              </div>
             </div>
           ) : messages.map((item, index) => {
             const isUser = item.role === "user";
@@ -574,15 +620,13 @@ export default function AgentChat() {
               <div key={item.id || index} className={`agent-chat-row ${isUser ? "user" : "assistant"}`}>
                 <Avatar
                   size={32}
+                  className={isUser ? "agent-chat-avatar-user" : "agent-chat-avatar-assistant"}
                   src={isUser && me?.avatar_url
                     ? `${me.avatar_url}${me.avatar_url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getAuthToken() || "")}`
                     : undefined}
                   icon={isUser
                     ? (me?.avatar_url ? undefined : <UserOutlined />)
                     : <RobotOutlined />}
-                  style={isUser
-                    ? { background: me?.avatar_url ? undefined : brand.navyMid }
-                    : { background: brand.gradientGold }}
                 />
                 <div className={`agent-chat-bubble${isBlocks ? " report" : ""}`}>
                   {isUser ? (
@@ -622,9 +666,9 @@ export default function AgentChat() {
           })}
           {loading && (
             <div className="agent-chat-row assistant">
-              <Avatar size={32} icon={<RobotOutlined />} style={{ background: brand.gradientGold }} />
+              <Avatar size={32} className="agent-chat-avatar-assistant" icon={<RobotOutlined />} />
               <div className="agent-chat-bubble">
-                <Spin size="small" /> <span style={{ marginLeft: 8, color: "var(--lc-text-muted)" }}>正在检索资料并思考…</span>
+                <Spin size="small" /> <span style={{ marginLeft: 8, color: "var(--chat-muted)" }}>正在检索资料并思考…</span>
               </div>
             </div>
           )}

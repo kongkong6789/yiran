@@ -13,6 +13,7 @@ import {
 } from "./theme/mode";
 import "antd/dist/reset.css";
 import "./index.css";
+import "./styles/agentChatApple.css";
 
 const LIGHT_TOKENS = {
   colorPrimary: brand.gold,
