@@ -192,7 +192,6 @@ export default function Council() {
     let reconnectTimer: number | null = null;
     let pingTimer: number | null = null;
     let pollTimer: number | null = null;
-    let wsAlive = false;
     const messagesRef = { current: [] as CouncilMessage[] };
 
     const applyPayload = (data: { status?: string; round?: number; results?: CouncilMessage[] }) => {
@@ -224,7 +223,7 @@ export default function Council() {
     const pollOnce = async () => {
       const m = meetingRef.current;
       if (!m?.id || stopped) return;
-      // WebSocket 正常时降低频率：仍偶发补洞，避免完全丢消息
+      // 按消息游标补洞，避免 WebSocket 事件丢失造成缺口
       const after = messagesRef.current.reduce(
         (max, x) => (x.id > 0 && x.id > max ? x.id : max),
         0,
@@ -246,19 +245,14 @@ export default function Council() {
       if (stopped || !meetingRef.current?.id) return;
       try { ws?.close(); } catch { /* ignore */ }
       ws = openCouncilMeetingSocket(meetingRef.current.id, {
-        onOpen: () => { wsAlive = true; },
         onMessages: applyPayload,
         onStatus: applyPayload,
         onClose: (ev) => {
-          wsAlive = false;
           if (stopped) return;
           // 鉴权失败别狂重连
           if (ev.code === 4401 || ev.code === 4404) return;
           if (reconnectTimer) window.clearTimeout(reconnectTimer);
           reconnectTimer = window.setTimeout(connect, 1500);
-        },
-        onError: () => {
-          wsAlive = false;
         },
       });
       if (pingTimer) window.clearInterval(pingTimer);
@@ -282,7 +276,6 @@ export default function Council() {
 
     return () => {
       stopped = true;
-      wsAlive = false;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (pingTimer) window.clearInterval(pingTimer);
       if (pollTimer) window.clearInterval(pollTimer);
