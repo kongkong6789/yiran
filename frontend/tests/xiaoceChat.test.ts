@@ -105,4 +105,12 @@ test("Xiaoce process presentation has dedicated responsive styles", () => {
   assert.match(source, /\.xiaoce-process/);
   assert.match(source, /\.xiaoce-live-process/);
   assert.match(source, /\.xiaoce-created-skill/);
+  const processStyles = source.slice(
+    source.indexOf(".xiaoce-live-process {"),
+    source.indexOf(".collab-agent-composer {"),
+  );
+  assert.match(processStyles, /var\(--lc-bg-elevated/);
+  assert.match(processStyles, /var\(--lc-border-light/);
+  assert.match(processStyles, /var\(--lc-text-muted/);
+  assert.match(processStyles, /var\(--lc-accent-blue/);
 });

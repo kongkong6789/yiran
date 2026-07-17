@@ -3683,35 +3683,35 @@ const css = `
 .xiaoce-live-process {
   flex-shrink: 0;
   padding: 8px 14px 4px;
-  border-top: 1px solid #edf1f7;
-  background: #fff;
+  border-top: 1px solid var(--lc-border-light, #edf1f7);
+  background: var(--lc-bg-elevated, #fff);
 }
 .xiaoce-live-process-label {
   display: block;
   margin: 0 0 5px 2px;
-  color: #5c6b84;
+  color: var(--lc-text-muted, #5c6b84);
   font-size: 11px;
   font-weight: 600;
 }
 .xiaoce-process {
   width: min(520px, 100%);
   margin-top: 9px;
-  color: #31405b;
+  color: var(--lc-text, #31405b);
   font-size: 12px;
 }
 .xiaoce-process.is-live {
   margin-top: 0;
   padding: 10px 12px;
-  border: 1px solid #dbe7ff;
+  border: 1px solid var(--lc-border-light, #dbe7ff);
   border-radius: 12px;
-  background: #f7faff;
+  background: var(--lc-bg, #f7faff);
 }
 .xiaoce-process-live-title,
 .xiaoce-process-toggle {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #315efb;
+  color: var(--lc-accent-blue, #315efb);
   font-size: 12px;
   font-weight: 600;
 }
@@ -3723,7 +3723,7 @@ const css = `
   cursor: pointer;
 }
 .xiaoce-process-toggle:hover {
-  color: #1d4ed8;
+  color: var(--lc-navy, #1d4ed8);
 }
 .xiaoce-process-steps {
   display: grid;
@@ -3737,10 +3737,10 @@ const css = `
   align-items: center;
   gap: 8px;
   min-height: 20px;
-  color: #6b7890;
+  color: var(--lc-text-muted, #6b7890);
 }
 .xiaoce-process-steps li.is-running {
-  color: #172033;
+  color: var(--lc-text, #172033);
   font-weight: 600;
 }
 .xiaoce-process-icon {
@@ -3748,7 +3748,7 @@ const css = `
   font-size: 14px;
 }
 .xiaoce-process-icon.is-completed { color: #22a06b; }
-.xiaoce-process-icon.is-running { color: #315efb; }
+.xiaoce-process-icon.is-running { color: var(--lc-accent-blue, #315efb); }
 .xiaoce-process-icon.is-cancelled { color: #d48806; }
 .xiaoce-process-icon.is-failed { color: #cf1322; }
 .xiaoce-process-error {
@@ -3782,8 +3782,8 @@ const css = `
   margin-inline-end: 0;
 }
 .agent-chat-stop-circle {
-  border-color: #172033 !important;
-  background: #172033 !important;
+  border-color: var(--lc-navy, #172033) !important;
+  background: var(--lc-navy, #172033) !important;
   box-shadow: none !important;
 }
 .agent-chat-stop-glyph {
@@ -3791,7 +3791,7 @@ const css = `
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  background: #fff;
+  background: var(--lc-bg-elevated, #fff);
 }
 .collab-agent-composer {
   position: relative;
