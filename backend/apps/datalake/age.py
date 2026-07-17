@@ -12,7 +12,7 @@ import time
 
 from django.conf import settings
 
-from .pg import PgLake, PgSession, pglake
+from .pg import PgSession, age_pglake as pglake
 
 
 def _sid() -> str:

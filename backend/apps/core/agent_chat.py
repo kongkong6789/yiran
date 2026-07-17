@@ -15,6 +15,7 @@ from apps.skills.runner import (
     try_execute_skill_scripts,
 )
 from .attachments import format_attachment_context, vision_image_parts
+from .cancellation import raise_if_cancelled
 from pathlib import Path
 
 DOC_SYSTEM_APPEND = """
@@ -32,7 +33,7 @@ SYSTEM_PROMPT = """你是「良策 AI」对话助手,面向电商/零售运营�
 - 圆桌会议:多 Agent 围绕复杂问题会诊
 - Agent 控制台:自然语言触发 SOP(采购/改价/日报/吉客云同步)
 - 本体图谱 / Loops:因果链路与回路分析
-- MCP 接入:企业微信、腾讯文档、金蝶、吉客云等
+- MCP 接入:企业微信、金蝶、吉客云、NAS 等
 - Skill:用户可上传 SKILL.md 完整 zip 包(含 scripts/),对话中用 @skill-id 调用;平台会自动执行 Skill 中的 python 脚本
 - 文生图/图生图:用户说「画一张…」走文生图;上传图片并说「改成…」走图生图
 
@@ -84,6 +85,7 @@ def run_chat(
     skill_ids: list[str] | None = None,
     attachments: list[dict] | None = None,
     model: str | None = None,
+    cancel_check=None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -92,13 +94,21 @@ def run_chat(
     if not message and not attachments:
         return {"ok": False, "error": "消息不能为空"}
 
+    raise_if_cancelled(cancel_check)
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
     script_blocks = (
-        try_execute_skill_scripts(active_skills, message, user, history=history)
+        try_execute_skill_scripts(
+            active_skills,
+            message,
+            user,
+            history=history,
+            cancel_check=cancel_check,
+        )
         if active_skills else []
     )
+    raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
@@ -106,9 +116,21 @@ def run_chat(
     graph: dict = {"refs": []}
     if not doc_mode:
         knowledge = gather_knowledge(message, top_k=4)
+        raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
+        raise_if_cancelled(cancel_check)
 
-    mcp = read_wecom_document(message, document_url=doc_url, user=user) if doc_url else read_wecom_document(message, user=user)
+    mcp = (
+        read_wecom_document(
+            message,
+            document_url=doc_url,
+            user=user,
+            cancel_check=cancel_check,
+        )
+        if doc_url
+        else read_wecom_document(message, user=user, cancel_check=cancel_check)
+    )
+    raise_if_cancelled(cancel_check)
     refs = {
         "rag": [],
         "graph": graph.get("refs") or [],
@@ -154,7 +176,8 @@ def run_chat(
 
     user_block = message or "(用户仅上传了附件,请结合附件内容回答)"
     if reference_blocks:
-        user_block = f"参考资料:\n{'\n\n'.join(reference_blocks)}\n\n用户问题:{user_block}"
+        reference_text = "\n\n".join(reference_blocks)
+        user_block = f"参考资料:\n{reference_text}\n\n用户问题:{user_block}"
 
     clean_history = [
         {"role": item["role"], "content": str(item["content"])}
@@ -173,6 +196,7 @@ def run_chat(
     generated_images: list[dict] = []
 
     # 文生图 / 图生图:走独立 images API + 生图密钥
+    raise_if_cancelled(cancel_check)
     if image_intent == "generate" and image_svc.image_api_available() and user is not None:
         prompt = image_svc.extract_generation_prompt(message)
         gen = image_svc.generate_image_with_fallback(
@@ -214,6 +238,7 @@ def run_chat(
                     generated_images.extend(edited.get("images") or [])
                     if edited.get("model"):
                         model_override = model_override or edited["model"]
+    raise_if_cancelled(cancel_check)
 
     if image_parts:
         user_content: str | list = [
@@ -255,8 +280,10 @@ def run_chat(
             "max_tokens": max_tokens,
             "temperature": 0.4 if doc_mode else 0.6,
             "llm_user": user,
-            "timeout": 90 if image_parts else 45,
+            "timeout": 90,
         }
+        if cancel_check:
+            chat_kwargs["cancel_check"] = cancel_check
         tried_models: list[str] = []
         if image_parts:
             # 个人设置若是 DeepSeek 等纯文本模型,识图改用全局 .env 的 Key/URL + 视觉模型
@@ -292,6 +319,7 @@ def run_chat(
             if model_override:
                 chat_kwargs["model"] = model_override
             llm_result = llm.chat_messages_result(system, messages, **chat_kwargs)
+        raise_if_cancelled(cancel_check)
 
     reply = llm_result.get("content") or ""
     llm_error = llm_result.get("error") or ""
@@ -335,6 +363,7 @@ def run_chat(
             configured=llm_configured,
         )
 
+    raise_if_cancelled(cancel_check)
     return {
         "ok": True,
         "reply": reply,

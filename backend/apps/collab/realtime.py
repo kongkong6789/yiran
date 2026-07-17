@@ -134,6 +134,10 @@ def room_events(request, room_id):
                         "updated_at": room.updated_at.isoformat(),
                         "online_count": online_count,
                         "peer_online": peer_online,
+                        "active_xiaoce_run": v._active_xiaoce_run_payload(
+                            room,
+                            request.user,
+                        ),
                     },
                     "after_id": state["after_id"],
                     "after_insight_id": state["after_insight_id"],
@@ -174,4 +178,5 @@ def room_presence(request, room_id):
         "participants": payload.get("participants") or [],
         "member_count": payload.get("member_count"),
         "display_title": payload.get("display_title"),
+        "active_xiaoce_run": payload.get("active_xiaoce_run"),
     })

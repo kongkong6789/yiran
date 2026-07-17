@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from .mentions import get_collab_ai_user
 from .models import CollabInsight, CollabMessage, CollabRoom
+from . import ws_push
 
 
 def _should_interject(insight: CollabInsight) -> bool:
@@ -109,4 +110,17 @@ def maybe_interject(room: CollabRoom, insight: CollabInsight | None) -> CollabMe
         ai_kind="suggest" if suggest else "interject",
     )
     room.save(update_fields=["updated_at"])
+    # 延迟导入避免循环
+    from .views import _message_payload
+
+    ws_push.publish_sync(
+        room.id,
+        messages=[_message_payload(msg)],
+        room={
+            "id": str(room.id),
+            "status": room.status,
+            "risk_level": room.risk_level,
+            "updated_at": room.updated_at.isoformat(),
+        },
+    )
     return msg

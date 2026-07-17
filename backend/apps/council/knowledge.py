@@ -14,6 +14,28 @@ from apps.datalake.pg import pglake
 from . import graph_knowledge
 
 
+def _fmt_num(value, unit: str = "") -> str:
+    """把数值格式化成业务可读文本，避免出现 4.18e+05 这种科学计数法。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"{value}{unit}"
+    u = (unit or "").strip()
+    # 比率/百分比类：保留小数，不做万元换算
+    if u in ("比率", "率", "%") or (-1 <= v <= 1 and v != int(v)):
+        if u in ("%",):
+            return f"{v:.2f}%"
+        return f"{v:.4f}".rstrip("0").rstrip(".") + u
+    av = abs(v)
+    if av >= 1_0000_0000:
+        return f"{v / 1_0000_0000:.2f}".rstrip("0").rstrip(".") + "亿" + u
+    if av >= 1_0000:
+        return f"{v / 1_0000:.2f}".rstrip("0").rstrip(".") + "万" + u
+    if v == int(v):
+        return f"{int(v):,}{u}"
+    return f"{v:,.2f}{u}"
+
+
 def _safe_query(sql: str) -> list[dict]:
     """查询 DuckDB;若表不存在则尝试 seed 后重试。"""
     try:
@@ -85,7 +107,7 @@ def _metrics_block() -> str:
             if rows:
                 lines = [
                     f"- {r['metric_name']}({r['dim_value']},{r['dt']}):"
-                    f"值={r['value']:.4g}{r['unit'] or ''}"
+                    f"值={_fmt_num(r['value'], r['unit'] or '')}"
                     + (f",环比={r['mom']:+.1%}" if r["mom"] is not None else "")
                     + f"(口径:{r['formula']})"
                     for r in rows
@@ -131,6 +153,83 @@ def _anomaly_block() -> str:
     return "【异常预警(DuckDB)】\n" + "\n".join(lines)
 
 
+def _orders_block(question: str) -> str:
+    """问订单/销量时，补充销售明细事实（业务库）。"""
+    q = (question or "").lower()
+    if not any(k in q for k in ("订单", "下单", "销量", "销售明细", "gmv", "sales")):
+        return ""
+    if not _pg_ready():
+        return ""
+    try:
+        rows = pglake.query(
+            """
+            SELECT d.dt, COALESCE(s.shop_name, d.shop_id) AS shop,
+                   d.sku, COALESCE(p.product_name, d.sku) AS product,
+                   d.gmv, d.orders, d.units, d.refund_amt
+            FROM dwd_sales_detail d
+            LEFT JOIN dim_shop s ON s.shop_id = d.shop_id
+            LEFT JOIN dim_product p ON p.sku = d.sku
+            ORDER BY d.dt DESC, d.gmv DESC
+            LIMIT 12
+            """
+        )
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = [
+        f"- {r['dt']} · {r['shop']} · {r['product']}({r['sku']}):"
+        f"订单={r['orders']}笔,件数={r['units']},GMV={_fmt_num(r['gmv'])},退款={_fmt_num(r['refund_amt'])}"
+        for r in rows
+    ]
+    return "【订单/销售明细(PostgreSQL·dwd_sales_detail)】\n" + "\n".join(lines)
+
+
+def _inventory_block(question: str) -> str:
+    """库存意图：当前库无独立库存快照时明确告知，避免模型瞎编。"""
+    q = (question or "").lower()
+    if not any(k in q for k in ("库存", "在库", "在途", "warehouse", "inventory", "stock")):
+        return ""
+    if not _pg_ready():
+        return "【库存】当前未接入库存快照表，无法给出在库数量。"
+    try:
+        tables = {
+            r["table_name"]
+            for r in pglake.query(
+                """
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                """
+            )
+        }
+    except Exception:
+        tables = set()
+    for name in ("dwd_inventory_snapshot", "inventory_snapshot", "stock_snapshot"):
+        if name in tables:
+            try:
+                rows = pglake.query(
+                    f"""
+                    SELECT * FROM {name}
+                    ORDER BY 1 DESC
+                    LIMIT 10
+                    """
+                )
+            except Exception:
+                rows = []
+            if rows:
+                keys = list(rows[0].keys())[:6]
+                lines = [
+                    "- " + ", ".join(f"{k}={r.get(k)}" for k in keys)
+                    for r in rows
+                ]
+                return f"【库存快照(PostgreSQL·{name})】\n" + "\n".join(lines)
+    return (
+        "【库存】DataLake 尚未接入库存快照表"
+        "（期望 dwd_inventory_snapshot / inventory_snapshot）。"
+        "请先同步库存数据；当前仅有销售明细与指标，不能代替库存数量。"
+    )
+
+
 def gather_knowledge(question: str, top_k: int = 3) -> str:
     """围绕会议问题汇聚 RAG + 数据底座 + 本体图谱资料,返回可直接注入 prompt 的文本(无资料返回空串)。"""
     blocks: list[str] = []
@@ -145,6 +244,20 @@ def gather_knowledge(question: str, top_k: int = 3) -> str:
     gb = graph_knowledge.search_graph(question).get("card")
     if gb:
         blocks.append(gb)
+
+    # 业务意图：回路上卷计算（按渠道/平台/品牌汇总销售额）
+    from .loop_rollup import rollup_block
+    rb = rollup_block(question)
+    if rb:
+        blocks.append(rb)
+
+    # 业务意图：订单 / 库存
+    ob = _orders_block(question)
+    if ob:
+        blocks.append(ob)
+    ib = _inventory_block(question)
+    if ib:
+        blocks.append(ib)
 
     # 第1层 数据底座:关键指标(PG 优先,带口径)
     mb = _metrics_block()

@@ -43,6 +43,10 @@ class UserSkill(models.Model):
 class SkillAsset(models.Model):
     """COS Skill 仓库中的上传文件(与个人启用列表分离)。"""
 
+    class Visibility(models.TextChoices):
+        SHARED = "shared", "全员共享"
+        PRIVATE = "private", "仅上传者"
+
     uploader = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="skill_assets",
@@ -50,6 +54,13 @@ class SkillAsset(models.Model):
         verbose_name="上传者",
     )
     skill_id = models.CharField("Skill ID", max_length=64, db_index=True)
+    visibility = models.CharField(
+        "可见范围",
+        max_length=16,
+        choices=Visibility.choices,
+        default=Visibility.SHARED,
+        db_index=True,
+    )
     name = models.CharField("名称", max_length=128)
     description = models.TextField("描述", blank=True, default="")
     original_filename = models.CharField("原始文件名", max_length=255, default="SKILL.md")

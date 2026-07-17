@@ -1,9 +1,13 @@
 """根路由:各层 App 的 API 挂载在 /api/ 下。"""
 from django.contrib import admin
 from django.urls import path, include
+from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="api-schema"), name="api-docs"),
+    path("api/redoc/", SpectacularRedocView.as_view(url_name="api-schema"), name="api-redoc"),
     path("api/", include("apps.core.urls")),
     path("api/datalake/", include("apps.datalake.urls")),
     path("api/rag/", include("apps.rag.urls")),
@@ -18,4 +22,6 @@ urlpatterns = [
     path("api/skills/", include("apps.skills.urls")),
     path("api/collab/", include("apps.collab.urls")),
     path("api/knowledge/", include("apps.knowledge.urls")),
+    path("api/commerce/", include("apps.commerce.urls")),
+    path("api/wecom/", include("apps.wecom.urls")),
 ]

@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 
 import AppLayout from "./components/AppLayout";
 import RequireAuth from "./components/RequireAuth";
@@ -10,14 +10,23 @@ import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
 import Audit from "./pages/Audit";
 import Agents from "./pages/Agents";
-import Council from "./pages/Council";
+import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
+import CommerceHub from "./pages/CommerceHub";
+import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
 import SkillsPage from "./pages/SkillsPage";
-import CollabRisk from "./pages/CollabRisk";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
+import WorkTodos from "./pages/WorkTodos";
+
+function LegacyCouncilRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  params.set("view", "roundtable");
+  return <Navigate to={`/collab?${params.toString()}`} replace />;
+}
 
 export default function App() {
   return (
@@ -28,12 +37,17 @@ export default function App() {
           <Route index element={<Navigate to="/home" replace />} />
           <Route path="home" element={<Home />} />
           <Route path="agent" element={<AgentChat />} />
-          <Route path="collab" element={<CollabRisk />} />
+          <Route path="collab" element={<TeamCollaboration />} />
           <Route path="ontology" element={<OntologyGraph />} />
           <Route path="knowledge" element={<Knowledge />} />
           <Route path="skills" element={<SkillsPage />} />
-          <Route path="council" element={<Council />} />
+          <Route path="council" element={<LegacyCouncilRedirect />} />
+          <Route path="commerce" element={<CommerceHub />} />
+          <Route path="commerce/bench" element={<CommerceFusion />} />
+          <Route path="commerce/loops" element={<Loops />} />
+          <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
           <Route path="console" element={<AgentConsole />} />
+          <Route path="todos" element={<WorkTodos />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="datalake" element={<DataLake />} />
           <Route path="my/knowledge" element={(
@@ -62,7 +76,6 @@ export default function App() {
           )} />
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
-          <Route path="loops" element={<Loops />} />
           <Route path="audit" element={<Audit />} />
         </Route>
       </Route>
