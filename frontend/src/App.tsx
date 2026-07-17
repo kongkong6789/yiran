@@ -16,6 +16,7 @@ import Loops from "./pages/Loops";
 import Connectors from "./pages/Connectors";
 import SkillsPage from "./pages/SkillsPage";
 import CollabRisk from "./pages/CollabRisk";
+import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
 
 export default function App() {
@@ -29,17 +30,7 @@ export default function App() {
           <Route path="agent" element={<AgentChat />} />
           <Route path="collab" element={<CollabRisk />} />
           <Route path="ontology" element={<OntologyGraph />} />
-          <Route path="knowledge" element={(
-            <SectionHub
-              title="知识库"
-              description="汇聚制度 SOP、业务文档与检索结果。可从对话、数据或图谱导入知识。"
-              links={[
-                { label: "对话", path: "/agent" },
-                { label: "数据", path: "/datalake" },
-                { label: "图谱", path: "/ontology" },
-              ]}
-            />
-          )} />
+          <Route path="knowledge" element={<Knowledge />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="council" element={<Council />} />
           <Route path="console" element={<AgentConsole />} />

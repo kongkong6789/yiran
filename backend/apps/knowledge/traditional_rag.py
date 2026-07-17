@@ -1,0 +1,1067 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+import math
+import re
+import threading
+import time
+import urllib.error
+import urllib.request
+import zipfile
+from dataclasses import dataclass
+from html import unescape
+from html.parser import HTMLParser
+from io import StringIO
+from pathlib import Path, PurePath
+from uuid import uuid4
+from xml.etree import ElementTree
+
+from django.conf import settings
+from django.db import close_old_connections, transaction
+from django.utils import timezone
+
+from .models import KnowledgeBase, KnowledgeChunkRef, KnowledgeEmbedding, KnowledgeFile, KnowledgeIngestJob
+
+
+EXTENSION_TO_FILE_TYPE = {
+    ".csv": "csv",
+    ".docx": "docx",
+    ".htm": "html",
+    ".html": "html",
+    ".json": "json",
+    ".markdown": "markdown",
+    ".md": "markdown",
+    ".txt": "txt",
+    ".xlsx": "xlsx",
+}
+
+TEXT_FILE_TYPES = {"docx", "html", "json", "markdown", "txt"}
+TABLE_FILE_TYPES = {"csv", "xlsx"}
+
+KEYWORD_STOPWORDS = {
+    "and", "or", "the", "for", "with", "from", "this", "that", "into", "about", "http", "https",
+    "www", "com", "cn", "html", "prodid", "产品", "商品", "编号", "备案", "系统", "中文名",
+    "使用", "测试", "结果", "说明", "具有", "可以", "通过", "以及", "或者", "一个", "这个",
+}
+
+
+def extract_chunk_keywords(text: str, *, limit: int = 12) -> list[str]:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_\-]{2,}|[\u4e00-\u9fff]{2,}|\d{4,}", text or "")
+    scores: dict[str, float] = {}
+    first_seen: dict[str, int] = {}
+    for index, token in enumerate(tokens):
+        normalized = token.strip().strip("_-./:：，,。；;、（）()[]【】\"' ").lower()
+        if not normalized or normalized in KEYWORD_STOPWORDS:
+            continue
+        if len(normalized) < 2:
+            continue
+        first_seen.setdefault(normalized, index)
+        length_bonus = min(len(normalized), 12) / 12
+        digit_penalty = 0.45 if normalized.isdigit() else 0
+        scores[normalized] = scores.get(normalized, 0) + 1 + length_bonus - digit_penalty
+    ordered = sorted(scores, key=lambda item: (-scores[item], first_seen[item], item))
+    return ordered[:limit]
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 160
+MAX_TABLE_ROWS = 5000
+
+
+class TraditionalRagError(ValueError):
+    def __init__(self, message: str, code: str = "traditional_rag_error"):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+
+
+@dataclass(frozen=True)
+class ParsedSegment:
+    text: str
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class ParsedDocument:
+    text: str
+    segments: list[ParsedSegment]
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class TraditionalIngestResult:
+    file: KnowledgeFile
+    job: KnowledgeIngestJob
+    chunks: list[KnowledgeChunkRef]
+
+
+def safe_original_filename(filename: str) -> str:
+    base = PurePath(filename).name.strip()
+    if not base:
+        return "upload.bin"
+    safe = "".join(char if char.isalnum() or char in {".", "_", "-", " ", "(", ")"} else "_" for char in base)
+    return safe[:180] or "upload.bin"
+
+
+def detect_file_type(filename: str, content: bytes) -> str:
+    suffix = PurePath(filename).suffix.lower()
+    file_type = EXTENSION_TO_FILE_TYPE.get(suffix)
+    if not file_type:
+        raise TraditionalRagError("Unsupported file type for traditional RAG.", "unsupported_file_type")
+    if file_type in {"docx", "xlsx"} and not content.startswith(b"PK"):
+        raise TraditionalRagError(f"Invalid {file_type.upper()} file header.", "unsupported_file_type")
+    return file_type
+
+
+def storage_root() -> Path:
+    root = getattr(settings, "KNOWLEDGE_UPLOAD_ROOT", None)
+    return Path(root) if root else settings.BASE_DIR / "data" / "knowledge_uploads"
+
+
+def relative_storage_path(knowledge_base_id: int, file_id: int, filename: str) -> str:
+    return f"knowledge/{knowledge_base_id}/{file_id}/{filename}"
+
+
+def resolve_storage_path(path: str) -> Path:
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    return storage_root().joinpath(*parts)
+
+
+def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes]:
+    storage_path = relative_storage_path(knowledge_base_id, file_id, filename)
+    destination = resolve_storage_path(storage_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    content = bytearray()
+    with destination.open("wb") as handle:
+        for chunk in upload.chunks():
+            handle.write(chunk)
+            digest.update(chunk)
+            content.extend(chunk)
+    if not content:
+        raise TraditionalRagError("Uploaded file is empty.", "empty_file")
+    return storage_path, bytes(content)
+
+
+def read_stored_file(storage_path: str) -> bytes:
+    content = resolve_storage_path(storage_path).read_bytes()
+    if not content:
+        raise TraditionalRagError("Uploaded file is empty.", "empty_file")
+    return content
+
+
+class _TextHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        lowered = tag.lower()
+        if lowered in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+        elif lowered in {"article", "br", "div", "h1", "h2", "h3", "h4", "li", "p", "section", "tr"}:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered in {"script", "style", "noscript"} and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif lowered in {"article", "div", "h1", "h2", "h3", "h4", "li", "p", "section", "tr"}:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and data.strip():
+            self._parts.append(data)
+
+    def text(self) -> str:
+        return unescape(" ".join(self._parts))
+
+
+def normalize_text(text: str) -> str:
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def segments_from_text(text: str, *, parser: str) -> ParsedDocument:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [normalize_text(part) for part in re.split(r"\n\s*\n", normalized)]
+    segments = [
+        ParsedSegment(paragraph, {"parser": parser, "kind": "paragraph", "paragraph_index": index})
+        for index, paragraph in enumerate(paragraph for paragraph in paragraphs if paragraph)
+    ]
+    if not segments and normalize_text(normalized):
+        segments = [ParsedSegment(normalize_text(normalized), {"parser": parser, "kind": "text", "paragraph_index": 0})]
+    if not segments:
+        raise TraditionalRagError("No indexable text extracted from file.", "parser_error")
+    joined = "\n\n".join(segment.text for segment in segments)
+    return ParsedDocument(
+        text=joined,
+        segments=segments,
+        metadata={"parser": parser, "paragraph_count": len(segments), "char_count": len(joined)},
+    )
+
+
+def parse_text_bytes(content: bytes, *, parser: str) -> ParsedDocument:
+    return segments_from_text(content.decode("utf-8", errors="replace"), parser=parser)
+
+
+def parse_html_bytes(content: bytes) -> ParsedDocument:
+    parser = _TextHTMLParser()
+    parser.feed(content.decode("utf-8", errors="replace"))
+    return segments_from_text(parser.text(), parser="html")
+
+
+def flatten_json(value: object, prefix: str = "") -> list[str]:
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, child in value.items():
+            child_key = f"{prefix}.{key}" if prefix else str(key)
+            lines.extend(flatten_json(child, child_key))
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for index, child in enumerate(value):
+            child_key = f"{prefix}[{index}]" if prefix else f"[{index}]"
+            lines.extend(flatten_json(child, child_key))
+        return lines
+    normalized = json.dumps(value, ensure_ascii=False) if isinstance(value, (bool, type(None))) else str(value)
+    return [f"{prefix}: {normalized}" if prefix else normalized]
+
+
+def parse_json_bytes(content: bytes) -> ParsedDocument:
+    try:
+        data = json.loads(content.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as error:
+        raise TraditionalRagError(f"JSON parse failed: {error}", "parser_error") from error
+    return segments_from_text("\n".join(flatten_json(data)), parser="json")
+
+
+def paragraph_text(node: ElementTree.Element, ns: dict[str, str]) -> str:
+    parts = [text_node.text or "" for text_node in node.findall(".//w:t", ns)]
+    return normalize_text("".join(parts))
+
+
+def parse_docx_bytes(content: bytes) -> ParsedDocument:
+    try:
+        with zipfile.ZipFile(PathLikeBytes(content)) as archive:
+            xml = archive.read("word/document.xml")
+    except KeyError as error:
+        raise TraditionalRagError("DOCX missing word/document.xml.", "parser_error") from error
+    except zipfile.BadZipFile as error:
+        raise TraditionalRagError("DOCX file is corrupted.", "parser_error") from error
+
+    root = ElementTree.fromstring(xml)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    body = root.find("w:body", ns)
+    if body is None:
+        raise TraditionalRagError("DOCX missing document body.", "parser_error")
+
+    segments: list[ParsedSegment] = []
+    paragraph_index = 0
+    table_index = 0
+    for child in list(body):
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            paragraph = paragraph_text(child, ns)
+            if paragraph:
+                segments.append(ParsedSegment(paragraph, {"parser": "docx", "kind": "paragraph", "paragraph_index": paragraph_index}))
+                paragraph_index += 1
+        elif tag == "tbl":
+            rows: list[str] = []
+            for row in child.findall("w:tr", ns):
+                cells: list[str] = []
+                for cell in row.findall("w:tc", ns):
+                    cell_text = " ".join(filter(None, (paragraph_text(p, ns) for p in cell.findall("w:p", ns))))
+                    cells.append(cell_text)
+                if any(cells):
+                    rows.append(" | ".join(cells))
+            if rows:
+                segments.append(
+                    ParsedSegment(
+                        "\n".join(rows),
+                        {"parser": "docx", "kind": "table", "table_index": table_index, "row_count": len(rows)},
+                    )
+                )
+                table_index += 1
+    if not segments:
+        raise TraditionalRagError("DOCX contains no indexable text.", "parser_error")
+    text = "\n\n".join(segment.text for segment in segments)
+    return ParsedDocument(
+        text=text,
+        segments=segments,
+        metadata={"parser": "docx", "paragraph_count": paragraph_index, "table_count": table_index, "char_count": len(text)},
+    )
+
+
+class PathLikeBytes:
+    def __init__(self, content: bytes):
+        from io import BytesIO
+
+        self._buffer = BytesIO(content)
+
+    def read(self, *args, **kwargs):
+        return self._buffer.read(*args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._buffer.seek(*args, **kwargs)
+
+    def tell(self):
+        return self._buffer.tell()
+
+    def seekable(self):
+        return True
+
+
+def parse_table_bytes(content: bytes, file_type: str) -> ParsedDocument:
+    rows: list[ParsedSegment] = []
+    table_metadata: list[dict] = []
+    if file_type == "csv":
+        text = content.decode("utf-8-sig", errors="replace")
+        sample = text[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+        except csv.Error:
+            dialect = csv.excel
+        raw_rows = list(csv.reader(StringIO(text), dialect))
+        rows, table_metadata = table_rows_to_segments("CSV", raw_rows, {"parser": "csv", "dialect": dialect.delimiter})
+    elif file_type == "xlsx":
+        for sheet_name, raw_rows, metadata in read_xlsx_rows(content):
+            sheet_rows, sheet_metadata = table_rows_to_segments(sheet_name, raw_rows, metadata)
+            rows.extend(sheet_rows)
+            table_metadata.extend(sheet_metadata)
+    if not rows:
+        raise TraditionalRagError("No indexable table rows extracted from file.", "parser_error")
+    text = "\n\n".join(segment.text for segment in rows)
+    return ParsedDocument(
+        text=text,
+        segments=rows,
+        metadata={"parser": file_type, "table_count": len(table_metadata), "row_count": len(rows), "char_count": len(text), "tables": table_metadata},
+    )
+
+
+def table_rows_to_segments(sheet_name: str, raw_rows: list[list[object]], metadata: dict) -> tuple[list[ParsedSegment], list[dict]]:
+    non_empty_rows = [row for row in raw_rows if any(str(value or "").strip() for value in row)]
+    if not non_empty_rows:
+        return [], []
+    headers = dedupe_headers([normalize_header(value, index) for index, value in enumerate(non_empty_rows[0])])
+    segments: list[ParsedSegment] = []
+    for row_index, raw_row in enumerate(non_empty_rows[1:]):
+        values = {
+            header: parse_scalar(raw_row[index] if index < len(raw_row) else None)
+            for index, header in enumerate(headers)
+        }
+        present = {key: value for key, value in values.items() if value is not None}
+        if not present:
+            continue
+        text = " | ".join(f"{key}: {value}" for key, value in present.items())
+        segments.append(
+            ParsedSegment(
+                text,
+                {
+                    "parser": metadata.get("parser"),
+                    "kind": "table_row",
+                    "sheet_name": sheet_name,
+                    "row_index": row_index,
+                    "values": present,
+                },
+            )
+        )
+    if len(segments) > MAX_TABLE_ROWS:
+        raise TraditionalRagError(f"Table row count exceeds {MAX_TABLE_ROWS}.", "table_error")
+    return segments, [{"sheet_name": sheet_name, "columns": headers, "row_count": len(segments), **metadata}]
+
+
+def normalize_header(value: object, index: int) -> str:
+    text = str(value or "").strip()
+    return text if text else f"column_{index + 1}"
+
+
+def dedupe_headers(headers: list[str]) -> list[str]:
+    counts: dict[str, int] = {}
+    result: list[str] = []
+    for header in headers:
+        count = counts.get(header, 0)
+        counts[header] = count + 1
+        result.append(header if count == 0 else f"{header}_{count + 1}")
+    return result
+
+
+def parse_scalar(value: object) -> object:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "":
+        return None
+    normalized = text.replace(",", "")
+    if re.fullmatch(r"[-+]?\d+", normalized):
+        try:
+            return int(normalized)
+        except ValueError:
+            return text
+    if re.fullmatch(r"[-+]?(?:\d+\.\d*|\d*\.\d+)", normalized):
+        try:
+            return float(normalized)
+        except ValueError:
+            return text
+    lowered = text.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    return text
+
+
+def read_xlsx_rows(content: bytes) -> list[tuple[str, list[list[object]], dict]]:
+    try:
+        with zipfile.ZipFile(PathLikeBytes(content)) as archive:
+            shared_strings = xlsx_shared_strings(archive)
+            ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+            sheets: list[tuple[str, list[list[object]], dict]] = []
+            for sheet_index, (sheet_name, sheet_path) in enumerate(xlsx_sheet_paths(archive)):
+                root = ElementTree.fromstring(archive.read(sheet_path))
+                raw_rows: list[list[object]] = []
+                for row in root.findall(".//s:sheetData/s:row", ns):
+                    values: list[object] = []
+                    for cell in row.findall("s:c", ns):
+                        column_index = xlsx_column_index(cell.attrib.get("r", ""))
+                        while len(values) <= column_index:
+                            values.append(None)
+                        values[column_index] = xlsx_cell_value(cell, shared_strings, ns)
+                    raw_rows.append(values)
+                sheets.append((sheet_name, raw_rows, {"parser": "xlsx", "sheet_index": sheet_index, "sheet_path": sheet_path}))
+            return sheets
+    except zipfile.BadZipFile as error:
+        raise TraditionalRagError("XLSX file is corrupted.", "parser_error") from error
+    except KeyError as error:
+        raise TraditionalRagError(f"XLSX missing required structure: {error}", "parser_error") from error
+
+
+def xlsx_column_index(cell_ref: str) -> int:
+    letters = "".join(char for char in cell_ref if char.isalpha()).upper()
+    index = 0
+    for char in letters:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return max(index - 1, 0)
+
+
+def xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    try:
+        xml = archive.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = ElementTree.fromstring(xml)
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    return ["".join(node.text or "" for node in item.findall(".//s:t", ns)) for item in root.findall("s:si", ns)]
+
+
+def xlsx_sheet_paths(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    rels = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    ns = {
+        "s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "pr": "http://schemas.openxmlformats.org/package/2006/relationships",
+    }
+    rel_targets = {
+        rel.attrib["Id"]: rel.attrib["Target"]
+        for rel in rels.findall("pr:Relationship", ns)
+        if "Id" in rel.attrib and "Target" in rel.attrib
+    }
+    sheets: list[tuple[str, str]] = []
+    for sheet in workbook.findall("s:sheets/s:sheet", ns):
+        name = sheet.attrib.get("name", f"Sheet{len(sheets) + 1}")
+        rel_id = sheet.attrib.get(f"{{{ns['r']}}}id")
+        target = rel_targets.get(rel_id or "")
+        if not target:
+            continue
+        path = target.lstrip("/")
+        if not path.startswith("xl/"):
+            path = f"xl/{path}"
+        sheets.append((name, path))
+    return sheets
+
+
+def xlsx_cell_value(cell: ElementTree.Element, shared_strings: list[str], ns: dict[str, str]) -> object:
+    cell_type = cell.attrib.get("t")
+    value_node = cell.find("s:v", ns)
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.findall(".//s:t", ns))
+    if value_node is None or value_node.text is None:
+        return None
+    raw = value_node.text
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw)]
+        except (ValueError, IndexError):
+            return raw
+    if cell_type == "b":
+        return raw == "1"
+    return raw
+
+
+def parse_document(content: bytes, file_type: str) -> ParsedDocument:
+    if file_type == "docx":
+        return parse_docx_bytes(content)
+    if file_type == "html":
+        return parse_html_bytes(content)
+    if file_type == "json":
+        return parse_json_bytes(content)
+    if file_type == "markdown":
+        return parse_text_bytes(content, parser="markdown")
+    if file_type == "txt":
+        return parse_text_bytes(content, parser="txt")
+    if file_type in TABLE_FILE_TYPES:
+        return parse_table_bytes(content, file_type)
+    raise TraditionalRagError("Unsupported file type for parsing.", "unsupported_file_type")
+
+
+def segment_reference(segment_index: int, metadata: dict) -> dict:
+    reference = {"segment_index": segment_index}
+    for key in ("kind", "paragraph_index", "parser", "row_index", "sheet_name", "table_index"):
+        if key in metadata:
+            reference[key] = metadata[key]
+    return reference
+
+
+def reference_kinds(references: list[dict]) -> list[str]:
+    kinds: list[str] = []
+    for reference in references:
+        kind = reference.get("kind")
+        if isinstance(kind, str) and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def split_into_chunks(parsed: ParsedDocument, *, max_chars: int = DEFAULT_CHUNK_SIZE, overlap_chars: int = DEFAULT_CHUNK_OVERLAP) -> list[tuple[str, dict]]:
+    max_chars = max(1, max_chars)
+    overlap_chars = max(0, min(overlap_chars, max_chars - 1))
+    chunks: list[tuple[str, dict]] = []
+    current_parts: list[str] = []
+    current_references: list[dict] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_chars = 0
+
+    def flush() -> None:
+        nonlocal current_parts, current_references, current_start, current_end, current_chars
+        if not current_parts:
+            return
+        text = "\n\n".join(current_parts).strip()
+        if text:
+            chunks.append(
+                (
+                    text,
+                    {
+                        "segment_start": current_start,
+                        "segment_end": current_end,
+                        "segments": current_references,
+                        "reference_kinds": reference_kinds(current_references),
+                        "char_count": len(text),
+                    },
+                )
+            )
+        current_parts = []
+        current_references = []
+        current_start = None
+        current_end = None
+        current_chars = 0
+
+    for segment_index, segment in enumerate(parsed.segments):
+        text = segment.text.strip()
+        if not text:
+            continue
+        if len(text) > max_chars:
+            flush()
+            start = 0
+            while start < len(text):
+                end = min(len(text), start + max_chars)
+                piece = text[start:end].strip()
+                if piece:
+                    references = [segment_reference(segment_index, segment.metadata)]
+                    metadata = dict(segment.metadata)
+                    metadata.update(
+                        {
+                            "segment_start": segment_index,
+                            "segment_end": segment_index,
+                            "segments": references,
+                            "reference_kinds": reference_kinds(references),
+                            "char_start": start,
+                            "char_end": end,
+                            "char_count": len(piece),
+                        }
+                    )
+                    chunks.append((piece, metadata))
+                if end >= len(text):
+                    break
+                start = max(0, end - overlap_chars)
+            continue
+        projected = current_chars + len(text) + (2 if current_parts else 0)
+        if projected > max_chars:
+            flush()
+        if current_start is None:
+            current_start = segment_index
+        current_end = segment_index
+        current_chars += len(text) + (2 if current_parts else 0)
+        current_parts.append(text)
+        current_references.append(segment_reference(segment_index, segment.metadata))
+    flush()
+    if not chunks:
+        raise TraditionalRagError("No chunks generated from file.", "empty_chunks")
+    return chunks
+
+
+
+def embedding_settings() -> dict | None:
+    base_url = (getattr(settings, "EMBEDDING_BASE_URL", "") or "").strip().rstrip("/")
+    api_key = (getattr(settings, "EMBEDDING_API_KEY", "") or "").strip()
+    model = (getattr(settings, "EMBEDDING_MODEL", "") or "").strip()
+    api_format = (getattr(settings, "EMBEDDING_API_FORMAT", "local-inputs") or "local-inputs").strip().lower()
+    normalize = bool(getattr(settings, "EMBEDDING_NORMALIZE", True))
+    pooling = (getattr(settings, "EMBEDDING_POOLING", "mean") or "mean").strip()
+    if not base_url:
+        return None
+    if api_format == "openai" and (not api_key or not model):
+        raise TraditionalRagError(
+            "Embedding config is incomplete. OpenAI format requires EMBEDDING_API_KEY and EMBEDDING_MODEL.",
+            "config_error",
+        )
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model or "local-embedding",
+        "api_format": api_format,
+        "normalize": normalize,
+        "pooling": pooling,
+    }
+
+
+def normalize_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [value / norm for value in vector]
+
+
+def embedding_endpoint(base_url: str) -> str:
+    return base_url if base_url.rstrip("/").endswith("/embeddings") else f"{base_url}/embeddings"
+
+
+def build_embedding_payload(config: dict, texts: list[str]) -> dict:
+    if config["api_format"] == "openai":
+        return {"model": config["model"], "input": texts}
+    return {
+        "inputs": [{"text": text} for text in texts],
+        "normalize": config["normalize"],
+        "pooling": config["pooling"],
+    }
+
+
+def extract_embedding_vectors(result: object, expected_count: int) -> list[list[float]]:
+    data: object
+    if isinstance(result, dict):
+        data = result.get("data") or result.get("embeddings") or result.get("vectors") or result.get("result")
+    else:
+        data = result
+    if not isinstance(data, list) or len(data) != expected_count:
+        raise TraditionalRagError("Embedding API returned an unexpected number of vectors.", "embedding_error")
+    if data and all(isinstance(item, dict) for item in data):
+        ordered = sorted(data, key=lambda item: item.get("index", 0))
+        raw_vectors = [item.get("embedding") or item.get("vector") or item.get("values") for item in ordered]
+    else:
+        raw_vectors = data
+    vectors: list[list[float]] = []
+    for raw in raw_vectors:
+        if not isinstance(raw, list) or not raw:
+            raise TraditionalRagError("Embedding API response is missing embedding vectors.", "embedding_error")
+        vectors.append(normalize_vector([float(value) for value in raw]))
+    dimensions = len(vectors[0])
+    if any(len(vector) != dimensions for vector in vectors):
+        raise TraditionalRagError("Embedding API returned vectors with inconsistent dimensions.", "embedding_error")
+    return vectors
+
+
+def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[list[float]], dict]:
+    config = embedding_settings()
+    if config is None:
+        return [], {"status": "not_configured"}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if config["api_key"]:
+        headers["Authorization"] = f"Bearer {config['api_key']}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    attempts = max(1, int(getattr(
+        settings,
+        "EMBEDDING_RETRY_ATTEMPTS" if fail_on_error else "EMBEDDING_OPTIONAL_RETRY_ATTEMPTS",
+        5 if fail_on_error else 1,
+    )))
+    timeout_seconds = max(1.0, float(getattr(
+        settings,
+        "EMBEDDING_TIMEOUT_SECONDS" if fail_on_error else "EMBEDDING_OPTIONAL_TIMEOUT_SECONDS",
+        30 if fail_on_error else 90,
+    )))
+    batch_size = max(1, int(getattr(settings, "EMBEDDING_BATCH_SIZE", 4)))
+    max_text_chars = max(1, int(getattr(settings, "EMBEDDING_MAX_TEXT_CHARS", 300)))
+    normalized_texts = [(text or "")[:max_text_chars] for text in texts]
+    endpoint = embedding_endpoint(config["base_url"])
+    all_vectors: list[list[float]] = []
+    last_error: Exception | None = None
+
+    for start_index in range(0, len(normalized_texts), batch_size):
+        batch = normalized_texts[start_index:start_index + batch_size]
+        payload = json.dumps(build_embedding_payload(config, batch), ensure_ascii=False).encode("utf-8")
+        for attempt in range(attempts):
+            request = urllib.request.Request(
+                endpoint,
+                data=payload,
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with opener.open(request, timeout=timeout_seconds) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                all_vectors.extend(extract_embedding_vectors(result, len(batch)))
+                last_error = None
+                break
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode("utf-8", errors="replace")
+                raise TraditionalRagError(f"Embedding API HTTP {error.code}: {detail}", "embedding_error") from error
+            except (urllib.error.URLError, TimeoutError, OSError) as error:
+                last_error = error
+                if attempt < attempts - 1:
+                    time.sleep(min(1.0 * (attempt + 1), 3.0))
+                    continue
+            except json.JSONDecodeError as error:
+                raise TraditionalRagError("Embedding API returned invalid JSON.", "embedding_error") from error
+        if last_error is not None:
+            message = f"Embedding API network error: {last_error}"
+            if fail_on_error:
+                raise TraditionalRagError(message, "embedding_error")
+            return [], {
+                "status": "unavailable",
+                "error": "embedding_error",
+                "message": message,
+                "provider": config["api_format"],
+                "model": config["model"],
+                "endpoint": endpoint,
+                "batch_size": batch_size,
+                "max_text_chars": max_text_chars,
+            }
+
+    if len(all_vectors) != len(texts):
+        raise TraditionalRagError("Embedding API returned an unexpected number of vectors.", "embedding_error")
+    return all_vectors, {
+        "status": "ready",
+        "provider": config["api_format"],
+        "model": config["model"],
+        "dimensions": len(all_vectors[0]) if all_vectors else 0,
+        "count": len(all_vectors),
+        "endpoint": endpoint,
+        "batch_size": batch_size,
+        "max_text_chars": max_text_chars,
+    }
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return -1.0
+    return sum(a * b for a, b in zip(left, right, strict=True))
+
+
+def semantic_search(*, query: str, knowledge_base_id: int | None = None, limit: int = 10) -> list[KnowledgeChunkRef]:
+    normalized = query.strip()
+    if not normalized:
+        raise TraditionalRagError("Search query cannot be empty.", "invalid_input")
+    vectors, metadata = embed_texts([normalized])
+    if metadata.get("status") != "ready" or not vectors:
+        raise TraditionalRagError("Embedding is not configured, semantic search is unavailable.", "config_error")
+    embeddings = KnowledgeEmbedding.objects.select_related("chunk", "chunk__file", "chunk__file__knowledge_base").filter(
+        chunk__file__archived_at__isnull=True,
+        chunk__file__knowledge_base__archived_at__isnull=True,
+        model=metadata["model"],
+        dimensions=metadata["dimensions"],
+    )
+    if knowledge_base_id:
+        embeddings = embeddings.filter(chunk__file__knowledge_base_id=knowledge_base_id)
+    scored = sorted(
+        ((cosine_similarity(vectors[0], item.vector), item.chunk) for item in embeddings),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    return [chunk for score, chunk in scored[: max(1, min(limit, 50))] if score >= 0]
+
+def _run_ingest_pipeline(
+    *,
+    file: KnowledgeFile,
+    job: KnowledgeIngestJob,
+    content: bytes,
+    file_type: str,
+    digest: str,
+    content_metadata: dict,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> TraditionalIngestResult:
+    job.status = KnowledgeIngestJob.Status.PARSING
+    job.stage = "parsing"
+    job.progress = 10
+    if job.started_at is None:
+        job.started_at = timezone.now()
+    job.save(update_fields=["status", "stage", "progress", "started_at", "updated_at"])
+
+    parsed = parse_document(content, file_type)
+    job.status = KnowledgeIngestJob.Status.CHUNKING
+    job.stage = "chunking"
+    job.progress = 60
+    job.save(update_fields=["status", "stage", "progress", "updated_at"])
+
+    chunk_items = split_into_chunks(
+        parsed,
+        max_chars=chunk_size or DEFAULT_CHUNK_SIZE,
+        overlap_chars=chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+    )
+    job.status = KnowledgeIngestJob.Status.EMBEDDING
+    job.stage = "embedding"
+    job.progress = 80
+    job.save(update_fields=["status", "stage", "progress", "updated_at"])
+
+    vectors, embedding_metadata = embed_texts([text for text, _ in chunk_items], fail_on_error=False)
+    knowledge_db = file._state.db or "knowledge"
+    with transaction.atomic(using=knowledge_db):
+        file.file_type = file_type
+        file.content_hash = digest
+        file.char_count = len(parsed.text)
+        file.chunk_count = len(chunk_items)
+        file.status = KnowledgeFile.Status.READY
+        file.metadata = {
+            **(file.metadata or {}),
+            **content_metadata,
+            "content_hash": digest,
+            "parser": parsed.metadata,
+            "chunk_config": {
+                "max_chars": chunk_size or DEFAULT_CHUNK_SIZE,
+                "overlap_chars": chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+            },
+            "embedding": embedding_metadata,
+        }
+        file.save()
+        file.chunk_refs.all().delete()
+        chunks = [
+            KnowledgeChunkRef(
+                file=file,
+                chunk_index=index,
+                chunk_ref=f"knowledge_file:{file.id}:chunk:{index}",
+                text_preview=text[:2000],
+                metadata={
+                    **metadata,
+                    "parser": parsed.metadata.get("parser"),
+                    "ingest_mode": "traditional-rag",
+                    "keywords": extract_chunk_keywords(text),
+                },
+            )
+            for index, (text, metadata) in enumerate(chunk_items)
+        ]
+        KnowledgeChunkRef.objects.bulk_create(chunks)
+        saved_chunks = list(file.chunk_refs.order_by("chunk_index"))
+        if embedding_metadata.get("status") == "ready":
+            embeddings = []
+            for chunk, vector in zip(saved_chunks, vectors, strict=True):
+                chunk.embedding_ref = f"knowledge_embedding:{chunk.id}"
+                chunk.save(update_fields=["embedding_ref"])
+                embeddings.append(
+                    KnowledgeEmbedding(
+                        chunk=chunk,
+                        model=embedding_metadata["model"],
+                        dimensions=embedding_metadata["dimensions"],
+                        vector=vector,
+                        provider=embedding_metadata.get("provider", "openai-compatible"),
+                    )
+                )
+            KnowledgeEmbedding.objects.bulk_create(embeddings)
+        job.status = KnowledgeIngestJob.Status.READY
+        job.stage = "ready"
+        job.progress = 100
+        job.error = None
+        job.metrics = {
+            "char_count": file.char_count,
+            "chunk_count": file.chunk_count,
+            "parser": parsed.metadata,
+            "embedding": embedding_metadata,
+        }
+        job.finished_at = timezone.now()
+        job.save()
+        KnowledgeBase.objects.filter(id=file.knowledge_base_id).update(
+            file_count=file.knowledge_base.files.filter(archived_at__isnull=True).count(),
+            status=KnowledgeBase.Status.READY,
+        )
+    file.refresh_from_db()
+    job.refresh_from_db()
+    return TraditionalIngestResult(file=file, job=job, chunks=list(file.chunk_refs.order_by("chunk_index")))
+
+
+def _mark_ingest_failed(file: KnowledgeFile, job: KnowledgeIngestJob, error: Exception) -> None:
+    payload = {
+        "error": getattr(error, "code", "processing_error"),
+        "message": getattr(error, "message", str(error)),
+    }
+    file.status = KnowledgeFile.Status.FAILED
+    file.metadata = {**(file.metadata or {}), "error": payload}
+    file.save(update_fields=["status", "metadata", "updated_at"])
+    job.status = KnowledgeIngestJob.Status.FAILED
+    job.stage = "failed"
+    job.progress = 100
+    job.error = payload
+    job.finished_at = timezone.now()
+    job.save(update_fields=["status", "stage", "progress", "error", "finished_at", "updated_at"])
+
+
+def _run_async_ingest_job(job_id: int, *, chunk_size: int | None, chunk_overlap: int | None) -> None:
+    close_old_connections()
+    try:
+        job = KnowledgeIngestJob.objects.select_related("file", "file__knowledge_base").get(id=job_id)
+        file = job.file
+        content = read_stored_file(file.storage_path)
+        file_type = file.file_type or detect_file_type(file.original_filename, content)
+        digest = file.content_hash or hashlib.sha256(content).hexdigest()
+        content_metadata = {
+            "content_type": (file.metadata or {}).get("content_type", ""),
+            "file_size": (file.metadata or {}).get("file_size", len(content)),
+            "ingest_mode": "traditional-rag",
+            "async": True,
+        }
+        _run_ingest_pipeline(
+            file=file,
+            job=job,
+            content=content,
+            file_type=file_type,
+            digest=digest,
+            content_metadata=content_metadata,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    except Exception as error:
+        try:
+            if "job" not in locals():
+                job = KnowledgeIngestJob.objects.select_related("file").get(id=job_id)
+                file = job.file
+            _mark_ingest_failed(file, job, error)
+        except Exception:
+            pass
+    finally:
+        close_old_connections()
+
+
+def enqueue_ingest_upload(
+    *,
+    knowledge_base: KnowledgeBase,
+    upload,
+    user,
+    segment_mode: str = "general",
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> TraditionalIngestResult:
+    original_filename = safe_original_filename(getattr(upload, "name", "") or "upload.bin")
+    file = KnowledgeFile.objects.create(
+        knowledge_base=knowledge_base,
+        original_filename=original_filename,
+        segment_mode=segment_mode or "general",
+        status=KnowledgeFile.Status.PROCESSING,
+        uploaded_by=None,
+        metadata={"ingest_mode": "traditional-rag", "async": True},
+    )
+    job = KnowledgeIngestJob.objects.create(
+        file=file,
+        status=KnowledgeIngestJob.Status.PENDING,
+        stage="queued",
+        progress=5,
+        created_by=None,
+    )
+    try:
+        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        file_type = detect_file_type(original_filename, content)
+        digest = hashlib.sha256(content).hexdigest()
+        file.storage_path = storage_path
+        file.file_type = file_type
+        file.content_hash = digest
+        file.metadata = {
+            **(file.metadata or {}),
+            "content_hash": digest,
+            "content_type": getattr(upload, "content_type", ""),
+            "file_size": getattr(upload, "size", len(content)),
+            "chunk_config": {
+                "max_chars": chunk_size or DEFAULT_CHUNK_SIZE,
+                "overlap_chars": chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+            },
+        }
+        file.save(update_fields=["storage_path", "file_type", "content_hash", "metadata", "updated_at"])
+    except Exception as error:
+        _mark_ingest_failed(file, job, error)
+        raise
+
+    thread = threading.Thread(
+        target=_run_async_ingest_job,
+        kwargs={"job_id": job.id, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
+        name=f"knowledge-ingest-{job.id}",
+        daemon=True,
+    )
+    thread.start()
+    return TraditionalIngestResult(file=file, job=job, chunks=[])
+
+
+def ingest_upload(
+    *,
+    knowledge_base: KnowledgeBase,
+    upload,
+    user,
+    segment_mode: str = "general",
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> TraditionalIngestResult:
+    original_filename = safe_original_filename(getattr(upload, "name", "") or "upload.bin")
+    file = KnowledgeFile.objects.create(
+        knowledge_base=knowledge_base,
+        original_filename=original_filename,
+        segment_mode=segment_mode or "general",
+        status=KnowledgeFile.Status.PROCESSING,
+        uploaded_by=None,
+        metadata={"ingest_mode": "traditional-rag"},
+    )
+    job = KnowledgeIngestJob.objects.create(
+        file=file,
+        status=KnowledgeIngestJob.Status.PARSING,
+        stage="parsing",
+        progress=10,
+        created_by=None,
+        started_at=timezone.now(),
+    )
+    try:
+        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        file.storage_path = storage_path
+        file_type = detect_file_type(original_filename, content)
+        digest = hashlib.sha256(content).hexdigest()
+        return _run_ingest_pipeline(
+            file=file,
+            job=job,
+            content=content,
+            file_type=file_type,
+            digest=digest,
+            content_metadata={
+                "content_type": getattr(upload, "content_type", ""),
+                "file_size": getattr(upload, "size", len(content)),
+                "ingest_mode": "traditional-rag",
+            },
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+    except Exception as error:
+        _mark_ingest_failed(file, job, error)
+        raise
+
+def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: int = 10) -> list[KnowledgeChunkRef]:
+    normalized = query.strip()
+    if not normalized:
+        raise TraditionalRagError("Search query cannot be empty.", "invalid_input")
+    rows = KnowledgeChunkRef.objects.select_related("file", "file__knowledge_base").filter(
+        file__archived_at__isnull=True,
+        file__knowledge_base__archived_at__isnull=True,
+    )
+    if knowledge_base_id:
+        rows = rows.filter(file__knowledge_base_id=knowledge_base_id)
+    return list(rows.filter(text_preview__icontains=normalized).order_by("-created_at")[: max(1, min(limit, 50))])
