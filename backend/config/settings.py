@@ -235,11 +235,8 @@ JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
 
 # MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
 MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")
-MCP_TENCENT_DOCS_URL = os.getenv("MCP_TENCENT_DOCS_URL", "")
-MCP_WEDRIVE_URL = os.getenv("MCP_WEDRIVE_URL", "")
 MCP_KINGDEE_URL = os.getenv("MCP_KINGDEE_URL", "")
 MCP_JACKYUN_URL = os.getenv("MCP_JACKYUN_URL", "")
-MCP_WORKBUDDY_URL = os.getenv("MCP_WORKBUDDY_URL", "")
 MCP_NAS_COMMAND = os.getenv("MCP_NAS_COMMAND", "")
 MCP_NAS_ARGS = os.getenv("MCP_NAS_ARGS", "")
 

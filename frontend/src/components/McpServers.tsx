@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Drawer, Tag, Button, Space, Typography, List, message, Tooltip,
-  Form, Input, Switch, Divider, Alert,
+  Form, Input, Switch, Divider, Alert, Empty, Segmented, Skeleton,
 } from "antd";
 import {
-  FileTextOutlined,
-  CloudOutlined,
   AccountBookOutlined,
   ShoppingOutlined,
   HddOutlined,
-  RobotOutlined,
   ApiOutlined,
   CopyOutlined,
   RadarChartOutlined,
   ReloadOutlined,
   SaveOutlined,
   ImportOutlined,
+  ArrowRightOutlined,
+  CheckCircleOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import WecomIcon from "./WecomIcon";
 import type { ReactNode } from "react";
@@ -31,22 +31,16 @@ import {
 
 const ICONS: Record<string, ReactNode> = {
   wecom: <WecomIcon size={20} />,
-  tencent_docs: <FileTextOutlined />,
-  wedrive: <CloudOutlined />,
   kingdee: <AccountBookOutlined />,
   jackyun: <ShoppingOutlined />,
   nas: <HddOutlined />,
-  workbuddy: <RobotOutlined />,
 };
 
 const COLORS: Record<string, string> = {
   wecom: "#0082EF",
-  tencent_docs: "#2b7fff",
-  wedrive: "#5b8def",
   kingdee: "#e62e2e",
   jackyun: "#ff6b35",
   nas: "#a78bfa",
-  workbuddy: "#34d399",
 };
 
 const STATUS_TAG: Record<string, { color: string; text: string }> = {
@@ -94,6 +88,14 @@ type FormValues = {
   paste_json?: string;
 };
 
+type StatusFilter = "all" | "configured" | "reachable" | "attention";
+
+const LAYER_DESC: Record<string, string> = {
+  协作: "文档、消息与团队协作服务",
+  感知: "业务数据读取与外部信息感知",
+  终端: "本地文件、桌面环境与执行终端",
+};
+
 function mcpStatus(item: Pick<McpServer, "status" | "configured" | "enabled">): McpServer["status"] {
   if (item.status && item.status !== "unconfigured") return item.status;
   if (item.enabled === false) return "disabled";
@@ -112,6 +114,8 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   const [probing, setProbing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [form] = Form.useForm<FormValues>();
 
   const load = useCallback(() => {
@@ -277,6 +281,40 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     );
   };
 
+  const renderPageCard = (item: McpServer) => {
+    const color = COLORS[item.id] || "#59c2ff";
+    const status = mcpStatus(item);
+    const st = STATUS_TAG[status] || STATUS_TAG.unconfigured;
+    return (
+      <button
+        key={item.id}
+        type="button"
+        className="mcp-card mcp-card--detailed"
+        onClick={() => openServer(item.id)}
+        style={{ "--accent": color } as React.CSSProperties}
+        aria-label={`管理${item.name}连接，当前状态：${st.text}`}
+      >
+        <span className="mcp-card-icon" style={{ color }}>{ICONS[item.id]}</span>
+        <span className="mcp-card-copy">
+          <span className="mcp-card-title-row">
+            <b>{item.name}</b>
+            <Tag color={st.color} bordered={false}>{st.text}</Tag>
+          </span>
+          <em>{item.desc}</em>
+          <span className="mcp-card-meta">
+            <i>{TRANSPORT_LABEL[item.transport] || item.transport}</i>
+            <i>{item.tools?.length || 0} 个工具</i>
+            {status === "reachable" ? <i className="mcp-card-health"><CheckCircleOutlined /> 已验证</i> : null}
+          </span>
+        </span>
+        <span className="mcp-card-action">
+          管理连接
+          <ArrowRightOutlined />
+        </span>
+      </button>
+    );
+  };
+
   const renderRow = (item: McpServer) => {
     const color = COLORS[item.id] || "#59c2ff";
     const st = STATUS_TAG[mcpStatus(item)] || STATUS_TAG.unconfigured;
@@ -309,10 +347,25 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   const ph = detail?.placeholders || {};
 
   const configuredCount = servers.filter((s) => mcpStatus(s) === "configured" || mcpStatus(s) === "reachable").length;
+  const reachableCount = servers.filter((s) => mcpStatus(s) === "reachable").length;
+  const attentionCount = servers.filter((s) => !["configured", "reachable"].includes(mcpStatus(s))).length;
+  const filteredServers = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    return servers.filter((server) => {
+      const status = mcpStatus(server);
+      const statusMatched = statusFilter === "all"
+        || (statusFilter === "configured" && ["configured", "reachable"].includes(status))
+        || (statusFilter === "reachable" && status === "reachable")
+        || (statusFilter === "attention" && !["configured", "reachable"].includes(status));
+      const queryMatched = !keyword
+        || `${server.name} ${server.desc} ${server.layer} ${server.transport}`.toLowerCase().includes(keyword);
+      return statusMatched && queryMatched;
+    });
+  }, [query, servers, statusFilter]);
   const layerOrder = ["协作", "感知", "终端"];
   const layers = [
-    ...layerOrder.filter((l) => servers.some((s) => s.layer === l)),
-    ...Array.from(new Set(servers.map((s) => s.layer).filter((l) => !layerOrder.includes(l)))),
+    ...layerOrder.filter((l) => filteredServers.some((s) => s.layer === l)),
+    ...Array.from(new Set(filteredServers.map((s) => s.layer).filter((l) => !layerOrder.includes(l)))),
   ];
 
   return (
@@ -329,35 +382,109 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         </div>
       ) : variant === "page" ? (
         <section className="connectors-board">
+          <div className="connectors-board-head">
+            <div>
+              <Typography.Text className="connectors-section-eyebrow">MCP 服务目录</Typography.Text>
+              <Typography.Title level={4}>{title}</Typography.Title>
+              <Typography.Text type="secondary">
+                按业务层查看可用连接。选择卡片即可配置参数、导入 mcp.json 或探测连通性。
+              </Typography.Text>
+            </div>
+            <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新状态</Button>
+          </div>
+
           <div className="connectors-stats">
-            <div className="connectors-stat">
+            <button
+              type="button"
+              className={`connectors-stat${statusFilter === "all" ? " is-active" : ""}`}
+              onClick={() => setStatusFilter("all")}
+            >
               <b>{servers.length}</b>
               <span>平台总数</span>
-            </div>
-            <div className="connectors-stat">
+            </button>
+            <button
+              type="button"
+              className={`connectors-stat${statusFilter === "configured" ? " is-active" : ""}`}
+              onClick={() => setStatusFilter("configured")}
+            >
               <b>{configuredCount}</b>
               <span>已配置</span>
-            </div>
-            <div className="connectors-stat">
-              <b>{servers.filter((s) => s.status === "reachable").length}</b>
+            </button>
+            <button
+              type="button"
+              className={`connectors-stat${statusFilter === "reachable" ? " is-active" : ""}`}
+              onClick={() => setStatusFilter("reachable")}
+            >
+              <b>{reachableCount}</b>
               <span>可连通</span>
-            </div>
-            <Space>
-              <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新</Button>
-            </Space>
+            </button>
+            <button
+              type="button"
+              className={`connectors-stat connectors-stat--attention${statusFilter === "attention" ? " is-active" : ""}`}
+              onClick={() => setStatusFilter("attention")}
+            >
+              <b>{attentionCount}</b>
+              <span>待处理</span>
+            </button>
           </div>
-          {layers.map((layer) => {
-            const items = servers.filter((s) => s.layer === layer);
-            if (!items.length) return null;
-            return (
-              <div key={layer} className="connectors-layer">
-                <Typography.Title level={5} className="connectors-layer-title">{layer}</Typography.Title>
-                <div className="mcp-dock-grid connectors-grid">
-                  {items.map(renderCard)}
-                </div>
-              </div>
-            );
-          })}
+
+          <div className="connectors-toolbar">
+            <Input
+              allowClear
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              prefix={<SearchOutlined />}
+              placeholder="搜索平台、能力或协议"
+              aria-label="搜索平台连接器"
+            />
+            <Segmented
+              value={statusFilter}
+              onChange={(value) => setStatusFilter(value as StatusFilter)}
+              options={[
+                { label: "全部", value: "all" },
+                { label: "已配置", value: "configured" },
+                { label: "可连通", value: "reachable" },
+                { label: "待处理", value: "attention" },
+              ]}
+            />
+            <Typography.Text type="secondary">{filteredServers.length} 个结果</Typography.Text>
+          </div>
+
+          {loading && !servers.length ? (
+            <div className="connectors-loading" aria-label="正在加载平台连接器">
+              <Skeleton active paragraph={{ rows: 4 }} />
+            </div>
+          ) : filteredServers.length ? (
+            <div className="connectors-layers">
+              {layers.map((layer) => {
+                const items = filteredServers.filter((s) => s.layer === layer);
+                if (!items.length) return null;
+                return (
+                  <div key={layer} className="connectors-layer">
+                    <div className="connectors-layer-head">
+                      <div>
+                        <Typography.Title level={5} className="connectors-layer-title">{layer}</Typography.Title>
+                        <Typography.Text type="secondary">{LAYER_DESC[layer] || "外部业务系统与能力服务"}</Typography.Text>
+                      </div>
+                      <Typography.Text type="secondary">{items.length} 个连接</Typography.Text>
+                    </div>
+                    <div className="mcp-dock-grid connectors-grid">
+                      {items.map(renderPageCard)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="connectors-empty">
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="没有符合当前条件的连接器"
+              >
+                <Button onClick={() => { setQuery(""); setStatusFilter("all"); }}>清除筛选</Button>
+              </Empty>
+            </div>
+          )}
         </section>
       ) : (
         <section className="mcp-dock">
