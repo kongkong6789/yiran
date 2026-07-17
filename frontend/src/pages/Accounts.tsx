@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import {
   App,
+  Avatar,
   Button,
+  Card,
+  Dropdown,
+  Empty,
   Form,
   Input,
   Modal,
+  Select,
   Space,
   Switch,
   Table,
@@ -12,7 +17,19 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { PlusOutlined, ReloadOutlined, KeyOutlined } from "@ant-design/icons";
+import {
+  BankOutlined,
+  KeyOutlined,
+  LockOutlined,
+  MoreOutlined,
+  PhoneOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+  SearchOutlined,
+  TeamOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
 import {
   createAdminUser,
   getMe,
@@ -22,11 +39,37 @@ import {
 } from "../api/client";
 import WeComBindingManager from "../features/wecom-bindings/WeComBindingManager";
 import WeComNotificationManager from "../features/wecom-bindings/WeComNotificationManager";
+import OrganizationManager from "../features/organizations/OrganizationManager";
 
 function fmtTime(v?: string | null) {
   if (!v) return "—";
-  return v.slice(0, 19).replace("T", " ");
+  return new Date(v).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
+
+const organizationRoleLabel = {
+  owner: "企业所有者",
+  admin: "企业管理员",
+  member: "企业成员",
+} as const;
+
+const organizationRoleColor = {
+  owner: "gold",
+  admin: "blue",
+  member: "default",
+} as const;
+
+const compareText = (left?: string | null, right?: string | null) =>
+  String(left || "").localeCompare(String(right || ""), "zh-CN", {
+    numeric: true,
+    sensitivity: "base",
+  });
+
+const organizationRoleOrder = { owner: 3, admin: 2, member: 1, "": 0 } as const;
 
 export default function Accounts() {
   const { message, modal } = App.useApp();
@@ -42,6 +85,7 @@ export default function Accounts() {
   const [pwdForm] = Form.useForm();
   const [phoneForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
+  const [isSuperuserSelf, setIsSuperuserSelf] = useState(false);
   const [activeTab, setActiveTab] = useState("accounts");
 
   const load = async (q = keyword) => {
@@ -60,8 +104,10 @@ export default function Accounts() {
   useEffect(() => {
     getMe()
       .then((res) => {
-        setIsStaffSelf(!!(res.user.is_staff || res.user.is_superuser));
-        if (res.user.is_staff || res.user.is_superuser) void load();
+        const canManage = !!(res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage);
+        setIsStaffSelf(canManage);
+        setIsSuperuserSelf(!!res.user.is_superuser);
+        if (canManage) void load();
       })
       .catch(() => setIsStaffSelf(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -93,6 +139,7 @@ export default function Accounts() {
         display_name: values.display_name || "",
         phone: values.phone || "",
         is_staff: !!values.is_staff,
+        organization_role: values.organization_role || "member",
       });
       message.success("账号已创建");
       setCreateOpen(false);
@@ -126,167 +173,255 @@ export default function Accounts() {
 
   if (!isStaffSelf) {
     return (
-      <div style={{ padding: 24 }}>
-        <Typography.Title level={4}>账号管理</Typography.Title>
-        <Typography.Paragraph type="secondary">
-          仅管理员可查看与修改账号密码。请用 staff / 超级管理员账号登录。
-        </Typography.Paragraph>
+      <div className="account-admin-page account-admin-denied">
+        <Card>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={(
+              <div>
+                <Typography.Title level={5}>暂无账号管理权限</Typography.Title>
+                <Typography.Text type="secondary">仅企业所有者、企业管理员或平台管理员可以访问。</Typography.Text>
+              </div>
+            )}
+          />
+        </Card>
       </div>
     );
   }
 
+  const enabledCount = rows.filter((row) => row.is_active).length;
+  const organizationAdminCount = rows.filter((row) => ["owner", "admin"].includes(row.organization_role)).length;
+  const unboundPhoneCount = rows.filter((row) => !row.phone_masked).length;
+
+  const openPasswordModal = (row: AdminUserRow) => {
+    setTarget(row);
+    pwdForm.resetFields();
+    setPwdOpen(true);
+  };
+
+  const openPhoneModal = (row: AdminUserRow) => {
+    setTarget(row);
+    phoneForm.resetFields();
+    setPhoneOpen(true);
+  };
+
   return (
-    <div style={{ padding: "16px 20px 32px", maxWidth: 1100 }}>
-      <Space style={{ width: "100%", justifyContent: "space-between", marginBottom: 16 }} wrap>
-        <div>
-          <Typography.Title level={4} style={{ margin: 0 }}>账号管理</Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            列出全部登录账号；密码入库后不可回读，可在此新建或重置。
-          </Typography.Text>
+    <div className="account-admin-page">
+      <header className="account-admin-header">
+        <div className="account-admin-heading">
+          <span className="account-admin-heading-icon"><TeamOutlined /></span>
+          <div>
+            <Typography.Title level={3}>账号与企业成员</Typography.Title>
+            <Typography.Text>管理本企业的平台账号、成员角色和企业微信绑定关系</Typography.Text>
+          </div>
         </div>
-        {activeTab === "accounts" ? <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="搜用户名 / 邮箱"
-            style={{ width: 220 }}
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onSearch={(v) => void load(v)}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建账号
-          </Button>
-        </Space> : null}
-      </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建成员账号</Button>
+      </header>
 
-      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
-        { key: "accounts", label: "平台账号" },
-        { key: "wecom", label: "企业微信账号绑定" },
-        { key: "wecom-notifications", label: "通知重试" },
-      ]} />
+      <Card className="account-admin-workspace" styles={{ body: { padding: 0 } }}>
+        <Tabs
+          className="account-admin-tabs"
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          items={[
+            { key: "accounts", label: <span><UserOutlined /> 平台账号</span> },
+            { key: "organization", label: <span><BankOutlined /> 企业与成员</span> },
+            { key: "wecom", label: <span><SafetyCertificateOutlined /> 企微绑定</span> },
+            { key: "wecom-notifications", label: <span><ReloadOutlined /> 通知重试</span> },
+          ]}
+        />
 
-      {activeTab === "wecom" ? <WeComBindingManager /> : activeTab === "wecom-notifications" ? <WeComNotificationManager /> : <>
+        <div className="account-admin-content">
+          {activeTab === "wecom" ? <WeComBindingManager />
+            : activeTab === "wecom-notifications" ? <WeComNotificationManager />
+              : activeTab === "organization" ? (
+                <OrganizationManager
+                  isSuperuser={isSuperuserSelf}
+                  platformUsers={rows}
+                  onOrganizationCreated={() => load()}
+                />
+              )
+                : <>
+                  <div className="account-admin-overview">
+                    <div><span>企业账号</span><strong>{rows.length}</strong><small>当前企业成员总数</small></div>
+                    <div><span>已启用</span><strong>{enabledCount}</strong><small>{rows.length - enabledCount} 个账号已停用</small></div>
+                    <div><span>企业管理者</span><strong>{organizationAdminCount}</strong><small>所有者与企业管理员</small></div>
+                    <div><span>资料待完善</span><strong>{unboundPhoneCount}</strong><small>尚未填写手机号</small></div>
+                  </div>
 
-      <Table
-        rowKey="id"
-        size="middle"
-        loading={loading}
-        dataSource={rows}
-        pagination={{ pageSize: 20, showSizeChanger: true }}
-        columns={[
-          {
-            title: "账号",
-            dataIndex: "username",
-            render: (v: string, r) => (
-              <div>
-                <Typography.Text strong copyable={{ text: v }}>{v}</Typography.Text>
-                {r.display_name && r.display_name !== v ? (
-                  <div style={{ color: "#8b96a8", fontSize: 12 }}>{r.display_name}</div>
-                ) : null}
-              </div>
-            ),
-          },
-          {
-            title: "邮箱",
-            dataIndex: "email",
-            render: (v: string) => v || "—",
-          },
-          {
-            title: "手机号",
-            dataIndex: "phone_masked",
-            width: 130,
-            render: (v: string) => v || "未填写",
-          },
-          {
-            title: "密码",
-            width: 120,
-            render: (_: unknown, r) => (
-              r.has_usable_password
-                ? <Tag color="blue">已设置（加密）</Tag>
-                : <Tag>不可用</Tag>
-            ),
-          },
-          {
-            title: "角色",
-            width: 130,
-            render: (_: unknown, r) => (
-              r.is_superuser ? <Tag color="gold">超级管理员</Tag>
-                : r.is_staff ? <Tag color="purple">管理员</Tag>
-                  : <Tag>成员</Tag>
-            ),
-          },
-          {
-            title: "状态",
-            width: 90,
-            dataIndex: "is_active",
-            render: (v: boolean, r) => (
-              <Switch
-                size="small"
-                checked={v}
-                checkedChildren="启用"
-                unCheckedChildren="停用"
-                onChange={async (checked) => {
-                  try {
-                    await updateAdminUser(r.id, { is_active: checked });
-                    message.success(checked ? "已启用" : "已停用");
-                    await load();
-                  } catch (e: any) {
-                    message.error(e?.response?.data?.error || "操作失败");
-                  }
-                }}
-              />
-            ),
-          },
-          {
-            title: "最近登录",
-            dataIndex: "last_login",
-            width: 170,
-            render: fmtTime,
-          },
-          {
-            title: "操作",
-            width: 190,
-            render: (_: unknown, r) => (
-              <Space size={0}><Button
-                type="link"
-                size="small"
-                icon={<KeyOutlined />}
-                onClick={() => {
-                  setTarget(r);
-                  pwdForm.resetFields();
-                  setPwdOpen(true);
-                }}
-              >
-                改密码
-              </Button><Button type="link" size="small" onClick={() => { setTarget(r); phoneForm.resetFields(); setPhoneOpen(true); }}>改手机号</Button></Space>
-            ),
-          },
-        ]}
-      />
+                  <div className="account-admin-toolbar">
+                    <div>
+                      <Typography.Title level={5}>平台账号</Typography.Title>
+                      <Typography.Text type="secondary">平台权限和企业角色分别管理，密码不会在页面回显。</Typography.Text>
+                    </div>
+                    <Space wrap>
+                      <Input
+                        allowClear
+                        prefix={<SearchOutlined />}
+                        placeholder="搜索姓名、用户名或邮箱"
+                        value={keyword}
+                        onChange={(event) => {
+                          setKeyword(event.target.value);
+                          if (!event.target.value) void load("");
+                        }}
+                        onPressEnter={() => void load()}
+                      />
+                      <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
+                    </Space>
+                  </div>
+
+                  <Table
+                    className="account-admin-table"
+                    rowKey="id"
+                    loading={loading}
+                    dataSource={rows}
+                    showSorterTooltip={{ title: "点击切换升序或降序" }}
+                    scroll={{ x: 980 }}
+                    pagination={{
+                      defaultPageSize: 15,
+                      pageSizeOptions: [10, 15, 30, 50],
+                      showSizeChanger: true,
+                      showQuickJumper: true,
+                      showTotal: (total) => `共 ${total} 个账号`,
+                    }}
+                    columns={[
+                      {
+                        title: "成员",
+                        fixed: "left",
+                        width: 230,
+                        sorter: (left, right) => compareText(
+                          left.display_name || left.username,
+                          right.display_name || right.username,
+                        ),
+                        render: (_: unknown, row) => {
+                          const displayName = row.display_name || row.username;
+                          return <div className="account-member-cell">
+                            <Avatar>{displayName.slice(0, 1).toUpperCase()}</Avatar>
+                            <span>
+                              <strong>{displayName}</strong>
+                              <small>@{row.username}</small>
+                            </span>
+                          </div>;
+                        },
+                      },
+                      {
+                        title: "联系方式",
+                        width: 220,
+                        sorter: (left, right) => compareText(
+                          left.email || left.phone_masked,
+                          right.email || right.phone_masked,
+                        ),
+                        render: (_: unknown, row) => <div className="account-contact-cell">
+                          <span>{row.email || "未填写邮箱"}</span>
+                          <small>{row.phone_masked || "未填写手机号"}</small>
+                        </div>,
+                      },
+                      {
+                        title: "企业身份",
+                        width: 210,
+                        sorter: (left, right) => (
+                          compareText(left.organization_name, right.organization_name)
+                          || organizationRoleOrder[left.organization_role] - organizationRoleOrder[right.organization_role]
+                        ),
+                        render: (_: unknown, row) => <div className="account-role-cell">
+                          <span>{row.organization_name || "未分配企业"}</span>
+                          {row.organization_role
+                            ? <Tag color={organizationRoleColor[row.organization_role]}>{organizationRoleLabel[row.organization_role]}</Tag>
+                            : <Tag>未分配</Tag>}
+                        </div>,
+                      },
+                      {
+                        title: "平台权限",
+                        width: 130,
+                        sorter: (left, right) => (
+                          Number(left.is_superuser) * 2 + Number(left.is_staff)
+                        ) - (
+                          Number(right.is_superuser) * 2 + Number(right.is_staff)
+                        ),
+                        render: (_: unknown, row) => row.is_superuser
+                          ? <Tag color="purple">超级管理员</Tag>
+                          : row.is_staff ? <Tag color="geekblue">平台管理员</Tag> : <span className="account-muted">普通用户</span>,
+                      },
+                      {
+                        title: "账号状态",
+                        width: 120,
+                        sorter: (left, right) => Number(left.is_active) - Number(right.is_active),
+                        render: (_: unknown, row) => <Switch
+                          size="small"
+                          checked={row.is_active}
+                          checkedChildren="启用"
+                          unCheckedChildren="停用"
+                          onChange={async (checked) => {
+                            try {
+                              await updateAdminUser(row.id, { is_active: checked });
+                              message.success(checked ? "账号已启用" : "账号已停用");
+                              await load();
+                            } catch (error: any) {
+                              message.error(error?.response?.data?.error || "状态更新失败");
+                            }
+                          }}
+                        />,
+                      },
+                      {
+                        title: "最近登录",
+                        dataIndex: "last_login",
+                        width: 130,
+                        sorter: (left, right) => (
+                          left.last_login ? new Date(left.last_login).getTime() : 0
+                        ) - (
+                          right.last_login ? new Date(right.last_login).getTime() : 0
+                        ),
+                        render: (value: string | null) => <span className="account-muted">{fmtTime(value)}</span>,
+                      },
+                      {
+                        title: "",
+                        fixed: "right",
+                        width: 64,
+                        align: "center",
+                        render: (_: unknown, row) => <Dropdown
+                          trigger={["click"]}
+                          menu={{
+                            items: [
+                              { key: "phone", icon: <PhoneOutlined />, label: "修改手机号" },
+                              { key: "password", icon: <KeyOutlined />, label: "重置密码" },
+                            ],
+                            onClick: ({ key }) => key === "phone" ? openPhoneModal(row) : openPasswordModal(row),
+                          }}
+                        >
+                          <Button type="text" icon={<MoreOutlined />} aria-label={`管理 ${row.username}`} />
+                        </Dropdown>,
+                      },
+                    ]}
+                  />
+                </>}
+        </div>
+      </Card>
 
       <Modal
-        title="新建账号"
+        className="account-admin-modal"
+        title={<div className="account-modal-title"><span><PlusOutlined /></span><div><strong>新建成员账号</strong><small>账号创建后将自动加入当前企业</small></div></div>}
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => void handleCreate()}
         confirmLoading={saving}
         okText="创建"
-        destroyOnClose
+        cancelText="取消"
+        width={680}
+        destroyOnHidden
       >
-        <Form form={createForm} layout="vertical" initialValues={{ is_staff: false }}>
-          <Form.Item label="账号（用户名）" name="username" rules={[{ required: true, message: "请输入账号" }]}>
-            <Input placeholder="登录用用户名" autoComplete="off" />
-          </Form.Item>
-          <Form.Item label="显示名称" name="display_name">
-            <Input placeholder="可选，协作里展示" />
-          </Form.Item>
-          <Form.Item label="邮箱" name="email">
-            <Input placeholder="可选" />
-          </Form.Item>
-          <Form.Item label="手机号" name="phone" help="用于自动匹配企业微信成员">
-            <Input placeholder="例如 13800000000" />
-          </Form.Item>
+        <Form form={createForm} layout="vertical" initialValues={{ is_staff: false, organization_role: "member" }}>
+          <div className="account-form-grid">
+            <Form.Item label="登录用户名" name="username" rules={[{ required: true, message: "请输入用户名" }]}>
+              <Input placeholder="用于登录，不建议使用中文" autoComplete="off" />
+            </Form.Item>
+            <Form.Item label="成员姓名" name="display_name" rules={[{ required: true, message: "请输入成员姓名" }]}>
+              <Input placeholder="在任务和协作中展示" />
+            </Form.Item>
+            <Form.Item label="邮箱" name="email"><Input placeholder="选填" /></Form.Item>
+            <Form.Item label="手机号" name="phone" help="用于自动匹配企业微信成员">
+              <Input placeholder="13800000000" />
+            </Form.Item>
+          </div>
           <Form.Item
             label="初始密码"
             name="password"
@@ -295,22 +430,32 @@ export default function Accounts() {
               { min: 8, message: "至少 8 位" },
             ]}
           >
-            <Input.Password placeholder="创建后仅展示一次供抄录" autoComplete="new-password" />
+            <Input.Password prefix={<LockOutlined />} placeholder="至少 8 位，创建后仅展示一次" autoComplete="new-password" />
           </Form.Item>
-          <Form.Item label="管理员权限" name="is_staff" valuePropName="checked">
-            <Switch checkedChildren="是" unCheckedChildren="否" />
-          </Form.Item>
+          <div className="account-form-grid">
+            <Form.Item label="企业角色" name="organization_role" extra="企业管理员可管理本企业成员和连接授权">
+              <Select options={[
+                { value: "member", label: "企业成员" },
+                { value: "admin", label: "企业管理员" },
+              ]} />
+            </Form.Item>
+            {isSuperuserSelf && <Form.Item label="平台管理权限" name="is_staff" valuePropName="checked" extra="可访问平台级后台功能">
+              <Switch checkedChildren="平台管理员" unCheckedChildren="普通用户" />
+            </Form.Item>}
+          </div>
         </Form>
       </Modal>
 
       <Modal
-        title={target ? `重置密码 · ${target.username}` : "重置密码"}
+        className="account-admin-modal"
+        title={target ? `重置密码 · ${target.display_name || target.username}` : "重置密码"}
         open={pwdOpen}
         onCancel={() => { setPwdOpen(false); setTarget(null); }}
         onOk={() => void handleResetPwd()}
         confirmLoading={saving}
-        okText="重置"
-        destroyOnClose
+        okText="确认重置"
+        cancelText="取消"
+        destroyOnHidden
       >
         <Form form={pwdForm} layout="vertical">
           <Form.Item
@@ -323,13 +468,11 @@ export default function Accounts() {
           >
             <Input.Password placeholder="重置后对方需用新密码登录" autoComplete="new-password" />
           </Form.Item>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            重置后该账号已有登录状态会失效，需重新登录。
-          </Typography.Text>
+          <div className="account-modal-notice">重置后该成员现有登录令牌会立即失效，需要使用新密码重新登录。</div>
         </Form>
       </Modal>
 
-      <Modal title={target ? `修改手机号 · ${target.username}` : "修改手机号"} open={phoneOpen}
+      <Modal className="account-admin-modal" title={target ? `修改手机号 · ${target.display_name || target.username}` : "修改手机号"} open={phoneOpen}
         onCancel={() => { setPhoneOpen(false); setTarget(null); }} okText="保存并匹配"
         onOk={async () => {
           if (!target) return;
@@ -338,10 +481,13 @@ export default function Accounts() {
           try { await updateAdminUser(target.id, { phone: values.phone || "" }); message.success("手机号已保存，匹配任务已触发"); setPhoneOpen(false); setTarget(null); await load(); }
           catch (e: any) { message.error(e?.response?.data?.error || "保存失败"); }
           finally { setSaving(false); }
-        }} confirmLoading={saving} destroyOnClose>
-        <Form form={phoneForm} layout="vertical"><Form.Item name="phone" label="新手机号" help="留空可清除；页面和日志仅展示脱敏号码"><Input placeholder="13800000000 或 +8613800000000" /></Form.Item></Form>
+        }} confirmLoading={saving} cancelText="取消" destroyOnHidden>
+        <Form form={phoneForm} layout="vertical">
+          <Form.Item name="phone" label="手机号" help="保存后会异步匹配同企业的企业微信成员；页面和日志仅展示脱敏号码">
+            <Input prefix={<PhoneOutlined />} placeholder="13800000000 或 +8613800000000" />
+          </Form.Item>
+        </Form>
       </Modal>
-      </>}
     </div>
   );
 }

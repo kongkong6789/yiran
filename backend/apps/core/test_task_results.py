@@ -3,7 +3,8 @@ from rest_framework.test import APITestCase
 
 from .models import TaskFollowUp, TaskResultRecord
 from .models import WorkTask, WorkTaskArtifact
-from apps.wecom.models import UserWeComBinding
+from .organizations import assign_user_to_organization, create_personal_organization
+from apps.wecom.models import UserWeComBinding, WeComApiConfig
 
 
 User = get_user_model()
@@ -13,6 +14,14 @@ class TaskResultApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user("task-owner", password="password123")
         self.other = User.objects.create_user("other-owner", password="password123")
+        membership = create_personal_organization(self.user, name="测试企业")
+        assign_user_to_organization(self.other, membership.organization)
+        self.wecom_config = WeComApiConfig.objects.create(
+            user=self.user,
+            organization=membership.organization,
+            corp_id="ww-test",
+            agent_id="100001",
+        )
         self.client.force_authenticate(self.user)
 
     def test_result_actions_are_persisted_and_user_isolated(self):
@@ -33,6 +42,7 @@ class TaskResultApiTests(APITestCase):
     def test_sent_and_received_tasks_use_real_priority_and_user_isolation(self):
         UserWeComBinding.objects.create(
             platform_user=self.other,
+            wecom_config=self.wecom_config,
             wecom_userid="other-wecom",
             status=UserWeComBinding.Status.MATCHED,
             source=UserWeComBinding.Source.ADMIN_CONFIRMED,
@@ -43,10 +53,10 @@ class TaskResultApiTests(APITestCase):
             "sopId": "sales.review",
             "priority": "urgent",
             "deadline": "2026-07-17T18:00:00+08:00",
-            "recipientUserIds": ["other-wecom"],
+            "assigneeWeComUserIds": ["other-wecom"],
             "assigneeNames": ["其他用户"],
             "notificationTarget": "其他用户",
-            "notificationMode": "person",
+            "notificationMode": "none",
             "timeline": [{"title": "任务已创建", "status": "completed", "detail": "已创建"}],
             "parameters": {"dt": "2026-07-16", "scope": "all"},
             "resultData": {"ok": True, "processed_count": 12},

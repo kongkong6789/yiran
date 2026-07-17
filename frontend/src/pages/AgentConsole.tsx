@@ -1,30 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert, App, Button, Card, Col, Input, Row, Segmented,
-  Space, Tag, Typography,
+  Alert, App, Button, Card, Col, Row, Segmented,
+  Space, Typography,
 } from "antd";
-import { useNavigate } from "react-router-dom";
 import {
-  CloudSyncOutlined, InboxOutlined, PlayCircleOutlined, SendOutlined,
-  SettingOutlined, UploadOutlined,
+  InboxOutlined, PlayCircleOutlined, UploadOutlined,
 } from "@ant-design/icons";
 import {
-  api, getCatalog, runSop, resumeSop, syncJackyun,
+  api, getCatalog, runSop, resumeSop,
   listAgents, type ActionContract, type Agent, type SopResult,
 } from "../api/client";
 import TaskAssignmentPanel from "../features/task-console/TaskAssignmentPanel";
 import ExecutionTimeline, {
-  type ExecutionState,
   type ExecutionStep,
 } from "../features/task-console/ExecutionTimeline";
+import WeComConnectionStatus from "../features/task-console/WeComConnectionStatus";
 import TaskTrackingPanel from "../features/task-console/TaskTrackingPanel";
 import type { TaskView } from "../features/task-console/mockTasks";
 import AgentSelector from "../features/task-console/AgentSelector";
 import ExecutionInfoPanel from "../features/task-console/ExecutionInfoPanel";
 import TaskResultPanel from "../features/task-console/TaskResultPanel";
+import TaskCommandSection from "../features/task-console/TaskCommandSection";
+import TaskStepHeader from "../features/task-console/TaskStepHeader";
+import TaskSubmitActions from "../features/task-console/TaskSubmitActions";
+import ExecutionEmptyState from "../features/task-console/ExecutionEmptyState";
 import {
   buildExecutionFields,
-  isExecutionFieldPending,
   type ExecutionField,
 } from "../features/task-console/executionFields";
 import {
@@ -37,8 +38,7 @@ import {
   sendTaskNotification,
   type TaskAssignmentValue,
 } from "../features/task-console/mockWeCom";
-
-const { TextArea } = Input;
+import { collectSubmitBlockers } from "../features/task-console/taskSubmitValidation";
 
 const decisionTag: Record<string, { color: string; text: string }> = {
   allow: { color: "success", text: "放行执行" },
@@ -77,10 +77,18 @@ const EXECUTION_TEMPLATE: Omit<ExecutionStep, "status" | "time">[] = [
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const timeNow = () => new Date().toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const sopFailureDetail = (result: SopResult) => {
+  const raw = result.result || {};
+  const explicit = raw.user_message || raw.failure_reason || raw.error || raw.detail;
+  if (explicit) return String(explicit);
+  const failedStep = [...(result.steps || [])].reverse().find((step) => (
+    ["block", "failed", "error", "warn"].includes(step.status)
+  ));
+  return failedStep?.detail || "未能识别可执行的 SOP，请补充更明确的任务目标。";
+};
 
 export default function AgentConsole() {
   const { message } = App.useApp();
-  const navigate = useNavigate();
   const [text, setText] = useState("帮我生成昨天的日报");
   const [agentId, setAgentId] = useState<number>();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -93,8 +101,8 @@ export default function AgentConsole() {
   const [assignment, setAssignment] = useState<TaskAssignmentValue>(DEFAULT_ASSIGNMENT);
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [pageView, setPageView] = useState<"create" | TaskView>("create");
+  const [rightPanelTab, setRightPanelTab] = useState<"result" | "process">("process");
   const [businessResultContext, setBusinessResultContext] = useState<TaskBusinessResultContext>({});
 
   const selectedAgent = useMemo(
@@ -102,9 +110,13 @@ export default function AgentConsole() {
     [agentId, agents],
   );
   const roleLabel = selectedAgent?.name || "未选择智能体";
-  const pendingExecutionInfoCount = useMemo(
-    () => executionFields.filter(isExecutionFieldPending).length,
-    [executionFields],
+  const submitBlockers = useMemo(
+    () => collectSubmitBlockers({ text, selectedAgent, executionFields, assignment }),
+    [assignment, executionFields, selectedAgent, text],
+  );
+  const commandRecognized = useMemo(
+    () => Boolean(text.trim() && executionFields.length > 0),
+    [executionFields.length, text],
   );
   const formattedBusinessResult = useMemo(() => {
     if (result) return formatTaskBusinessResult(result.result, {
@@ -121,6 +133,12 @@ export default function AgentConsole() {
     });
     return null;
   }, [businessResultContext, executionFailure, result, selectedAgent?.name]);
+
+  useEffect(() => {
+    if (formattedBusinessResult && !loading) {
+      setRightPanelTab("result");
+    }
+  }, [formattedBusinessResult, loading]);
 
   useEffect(() => {
     getCatalog().then((data) => setActions(data.actions)).catch(() => setActions([]));
@@ -157,7 +175,7 @@ export default function AgentConsole() {
     setExecutionFields(buildExecutionFields(nextFields));
   }, [text, actions]);
 
-  const updateStep = (index: number, status: ExecutionState, detail?: string) => {
+  const updateStep = (index: number, status: ExecutionStep["status"], detail?: string) => {
     setExecutionSteps((current) => current.map((step, stepIndex) => (
       stepIndex === index
         ? { ...step, status, time: timeNow(), detail: detail || step.detail }
@@ -172,38 +190,27 @@ export default function AgentConsole() {
   };
 
   const submit = async () => {
-    if (!text.trim()) {
-      message.warning("请先输入任务或工作指令");
-      return;
-    }
-    if (!selectedAgent) {
-      message.warning("请先在“管理 → 对象”中创建并启用执行智能体");
-      return;
-    }
-    if (assignment.notificationMode === "person" && assignment.assigneeIds.length === 0) {
-      message.warning("请选择至少一位任务负责人");
-      return;
-    }
-    if (assignment.notificationMode === "group" && !assignment.groupId) {
-      message.warning("请选择需要通知的企业微信群聊");
-      return;
-    }
-    if (pendingExecutionInfoCount > 0) return;
+    if (submitBlockers.length > 0) return;
 
     setLoading(true);
     setResult(null);
     setExecutionFailure(null);
+    setRightPanelTab("process");
     const runStartedAt = Date.now();
-    setBusinessResultContext({ startedAt: runStartedAt, agentName: selectedAgent.name });
+    setBusinessResultContext({ startedAt: runStartedAt, agentName: selectedAgent!.name });
+
     setExecutionSteps(EXECUTION_TEMPLATE.map((step) => ({ ...step, status: "waiting" })));
 
     let activeIndex = 0;
     let notificationTarget = "指定接收人";
     let publishedTaskTrace = "";
     let recipientUserIds: string[] = [];
+    let assigneeWeComUserIds: string[] = [];
     let assigneeNames: string[] = [];
     let notificationAccepted = false;
     let acceptedNotificationId: number | undefined;
+    let partial = false;
+    let notificationStatus: string | undefined;
     try {
       const cleaned: Record<string, unknown> = {};
       executionFields.forEach((field) => {
@@ -217,21 +224,31 @@ export default function AgentConsole() {
 
       let matchedDetail = "";
       let identityDetail = "";
+      const selectedAssignees = assignment.assigneeIds.length > 0
+        ? (await getWeComUsers()).filter((member) => assignment.assigneeIds.includes(member.key))
+        : [];
+      assigneeWeComUserIds = selectedAssignees.map((member) => member.weComUserId);
+      assigneeNames = selectedAssignees.map((member) => member.name);
+
       if (assignment.notificationMode === "person") {
-        const contacts = await getWeComUsers();
-        const selected = contacts.filter((member) => assignment.assigneeIds.includes(member.key));
-        const names = selected.map((member) => member.name).join("、");
-        recipientUserIds = selected.map((member) => member.weComUserId);
-        assigneeNames = selected.map((member) => member.name);
+        const names = assigneeNames.join("、");
+        recipientUserIds = assigneeWeComUserIds;
         notificationTarget = names || notificationTarget;
-        matchedDetail = `已匹配负责人：${names}。`;
-        identityDetail = `已确认 ${selected.length} 位负责人的企业微信通知身份。`;
-      } else {
+        matchedDetail = `已匹配负责人：${names || "未指定"}。`;
+        identityDetail = `已确认 ${selectedAssignees.length} 位负责人的企业微信通知身份。`;
+      } else if (assignment.notificationMode === "group") {
         const groups = await getWeComGroups();
         const group = groups.find((item) => item.key === assignment.groupId);
         notificationTarget = group?.name || notificationTarget;
         matchedDetail = `已匹配通知群聊：${group?.name || "企业微信群"}。`;
         identityDetail = "已确认该群聊的通知渠道可用。";
+      } else {
+        if (assigneeNames.length > 0) {
+          matchedDetail = `已指定负责人：${assigneeNames.join("、")}（不发送企微通知）。`;
+        } else {
+          matchedDetail = "已选择暂不发送企业微信通知。";
+        }
+        identityDetail = "通知步骤已跳过。";
       }
 
       publishedTaskTrace = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -263,9 +280,10 @@ export default function AgentConsole() {
         traceId: publishedTaskTrace,
         title: text.trim(),
         sopId: "",
-        agentName: selectedAgent.name,
+        agentName: selectedAgent?.name,
         priority: assignment.priority,
         deadline: assignment.deadline ? new Date(assignment.deadline).toISOString() : null,
+        assigneeWeComUserIds,
         recipientUserIds,
         assigneeNames,
         notificationMode: assignment.notificationMode,
@@ -282,45 +300,101 @@ export default function AgentConsole() {
       updateStep(activeIndex, "running", "正在调用 SOP 编排与业务数据上下文。");
       await persistProgress(activeIndex, activeIndex);
       const [sopResult] = await Promise.all([
-        runSop({ text, payload: cleaned, agent_id: selectedAgent.id, trace_id: publishedTaskTrace }),
+        runSop({ text, payload: cleaned, agent_id: selectedAgent!.id, trace_id: publishedTaskTrace }),
         delay(620),
       ]);
+
+      const executionRejected = sopResult.decision === "block" || (
+        sopResult.decision === "allow" && sopResult.result?.ok === false
+      );
+      if (executionRejected) {
+        const failureDetail = sopFailureDetail(sopResult);
+        const errorCode = sopResult.action ? "SOP_EXECUTION_FAILED" : "SOP_NOT_MATCHED";
+        const failedResult: SopResult = {
+          ...sopResult,
+          result: {
+            ...(sopResult.result || {}),
+            ok: false,
+            error_code: errorCode,
+            user_message: failureDetail,
+          },
+        };
+        const failedTimeline = EXECUTION_TEMPLATE.map((step, index) => ({
+          title: step.title,
+          detail: index === 1 ? failureDetail : step.detail,
+          status: index === 0 ? "completed" as const : index === 1 ? "failed" as const : "waiting" as const,
+          time: index <= 1 ? timeNow() : undefined,
+        }));
+        setResult(failedResult);
+        setExecutionSteps(EXECUTION_TEMPLATE.map((step, index) => ({
+          ...step,
+          detail: index === 1 ? failureDetail : step.detail,
+          status: index === 0 ? "completed" : index === 1 ? "failed" : "waiting",
+          time: index <= 1 ? timeNow() : undefined,
+        })));
+        await api.patch(`/tasks/${sopResult.trace_id}/`, {
+          status: "failed",
+          progress: 22,
+          sopId: sopResult.action,
+          notificationStatus: "skipped",
+          timeline: failedTimeline,
+        });
+        setBusinessResultContext({
+          startedAt: runStartedAt,
+          completedAt: Date.now(),
+          agentName: selectedAgent!.name,
+          ownerName: assigneeNames.join("、") || undefined,
+        });
+        message.error(failureDetail);
+        return;
+      }
+
       setResult(sopResult);
       updateStep(activeIndex++, "completed", `SOP 返回：${decisionTag[sopResult.decision]?.text || sopResult.decision}。`);
       await persistProgress(activeIndex, activeIndex, { [activeIndex - 1]: `SOP 返回：${decisionTag[sopResult.decision]?.text || sopResult.decision}。` });
 
       await trackedCompleteStep(activeIndex++, `任务链路 ${sopResult.trace_id} 已创建。`);
       await trackedCompleteStep(activeIndex++, matchedDetail);
-      await trackedCompleteStep(activeIndex++, identityDetail);
-
-      updateStep(activeIndex, "running", "正在通过良策任务助手发送消息。");
-      await persistProgress(activeIndex, activeIndex, { [activeIndex]: "正在向企业微信提交任务通知。" });
-      const notificationResponse = await sendTaskNotification(assignment, { task: text, agentName: selectedAgent.name, targetLabel: notificationTarget, taskTraceId: sopResult.trace_id });
-      const notificationStatus = notificationResponse.notification.status;
-      const partial = notificationStatus === "partial";
-      notificationAccepted = notificationStatus === "accepted" || partial;
-      acceptedNotificationId = notificationResponse.notification.id;
-      updateStep(activeIndex++, partial ? "failed" : "completed", partial
-        ? `企业微信已受理，但无效成员：${notificationResponse.notification.invalid_users.join("、")}`
-        : `企业微信已受理消息${notificationResponse.notification.wecom_msgid ? `，消息 ID：${notificationResponse.notification.wecom_msgid}` : ""}。`);
-      await persistProgress(activeIndex, activeIndex, {
-        [activeIndex - 1]: partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。",
-      });
+      if (assignment.notificationMode === "none") {
+        updateStep(activeIndex++, "skipped", identityDetail);
+        await persistProgress(activeIndex, activeIndex, { [activeIndex - 1]: identityDetail });
+        updateStep(activeIndex++, "skipped", "已跳过企业微信通知。");
+        await persistProgress(activeIndex, activeIndex, { [activeIndex - 1]: "已跳过企业微信通知。" });
+      } else {
+        await trackedCompleteStep(activeIndex++, identityDetail);
+        updateStep(activeIndex, "running", "正在通过良策任务助手发送消息。");
+        await persistProgress(activeIndex, activeIndex, { [activeIndex]: "正在向企业微信提交任务通知。" });
+        const notificationResponse = await sendTaskNotification(assignment, { task: text, agentName: selectedAgent!.name, targetLabel: notificationTarget, taskTraceId: sopResult.trace_id });
+        const notificationStatus = notificationResponse.notification.status;
+        const partial = notificationStatus === "partial";
+        notificationAccepted = notificationStatus === "accepted" || partial;
+        acceptedNotificationId = notificationResponse.notification.id;
+        updateStep(activeIndex++, partial ? "failed" : "completed", partial
+          ? `企业微信已受理，但无效成员：${notificationResponse.notification.invalid_users.join("、")}`
+          : `企业微信已受理消息${notificationResponse.notification.wecom_msgid ? `，消息 ID：${notificationResponse.notification.wecom_msgid}` : ""}。`);
+        await persistProgress(activeIndex, activeIndex, {
+          [activeIndex - 1]: partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。",
+        });
+      }
       await trackedCompleteStep(activeIndex, "任务执行完成，通知状态已记录。", 300);
       const finalTimeline = EXECUTION_TEMPLATE.map((step) => ({
         title: step.title,
         detail: step.key === "notified"
-          ? (partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。")
+          ? (assignment.notificationMode === "none"
+            ? "已跳过企业微信通知。"
+            : partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。")
           : step.key === "finished" ? "SOP、任务分配与通知状态均已记录。" : step.detail,
-        status: step.key === "notified" && partial ? "failed" : "completed",
+        status: (step.key === "notified" && assignment.notificationMode === "none")
+          ? "skipped"
+          : (step.key === "notified" && partial ? "failed" : "completed"),
         time: timeNow(),
       }));
       const finalTaskResponse = await api.patch(`/tasks/${sopResult.trace_id}/`, {
-        status: partial ? "partial" : "completed",
+        status: assignment.notificationMode === "none" ? "completed" : (partial ? "partial" : "completed"),
         progress: 100,
         sopId: sopResult.action,
-        notificationStatus,
-        notificationRecordId: notificationResponse.notification.id,
+        notificationStatus: assignment.notificationMode === "none" ? "skipped" : notificationStatus,
+        notificationRecordId: assignment.notificationMode === "none" ? undefined : acceptedNotificationId,
         timeline: finalTimeline,
         parameters: cleaned,
         resultData: sopResult.result || {},
@@ -334,18 +408,23 @@ export default function AgentConsole() {
       setBusinessResultContext({
         startedAt: runStartedAt,
         completedAt: Date.now(),
-        agentName: selectedAgent.name,
+        agentName: selectedAgent!.name,
         ownerName: notificationTarget,
-        notification: {
-          recordId: notificationResponse.notification.id,
+        notification: assignment.notificationMode === "none" ? undefined : {
+          recordId: acceptedNotificationId,
           channel: assignment.notificationMode === "person" ? "wecom_person" : "wecom_group",
           targetName: notificationTarget,
           status: partial ? "partial" : "accepted",
           sentAt: new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
         },
       });
-      if (partial) message.warning("企业微信已受理通知，但部分成员无效，请检查应用可见范围");
-      else message.success(`任务执行成功，企业微信已受理发给${notificationTarget}的通知`);
+      if (assignment.notificationMode === "none") {
+        message.success("任务执行成功");
+      } else if (partial) {
+        message.warning("企业微信已受理通知，但部分成员无效，请检查应用可见范围");
+      } else {
+        message.success(`任务执行成功，企业微信已受理发给${notificationTarget}的通知`);
+      }
     } catch (error: any) {
       const errorMessage = String(error?.response?.data?.detail || error?.response?.data?.error || error?.message || "执行失败，请检查任务参数或后端服务");
       updateStep(Math.min(activeIndex, EXECUTION_TEMPLATE.length - 1), "failed", errorMessage);
@@ -367,7 +446,7 @@ export default function AgentConsole() {
       setBusinessResultContext({
         startedAt: runStartedAt,
         completedAt: Date.now(),
-        agentName: selectedAgent.name,
+        agentName: selectedAgent?.name,
         ownerName: notificationTarget,
         notification: {
           recordId: acceptedNotificationId || error?.response?.data?.notification?.id,
@@ -407,23 +486,6 @@ export default function AgentConsole() {
     }
   };
 
-  const doSyncJackyun = async () => {
-    setSyncing(true);
-    try {
-      const response = await syncJackyun();
-      if (!response.ok) {
-        message.error(response.error || "同步失败");
-        return;
-      }
-      const written = response.written || {};
-      message.success(`吉客云同步完成：商品 ${written.products ?? 0} / 销售 ${written.sales ?? 0} → ${written.backend}`);
-    } catch (error: any) {
-      message.error(error?.response?.data?.error || "吉客云同步失败");
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   return (
     <div className={`task-console-page ${pageView === "create" ? "is-create" : ""}`}>
       <div className="task-view-switcher">
@@ -443,112 +505,101 @@ export default function AgentConsole() {
       </div>
 
       {pageView !== "create" ? <TaskTrackingPanel view={pageView} /> : (
-      <Row gutter={[16, 16]} align="stretch" className="task-create-layout">
-        <Col xs={24} lg={10} className="task-console-column task-launch-column">
+      <Row gutter={[20, 20]} align="top" className="task-create-layout">
+        <Col xs={24} xl={10} className="task-console-column task-launch-column">
           <Card
             className="task-console-card task-launch-card"
             title={(
               <div className="task-card-heading">
-                <span className="task-card-heading-icon"><PlayCircleOutlined /></span>
                 <div>
-                  <Typography.Title level={5}>发起指令与任务分配</Typography.Title>
-                  <Typography.Text type="secondary">运行 SOP，并将任务通知到企业微信</Typography.Text>
+                  <Typography.Title level={5}>创建任务</Typography.Title>
+                  <Typography.Text type="secondary">输入工作指令，确认执行信息并分配负责人</Typography.Text>
                 </div>
               </div>
             )}
           >
-            <div className="task-launch-body">
-              <div className="task-launch-scroll">
-                <Space direction="vertical" style={{ width: "100%" }} size={10}>
-                  <div>
-                    <div className="task-field-label">任务或工作指令</div>
-                    <TextArea
-                      rows={2}
-                      value={text}
-                      onChange={(event) => setText(event.target.value)}
-                      placeholder="用自然语言描述诉求，如：帮我生成昨天的日报"
-                    />
-                  </div>
+            <div className="task-create-steps">
+              <TaskCommandSection
+                value={text}
+                onChange={setText}
+                recognized={commandRecognized}
+              />
 
+              <div className="task-step-divider" />
+
+              <section className="task-step-section">
+                <TaskStepHeader
+                  step={2}
+                  title="选择执行智能体"
+                  tooltip="决定本次任务使用的知识、技能、数据权限和执行规则。执行智能体负责实际执行任务，任务负责人负责接收、跟进和验收。"
+                />
+                <div className="task-step-body">
                   <AgentSelector agents={agents} value={agentId} loading={agentsLoading} onChange={setAgentId} />
+                </div>
+              </section>
 
-                  {executionFields.length > 0 && (
-                    <ExecutionInfoPanel fields={executionFields} onChange={setExecutionFields} />
-                  )}
+              {executionFields.length > 0 && (
+                <>
+                  <div className="task-step-divider" />
+                  <ExecutionInfoPanel fields={executionFields} onChange={setExecutionFields} />
+                </>
+              )}
 
-                  <TaskAssignmentPanel
-                    task={text}
-                    roleLabel={roleLabel}
-                    value={assignment}
-                    onChange={setAssignment}
-                    onConfigureWeCom={() => navigate("/connectors?section=wecom")}
-                  />
-                </Space>
-              </div>
+              <div className="task-step-divider" />
 
-              <div className="task-launch-actions">
-                {pendingExecutionInfoCount > 0 && (
-                  <div className="task-run-blocked-hint">请先完成 {pendingExecutionInfoCount} 项必要信息</div>
-                )}
-                {!agentsLoading && !selectedAgent && (
-                  <div className="task-run-blocked-hint">请先在“管理 → 对象”中创建并启用执行智能体</div>
-                )}
-                <Button
-                  className="task-run-button"
-                  type="primary"
-                  size="large"
-                  loading={loading}
-                  disabled={pendingExecutionInfoCount > 0 || !selectedAgent}
-                  icon={<SendOutlined />}
-                  onClick={submit}
-                  block
-                >
-                  运行 SOP 并分配任务
-                </Button>
-                <Button loading={syncing} icon={<CloudSyncOutlined />} onClick={doSyncJackyun} block>
-                  同步吉客云 → DataLake
-                </Button>
-              </div>
+              <TaskAssignmentPanel
+                task={text}
+                agentName={roleLabel}
+                value={assignment}
+                onChange={setAssignment}
+              />
+
+              <TaskSubmitActions
+                loading={loading}
+                blockers={submitBlockers}
+                onSubmit={() => void submit()}
+              />
             </div>
           </Card>
         </Col>
 
-        <Col xs={24} lg={14} className="task-console-column task-trace-column">
+        <Col xs={24} xl={14} className="task-console-column task-trace-column">
           <Card
             className="task-console-card task-trace-card"
             title={(
               <div className="task-trace-title">
                 <div className="task-card-heading">
-                  <span className="task-card-heading-icon"><CloudSyncOutlined /></span>
                   <div>
                     <Typography.Title level={5}>执行轨迹</Typography.Title>
-                    <Typography.Text type="secondary">SOP 执行轨迹与企业微信通知记录</Typography.Text>
+                    <Typography.Text type="secondary">查看任务执行、交付结果和企业微信通知状态</Typography.Text>
                   </div>
                 </div>
-                <Button className="task-wecom-config-button" icon={<SettingOutlined />} onClick={() => navigate("/connectors?section=wecom")}>
-                  企业微信连接设置
-                </Button>
+                <WeComConnectionStatus />
               </div>
             )}
           >
-            {result && (
-              <Space className="task-result-summary" wrap>
-                <span>链路：</span>
-                <Tag>{result.trace_id}</Tag>
-                <Tag color={decisionTag[result.decision]?.color}>{decisionTag[result.decision]?.text ?? result.decision}</Tag>
-                {result.action && <Tag color="blue">{result.action}</Tag>}
-                {result.approval_id && <Tag color="orange">审批单 #{result.approval_id}</Tag>}
-              </Space>
+            {formattedBusinessResult && !loading && (
+              <div className="task-right-tabs">
+                <Segmented
+                  value={rightPanelTab}
+                  onChange={(value) => setRightPanelTab(value as "result" | "process")}
+                  options={[
+                    { label: "任务结果", value: "result" },
+                    { label: "执行过程", value: "process" },
+                  ]}
+                />
+              </div>
             )}
 
             {result?.decision === "need_input" && (
-              <Alert type="info" showIcon message={`需补全字段：${(result.missing || []).join("、")}`} />
+              <Alert type="info" showIcon message={`需补全字段：${(result.missing || []).join("、")}`} className="task-trace-alert" />
             )}
 
             {result?.decision === "need_approval" && result.approval_id && (
               <Alert
                 type="warning"
                 showIcon
+                className="task-trace-alert"
                 message="高风险动作已挂起，请审批后续跑"
                 action={(
                   <Space>
@@ -559,13 +610,18 @@ export default function AgentConsole() {
               />
             )}
 
-            <ExecutionTimeline steps={executionSteps} />
-
-            {!loading && formattedBusinessResult && <TaskResultPanel result={formattedBusinessResult} />}
+            {rightPanelTab === "result" && formattedBusinessResult && !loading ? (
+              <TaskResultPanel result={formattedBusinessResult} />
+            ) : executionSteps.length > 0 || loading ? (
+              <ExecutionTimeline steps={executionSteps} />
+            ) : (
+              <ExecutionEmptyState />
+            )}
           </Card>
         </Col>
       </Row>
       )}
+
     </div>
   );
 }

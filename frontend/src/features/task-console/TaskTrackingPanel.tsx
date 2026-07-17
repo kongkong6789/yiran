@@ -6,7 +6,8 @@ import {
 import { App, Button, Card, Col, Empty, Progress, Row, Skeleton, Space, Tag, Typography } from "antd";
 import { api } from "../../api/client";
 import ExecutionTimeline, { type ExecutionStep } from "./ExecutionTimeline";
-import { getPublishedTasks, type PublishedTask, type TaskView } from "./mockTasks";
+import { openArtifactPreview } from "./openArtifactPreview";
+import { getPublishedTasks, type PublishedTask, type TaskArtifact, type TaskView } from "./mockTasks";
 
 const STATUS_META: Record<PublishedTask["status"], { text: string; color: string }> = {
   pending: { text: "待处理", color: "default" },
@@ -70,18 +71,15 @@ export default function TaskTrackingPanel({ view }: { view: TaskView }) {
     } finally { setRetrying(false); }
   };
 
-  const previewArtifact = async (url: string, name: string) => {
-    try {
-      const response = await api.get(url, { responseType: "text" });
-      modal.info({
-        title: name,
-        width: 760,
-        okText: "关闭",
-        content: <pre className="task-artifact-preview">{typeof response.data === "string" ? response.data : JSON.stringify(response.data, null, 2)}</pre>,
-      });
-    } catch (error: any) {
-      message.error(error?.response?.data?.detail || "产物预览失败");
-    }
+  const previewArtifact = async (artifact: TaskArtifact) => {
+    if (!artifact.preview_url) return;
+    await openArtifactPreview(
+      modal,
+      artifact.preview_url,
+      artifact.name,
+      { format: artifact.format, filename: artifact.filename, name: artifact.name },
+      (error) => message.error(error),
+    );
   };
 
   const downloadArtifact = async (url: string, filename: string) => {
@@ -118,11 +116,11 @@ export default function TaskTrackingPanel({ view }: { view: TaskView }) {
           <div className="task-priority-summary"><FlagOutlined /><span>优先级</span><strong className={`task-priority-indicator is-${selected.priority}`}><i />{PRIORITY_LABEL[selected.priority]}</strong></div>
         </div>
         {!!selected.artifacts?.length && <section className="task-tracking-artifacts">
-          <div className="task-tracking-artifacts-heading"><FileOutlined /><span><strong>任务产物</strong><small>执行生成的报告和原始数据，可随时查看或下载</small></span></div>
+          <div className="task-tracking-artifacts-heading"><FileOutlined /><span><strong>任务产物</strong><small>执行生成的报告和数据文件，支持阅读视图查看</small></span></div>
           <div className="task-tracking-artifact-list">{selected.artifacts.map((artifact) => <div className="task-tracking-artifact" key={artifact.id}>
             <span><strong>{artifact.name}</strong><small>{artifact.format} · {artifact.size}</small></span>
             <Space size={6}>
-              {!!artifact.preview_url && <Button size="small" icon={<EyeOutlined />} onClick={() => void previewArtifact(artifact.preview_url!, artifact.name)}>查看</Button>}
+              {!!artifact.preview_url && <Button size="small" icon={<EyeOutlined />} onClick={() => void previewArtifact(artifact)}>查看</Button>}
               <Button size="small" type="primary" ghost icon={<DownloadOutlined />} onClick={() => void downloadArtifact(artifact.download_url, artifact.filename)}>下载</Button>
             </Space>
           </div>)}</div>

@@ -9,6 +9,7 @@ from .services import WeComApiError, WeComClient
 
 def _as_api_contact(row: WeComContact) -> dict:
     return {
+        "contactId": row.id,
         "key": f"wecom:{row.wecom_userid}",
         "name": row.name,
         "department": row.department,

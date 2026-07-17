@@ -51,6 +51,13 @@ export interface AuthUser {
   avatar_url?: string;
   is_staff?: boolean;
   is_superuser?: boolean;
+  organization?: {
+    id: number;
+    name: string;
+    role: "owner" | "admin" | "member";
+    roleLabel: string;
+    canManage: boolean;
+  } | null;
 }
 
 export const login = (body: { username: string; password: string }) =>
@@ -92,7 +99,76 @@ export interface AdminUserRow {
   date_joined: string | null;
   last_login: string | null;
   phone_masked: string;
+  organization_id: number | null;
+  organization_name: string;
+  organization_role: "owner" | "admin" | "member" | "";
 }
+
+export interface OrganizationMember {
+  id: number;
+  username: string;
+  displayName: string;
+  role: "owner" | "admin" | "member";
+  roleLabel: string;
+  isActive: boolean;
+  canRemove: boolean;
+}
+
+export interface OrganizationSummary {
+  id: number;
+  code: string;
+  name: string;
+  isActive: boolean;
+  memberCount: number;
+  role: "owner" | "admin" | "member" | "";
+  canManage: boolean;
+  createdAt: string | null;
+}
+
+export const getCurrentOrganization = () =>
+  api.get<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
+    "/auth/organization/",
+  ).then((r) => r.data);
+export const updateCurrentOrganization = (name: string) =>
+  api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
+    "/auth/organization/",
+    { name },
+  ).then((r) => r.data);
+export const transferOrganizationOwnership = (targetUserId: number) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    previousOwner: { id: number; username: string; role: "admin" };
+    newOwner: { id: number; username: string; role: "owner" };
+    transferredAt: string;
+  }>("/auth/organization/transfer-ownership/", { targetUserId }).then((r) => r.data);
+export const removeOrganizationMember = (userId: number) =>
+  api.delete<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    removedUser: { id: number; username: string };
+  }>(`/auth/organization/members/${userId}/`).then((r) => r.data);
+export const createOrganization = (body: { name: string; ownerUserId: number }) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    owner: { id: number; username: string; role: "owner" };
+  }>("/auth/admin/organizations/", body).then((r) => r.data);
+export const listOrganizations = () =>
+  api.get<{ ok: boolean; count: number; results: OrganizationSummary[] }>(
+    "/auth/admin/organizations/",
+  ).then((r) => r.data);
+export const assignUsersToOrganization = (body: {
+  organizationId: number;
+  userIds: number[];
+  role: "admin" | "member";
+}) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    assignedCount: number;
+    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
+  }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
 export const listAdminUsers = (q?: string) =>
   api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
@@ -106,6 +182,8 @@ export const createAdminUser = (body: {
   display_name?: string;
   is_staff?: boolean;
   phone?: string;
+  organization_id?: number;
+  organization_role?: "owner" | "admin" | "member";
 }) =>
   api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     "/auth/admin/users/",
@@ -121,6 +199,8 @@ export const updateAdminUser = (
     is_active?: boolean;
     is_staff?: boolean;
     phone?: string;
+    organization_id?: number;
+    organization_role?: "owner" | "admin" | "member";
   },
 ) =>
   api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
@@ -134,6 +214,7 @@ export interface UserWeComBindingSummary {
   status: WeComBindingStatus;
   statusLabel: string;
   weComUserId: string;
+  weComMember: string;
   failureReason: string;
 }
 
@@ -158,6 +239,10 @@ export interface WeComBindingRow {
   phoneMasked: string;
   weComUserId: string;
   weComMember: string;
+  weComAvatar: string;
+  weComDepartment: string;
+  weComPosition: string;
+  weComAvailable: boolean | null;
   status: WeComBindingStatus;
   statusLabel: string;
   source: string;
@@ -1505,4 +1590,67 @@ export const markCollabRoomRead = (id: string, upToId?: number) =>
       upToId ? { up_to_id: upToId } : {},
     )
     .then((r) => r.data);
+
+export type WorkTodoItem = {
+  id: string;
+  title: string;
+  description?: string;
+  status: "pending" | "completed" | "cancelled";
+  userStatus?: number;
+  priority?: "normal" | "high" | "urgent";
+  dueAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  creatorName: string;
+  assigneeNames: string[];
+  remindTypes: number[];
+  syncRequested?: boolean;
+  syncStatus?: "not_requested" | "pending" | "synced" | "failed" | "partial";
+  recipients?: Array<{
+    name: string;
+    type: "platform" | "wecom";
+    avatar?: string;
+    syncStatus: "not_requested" | "pending" | "synced" | "failed";
+  }>;
+  syncErrorReason?: string;
+  lastSyncedAt?: string | null;
+  source: "platform";
+};
+
+export type WeComTodoMember = { id: number; name: string; department: string; avatar: string; bound: boolean };
+export type WeComCliConfig = {
+  configured: boolean; enabled: boolean; botId: string; secretConfigured: boolean; canManage: boolean;
+  canUse: boolean; accessScope: "organization" | "selected" | "owner"; allowedUserIds: number[];
+  lastTestedAt?: string | null; lastErrorReason?: string; organizationName?: string;
+};
+
+export const getWeComCliConfig = () =>
+  api.get<WeComCliConfig & { ok: boolean }>("/wecom/cli-config/").then((r) => r.data);
+export const saveWeComCliConfig = (body: {
+  botId: string; secret?: string; enabled?: boolean;
+  accessScope?: "organization" | "selected" | "owner"; allowedUserIds?: number[];
+}) =>
+  api.patch<{ ok: boolean; detail: string }>("/wecom/cli-config/", body).then((r) => r.data);
+export const testWeComCliConfig = () =>
+  api.post<{ ok: boolean; detail: string }>("/wecom/cli-config/test/", {}).then((r) => r.data);
+export const getWeComTodoMembers = () =>
+  api.get<{ ok: boolean; results: WeComTodoMember[] }>("/wecom/todos/members/").then((r) => r.data);
+export const listWeComTodos = (view: "assigned" | "created", status?: "pending" | "completed") =>
+  api.get<{ ok: boolean; source: string; results: WorkTodoItem[] }>("/wecom/todos/", {
+    params: { view, ...(status ? { status } : {}) },
+  }).then((r) => r.data);
+export const createWeComTodo = (body: {
+  title: string; description?: string; platformAssigneeIds: number[]; wecomContactIds: number[];
+  dueAt?: string; priority?: string; remindTypes?: number[];
+  syncToWeCom?: boolean;
+}) => api.post<{
+  ok: boolean; ids: string[]; detail: string; syncStatus: WorkTodoItem["syncStatus"]; syncDetail: string;
+  skippedPlatformAssigneeNames: string[];
+}>("/wecom/todos/", body).then((r) => r.data);
+export const setWeComTodoStatus = (id: string, status: "pending" | "completed") =>
+  api.post<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>("/wecom/todos/status/", { id, status }).then((r) => r.data);
+export const retryWeComTodoSync = (id: string) =>
+  api.post<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>(`/wecom/todos/${id}/sync/`, {}).then((r) => r.data);
+export const deleteWeComTodo = (id: string) =>
+  api.delete<{ ok: boolean; detail: string; deletedCount: number; weComDeleted: boolean }>(`/wecom/todos/${id}/`).then((r) => r.data);
 

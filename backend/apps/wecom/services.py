@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import logging
 
 import requests
 from django.core.cache import cache
@@ -14,8 +15,32 @@ REQUEST_TIMEOUT_SECONDS = 12
 TOKEN_TTL_SECONDS = 7000
 TOKEN_ERROR_CODES = {40014, 42001}
 PERMISSION_ERROR_CODES = {48002, 60011, 60020, 60023}
-NOT_FOUND_CODES = {60111}
+NOT_FOUND_CODES = {46004, 60111}
 RATE_LIMIT_CODES = {45009}
+
+logger = logging.getLogger(__name__)
+
+USER_NOT_FOUND_DETAIL = "未在企业微信通讯录中找到该成员，请确认手机号与企业微信一致，并检查应用可见范围。"
+
+
+def user_friendly_wecom_error(code: str, detail: str) -> str:
+    """把数据库中的历史上游错误转换成可直接展示的中文业务原因。"""
+    normalized = str(detail or "").strip()
+    lowered = normalized.lower()
+    if code == "WEWORK_USER_NOT_FOUND" or "user no exist" in lowered or "46004" in lowered:
+        return USER_NOT_FOUND_DETAIL
+    known = {
+        "WEWORK_NO_PERMISSION": "企业微信应用没有通讯录权限，或该成员不在应用可见范围内，请联系企业管理员处理。",
+        "WEWORK_RATE_LIMITED": "企业微信请求较多，系统稍后会自动重试。",
+        "WEWORK_NETWORK_ERROR": "企业微信服务暂时无法连接，系统稍后会自动重试。",
+        "WEWORK_TEMPORARY_ERROR": "企业微信服务暂时不可用，系统稍后会自动重试。",
+        "TOKEN_EXPIRED": "企业微信访问凭证已失效，系统正在重新获取。",
+    }
+    if code in known:
+        return known[code]
+    if any(marker in lowered for marker in ("hint:", "from ip:", "devtool/query", "more info at")):
+        return "企业微信接口调用失败，请联系企业管理员检查应用配置和通讯录权限。"
+    return normalized or "企业微信账号匹配失败，请稍后重试。"
 
 
 @dataclass
@@ -35,17 +60,22 @@ def _classify_error(payload: dict) -> WeComApiError | None:
     if not errcode:
         return None
     errmsg = str(payload.get("errmsg", "企业微信接口调用失败"))
+    logger.warning("WeCom API rejected request: errcode=%s errmsg=%s", errcode, errmsg)
     if errcode in TOKEN_ERROR_CODES:
         return WeComApiError("TOKEN_EXPIRED", "企业微信访问凭证已失效。", retryable=True, upstream_code=errcode)
     if errcode in PERMISSION_ERROR_CODES:
         return WeComApiError("WEWORK_NO_PERMISSION", "企业微信应用没有读取该成员的权限。", upstream_code=errcode)
     if errcode in NOT_FOUND_CODES:
-        return WeComApiError("WEWORK_USER_NOT_FOUND", "企业微信中未查询到该手机号对应的成员。", upstream_code=errcode)
+        return WeComApiError("WEWORK_USER_NOT_FOUND", USER_NOT_FOUND_DETAIL, upstream_code=errcode)
     if errcode in RATE_LIMIT_CODES:
         return WeComApiError("WEWORK_RATE_LIMITED", "企业微信接口请求频繁，请稍后重试。", retryable=True, upstream_code=errcode)
     if 50000 <= errcode < 60000:
         return WeComApiError("WEWORK_TEMPORARY_ERROR", "企业微信服务暂时不可用，请稍后重试。", retryable=True, upstream_code=errcode)
-    return WeComApiError("WEWORK_API_ERROR", f"企业微信接口调用失败：{errmsg}", upstream_code=errcode)
+    return WeComApiError(
+        "WEWORK_API_ERROR",
+        "企业微信接口调用失败，请联系企业管理员检查应用配置和权限。",
+        upstream_code=errcode,
+    )
 
 
 def _parse_response(response) -> dict:

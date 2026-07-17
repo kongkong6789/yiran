@@ -1,10 +1,11 @@
 import axios from "axios";
 import { api } from "../../api/client";
 
-export type NotificationMode = "person" | "group";
+export type NotificationMode = "person" | "group" | "none";
 export type TaskPriority = "normal" | "high" | "urgent";
 
 export interface WeComMember {
+  contactId: number;
   key: string;
   name: string;
   department: string;
@@ -27,6 +28,9 @@ export interface WeComGroup {
   lastSuccessAt?: string | null;
   lastFailureAt?: string | null;
   lastErrorReason?: string;
+  accessScope: "organization" | "selected" | "owner";
+  allowedUserIds: number[];
+  canManage: boolean;
 }
 
 export interface TaskAssignmentValue {
@@ -47,6 +51,13 @@ export interface WeComConfigValue {
   callbackVerified?: boolean;
   callbackVerifiedAt?: string | null;
   lastEventAt?: string | null;
+  configured?: boolean;
+  canManage?: boolean;
+  detail?: string;
+  organization?: { id: number; name: string } | null;
+  ownerName?: string;
+  accessScope: "organization" | "selected" | "owner";
+  allowedUserIds: number[];
 }
 
 let weComMemberCache: WeComMember[] = [];
@@ -79,20 +90,21 @@ export function getWeComApiError(error: unknown) {
 }
 
 export async function getWeComGroups() {
-  const response = await api.get<{ ok: boolean; count: number; results: Array<{ id: number; name: string; maskedWebhook: string; enabled: boolean; last_success_at?: string | null; last_failure_at?: string | null; last_error_reason?: string }> }>("/wecom/group-webhooks/");
+  const response = await api.get<{ ok: boolean; count: number; results: Array<{ id: number; name: string; maskedWebhook: string; enabled: boolean; accessScope: "organization" | "selected" | "owner"; allowedUserIds: number[]; canManage: boolean; last_success_at?: string | null; last_failure_at?: string | null; last_error_reason?: string }> }>("/wecom/group-webhooks/");
   weComGroupCache = response.data.results.map((item) => ({
     key: `webhook:${item.id}`, id: item.id, name: item.name, groupId: String(item.id),
     maskedWebhook: item.maskedWebhook, available: item.enabled, enabled: item.enabled,
+    accessScope: item.accessScope, allowedUserIds: item.allowedUserIds || [], canManage: item.canManage,
     lastSuccessAt: item.last_success_at, lastFailureAt: item.last_failure_at, lastErrorReason: item.last_error_reason,
   }));
   return weComGroupCache;
 }
 
-export const createWeComGroupWebhook = (name: string, webhookUrl: string) =>
-  api.post("/wecom/group-webhooks/", { name, webhookUrl }).then((response) => response.data);
+export const createWeComGroupWebhook = (name: string, webhookUrl: string, accessScope: WeComGroup["accessScope"], allowedUserIds: number[]) =>
+  api.post("/wecom/group-webhooks/", { name, webhookUrl, accessScope, allowedUserIds }).then((response) => response.data);
 export const deleteWeComGroupWebhook = (id: number) =>
   api.delete(`/wecom/group-webhooks/${id}/`).then((response) => response.data);
-export const updateWeComGroupWebhook = (id: number, body: { name?: string; webhookUrl?: string; enabled?: boolean }) =>
+export const updateWeComGroupWebhook = (id: number, body: { name?: string; webhookUrl?: string; enabled?: boolean; accessScope?: WeComGroup["accessScope"]; allowedUserIds?: number[] }) =>
   api.patch(`/wecom/group-webhooks/${id}/`, body).then((response) => response.data);
 export const testWeComGroupWebhook = (id: number) =>
   api.post(`/wecom/group-webhooks/${id}/test/`, {}).then((response) => response.data);
@@ -108,7 +120,13 @@ export async function saveWeComConfig(_config: WeComConfigValue) {
   return api
     .put<WeComConfigValue & { ok: boolean; configured: boolean; updatedAt: string | null }>(
       "/wecom/config/",
-      { corpId: _config.corpId, agentId: _config.agentId, secret: _config.secret },
+      {
+        corpId: _config.corpId,
+        agentId: _config.agentId,
+        secret: _config.secret,
+        accessScope: _config.accessScope,
+        allowedUserIds: _config.allowedUserIds,
+      },
     )
     .then((response) => response.data);
 }
@@ -150,4 +168,6 @@ export const DEFAULT_WECOM_CONFIG: WeComConfigValue = {
   callbackUrl: "",
   token: "",
   encodingAesKey: "",
+  accessScope: "organization",
+  allowedUserIds: [],
 };

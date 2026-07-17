@@ -1,0 +1,12 @@
+[2m17:39:51[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/collab/unread/[39m
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1638:16)
+[2m17:40:06[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/collab/unread/[39m
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1638:16)
+[2m17:55:01[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/tasks/?view=received[39m
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1638:16)
+[2m18:02:13[22m [31m[1m[vite][22m[39m [31mhttp proxy error: /api/tasks/?view=received[39m
+Error: connect ECONNREFUSED 127.0.0.1:8000
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1638:16)

@@ -1,9 +1,17 @@
 from django.urls import path
 
 from . import views
+from . import todo_views
 
 
 urlpatterns = [
+    path("cli-config/", todo_views.cli_config, name="wecom-cli-config"),
+    path("cli-config/test/", todo_views.cli_config_test, name="wecom-cli-config-test"),
+    path("todos/", todo_views.todos, name="wecom-todos"),
+    path("todos/members/", todo_views.todo_members, name="wecom-todo-members"),
+    path("todos/status/", todo_views.todo_status, name="wecom-todo-status"),
+    path("todos/<uuid:todo_id>/sync/", todo_views.retry_todo_sync, name="wecom-todo-sync-retry"),
+    path("todos/<uuid:todo_id>/", todo_views.delete_todo, name="wecom-todo-delete"),
     path("callback/<uuid:callback_key>/", views.callback, name="wecom-callback"),
     path("config/", views.api_config, name="wecom-api-config"),
     path("config/test/", views.test_api_config, name="wecom-api-config-test"),

@@ -17,6 +17,7 @@ import {
   UserOutlined,
   ApartmentOutlined,
   ShopOutlined,
+  CheckSquareOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -37,6 +38,7 @@ const WORK_NAV: NavItem[] = [
   { key: "/agent", icon: <MessageOutlined />, label: "对话" },
   { key: "/collab", icon: <AlertOutlined />, label: "协作" },
   { key: "/console", icon: <FlagOutlined />, label: "任务" },
+  { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
 ];
 
 /** 沉淀与复用 */
@@ -97,15 +99,6 @@ export default function AppLayout() {
     const hit = ordered.find((n) => loc.pathname === n.key || loc.pathname.startsWith(`${n.key}/`));
     return hit ? [hit.key] : [loc.pathname];
   }, [loc.pathname]);
-
-  const openKeys = useMemo(() => {
-    if (WORK_NAV.some((n) => selectedKeys.includes(n.key))) return ["work"];
-    if (KNOWLEDGE_NAV.some((n) => selectedKeys.includes(n.key))) return ["knowledge"];
-    if (COMMERCE_NAV.some((n) => selectedKeys.includes(n.key))) return ["commerce"];
-    if (CAPABILITY_NAV.some((n) => selectedKeys.includes(n.key))) return ["capability"];
-    if (ADMIN_NAV.some((n) => selectedKeys.includes(n.key))) return ["admin"];
-    return [];
-  }, [selectedKeys]);
 
   const menuItems = useMemo(() => [
     {
@@ -176,7 +169,7 @@ export default function AppLayout() {
           theme="light"
           mode="horizontal"
           selectedKeys={selectedKeys}
-          defaultOpenKeys={openKeys}
+          triggerSubMenuAction="click"
           items={menuItems}
           onClick={(e) => {
             if (String(e.key).startsWith("/")) nav(e.key);
@@ -185,7 +178,7 @@ export default function AppLayout() {
 
         <Space className="app-topnav-actions" size={8}>
           {user ? <CollabUnreadBell enabled /> : null}
-          <Dropdown menu={userMenu} placement="bottomRight">
+          <Dropdown menu={userMenu} placement="bottomRight" trigger={["click"]}>
             <button type="button" className="app-topnav-user" aria-label="打开账户菜单">
               <Avatar
                 size={32}

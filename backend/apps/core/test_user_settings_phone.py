@@ -48,3 +48,4 @@ class UserSettingsPhoneTests(TransactionTestCase):
         self.assertEqual(binding.status, UserWeComBinding.Status.MATCHED)
         self.assertEqual(binding.wecom_userid, "zhangsan")
         self.assertEqual(binding.source, UserWeComBinding.Source.PHONE_UPDATED)
+        self.assertEqual(response.data["wecom_binding"]["weComMember"], "成员")

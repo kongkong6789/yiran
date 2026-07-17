@@ -59,7 +59,13 @@ export default function WeComNotificationManager() {
       <Typography.Text type="secondary">“已受理”仅代表企业微信接受请求，不代表成员已经阅读。</Typography.Text>
       <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
     </Space>
-    <Table rowKey="id" size="middle" loading={loading} dataSource={rows} scroll={{ x: 1080 }} pagination={{ pageSize: 20 }} columns={[
+    <Table rowKey="id" size="middle" loading={loading} dataSource={rows} scroll={{ x: 1080 }} pagination={{
+      defaultPageSize: 20,
+      pageSizeOptions: [10, 20, 50],
+      showSizeChanger: true,
+      showQuickJumper: true,
+      showTotal: (total) => `共 ${total} 条通知记录`,
+    }} columns={[
       { title: "平台用户", width: 140, render: (_, row) => <div><b>{row.userName}</b><div style={{ color: "#8b96a8", fontSize: 12 }}>ID：{row.userId}</div></div> },
       { title: "通知对象", dataIndex: "target_label", width: 180, render: (value) => value || "—" },
       { title: "渠道", dataIndex: "channelLabel", width: 100 },
