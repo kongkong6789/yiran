@@ -1,0 +1,194 @@
+import uuid
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from django.contrib.auth.models import User
+from django.test import override_settings
+from rest_framework.test import APITestCase
+
+from apps.collab import views
+from apps.collab.mentions import get_xiaoce_bot_user
+from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
+from apps.collab.xiaoce_runs import complete_xiaoce_run
+from apps.collab.tests.test_xiaoce_runs import prepared_skill
+from apps.skills.models import SkillAsset, UserSkill
+
+
+class XiaoceApiTests(APITestCase):
+    def setUp(self):
+        realtime_patcher = patch("apps.collab.views.ws_push.publish_sync")
+        realtime_patcher.start()
+        self.addCleanup(realtime_patcher.stop)
+        self.user = User.objects.create_user("api-owner", password="pw")
+        self.other = User.objects.create_user("api-other", password="pw")
+        bot = get_xiaoce_bot_user()
+        self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
+        CollabParticipant.objects.create(room=self.room, user=self.user)
+        CollabParticipant.objects.create(room=self.room, user=bot)
+        self.client.force_authenticate(self.user)
+
+    @property
+    def messages_url(self):
+        return f"/api/collab/rooms/{self.room.id}/messages/"
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_send_returns_progress_run_and_room_detail_recovers_it(self, thread_cls):
+        run_id = uuid.uuid4()
+
+        response = self.client.post(
+            self.messages_url,
+            {"content": "分析", "run_id": str(run_id)},
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["xiaoce_run"]["id"], str(run_id))
+        self.assertEqual(
+            response.data["xiaoce_run"]["progress_steps"][0]["code"],
+            "understanding",
+        )
+        self.assertEqual(response.data["message"]["meta"]["run_id"], str(run_id))
+        thread_cls.return_value.start.assert_called_once()
+        thread_args = thread_cls.call_args.kwargs["args"]
+        self.assertEqual(thread_args, (run_id,))
+
+        detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
+        self.assertEqual(detail.data["active_xiaoce_run"]["id"], str(run_id))
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_second_send_is_rejected_without_creating_an_orphan_message(self, _thread_cls):
+        self.client.post(
+            self.messages_url,
+            {"content": "第一次", "run_id": str(uuid.uuid4())},
+        )
+        before = CollabMessage.objects.count()
+
+        response = self.client.post(
+            self.messages_url,
+            {"content": "第二次", "run_id": str(uuid.uuid4())},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(CollabMessage.objects.count(), before)
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_cancel_is_idempotent_and_returns_persisted_snapshot(self, _thread_cls):
+        run_id = uuid.uuid4()
+        self.client.post(
+            self.messages_url,
+            {"content": "分析", "run_id": str(run_id)},
+        )
+        url = f"/api/collab/rooms/{self.room.id}/xiaoce-runs/{run_id}/cancel/"
+
+        first = self.client.post(url)
+        second = self.client.post(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.data["message"]["id"], first.data["message"]["id"])
+        self.assertTrue(first.data["message"]["meta"]["cancelled"])
+        self.assertEqual(first.data["xiaoce_run"]["status"], "cancelled")
+        self.assertIsNone(first.data["active_xiaoce_run"])
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_finished_or_unowned_run_cannot_be_cancelled(self, _thread_cls):
+        run_id = uuid.uuid4()
+        self.client.post(
+            self.messages_url,
+            {"content": "分析", "run_id": str(run_id)},
+        )
+        complete_xiaoce_run(run_id, "已完成")
+        url = f"/api/collab/rooms/{self.room.id}/xiaoce-runs/{run_id}/cancel/"
+        self.assertEqual(self.client.post(url).status_code, 409)
+
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.post(url).status_code, 404)
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_persists_final_process_snapshot(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="分析",
+            msg_type="user",
+            meta={},
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        def answer(**kwargs):
+            callback = kwargs["progress_callback"]
+            callback("understanding", "running", {})
+            callback("understanding", "completed", {})
+            callback("composing", "running", {})
+            callback("composing", "completed", {})
+            return {"ok": True, "reply": "最终答案"}
+
+        run_chat.side_effect = answer
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
+        self.assertEqual(run.result_message.content, "最终答案")
+        self.assertEqual(run.result_message.meta["process_steps"], run.progress_steps)
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_maps_internal_failure_to_safe_message(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="分析",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        run_chat.side_effect = RuntimeError("Traceback /srv/app.py sk-secret-value")
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, XiaoceRun.Status.FAILED)
+        self.assertNotIn("Traceback", run.result_message.content)
+        self.assertNotIn("sk-secret-value", run.result_message.content)
+
+    @patch("apps.skills.repository.cos_enabled", return_value=False)
+    @patch("apps.core.conversation_skill.prepare_conversation_skill")
+    def test_worker_packages_explicit_request_and_enables_private_skill(
+        self,
+        prepare,
+        _cos_enabled,
+    ):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="把当前聊天记录打包成 Skill 并自动上传平台",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        prepare.return_value = prepared_skill(self.room)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(SKILLS_WORKSPACE_ROOT=Path(tmp)):
+                views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        asset = SkillAsset.objects.get()
+        personal = UserSkill.objects.get()
+        self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
+        self.assertEqual(asset.visibility, SkillAsset.Visibility.PRIVATE)
+        self.assertTrue(personal.enabled)
+        self.assertEqual(run.result_message.meta["created_skill"]["skill_id"], asset.skill_id)
