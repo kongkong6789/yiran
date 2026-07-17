@@ -1,32 +1,6 @@
-.xiaoce-chat-shell[data-chat-theme="light"] {
-  --xiaoce-canvas: #ffffff;
-  --xiaoce-surface: #ffffff;
-  --xiaoce-ink: #000000;
-  --xiaoce-muted: rgba(0, 0, 0, 0.56);
-  --xiaoce-line: rgba(0, 0, 0, 0.14);
-  --xiaoce-hover: rgba(0, 0, 0, 0.06);
-  --xiaoce-own-bubble: #000000;
-  --xiaoce-own-ink: #ffffff;
-  --xiaoce-peer-bubble: #ffffff;
-  --xiaoce-peer-ink: #000000;
-}
-
-.xiaoce-chat-shell[data-chat-theme="dark"] {
-  --xiaoce-canvas: #000000;
-  --xiaoce-surface: #000000;
-  --xiaoce-ink: #ffffff;
-  --xiaoce-muted: rgba(255, 255, 255, 0.62);
-  --xiaoce-line: rgba(255, 255, 255, 0.2);
-  --xiaoce-hover: rgba(255, 255, 255, 0.1);
-  --xiaoce-own-bubble: #ffffff;
-  --xiaoce-own-ink: #000000;
-  --xiaoce-peer-bubble: #000000;
-  --xiaoce-peer-ink: #ffffff;
-}
-
 .xiaoce-chat-shell {
-  color: var(--xiaoce-ink);
-  background: var(--xiaoce-canvas);
+  color: var(--lc-ink);
+  background: var(--lc-canvas);
   transition: color 180ms ease, background-color 180ms ease;
 }
 
@@ -35,9 +9,9 @@
 .xiaoce-chat-shell .collab-virtuoso,
 .xiaoce-chat-shell .collab-agent-input,
 .xiaoce-chat-shell .agent-chat-composer {
-  color: var(--xiaoce-ink);
-  background: var(--xiaoce-canvas);
-  border-color: var(--xiaoce-line);
+  color: var(--lc-ink);
+  background: var(--lc-canvas);
+  border-color: var(--lc-line);
 }
 
 .xiaoce-chat-shell .collab-main-head {
@@ -49,9 +23,8 @@
 .xiaoce-chat-shell .collab-time-sep,
 .xiaoce-chat-shell .collab-composer-hint,
 .xiaoce-chat-shell .collab-empty,
-.xiaoce-chat-shell .agent-chat-composer-textarea textarea,
 .xiaoce-chat-shell .agent-chat-composer-textarea textarea::placeholder {
-  color: var(--xiaoce-muted) !important;
+  color: var(--lc-muted) !important;
 }
 
 .xiaoce-chat-shell .collab-main-head h4.ant-typography,
@@ -66,34 +39,30 @@
 .xiaoce-chat-shell .collab-md .agent-md-h4,
 .xiaoce-chat-shell .collab-bubble p,
 .xiaoce-chat-shell .agent-chat-composer-textarea textarea {
-  color: var(--xiaoce-ink) !important;
+  color: var(--lc-ink) !important;
 }
 
 .xiaoce-chat-shell .collab-bubble,
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble {
-  color: var(--xiaoce-peer-ink);
-  background: var(--xiaoce-peer-bubble);
-  border-color: var(--xiaoce-line);
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
   box-shadow: none;
 }
 
-.xiaoce-chat-shell .collab-msg.mine .collab-bubble {
-  color: var(--xiaoce-own-ink);
-  background: var(--xiaoce-own-bubble);
-  border-color: var(--xiaoce-own-bubble);
-}
-
+.xiaoce-chat-shell .collab-msg.mine .collab-bubble,
 .xiaoce-chat-shell .collab-msg.mine .collab-bubble:has(.collab-md.blocks) {
+  color: var(--lc-own-ink);
+  background: var(--lc-own-bg) !important;
+  border: 1px solid var(--lc-own-bg) !important;
   padding: 10px 12px;
-  background: var(--xiaoce-own-bubble) !important;
-  border: 1px solid var(--xiaoce-own-bubble) !important;
 }
 
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.collab-md.blocks),
 .xiaoce-chat-shell .collab-msg.peer .collab-bubble:has(.collab-md.blocks) {
   padding: 10px 12px;
-  background: var(--xiaoce-peer-bubble) !important;
-  border: 1px solid var(--xiaoce-line) !important;
+  background: var(--lc-surface) !important;
+  border: 1px solid var(--lc-line) !important;
 }
 
 .xiaoce-chat-shell .collab-msg.mine .collab-bubble p,
@@ -102,28 +71,28 @@
 .xiaoce-chat-shell .collab-msg.mine .collab-md .agent-md-p,
 .xiaoce-chat-shell .collab-msg.mine .collab-md .agent-md-strong,
 .xiaoce-chat-shell .collab-msg.mine .collab-md .agent-md-li {
-  color: var(--xiaoce-own-ink) !important;
+  color: var(--lc-own-ink) !important;
 }
 
 .xiaoce-chat-shell .collab-system-tip {
-  color: var(--xiaoce-muted);
-  background: var(--xiaoce-hover);
-  border: 1px solid var(--xiaoce-line);
+  color: var(--lc-muted);
+  background: var(--lc-hover);
+  border: 1px solid var(--lc-line);
 }
 
 .xiaoce-chat-shell .agent-chat-composer {
-  border: 1px solid var(--xiaoce-line);
+  border: 1px solid var(--lc-line);
   box-shadow: none;
 }
 
 .xiaoce-chat-shell .agent-chat-composer:focus-within {
-  border-color: var(--xiaoce-ink);
-  box-shadow: 0 0 0 1px var(--xiaoce-ink);
+  border-color: var(--lc-ink);
+  box-shadow: 0 0 0 1px var(--lc-ink);
 }
 
 .xiaoce-chat-shell .agent-chat-circle-btn,
 .xiaoce-chat-shell .xiaoce-theme-switch .ant-btn {
-  color: var(--xiaoce-muted) !important;
+  color: var(--lc-muted) !important;
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
@@ -132,8 +101,8 @@
 .xiaoce-chat-shell .agent-chat-circle-btn:hover,
 .xiaoce-chat-shell .xiaoce-theme-switch .ant-btn:hover,
 .xiaoce-chat-shell .xiaoce-theme-switch .ant-btn.active {
-  color: var(--xiaoce-ink) !important;
-  background: var(--xiaoce-hover) !important;
+  color: var(--lc-ink) !important;
+  background: var(--lc-hover) !important;
 }
 
 .xiaoce-chat-shell .agent-chat-send-circle,
@@ -141,9 +110,9 @@
   width: 40px !important;
   height: 40px !important;
   min-width: 40px !important;
-  color: var(--xiaoce-own-ink) !important;
-  background: var(--xiaoce-own-bubble) !important;
-  border-color: var(--xiaoce-own-bubble) !important;
+  color: var(--lc-own-ink) !important;
+  background: var(--lc-own-bg) !important;
+  border-color: var(--lc-own-bg) !important;
   box-shadow: none !important;
 }
 
@@ -159,9 +128,9 @@
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  border: 1px solid var(--xiaoce-line);
+  border: 1px solid var(--lc-line);
   border-radius: 10px;
-  background: var(--xiaoce-surface);
+  background: var(--lc-surface);
 }
 
 .xiaoce-chat-shell .xiaoce-created-skill {
@@ -172,9 +141,9 @@
 }
 
 .xiaoce-chat-shell .xiaoce-created-skill .ant-tag {
-  color: var(--xiaoce-ink);
-  background: var(--xiaoce-hover);
-  border-color: var(--xiaoce-line);
+  color: var(--lc-ink);
+  background: var(--lc-hover);
+  border-color: var(--lc-line);
 }
 
 @media (prefers-reduced-motion: reduce) {

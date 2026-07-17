@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   CHAT_THEME_STORAGE_KEY,
   DEFAULT_CHAT_THEME,
@@ -27,4 +28,12 @@ test("persists with the fixed key", () => {
   const writes: Array<[string, string]> = [];
   persistChatTheme({ setItem: (key, value) => writes.push([key, value]) }, "dark");
   assert.deepEqual(writes, [[CHAT_THEME_STORAGE_KEY, "dark"]]);
+});
+
+test("legacy Agent chat follows the global theme context", () => {
+  const source = readFileSync(new URL("../src/pages/AgentChat.tsx", import.meta.url), "utf8");
+  assert.match(source, /useThemeMode/);
+  assert.match(source, /const \{ mode, setMode \} = useThemeMode\(\);/);
+  assert.match(source, /data-chat-theme=\{mode\}/);
+  assert.doesNotMatch(source, /setChatTheme|readChatTheme|persistChatTheme/);
 });

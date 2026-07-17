@@ -33,26 +33,32 @@ test("creates a UUID v4 for each Xiaoce run", () => {
   assert.notEqual(first, second);
 });
 
-test("theme CSS is scoped to Xiaoce and preserves avatar colors", () => {
-  const css = readFileSync(
+test("global theme tokens drive Xiaoce without changing avatar colors", () => {
+  const xiaoceCss = readFileSync(
     new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
     "utf8",
   );
-  assert.match(css, /\.xiaoce-chat-shell\[data-chat-theme="light"\]/);
-  assert.match(css, /\.xiaoce-chat-shell\[data-chat-theme="dark"\]/);
-  assert.doesNotMatch(css, /(?:^|\n)body\[data-chat-theme=/);
-  assert.doesNotMatch(css, /filter\s*:/);
-  assert.doesNotMatch(css, /collab-(?:sider|ai)/);
-  assert.doesNotMatch(css, /avatar/i);
+  const globalCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  assert.match(globalCss, /:root\s*\{[^}]*--lc-canvas:\s*#fff/s);
+  assert.match(globalCss, /:root\[data-theme="dark"\]\s*\{[^}]*--lc-canvas:\s*#000/s);
+  assert.match(globalCss, /--lc-muted:\s*rgba\(/);
+  assert.doesNotMatch(xiaoceCss, /data-chat-theme/);
+  assert.doesNotMatch(xiaoceCss, /filter\s*:/);
+  assert.doesNotMatch(xiaoceCss, /avatar/i);
 });
 
-test("Collab composer includes pause, local theme, and Skill refresh wiring", () => {
+test("Collab composer includes pause, global theme, and Skill refresh wiring", () => {
   const source = readFileSync(
     new URL("../src/pages/CollabRisk.tsx", import.meta.url),
     "utf8",
   );
   assert.match(source, /cancelXiaoceRun/);
   assert.match(source, /aria-label=\{cancellingRunId \? "正在暂停" : xiaoceBusy \? "暂停生成" : "发送"\}/);
-  assert.match(source, /data-chat-theme=\{isXiaoce \? chatTheme : undefined\}/);
+  assert.match(source, /useThemeMode/);
+  assert.match(source, /const \{ mode, setMode \} = useThemeMode\(\);/);
+  assert.match(source, /onClick=\{\(\) => setMode\("light"\)\}/);
+  assert.match(source, /onClick=\{\(\) => setMode\("dark"\)\}/);
+  assert.doesNotMatch(source, /data-chat-theme=/);
+  assert.doesNotMatch(source, /(?:read|persist)ChatTheme|setChatTheme/);
   assert.match(source, /refreshKey=\{skillRefreshKey\}/);
 });

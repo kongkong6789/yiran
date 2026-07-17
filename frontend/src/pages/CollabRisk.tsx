@@ -47,12 +47,7 @@ import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabRoundTable from "../components/CollabRoundTable";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useSearchParams } from "react-router-dom";
-import {
-  getChatThemeStorage,
-  persistChatTheme,
-  readChatTheme,
-  type ChatTheme,
-} from "./agentChatTheme";
+import { useThemeMode } from "../theme/mode";
 import { createXiaoceRunId, isXiaoceRoom } from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
 
@@ -611,6 +606,7 @@ function buildChatAlertMap(
 
 export default function CollabRisk() {
   const { message } = App.useApp();
+  const { mode, setMode } = useThemeMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const [me, setMe] = useState<AuthUser | null>(null);
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
@@ -633,9 +629,6 @@ export default function CollabRisk() {
   const [sending, setSending] = useState(false);
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [skillRefreshKey, setSkillRefreshKey] = useState(0);
-  const [chatTheme, setChatTheme] = useState<ChatTheme>(() => (
-    readChatTheme(getChatThemeStorage())
-  ));
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
   const [contacts, setContacts] = useState<CollabUserBrief[]>([]);
@@ -687,11 +680,6 @@ export default function CollabRisk() {
   const isXiaoce = isXiaoceRoom(activeRoom);
   const activeXiaoceRun = isXiaoce ? activeRoom?.active_xiaoce_run : null;
   const xiaoceBusy = activeXiaoceRun?.status === "running";
-
-  const chooseChatTheme = useCallback((nextTheme: ChatTheme) => {
-    setChatTheme(nextTheme);
-    persistChatTheme(getChatThemeStorage(), nextTheme);
-  }, []);
 
   const canKickMembers = useMemo(() => {
     if (!me || !activeRoom || activeRoom.room_kind !== "group") return false;
@@ -2198,7 +2186,6 @@ export default function CollabRisk() {
 
       <section
         className={`collab-main${isXiaoce ? " xiaoce-chat-shell" : ""}`}
-        data-chat-theme={isXiaoce ? chatTheme : undefined}
       >
         {!activeRoom ? (
           <div className="collab-empty">
@@ -2253,20 +2240,20 @@ export default function CollabRisk() {
                     <Button
                       type="text"
                       size="small"
-                      className={chatTheme === "light" ? "active" : ""}
+                      className={mode === "light" ? "active" : ""}
                       icon={<SunOutlined />}
-                      onClick={() => chooseChatTheme("light")}
+                      onClick={() => setMode("light")}
                       aria-label="白色主题"
-                      aria-pressed={chatTheme === "light"}
+                      aria-pressed={mode === "light"}
                     />
                     <Button
                       type="text"
                       size="small"
-                      className={chatTheme === "dark" ? "active" : ""}
+                      className={mode === "dark" ? "active" : ""}
                       icon={<MoonOutlined />}
-                      onClick={() => chooseChatTheme("dark")}
+                      onClick={() => setMode("dark")}
                       aria-label="黑色主题"
-                      aria-pressed={chatTheme === "dark"}
+                      aria-pressed={mode === "dark"}
                     />
                   </div>
                 ) : null}
@@ -4202,6 +4189,158 @@ const css = `
   height: 22px;
   cursor: pointer;
   font-size: 11px;
+}
+
+/* 全站主题由根节点变量控制；头像与风险/在线语义色不在此覆盖。 */
+.collab-page,
+.collab-sider,
+.collab-ai,
+.collab-main,
+.collab-sider-head,
+.collab-ai-head,
+.collab-main-head,
+.collab-tabs,
+.collab-messages,
+.collab-virtuoso,
+.collab-monitor,
+.collab-agent-input,
+.collab-contact-pane,
+.collab-room-list,
+.collab-insight-list {
+  color: var(--lc-ink);
+  background: var(--lc-canvas);
+  border-color: var(--lc-line);
+}
+
+.collab-page,
+.collab-sider,
+.collab-ai,
+.collab-main-head,
+.collab-sider-head,
+.collab-ai-head,
+.collab-tabs,
+.collab-banner,
+.collab-kpi,
+.collab-alert-row {
+  border-color: var(--lc-line);
+}
+
+.collab-tabs button,
+.collab-ai-sub,
+.collab-msg-history-tip,
+.collab-contact-section-title,
+.collab-room-del,
+.collab-room-item em,
+.collab-room-preview span,
+.collab-contact-item span,
+.collab-msg-name,
+.collab-time-sep,
+.collab-system-tip,
+.collab-kpi span,
+.collab-kpi em,
+.collab-monitor-block h5,
+.collab-speaker-list em,
+.collab-alert-row em,
+.collab-composer-hint {
+  color: var(--lc-muted);
+}
+
+.collab-tabs button.active,
+.collab-room-item:hover,
+.collab-room-item.active,
+.collab-contact-item:hover,
+.collab-contact-item.is-bot,
+.collab-contact-item.is-bot:hover,
+.collab-room-del:hover,
+.collab-mention-menu button:hover,
+.collab-mention-menu button.active,
+.collab-alert-row:hover:not(:disabled) {
+  color: var(--lc-ink);
+  background: var(--lc-hover);
+  border-color: var(--lc-line);
+}
+
+.collab-room-item strong,
+.collab-contact-item strong,
+.collab-profile-card-main strong,
+.collab-profile-uname,
+.collab-profile-nick,
+.collab-profile-role,
+.collab-profile-bio,
+.collab-bubble p,
+.collab-md,
+.collab-md .agent-md-root,
+.collab-md .agent-md-p,
+.collab-md .agent-md-strong,
+.collab-md .agent-md-li,
+.collab-md .agent-md-h1,
+.collab-md .agent-md-h2,
+.collab-md .agent-md-h3,
+.collab-md .agent-md-h4,
+.collab-kpi strong,
+.collab-speaker-list .name,
+.collab-alert-title,
+.collab-mention-menu strong,
+.collab-mention-menu em {
+  color: var(--lc-ink);
+}
+
+.collab-bubble,
+.collab-msg.ai .collab-bubble,
+.collab-msg.peer .collab-bubble,
+.collab-kpi,
+.collab-alert-row,
+.collab-mention-menu,
+.collab-profile-popover .ant-popover-inner,
+.collab-md .agent-report-card,
+.collab-md .agent-md-section,
+.collab-md .agent-md-pre,
+.collab-md .agent-md-mermaid,
+.collab-md .agent-md-code,
+.collab-md .agent-md-table td,
+.collab-md .agent-md-table th {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+  box-shadow: none;
+}
+
+.collab-msg.mine .collab-bubble {
+  color: var(--lc-own-ink);
+  background: var(--lc-own-bg);
+  border-color: var(--lc-own-bg);
+}
+
+.collab-msg.mine .collab-bubble p,
+.collab-msg.mine .collab-md,
+.collab-msg.mine .collab-md .agent-md-root,
+.collab-msg.mine .collab-md .agent-md-p,
+.collab-msg.mine .collab-md .agent-md-strong,
+.collab-msg.mine .collab-md .agent-md-li,
+.collab-msg.mine .collab-md .agent-md-h1,
+.collab-msg.mine .collab-md .agent-md-h2,
+.collab-msg.mine .collab-md .agent-md-h3,
+.collab-msg.mine .collab-md .agent-md-h4 {
+  color: var(--lc-own-ink);
+}
+
+.collab-system-tip,
+.collab-speaker-list .track {
+  color: var(--lc-muted);
+  background: var(--lc-hover);
+  border-color: var(--lc-line);
+}
+
+.collab-kpi.risk-green span,
+.collab-kpi.risk-green strong,
+.collab-kpi.risk-green em,
+.collab-kpi.risk-yellow span,
+.collab-kpi.risk-yellow strong,
+.collab-kpi.risk-yellow em,
+.collab-kpi.risk-red span,
+.collab-kpi.risk-red strong,
+.collab-kpi.risk-red em {
+  color: #000;
 }
 
 @media (max-width: 1100px) {
