@@ -1,6 +1,6 @@
 from unittest.mock import Mock, patch
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -10,7 +10,12 @@ from apps.core.models import Organization, OrganizationMembership, WorkTodo
 
 from .cli_service import WeComCliClient, WeComCliError
 from .models import UserWeComBinding, WeComApiConfig, WeComCliConfig, WeComContact
-from .todo_sync_service import process_due_work_todo_syncs, refresh_assignee_from_wecom
+from .todo_sync_service import (
+    process_due_work_todo_syncs,
+    refresh_assignee_from_wecom,
+    refresh_contact_from_wecom,
+    sync_work_todo_group,
+)
 
 
 User = get_user_model()
@@ -159,11 +164,98 @@ class WeComTodoTests(APITestCase):
         self.assertFalse(platform_row.sync_requested)
         self.assertEqual(row.organization, self.organization)
         self.assertEqual(row.wecom_contact, self.bound_contact)
+        self.assertEqual(row.linked_platform_user, self.member)
         self.assertEqual(row.wecom_todo_id, "native-todo-id")
         self.assertEqual(row.sync_status, WorkTodo.SyncStatus.SYNCED)
         self.assertEqual(row.wecom_todo_userid, "todo-scoped-member-id")
         self.assertEqual(client.create_todo.call_args.kwargs["follower_ids"], ["todo-scoped-member-id"])
         client.change_user_status.assert_called_once()
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_mixed_platform_and_wecom_rows_are_not_reported_as_partial(self, client_class):
+        client_class.return_value.search_todo_userid.return_value = "todo-scoped-member-id"
+        client_class.return_value.create_todo.return_value = "native-todo-id"
+        self.client.force_authenticate(self.owner)
+        response = self.client.post("/api/wecom/todos/", {
+            "title": "混合负责人",
+            "platformAssigneeIds": [self.member.id],
+            "wecomContactIds": [self.bound_contact.id],
+            "syncToWeCom": True,
+        }, format="json")
+        group_id = WorkTodo.objects.first().sync_group_id
+        result = sync_work_todo_group(group_id, force=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["syncStatus"], WorkTodo.SyncStatus.SYNCED)
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_platform_completion_updates_linked_wecom_recipient(self, client_class):
+        client_class.return_value.search_todo_userid.return_value = "todo-scoped-member-id"
+        client_class.return_value.create_todo.return_value = "native-todo-id"
+        self.client.force_authenticate(self.owner)
+        self.client.post("/api/wecom/todos/", {
+            "title": "双向状态",
+            "platformAssigneeIds": [self.member.id],
+            "wecomContactIds": [self.bound_contact.id],
+            "syncToWeCom": True,
+        }, format="json")
+        process_due_work_todo_syncs()
+        platform_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.PLATFORM)
+        self.client.force_authenticate(self.member)
+        response = self.client.post("/api/wecom/todos/status/", {
+            "id": str(platform_row.public_id), "status": "completed",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(WorkTodo.objects.filter(status=WorkTodo.Status.PENDING).exists())
+        self.assertEqual(client_class.return_value.change_user_status.call_args.kwargs["user_status"], 2)
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_wecom_completion_updates_linked_platform_recipient(self, client_class):
+        client_class.return_value.search_todo_userid.return_value = "todo-scoped-member-id"
+        client_class.return_value.create_todo.return_value = "native-todo-id"
+        self.client.force_authenticate(self.owner)
+        self.client.post("/api/wecom/todos/", {
+            "title": "企微完成回写",
+            "platformAssigneeIds": [self.member.id],
+            "wecomContactIds": [self.bound_contact.id],
+            "syncToWeCom": True,
+        }, format="json")
+        process_due_work_todo_syncs()
+        client_class.return_value.list_todos.return_value = [{
+            "todo_id": "native-todo-id", "todo_status": 1,
+            "follower_list": {"followers": [{"follower_id": "todo-scoped-member-id", "follower_status": 2}]},
+        }]
+        refresh_contact_from_wecom(organization=self.organization, contact_id=self.bound_contact.id)
+        self.assertFalse(WorkTodo.objects.filter(status=WorkTodo.Status.PENDING).exists())
+
+    def test_same_name_different_people_are_not_collapsed(self):
+        second_contact = WeComContact.objects.create(
+            config=self.api_config, wecom_userid="same-name-other-id", name="杨晓东",
+            available=True, synced_at=timezone.now(),
+        )
+        group_id = uuid.uuid4()
+        WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner, assignee=self.member,
+            recipient_type=WorkTodo.RecipientType.PLATFORM, recipient_name="杨晓东",
+            title="同名成员", sync_group_id=group_id,
+        )
+        WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner, wecom_contact=second_contact,
+            recipient_type=WorkTodo.RecipientType.WECOM, recipient_name="杨晓东",
+            title="同名成员", sync_group_id=group_id, sync_requested=True,
+            sync_status=WorkTodo.SyncStatus.SYNCED,
+        )
+        self.client.force_authenticate(self.owner)
+        result = self.client.get("/api/wecom/todos/?view=created").data["results"][0]
+        self.assertEqual(len(result["recipients"]), 2)
+
+    def test_assignee_cannot_retry_entire_group(self):
+        row = WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner, assignee=self.member,
+            title="限制整组重试", sync_requested=True, sync_status=WorkTodo.SyncStatus.FAILED,
+        )
+        self.client.force_authenticate(self.member)
+        response = self.client.post(f"/api/wecom/todos/{row.public_id}/sync/", {}, format="json")
+        self.assertEqual(response.status_code, 403)
 
     @patch("apps.wecom.todo_sync_service.WeComCliClient")
     def test_expired_platform_deadline_is_not_sent_as_invalid_wecom_end_time(self, client_class):
@@ -414,6 +506,7 @@ class WeComTodoTests(APITestCase):
         )
         WorkTodo.objects.create(
             organization=self.organization, creator=self.owner, assignee=None,
+            linked_platform_user=self.member,
             recipient_type=WorkTodo.RecipientType.WECOM, recipient_name="企微同事",
             wecom_contact=self.wecom_only_contact, title="重复选择负责人", sync_group_id=group_id,
             sync_requested=True, sync_status=WorkTodo.SyncStatus.SYNCED,
@@ -501,3 +594,101 @@ class WeComTodoTests(APITestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertTrue(WorkTodo.objects.filter(pk=row.pk).exists())
+
+    def test_todo_list_supports_search_priority_and_pagination(self):
+        for index in range(3):
+            WorkTodo.objects.create(
+                organization=self.organization,
+                creator=self.owner,
+                assignee=self.member,
+                title=f"运营日报 {index}",
+                description="七月复盘",
+                priority=WorkTodo.Priority.HIGH,
+            )
+        WorkTodo.objects.create(
+            organization=self.organization,
+            creator=self.owner,
+            assignee=self.member,
+            title="其他事项",
+            priority=WorkTodo.Priority.NORMAL,
+        )
+        self.client.force_authenticate(self.member)
+        response = self.client.get(
+            "/api/wecom/todos/?view=assigned&q=七月&priority=high&page=2&pageSize=2"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        self.assertEqual(response.data["page"], 2)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_todo_list_filters_due_date_before_fetching_page_groups(self):
+        WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner, assignee=self.member,
+            title="范围内", due_at=timezone.make_aware(datetime(2026, 7, 20, 9, 0)),
+        )
+        WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner, assignee=self.member,
+            title="范围外", due_at=timezone.make_aware(datetime(2026, 8, 1, 9, 0)),
+        )
+        self.client.force_authenticate(self.member)
+        response = self.client.get(
+            "/api/wecom/todos/?view=assigned&dateFrom=2026-07-19&dateTo=2026-07-21&page=1&pageSize=10"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "范围内")
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_fresh_operation_claim_prevents_duplicate_native_create(self, client_class):
+        row = WorkTodo.objects.create(
+            organization=self.organization, creator=self.owner,
+            recipient_type=WorkTodo.RecipientType.WECOM, recipient_name=self.bound_contact.name,
+            wecom_contact=self.bound_contact, title="避免重复", sync_requested=True,
+            sync_status=WorkTodo.SyncStatus.PENDING, operation_claim_token=uuid.uuid4(),
+            operation_claim_kind="sync", operation_claimed_at=timezone.now(),
+        )
+        result = sync_work_todo_group(row.sync_group_id, force=True)
+        self.assertEqual(result["syncStatus"], WorkTodo.SyncStatus.PENDING)
+        client_class.return_value.create_todo.assert_not_called()
+
+    @patch("apps.wecom.todo_sync_service.WeComCliClient")
+    def test_creator_can_update_group_and_native_todo(self, client_class):
+        group_id = uuid.uuid4()
+        row = WorkTodo.objects.create(
+            organization=self.organization,
+            creator=self.owner,
+            recipient_type=WorkTodo.RecipientType.WECOM,
+            recipient_name="杨晓东",
+            wecom_contact=self.bound_contact,
+            title="旧标题",
+            sync_group_id=group_id,
+            sync_requested=True,
+            sync_status=WorkTodo.SyncStatus.SYNCED,
+        )
+        row.wecom_todo_id = "native-update-id"
+        row.wecom_todo_userid = "todo-user-id"
+        row.save()
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/wecom/todos/{row.public_id}/",
+            {"title": "新标题", "priority": "urgent", "remindTypes": [5]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        row.refresh_from_db()
+        self.assertEqual(row.title, "新标题")
+        self.assertEqual(row.priority, WorkTodo.Priority.URGENT)
+        client_class.return_value.update_todo.assert_called_once()
+
+    def test_cli_todo_list_reads_cursor_pages_and_detail_batches(self):
+        client = WeComCliClient(self.cli_config)
+        responses = [
+            {"todo_id_list": [{"todo_id": f"todo-{index}"} for index in range(20)], "next_cursor": "page-2"},
+            {"todo_id_list": [{"todo_id": "todo-20"}], "next_cursor": ""},
+            {"data_list": [{"todo_id": f"todo-{index}"} for index in range(20)]},
+            {"data_list": [{"todo_id": "todo-20"}]},
+        ]
+        with patch.object(client, "call", side_effect=responses) as call:
+            rows = client.list_todos(follower_id="member")
+        self.assertEqual(len(rows), 21)
+        self.assertEqual(call.call_args_list[1].args[1]["cursor"], "page-2")

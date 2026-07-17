@@ -208,6 +208,12 @@ export const updateAdminUser = (
     body,
   ).then((r) => r.data);
 
+export const deleteAdminUser = (id: number) =>
+  api.delete<{
+    ok: boolean;
+    deletedUser: { id: number; username: string };
+  }>(`/auth/admin/users/${id}/`).then((r) => r.data);
+
 export type WeComBindingStatus = "pending" | "matched" | "not_found" | "invalid_phone" | "duplicate_phone" | "conflict" | "permission_denied" | "retry_waiting" | "disabled";
 
 export interface UserWeComBindingSummary {
@@ -1635,9 +1641,19 @@ export const testWeComCliConfig = () =>
   api.post<{ ok: boolean; detail: string }>("/wecom/cli-config/test/", {}).then((r) => r.data);
 export const getWeComTodoMembers = () =>
   api.get<{ ok: boolean; results: WeComTodoMember[] }>("/wecom/todos/members/").then((r) => r.data);
-export const listWeComTodos = (view: "assigned" | "created", status?: "pending" | "completed") =>
-  api.get<{ ok: boolean; source: string; results: WorkTodoItem[] }>("/wecom/todos/", {
-    params: { view, ...(status ? { status } : {}) },
+export type WorkTodoListParams = {
+  view: "assigned" | "created";
+  status?: "pending" | "completed";
+  q?: string;
+  priority?: "normal" | "high" | "urgent";
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  pageSize?: number;
+};
+export const listWeComTodos = (params: WorkTodoListParams) =>
+  api.get<{ ok: boolean; source: string; results: WorkTodoItem[]; count: number; page: number; pageSize: number }>("/wecom/todos/", {
+    params,
   }).then((r) => r.data);
 export const createWeComTodo = (body: {
   title: string; description?: string; platformAssigneeIds: number[]; wecomContactIds: number[];
@@ -1653,4 +1669,8 @@ export const retryWeComTodoSync = (id: string) =>
   api.post<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>(`/wecom/todos/${id}/sync/`, {}).then((r) => r.data);
 export const deleteWeComTodo = (id: string) =>
   api.delete<{ ok: boolean; detail: string; deletedCount: number; weComDeleted: boolean }>(`/wecom/todos/${id}/`).then((r) => r.data);
+export const updateWeComTodo = (id: string, body: {
+  title?: string; description?: string; dueAt?: string | null;
+  priority?: "normal" | "high" | "urgent"; remindTypes?: number[];
+}) => api.patch<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>(`/wecom/todos/${id}/`, body).then((r) => r.data);
 

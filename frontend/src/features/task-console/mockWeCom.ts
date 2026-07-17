@@ -10,11 +10,14 @@ export interface WeComMember {
   name: string;
   department: string;
   departmentIds: number[];
-  weComUserId: string;
   position: string;
   avatar: string;
   available: boolean;
   source: "wecom";
+}
+
+export interface ManagedWeComMember extends WeComMember {
+  weComUserId: string;
 }
 
 export interface WeComGroup {
@@ -82,6 +85,11 @@ export async function getWeComUsers(forceRefresh = false) {
   return weComMemberCache;
 }
 
+export async function getManagedWeComUsers() {
+  const response = await api.get<{ ok: boolean; results: ManagedWeComMember[] }>("/wecom/contacts/manage/");
+  return response.data.results;
+}
+
 export function getWeComApiError(error: unknown) {
   if (axios.isAxiosError(error)) {
     return String(error.response?.data?.detail || "企业微信通讯录同步失败，请稍后重试。");
@@ -140,15 +148,15 @@ export async function getWeComConfig() {
 }
 
 export async function sendTaskNotification(assignment: TaskAssignmentValue, context: { task: string; agentName: string; targetLabel: string; taskTraceId?: string }) {
-  const recipientUserIds = weComMemberCache
+  const recipientContactIds = weComMemberCache
     .filter((member) => assignment.assigneeIds.includes(member.key))
-    .map((member) => member.weComUserId);
+    .map((member) => member.contactId);
   const group = weComGroupCache.find((item) => item.key === assignment.groupId);
   return api.post<{ ok: boolean; notification: { id: number; status: "accepted" | "partial" | "failed"; statusLabel: string; wecom_msgid: string; invalid_users: string[]; error_reason: string; accepted_at: string | null } }>(
     "/wecom/notifications/",
     {
       mode: assignment.notificationMode,
-      recipientUserIds,
+      recipientContactIds,
       groupWebhookId: group?.id,
       task: context.task,
       agentName: context.agentName,

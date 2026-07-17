@@ -136,7 +136,8 @@ class WeComApiConfigTests(APITestCase):
 
         self.assertEqual(response_value.status_code, 200)
         self.assertEqual(response_value.data["count"], 1)
-        self.assertEqual(response_value.data["results"][0]["weComUserId"], "xieyiping")
+        self.assertNotIn("weComUserId", response_value.data["results"][0])
+        self.assertTrue(response_value.data["results"][0]["key"].startswith("contact:"))
         self.assertEqual(response_value.data["results"][0]["department"], "运营中心")
         self.assertEqual(response_value.data["results"][0]["avatar"], "https://example.com/avatar.png")
         self.assertEqual(response_value.data["dataSource"], "wecom_sync")

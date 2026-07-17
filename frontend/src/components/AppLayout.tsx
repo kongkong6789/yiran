@@ -17,7 +17,6 @@ import {
   UserOutlined,
   ApartmentOutlined,
   ShopOutlined,
-  CheckSquareOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -37,8 +36,7 @@ const WORK_NAV: NavItem[] = [
   { key: "/home", icon: <HomeOutlined />, label: "总览" },
   { key: "/agent", icon: <MessageOutlined />, label: "对话" },
   { key: "/collab", icon: <AlertOutlined />, label: "协作" },
-  { key: "/console", icon: <FlagOutlined />, label: "任务" },
-  { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
+  { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
 ];
 
 /** 沉淀与复用 */

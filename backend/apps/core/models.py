@@ -138,6 +138,7 @@ class UserSettings(models.Model):
     llm_api_key = models.CharField("LLM API Key", max_length=255, blank=True, default="")
     llm_base_url = models.CharField("LLM Base URL", max_length=255, blank=True, default="")
     llm_model = models.CharField("LLM Model", max_length=128, blank=True, default="")
+    deleted_at = models.DateTimeField("账号删除时间", null=True, blank=True, db_index=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 
     class Meta:
@@ -305,9 +306,17 @@ class WorkTodo(models.Model):
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="work_todos")
-    creator = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="created_work_todos")
+    creator = models.ForeignKey("auth.User", on_delete=models.PROTECT, related_name="created_work_todos")
     assignee = models.ForeignKey(
-        "auth.User", null=True, blank=True, on_delete=models.CASCADE, related_name="assigned_work_todos"
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_work_todos"
+    )
+    linked_platform_user = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="linked_wecom_work_todos",
+        help_text="企业微信负责人通过绑定关系对应的平台用户；不等同于平台负责人字段。",
     )
     recipient_type = models.CharField(
         max_length=16, choices=RecipientType.choices, default=RecipientType.PLATFORM, db_index=True
@@ -337,6 +346,9 @@ class WorkTodo(models.Model):
     sync_error_reason = models.CharField(max_length=500, blank=True, default="")
     sync_retry_count = models.PositiveSmallIntegerField(default=0)
     sync_next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    operation_claim_token = models.UUIDField(null=True, blank=True, editable=False)
+    operation_claim_kind = models.CharField(max_length=16, blank=True, default="")
+    operation_claimed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_synced_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_sync_source = models.CharField(
         max_length=16, choices=SyncSource.choices, default=SyncSource.PLATFORM
@@ -350,6 +362,7 @@ class WorkTodo(models.Model):
         indexes = [
             models.Index(fields=["organization", "assignee", "status"], name="todo_org_assignee_status"),
             models.Index(fields=["organization", "creator", "status"], name="todo_org_creator_status"),
+            models.Index(fields=["organization", "linked_platform_user", "status"], name="todo_org_linked_status"),
         ]
 
     def __str__(self):

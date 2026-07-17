@@ -14,7 +14,7 @@ from .binding_service import create_sync_job, dispatch_sync_job, manual_bind, ma
 from .models import UserWeComBinding, WeComApiConfig, WeComBindingAuditLog, WeComBindingSyncJob, WeComContact
 from .serializers import (
     BindingAuditLogSerializer, BindingSyncJobSerializer, ManualBindingSerializer,
-    UserWeComBindingSerializer, WeComApiConfigSerializer, WeComContactSerializer, WeComCallbackEventSerializer,
+    UserWeComBindingSerializer, WeComApiConfigSerializer, WeComContactSerializer, WeComManagedContactSerializer, WeComCallbackEventSerializer,
     WeComGroupWebhookSerializer, TaskNotificationSerializer, WeComNotificationRecordSerializer,
 )
 from .services import WeComApiError, WeComClient
@@ -179,6 +179,21 @@ def contacts(request):
         "syncedAt": config.contacts_synced_at,
         "count": len(results),
         "results": WeComContactSerializer(results, many=True).data,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def managed_contacts(request):
+    config = resolve_accessible_config(request.user)
+    if not config or not config.can_manage(request.user):
+        return Response({"ok": False, "detail": "仅企业管理员可以读取账号绑定所需的成员标识。"}, status=403)
+    results = get_cached_contacts(config)
+    return Response({
+        "ok": True,
+        "dataSource": "database",
+        "count": len(results),
+        "results": WeComManagedContactSerializer(results, many=True).data,
     })
 
 

@@ -359,13 +359,33 @@ def work_tasks(request):
     deadline = parse_datetime(deadline_raw) if deadline_raw else None
     if deadline and timezone.is_naive(deadline):
         deadline = timezone.make_aware(deadline)
-    recipient_userids = [str(value) for value in request.data.get("recipientUserIds", []) if str(value)]
-    raw_assignee_userids = request.data.get("assigneeWeComUserIds")
-    assignee_userids = (
-        [str(value) for value in raw_assignee_userids if str(value)]
-        if isinstance(raw_assignee_userids, list)
-        else recipient_userids
+    from apps.wecom.access import resolve_accessible_config
+    from apps.wecom.models import WeComContact
+    contact_ids = [int(value) for value in request.data.get("recipientContactIds", []) if str(value).isdigit()]
+    raw_assignee_contact_ids = request.data.get("assigneeWeComContactIds")
+    assignee_contact_ids = (
+        [int(value) for value in raw_assignee_contact_ids if str(value).isdigit()]
+        if isinstance(raw_assignee_contact_ids, list)
+        else contact_ids
     )
+    config = resolve_accessible_config(request.user)
+    contacts = list(WeComContact.objects.filter(
+        config=config, available=True, id__in=assignee_contact_ids,
+    )) if config and assignee_contact_ids else []
+    if assignee_contact_ids and len(contacts) != len(set(assignee_contact_ids)):
+        return Response({"ok": False, "detail": "部分企业微信负责人不存在、已停用或不属于当前企业。"}, status=400)
+    contact_by_id = {item.id: item for item in contacts}
+    if assignee_contact_ids:
+        assignee_userids = [contact_by_id[item].wecom_userid for item in assignee_contact_ids]
+    else:
+        legacy_values = request.data.get("assigneeWeComUserIds") or request.data.get("recipientUserIds") or []
+        requested_userids = list(dict.fromkeys(str(value) for value in legacy_values if str(value)))
+        allowed_userids = set(WeComContact.objects.filter(
+            config=config, available=True, wecom_userid__in=requested_userids,
+        ).values_list("wecom_userid", flat=True)) if config else set()
+        if requested_userids and len(allowed_userids) != len(requested_userids):
+            return Response({"ok": False, "detail": "部分企业微信负责人不存在、已停用或不属于当前企业。"}, status=400)
+        assignee_userids = requested_userids
     assignee_names = [str(value)[:128] for value in request.data.get("assigneeNames", []) if str(value)]
     timeline = request.data.get("timeline") if isinstance(request.data.get("timeline"), list) else []
     row, _ = WorkTask.objects.update_or_create(

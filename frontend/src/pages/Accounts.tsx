@@ -19,6 +19,7 @@ import {
 } from "antd";
 import {
   BankOutlined,
+  DeleteOutlined,
   KeyOutlined,
   LockOutlined,
   MoreOutlined,
@@ -32,6 +33,7 @@ import {
 } from "@ant-design/icons";
 import {
   createAdminUser,
+  deleteAdminUser,
   getMe,
   listAdminUsers,
   updateAdminUser,
@@ -86,6 +88,7 @@ export default function Accounts() {
   const [phoneForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
   const [isSuperuserSelf, setIsSuperuserSelf] = useState(false);
+  const [selfUserId, setSelfUserId] = useState<number>();
   const [activeTab, setActiveTab] = useState("accounts");
 
   const load = async (q = keyword) => {
@@ -107,6 +110,7 @@ export default function Accounts() {
         const canManage = !!(res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage);
         setIsStaffSelf(canManage);
         setIsSuperuserSelf(!!res.user.is_superuser);
+        setSelfUserId(res.user.id);
         if (canManage) void load();
       })
       .catch(() => setIsStaffSelf(false));
@@ -203,6 +207,36 @@ export default function Accounts() {
     setTarget(row);
     phoneForm.resetFields();
     setPhoneOpen(true);
+  };
+
+  const confirmDeleteAccount = (row: AdminUserRow) => {
+    const displayName = row.display_name || row.username;
+    modal.confirm({
+      title: `删除平台账号“${displayName}”？`,
+      centered: true,
+      content: (
+        <div>
+          <Typography.Paragraph>
+            删除后该账号将立即退出企业、无法继续登录，手机号、个人资料和密钥会被清除。
+          </Typography.Paragraph>
+          <Typography.Text type="secondary">
+            历史任务和待办记录会保留，并显示为“已删除用户”。此操作不可恢复。
+          </Typography.Text>
+        </div>
+      ),
+      okText: "确认删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteAdminUser(row.id);
+          message.success("平台账号已删除");
+          await load();
+        } catch (error: any) {
+          message.error(error?.response?.data?.error || "账号删除失败");
+        }
+      },
+    });
   };
 
   return (
@@ -384,8 +418,23 @@ export default function Accounts() {
                             items: [
                               { key: "phone", icon: <PhoneOutlined />, label: "修改手机号" },
                               { key: "password", icon: <KeyOutlined />, label: "重置密码" },
+                              { type: "divider" },
+                              {
+                                key: "delete",
+                                icon: <DeleteOutlined />,
+                                label: "删除账号",
+                                danger: true,
+                                disabled: row.id === selfUserId
+                                  || row.is_superuser
+                                  || row.organization_role === "owner"
+                                  || (row.is_staff && !isSuperuserSelf),
+                              },
                             ],
-                            onClick: ({ key }) => key === "phone" ? openPhoneModal(row) : openPasswordModal(row),
+                            onClick: ({ key }) => {
+                              if (key === "phone") openPhoneModal(row);
+                              else if (key === "password") openPasswordModal(row);
+                              else if (key === "delete") confirmDeleteAccount(row);
+                            },
                           }}
                         >
                           <Button type="text" icon={<MoreOutlined />} aria-label={`管理 ${row.username}`} />

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   BellOutlined, ClockCircleOutlined, DownloadOutlined, EyeOutlined, FileOutlined, FlagOutlined,
-  ReloadOutlined, UserOutlined,
+  PlusOutlined, ReloadOutlined, UserOutlined,
 } from "@ant-design/icons";
 import { App, Button, Card, Col, Empty, Progress, Row, Skeleton, Space, Tag, Typography } from "antd";
 import { api } from "../../api/client";
@@ -21,7 +21,7 @@ const fmtTime = (value?: string | null) => value
   ? new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
   : "未设置";
 
-export default function TaskTrackingPanel({ view }: { view: TaskView }) {
+export default function TaskTrackingPanel({ view, onCreate }: { view: TaskView; onCreate?: () => void }) {
   const { message, modal } = App.useApp();
   const [tasks, setTasks] = useState<PublishedTask[]>([]);
   const [selectedId, setSelectedId] = useState<number>();
@@ -98,7 +98,11 @@ export default function TaskTrackingPanel({ view }: { view: TaskView }) {
 
   return <Row gutter={[16, 16]} align="stretch" className="task-tracking-layout">
     <Col xs={24} lg={10} className="task-console-column">
-      <Card className="task-console-card task-list-card" title={view === "sent" ? "我发出的任务" : "我收到的任务"} extra={<Button type="text" icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}>
+      <Card
+        className="task-console-card task-list-card"
+        title={<div className="task-list-heading"><span>{view === "sent" ? "我发出的任务" : "我收到的任务"}</span><small>{tasks.length} 项任务</small></div>}
+        extra={<Space size={6}><Button type="text" icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>{onCreate && <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>新建任务</Button>}</Space>}
+      >
         <div className="task-list-subtitle">{view === "sent" ? "跟踪已分配任务的执行与通知情况" : "查看真实分配给当前账号的工作任务"}</div>
         <div className="task-record-list">{tasks.map((task) => <button type="button" className={`task-record-item${task.id === selected.id ? " is-active" : ""}`} key={task.id} onClick={() => setSelectedId(task.id)}>
           <div className="task-record-topline"><Typography.Text strong>{task.title}</Typography.Text><Tag color={STATUS_META[task.status].color}>{task.statusLabel || STATUS_META[task.status].text}</Tag></div>
@@ -109,7 +113,7 @@ export default function TaskTrackingPanel({ view }: { view: TaskView }) {
       </Card>
     </Col>
     <Col xs={24} lg={14} className="task-console-column">
-      <Card className="task-console-card task-detail-card" title={<div className="task-detail-heading"><div><Typography.Title level={5}>任务执行详情</Typography.Title><Typography.Text type="secondary">{selected.traceId} · {selected.sopId || "未匹配 SOP"}</Typography.Text></div><Tag color={STATUS_META[selected.status].color}>{selected.statusLabel || STATUS_META[selected.status].text}</Tag></div>}>
+      <Card className="task-console-card task-detail-card" title={<div className="task-detail-heading"><div><Typography.Text type="secondary" className="task-detail-eyebrow">任务执行详情</Typography.Text><Typography.Title level={5}>{selected.title}</Typography.Title><Typography.Text type="secondary">{selected.traceId} · {selected.sopId || "未匹配 SOP"}</Typography.Text></div><Tag color={STATUS_META[selected.status].color}>{selected.statusLabel || STATUS_META[selected.status].text}</Tag></div>}>
         <div className="task-detail-summary">
           <div><UserOutlined /><span>{view === "sent" ? "负责人" : "发起人"}</span><strong>{view === "sent" ? selected.assignees.join("、") || "尚未匹配平台账号" : selected.sender}</strong></div>
           <div><ClockCircleOutlined /><span>截止时间</span><strong>{fmtTime(selected.deadline)}</strong></div>

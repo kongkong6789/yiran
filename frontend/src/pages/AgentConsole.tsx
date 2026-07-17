@@ -39,6 +39,7 @@ import {
   type TaskAssignmentValue,
 } from "../features/task-console/mockWeCom";
 import { collectSubmitBlockers } from "../features/task-console/taskSubmitValidation";
+import { createTaskTraceId } from "../utils/traceId";
 
 const decisionTag: Record<string, { color: string; text: string }> = {
   allow: { color: "success", text: "放行执行" },
@@ -204,8 +205,8 @@ export default function AgentConsole() {
     let activeIndex = 0;
     let notificationTarget = "指定接收人";
     let publishedTaskTrace = "";
-    let recipientUserIds: string[] = [];
-    let assigneeWeComUserIds: string[] = [];
+    let recipientContactIds: number[] = [];
+    let assigneeWeComContactIds: number[] = [];
     let assigneeNames: string[] = [];
     let notificationAccepted = false;
     let acceptedNotificationId: number | undefined;
@@ -227,12 +228,12 @@ export default function AgentConsole() {
       const selectedAssignees = assignment.assigneeIds.length > 0
         ? (await getWeComUsers()).filter((member) => assignment.assigneeIds.includes(member.key))
         : [];
-      assigneeWeComUserIds = selectedAssignees.map((member) => member.weComUserId);
+      assigneeWeComContactIds = selectedAssignees.map((member) => member.contactId);
       assigneeNames = selectedAssignees.map((member) => member.name);
 
       if (assignment.notificationMode === "person") {
         const names = assigneeNames.join("、");
-        recipientUserIds = assigneeWeComUserIds;
+        recipientContactIds = assigneeWeComContactIds;
         notificationTarget = names || notificationTarget;
         matchedDetail = `已匹配负责人：${names || "未指定"}。`;
         identityDetail = `已确认 ${selectedAssignees.length} 位负责人的企业微信通知身份。`;
@@ -251,7 +252,7 @@ export default function AgentConsole() {
         identityDetail = "通知步骤已跳过。";
       }
 
-      publishedTaskTrace = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      publishedTaskTrace = createTaskTraceId();
       const trackingTimeline = (completedCount: number, runningIndex?: number, overrides: Record<number, string> = {}) => (
         EXECUTION_TEMPLATE.map((step, index) => ({
           title: step.title,
@@ -283,8 +284,8 @@ export default function AgentConsole() {
         agentName: selectedAgent?.name,
         priority: assignment.priority,
         deadline: assignment.deadline ? new Date(assignment.deadline).toISOString() : null,
-        assigneeWeComUserIds,
-        recipientUserIds,
+        assigneeWeComContactIds,
+        recipientContactIds,
         assigneeNames,
         notificationMode: assignment.notificationMode,
         notificationTarget,
@@ -490,8 +491,10 @@ export default function AgentConsole() {
     <div className={`task-console-page ${pageView === "create" ? "is-create" : ""}`}>
       <div className="task-view-switcher">
         <div>
-          <Typography.Title level={4}>任务</Typography.Title>
-          <Typography.Text type="secondary">发起、分配并持续跟踪工作任务</Typography.Text>
+          <Typography.Title level={4}>{pageView === "create" ? "新建任务" : "任务中心"}</Typography.Title>
+          <Typography.Text type="secondary">
+            {pageView === "create" ? "告诉 AI 你想做什么，剩下的交给我们" : "高效协作，让 AI 帮你快速跟进多工作"}
+          </Typography.Text>
         </div>
         <Segmented
           value={pageView}
@@ -504,7 +507,7 @@ export default function AgentConsole() {
         />
       </div>
 
-      {pageView !== "create" ? <TaskTrackingPanel view={pageView} /> : (
+      {pageView !== "create" ? <TaskTrackingPanel view={pageView} onCreate={() => setPageView("create")} /> : (
       <Row gutter={[20, 20]} align="top" className="task-create-layout">
         <Col xs={24} xl={10} className="task-console-column task-launch-column">
           <Card
@@ -512,8 +515,8 @@ export default function AgentConsole() {
             title={(
               <div className="task-card-heading">
                 <div>
-                  <Typography.Title level={5}>创建任务</Typography.Title>
-                  <Typography.Text type="secondary">输入工作指令，确认执行信息并分配负责人</Typography.Text>
+                  <Typography.Title level={5}>任务编辑</Typography.Title>
+                  <Typography.Text type="secondary">描述目标，确认执行配置与协作成员</Typography.Text>
                 </div>
               </div>
             )}
@@ -570,8 +573,12 @@ export default function AgentConsole() {
               <div className="task-trace-title">
                 <div className="task-card-heading">
                   <div>
-                    <Typography.Title level={5}>执行轨迹</Typography.Title>
-                    <Typography.Text type="secondary">查看任务执行、交付结果和企业微信通知状态</Typography.Text>
+                    <Typography.Title level={5}>
+                      {formattedBusinessResult && !loading ? "任务结果" : executionSteps.length > 0 || loading ? "执行轨迹" : "任务预览"}
+                    </Typography.Title>
+                    <Typography.Text type="secondary">
+                      {formattedBusinessResult && !loading ? "查看交付内容与关键结论" : executionSteps.length > 0 || loading ? "实时查看任务执行进度" : "执行前核对任务流程与交付方式"}
+                    </Typography.Text>
                   </div>
                 </div>
                 <WeComConnectionStatus />
