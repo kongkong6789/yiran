@@ -8,6 +8,7 @@ from apps.council import images as image_svc
 from apps.council.knowledge import gather_knowledge
 from apps.council.graph_knowledge import search_graph
 from apps.mcp.client import find_document_url_in_thread, is_document_followup, read_wecom_document
+from apps.mcp.nas_files import read_nas_for_agent
 from apps.skills.service import build_skill_system_block, resolve_skills, skills_payload
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -131,14 +132,30 @@ def run_chat(
         else read_wecom_document(message, user=user, cancel_check=cancel_check)
     )
     raise_if_cancelled(cancel_check)
+    nas = read_nas_for_agent(user, message) if user is not None else {
+        "attempted": False, "content": "", "files": [], "error": "",
+    }
+    nas_files = nas.get("files") or []
+    context_attachments = [*attachments, *nas_files]
+    raise_if_cancelled(cancel_check)
     refs = {
         "rag": [],
         "graph": graph.get("refs") or [],
         "mcp": (
-            [{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
-            if mcp.get("content")
-            else []
+            ([{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
+             if mcp.get("content") else [])
+            + [{"server": "nas", "tool": "read_path", "source": item.get("native_path")} for item in nas_files]
         ),
+        "nas": [
+            {
+                "name": item.get("name"),
+                "path": item.get("path"),
+                "native_path": item.get("native_path"),
+                "size": item.get("size"),
+                "download_url": item.get("download_url"),
+            }
+            for item in nas_files
+        ],
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
         "attachments": [
@@ -173,6 +190,13 @@ def run_chat(
             f"【企业微信 MCP 状态】读取失败:{mcp['error']}。"
             "请明确告诉用户此错误及修复方向,不要假装已经读取文档。"
         )
+    if nas.get("content"):
+        reference_blocks.append(f"【NAS 文件库】\n{nas['content']}")
+    elif nas.get("attempted") and nas.get("error"):
+        reference_blocks.append(
+            f"【NAS 文件库状态】读取失败：{nas['error']}。"
+            "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
+        )
 
     user_block = message or "(用户仅上传了附件,请结合附件内容回答)"
     if reference_blocks:
@@ -186,7 +210,7 @@ def run_chat(
         and item.get("role") in {"user", "assistant"}
         and item.get("content")
     ]
-    image_parts = vision_image_parts(attachments)
+    image_parts = vision_image_parts(context_attachments)
     has_image = bool(image_parts)
     image_intent = image_svc.detect_image_intent(message, has_image)
     # 下拉选了生图模型时,强制走 images API
@@ -363,6 +387,15 @@ def run_chat(
             configured=llm_configured,
         )
 
+    if nas_files:
+        file_links = [
+            f"- [{item['name']}]({item['download_url']}) · `{item['native_path']}`"
+            for item in nas_files
+            if item.get("download_url")
+        ]
+        if file_links:
+            reply = reply.rstrip() + "\n\n**NAS 文件**\n" + "\n".join(file_links)
+
     raise_if_cancelled(cancel_check)
     return {
         "ok": True,
@@ -370,7 +403,7 @@ def run_chat(
         "llm": llm.llm_available(user),
         "llm_error": llm_error,
         "llm_model": used_model or llm_result.get("model") or "",
-        "knowledge_hit": bool(knowledge or mcp.get("content") or attachments or generated_images),
+        "knowledge_hit": bool(knowledge or mcp.get("content") or nas.get("content") or attachments or generated_images),
         "doc_context": bool(doc_mode),
         "image_intent": image_intent,
         "generated_images": generated_images,
@@ -384,6 +417,7 @@ def run_chat(
         "refs": refs,
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
+        "nas_files": refs["nas"],
         "attachments": [
             {
                 "id": a.get("id"),

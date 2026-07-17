@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import json
 
+from django.contrib.auth import get_user_model
+from django.http import FileResponse
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
 from .registry import REGISTRY, cursor_snippet, get_def, resolve_config, save_config
 from .client import probe_streamable_http
+from .nas_files import (
+    NasFileError,
+    list_directory,
+    preview_file,
+    read_access_ticket,
+    resolve_nas_path,
+)
 
 
 def _status_from_cfg(cfg: dict) -> str:
@@ -108,6 +117,22 @@ def server_probe(request, server_id: str):
         })
 
     transport = cfg.get("transport") or defn.transport
+    if server_id == "nas":
+        try:
+            payload = list_directory(request.user, "/")
+        except NasFileError as exc:
+            return Response({
+                "ok": False,
+                "status": "unreachable",
+                "message": str(exc),
+            })
+        return Response({
+            "ok": True,
+            "status": "reachable",
+            "message": f"NAS 已连接，可访问 {payload['count']} 个项目",
+            "transport": transport,
+        })
+
     if transport == "stdio":
         env_hint = ""
         if cfg.get("env"):
@@ -128,3 +153,57 @@ def server_probe(request, server_id: str):
         return Response(probe)
 
     return Response({"ok": False, "status": "error", "message": "未知传输类型"})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def server_files(request, server_id: str):
+    if server_id != "nas" or not get_def(server_id):
+        return Response({"error": "该连接器不支持文件浏览"}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        payload = list_directory(request.user, request.query_params.get("path") or "/")
+    except NasFileError as exc:
+        return Response({"error": str(exc)}, status=exc.status_code)
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def server_file_preview(request, server_id: str):
+    if server_id != "nas" or not get_def(server_id):
+        return Response({"error": "该连接器不支持文件预览"}, status=status.HTTP_404_NOT_FOUND)
+    virtual_path = request.query_params.get("path") or ""
+    if not virtual_path:
+        return Response({"error": "缺少 path 参数"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        payload = preview_file(request.user, virtual_path)
+    except NasFileError as exc:
+        return Response({"error": str(exc)}, status=exc.status_code)
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def server_file_download(request, server_id: str):
+    if server_id != "nas" or not get_def(server_id):
+        return Response({"error": "该连接器不支持文件下载"}, status=status.HTTP_404_NOT_FOUND)
+    ticket = request.query_params.get("ticket") or ""
+    try:
+        payload = read_access_ticket(ticket)
+        user = get_user_model().objects.filter(id=payload["user_id"], is_active=True).first()
+        if not user:
+            raise NasFileError("文件链接对应的账号不存在", 403)
+        target, _ = resolve_nas_path(user, payload["path"])
+        if not target.is_file():
+            raise NasFileError("目标路径不是文件", 400)
+        as_attachment = request.query_params.get("download", "1") != "0"
+        return FileResponse(
+            target.open("rb"),
+            as_attachment=as_attachment,
+            filename=target.name,
+            content_type=None,
+        )
+    except NasFileError as exc:
+        return Response({"error": str(exc)}, status=exc.status_code)
+    except OSError as exc:
+        return Response({"error": f"读取 NAS 文件失败：{exc}"}, status=status.HTTP_502_BAD_GATEWAY)

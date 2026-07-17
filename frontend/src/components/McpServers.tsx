@@ -18,6 +18,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import WecomIcon from "./WecomIcon";
+import NasFileExplorer from "./NasFileExplorer";
 import type { ReactNode } from "react";
 import {
   getMcpServers,
@@ -81,6 +82,7 @@ type Props = {
 
 type FormValues = {
   enabled: boolean;
+  nas_path?: string;
   url?: string;
   command?: string;
   args?: string;
@@ -89,6 +91,7 @@ type FormValues = {
 };
 
 type StatusFilter = "all" | "configured" | "reachable" | "attention";
+type NasDrawerMode = "files" | "settings";
 
 const LAYER_DESC: Record<string, string> = {
   协作: "文档、消息与团队协作服务",
@@ -116,6 +119,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   const [importing, setImporting] = useState(false);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [nasDrawerMode, setNasDrawerMode] = useState<NasDrawerMode>("files");
   const [form] = Form.useForm<FormValues>();
 
   const load = useCallback(() => {
@@ -128,10 +132,14 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   useEffect(() => { load(); }, [load]);
 
-  const fillForm = (d: McpServerDetail) => {
+  const fillForm = useCallback((d: McpServerDetail) => {
     const ph = d.placeholders || {};
+    const nasPath = [...(d.args || [])]
+      .reverse()
+      .find((value) => value && !value.startsWith("-") && !value.startsWith("@")) || "";
     form.setFieldsValue({
       enabled: d.enabled !== false,
+      nas_path: d.id === "nas" ? nasPath : "",
       url: d.url || "",
       command: d.command || "",
       args: d.args?.length ? JSON.stringify(d.args) : "",
@@ -144,7 +152,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     if (!d.command && !d.url && ph.command) {
       // keep empty so user can see placeholders
     }
-  };
+  }, [form]);
 
   const applyDetail = (saved: McpServerDetail, id: string) => {
     const normalized = normalizeServer(saved);
@@ -156,11 +164,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   };
 
   const openServer = async (id: string) => {
+    if (id === "nas") setNasDrawerMode("files");
     setOpenId(id);
     try {
       const d = await getMcpServer(id);
       setDetail(d);
-      fillForm(d);
+      if (id !== "nas") fillForm(d);
     } catch {
       message.error("读取 MCP 配置失败");
       setOpenId(null);
@@ -172,15 +181,23 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     const values = await form.validateFields();
     setSaving(true);
     try {
+      const nasPath = values.nas_path?.trim() || "";
       const saved = await saveMcpServer(openId, {
         enabled: values.enabled,
-        url: values.url?.trim() || "",
-        command: values.command?.trim() || "",
-        args: values.args?.trim() || "",
-        env: values.env?.trim() || "",
+        url: openId === "nas" ? "" : values.url?.trim() || "",
+        command: openId === "nas" ? "npx" : values.command?.trim() || "",
+        args: openId === "nas"
+          ? JSON.stringify(["-y", "@modelcontextprotocol/server-filesystem", nasPath])
+          : values.args?.trim() || "",
+        env: openId === "nas" ? "" : values.env?.trim() || "",
       });
       applyDetail(saved, openId);
-      message.success("MCP 配置已保存");
+      if (openId === "nas") {
+        setNasDrawerMode("files");
+        message.success("NAS 路径已保存，正在打开文件库");
+      } else {
+        message.success("MCP 配置已保存");
+      }
     } catch (e: any) {
       message.error(e?.response?.data?.error || "保存失败");
     } finally {
@@ -281,6 +298,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     );
   };
 
+  useEffect(() => {
+    if (openId === "nas" && detail && nasDrawerMode === "settings") {
+      fillForm(detail);
+    }
+  }, [detail, fillForm, nasDrawerMode, openId]);
+
   const renderPageCard = (item: McpServer) => {
     const color = COLORS[item.id] || "#59c2ff";
     const status = mcpStatus(item);
@@ -338,6 +361,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   };
 
   const isWecom = openId === "wecom";
+  const isNas = openId === "nas";
   const showStdio = !isWecom && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
   const showUrl = !isWecom && (
     detail?.declared_transport === "streamable_http"
@@ -504,20 +528,44 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
       )}
 
       <Drawer
-        title={detail ? `${detail.name} · MCP 配置` : "MCP 配置"}
+        title={detail ? (isNas ? (
+          <span className="nas-drawer-title"><HddOutlined /> NAS 文件资源管理器</span>
+        ) : `${detail.name} · MCP 配置`) : "MCP 配置"}
         open={!!openId}
-        onClose={() => { setOpenId(null); setDetail(null); form.resetFields(); }}
-        width={560}
+        onClose={() => { setOpenId(null); setDetail(null); setNasDrawerMode("files"); form.resetFields(); }}
+        width={isNas ? "min(1180px, calc(100vw - 24px))" : 560}
+        className={isNas ? "nas-explorer-drawer" : undefined}
         extra={
-          detail && (
+          detail && isNas && nasDrawerMode === "files" ? (
+            <Space>
+              <Button icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>检查连接</Button>
+              <Button type="primary" onClick={() => setNasDrawerMode("settings")}>连接设置</Button>
+            </Space>
+          ) : detail && isNas ? (
+            <Space>
+              <Button onClick={() => setNasDrawerMode("files")}>返回文件库</Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>连接并打开</Button>
+            </Space>
+          ) : detail ? (
             <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>
               保存
             </Button>
-          )
+          ) : null
         }
       >
-        {detail && (
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        {detail && isNas && nasDrawerMode === "files" ? (
+          <NasFileExplorer
+            configured={detail.configured}
+            enabled={detail.enabled}
+            onOpenSettings={() => setNasDrawerMode("settings")}
+          />
+        ) : detail && (
+          <Space
+            direction="vertical"
+            size={16}
+            style={{ width: "100%" }}
+            className={isNas ? "nas-settings-panel" : undefined}
+          >
             <div>
               <Typography.Text type="secondary">{detail.desc}</Typography.Text>
               <div style={{ marginTop: 8 }}>
@@ -547,7 +595,35 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                 <Switch checkedChildren="开" unCheckedChildren="关" />
               </Form.Item>
 
-              {isWecom ? (
+              {isNas ? (
+                <>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="输入 NAS 网络路径即可连接"
+                    description="支持直接填写服务器根路径（如 \\\\192.168.0.188），连接后会列出当前 Windows 账户可访问的共享文件夹。"
+                  />
+                  <Form.Item
+                    label="NAS 网络路径"
+                    name="nas_path"
+                    extra="使用运行良策后端的 Windows 账户访问；如果资源管理器已登录该 NAS，通常无需再次输入账号密码。"
+                    rules={[
+                      { required: true, whitespace: true, message: "请输入 NAS 网络路径" },
+                      {
+                        validator: (_, value?: string) => {
+                          const path = value?.trim() || "";
+                          const valid = /^\\\\[^\\]+/.test(path) || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/");
+                          return valid
+                            ? Promise.resolve()
+                            : Promise.reject(new Error("请输入 \\\\服务器、盘符路径或绝对目录"));
+                        },
+                      },
+                    ]}
+                  >
+                    <Input size="large" placeholder="\\\\192.168.0.188" allowClear autoFocus />
+                  </Form.Item>
+                </>
+              ) : isWecom ? (
                 <>
                   <Form.Item
                     label="StreamableHttp URL"
@@ -647,33 +723,37 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               )}
             </Form>
 
-            <div>
-              <Typography.Text strong>可用工具</Typography.Text>
-              <List
-                size="small"
-                dataSource={detail.tools}
-                renderItem={(t) => <List.Item style={{ padding: "4px 0" }}><code>{t}</code></List.Item>}
-              />
-            </div>
+            {!isNas && (
+              <>
+                <div>
+                  <Typography.Text strong>可用工具</Typography.Text>
+                  <List
+                    size="small"
+                    dataSource={detail.tools}
+                    renderItem={(t) => <List.Item style={{ padding: "4px 0" }}><code>{t}</code></List.Item>}
+                  />
+                </div>
 
-            <Divider style={{ margin: "4px 0" }} />
+                <Divider style={{ margin: "4px 0" }} />
 
-            <div>
-              <Space style={{ marginBottom: 8 }} wrap>
-                <Typography.Text strong>当前 Cursor mcp.json</Typography.Text>
-                <Button size="small" icon={<CopyOutlined />} onClick={copyConfig}>复制</Button>
-                <Button size="small" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
-                  探测连接
-                </Button>
-              </Space>
-              <pre className="mcp-json">{detail.cursor_json}</pre>
-            </div>
+                <div>
+                  <Space style={{ marginBottom: 8 }} wrap>
+                    <Typography.Text strong>当前 Cursor mcp.json</Typography.Text>
+                    <Button size="small" icon={<CopyOutlined />} onClick={copyConfig}>复制</Button>
+                    <Button size="small" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
+                      探测连接
+                    </Button>
+                  </Space>
+                  <pre className="mcp-json">{detail.cursor_json}</pre>
+                </div>
 
-            <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
-              {isWecom
-                ? "与企微后台一致: 填 StreamableHttp URL 或粘贴 JSON Config。配置含 apikey,请勿泄露。"
-                : "填写后点右上角「保存」,或粘贴 mcp.json 后「导入并保存」。"}
-            </Typography.Paragraph>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
+                  {isWecom
+                    ? "与企微后台一致: 填 StreamableHttp URL 或粘贴 JSON Config。配置含 apikey,请勿泄露。"
+                    : "填写后点右上角「保存」,或粘贴 mcp.json 后「导入并保存」。"}
+                </Typography.Paragraph>
+              </>
+            )}
           </Space>
         )}
       </Drawer>
