@@ -43,6 +43,7 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   deleteKnowledgeFile,
+  downloadKnowledgeFile,
   getKnowledgeFileChunks,
   getKnowledgeJob,
   listKnowledgeBases,
@@ -62,7 +63,7 @@ type Visibility = "private" | "team" | "company";
 type Engine = "naive-rag" | "graph-rag" | "hybrid-rag";
 type ReviewPolicy = "none" | "sample" | "required";
 
-type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; };
+type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; downloadUrl?: string; };
 
 const keywordStopwords = new Set([
   "and", "or", "the", "for", "with", "from", "this", "that", "http", "https", "www", "com", "cn",
@@ -70,7 +71,7 @@ const keywordStopwords = new Set([
 ]);
 
 function fallbackKeywords(text: string, limit = 10) {
-  const tokens = text.match(/[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}|\d{4,}/g) ?? [];
+  const tokens: string[] = text.match(/[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}|\d{4,}/g) ?? [];
   const counts = new Map<string, { count: number; index: number }>();
   tokens.forEach((token, index) => {
     const normalized = token.trim().toLowerCase();
@@ -406,6 +407,8 @@ export default function Knowledge() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [createMode, setCreateMode] = useState(false);
   const [createSource, setCreateSource] = useState<"file" | "wecom" | "web">("file");
+  const [createName, setCreateName] = useState("");
+  const [createDescription, setCreateDescription] = useState("");
   const [detailTemplateId, setDetailTemplateId] = useState<string | null>(null);
   const [detailSearch, setDetailSearch] = useState("");
   const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
@@ -518,13 +521,23 @@ export default function Knowledge() {
   function handleCreateKnowledgeBase() {
     setUploadFiles([]);
     setCreateSource("file");
+    setCreateName("");
+    setCreateDescription("");
     setCreateMode(true);
+  }
+
+  function validateCreateKnowledgeBaseMeta() {
+    if (!createName.trim()) {
+      message.warning("请输入知识库名称");
+      return false;
+    }
+    return true;
   }
 
   async function createKnowledgeBaseRecord() {
     return createKnowledgeBase({
-      name: "New knowledge base",
-      description: objective,
+      name: createName.trim(),
+      description: createDescription.trim(),
       category: "Custom",
       visibility,
       retrieval_mode: engine,
@@ -535,6 +548,7 @@ export default function Knowledge() {
   }
 
   async function handleCreateEmptyKnowledgeBase() {
+    if (!validateCreateKnowledgeBaseMeta()) return;
     setBaseLoading(true);
     try {
       const created = await createKnowledgeBaseRecord();
@@ -553,6 +567,7 @@ export default function Knowledge() {
 
   async function handleCreateWizardNext() {
     const rawFiles = uploadFiles.map((item) => item.originFileObj).filter(Boolean) as File[];
+    if (!validateCreateKnowledgeBaseMeta()) return;
     if (createSource !== "file") {
       message.info("This source type is not connected yet");
       return;
@@ -681,6 +696,27 @@ export default function Knowledge() {
     }
   }
 
+  async function downloadOriginalFile(file: KnowledgeTemplateFile) {
+    if (!file.id) {
+      message.info("Template sample files are not stored in the backend yet");
+      return;
+    }
+    try {
+      const blob = await downloadKnowledgeFile(file.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(error);
+      message.error("File download failed");
+    }
+  }
+
   async function openProcessedFile(file: KnowledgeTemplateFile) {
     setProcessedFile(file);
     setProcessedChunks([]);
@@ -799,76 +835,114 @@ export default function Knowledge() {
         <section className="kb-create-page">
           <div className="create-topbar">
             <button className="create-back" onClick={() => setCreateMode(false)}><ArrowLeftOutlined /></button>
-            <b>知识库</b>
-            <div className="create-steps">
-              <span className="active"><b>STEP 1</b> 选择数据源</span>
-              <i />
-              <span><b>2</b> 文本分段与清洗</span>
-              <i />
-              <span><b>3</b> 处理并完成</span>
-            </div>
+            <b>新建知识库</b>
           </div>
 
           <div className="create-body">
             <div className="create-main">
-              <h3>选择数据源</h3>
-              <div className="source-choice-row">
-                <button className={createSource === "file" ? "active" : ""} onClick={() => setCreateSource("file")}>
-                  <FileSearchOutlined />
-                  <span>导入已有文本</span>
-                </button>
-                <button className={createSource === "wecom" ? "active" : ""} onClick={() => setCreateSource("wecom")}>
-                  <DatabaseOutlined />
-                  <span>同步自企微内容</span>
-                </button>
-                <button className={createSource === "web" ? "active" : ""} onClick={() => setCreateSource("web")}>
-                  <NodeIndexOutlined />
-                  <span>同步自 Web 站点</span>
-                </button>
+              <div className="create-hero">
+                <div>
+                  <Text type="secondary">知识库配置</Text>
+                  <h2>先定义知识库，再导入文件</h2>
+                  <p>名称会显示在知识库列表和文件管理页，描述用于帮助团队理解这个知识库的用途。</p>
+                </div>
               </div>
 
-              {createSource === "file" ? (
-                <>
-                  <h3 className="upload-heading">上传文本文件</h3>
-                  <Dragger
-                    className="create-upload"
-                    multiple
-                    fileList={uploadFiles}
-                    beforeUpload={() => false}
-                    onChange={(info) => setUploadFiles(info.fileList)}
-                    accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
-                  >
-                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                    <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
-                    <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
-                  </Dragger>
+              <div className="create-grid">
+                <section className="create-panel create-info-panel">
+                  <div className="create-panel-title">
+                    <span>基础信息</span>
+                    <small>必填</small>
+                  </div>
+                  <div className="create-form-stack">
+                    <label>
+                      <span>知识库名称</span>
+                      <Input
+                        value={createName}
+                        onChange={(event) => setCreateName(event.target.value)}
+                        placeholder="例如：测试知识库"
+                        maxLength={80}
+                        showCount
+                      />
+                    </label>
+                    <label>
+                      <span>知识库描述</span>
+                      <Input.TextArea
+                        value={createDescription}
+                        onChange={(event) => setCreateDescription(event.target.value)}
+                        placeholder="描述这个知识库收录哪些资料、服务哪些场景"
+                        autoSize={{ minRows: 5, maxRows: 8 }}
+                        maxLength={500}
+                        showCount
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="create-panel create-source-panel">
+                  <div className="create-panel-title">
+                    <span>数据源</span>
+                    <small>可先创建空知识库</small>
+                  </div>
+                  <div className="source-choice-row">
+                    <button className={createSource === "file" ? "active" : ""} onClick={() => setCreateSource("file")}>
+                      <FileSearchOutlined />
+                      <span>导入已有文本</span>
+                    </button>
+                    <button className={createSource === "wecom" ? "active" : ""} onClick={() => setCreateSource("wecom")}>
+                      <DatabaseOutlined />
+                      <span>同步自企微内容</span>
+                    </button>
+                    <button className={createSource === "web" ? "active" : ""} onClick={() => setCreateSource("web")}>
+                      <NodeIndexOutlined />
+                      <span>同步自 Web 站点</span>
+                    </button>
+                  </div>
+
+                  {createSource === "file" ? (
+                    <>
+                      <h3 className="upload-heading">上传文本文件</h3>
+                      <Dragger
+                        className="create-upload"
+                        multiple
+                        fileList={uploadFiles}
+                        beforeUpload={() => false}
+                        onChange={(info) => setUploadFiles(info.fileList)}
+                        accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
+                      >
+                        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                        <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
+                        <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
+                      </Dragger>
+                    </>
+                  ) : createSource === "wecom" ? (
+                    <div className="source-connect-card">
+                      <div className="source-connect-icon"><DatabaseOutlined /></div>
+                      <h3>企微未绑定</h3>
+                      <p>同步企微内容前，须先绑定企业微信</p>
+                      <Button type="primary" onClick={() => message.info("后续接入企业微信授权绑定")}>去绑定</Button>
+                    </div>
+                  ) : (
+                    <div className="source-connect-card">
+                      <div className="source-connect-icon"><NodeIndexOutlined /></div>
+                      <h3>Web 站点未配置</h3>
+                      <p>同步 Web 站点内容前，须先配置站点地址和抓取规则</p>
+                      <Button type="primary" onClick={() => message.info("后续接入 Web 站点同步配置")}>去配置</Button>
+                    </div>
+                  )}
 
                   <div className="create-actions">
-                    <Button type="primary" disabled={!uploadFiles.length} loading={uploading} onClick={() => void handleCreateWizardNext()}>
-                      下一步 →
+                    <Button onClick={() => setCreateMode(false)}>取消</Button>
+                    <Button icon={<DatabaseOutlined />} loading={baseLoading} onClick={() => void handleCreateEmptyKnowledgeBase()}>
+                      创建空知识库
+                    </Button>
+                    <Button type="primary" disabled={createSource !== "file" || !uploadFiles.length} loading={uploading} onClick={() => void handleCreateWizardNext()}>
+                      创建并上传
                     </Button>
                   </div>
-                </>
-              ) : createSource === "wecom" ? (
-                <div className="source-connect-card">
-                  <div className="source-connect-icon"><DatabaseOutlined /></div>
-                  <h3>企微未绑定</h3>
-                  <p>同步企微内容前，须先绑定企业微信</p>
-                  <Button type="primary" onClick={() => message.info("后续接入企业微信授权绑定")}>去绑定</Button>
-                </div>
-              ) : (
-                <div className="source-connect-card">
-                  <div className="source-connect-icon"><NodeIndexOutlined /></div>
-                  <h3>Web 站点未配置</h3>
-                  <p>同步 Web 站点内容前，须先配置站点地址和抓取规则</p>
-                  <Button type="primary" onClick={() => message.info("后续接入 Web 站点同步配置")}>去配置</Button>
-                </div>
-              )}
+                </section>
+              </div>
             </div>
-
-            <button className="create-empty" onClick={() => void handleCreateEmptyKnowledgeBase()} disabled={baseLoading}>
-              <DatabaseOutlined /> 创建一个空知识库
-            </button>
           </div>
         </section>
       ) : detailTemplate ? (
@@ -933,7 +1007,7 @@ export default function Knowledge() {
                       <td className="check-col"><input type="checkbox" aria-label={`选择 ${file.name}`} /></td>
                       <td className="index-col">{index + 1}</td>
                       <td>
-                        <button className="doc-name" onClick={() => void openProcessedFile(file)}>
+                        <button className="doc-name" onClick={() => void downloadOriginalFile(file)}>
                           <span className="file-type-icon"><FileExcelOutlined /></span>
                           <span>{file.name}</span>
                         </button>
@@ -1306,13 +1380,15 @@ const styles = `
 .kb-create-page {
   min-height: calc(100vh - 96px);
   margin: 0;
-  background: #ffffff;
+  background: #f7f8fb;
   color: #101828;
 }
 .create-topbar {
   position: relative;
-  display: block;
-  border-bottom: 1px solid #eef0f4;
+  display: flex;
+  height: 60px;
+  align-items: center;
+  border-bottom: 1px solid #e7eaf0;
   background: #ffffff;
 }
 .create-back {
@@ -1336,7 +1412,6 @@ const styles = `
 }
 .create-topbar > b {
   display: flex;
-  height: 60px;
   align-items: center;
   padding-left: 56px;
   color: #111827;
@@ -1344,96 +1419,108 @@ const styles = `
   font-weight: 700;
   white-space: nowrap;
 }
-.create-steps {
-  display: flex;
-  height: 52px;
-  max-width: 760px;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  margin: 0 auto;
-  padding: 0 20px;
-  color: #98a2b3;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.create-steps::-webkit-scrollbar {
-  display: none;
-}
-.create-steps span {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  color: #98a2b3;
-  font-size: 14px;
-  line-height: 1;
-  white-space: nowrap;
-}
-.create-steps span b {
-  display: inline-flex;
-  min-width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #d9dee8;
-  border-radius: 999px;
-  color: #98a2b3;
-  font-size: 14px;
-  font-weight: 700;
-}
-.create-steps span.active {
-  color: #0646ff;
-  font-weight: 700;
-}
-.create-steps span.active b {
-  min-width: 62px;
-  padding: 0 10px;
-  border: 0;
-  background: #0646ff;
-  color: #ffffff;
-  font-size: 12px;
-}
-.create-steps i {
-  width: 44px;
-  height: 1px;
-  flex: 0 0 44px;
-  background: #e4e7ec;
-}
 .create-body {
   display: flex;
-  min-height: calc(100vh - 209px);
-  flex-direction: column;
-  align-items: center;
-  padding: 56px 24px 72px;
+  min-height: calc(100vh - 156px);
+  align-items: flex-start;
+  justify-content: center;
+  padding: 34px 24px 56px;
 }
 .create-main {
-  width: min(100%, 960px);
+  width: min(100%, 1120px);
 }
-.create-main h3 {
-  margin: 0 0 16px;
-  color: #1d2939;
-  font-size: 18px;
+.create-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+.create-hero h2 {
+  margin: 6px 0 8px;
+  color: #111827;
+  font-size: 28px;
   line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+.create-hero p {
+  max-width: 680px;
+  margin: 0;
+  color: #52637f;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.create-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.86fr) minmax(460px, 1.14fr);
+  gap: 18px;
+  align-items: start;
+}
+.create-panel {
+  min-width: 0;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+}
+.create-info-panel,
+.create-source-panel {
+  padding: 22px;
+}
+.create-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.create-panel-title span {
+  color: #182230;
+  font-size: 17px;
+  font-weight: 800;
+}
+.create-panel-title small {
+  color: #667085;
+  font-size: 13px;
+}
+.create-form-stack {
+  display: grid;
+  gap: 18px;
+}
+.create-form-stack label {
+  display: grid;
+  gap: 8px;
+  color: #344054;
+  font-size: 14px;
+  font-weight: 700;
+}
+.create-form-stack .ant-input,
+.create-form-stack .ant-input-affix-wrapper,
+.create-form-stack .ant-input-textarea-show-count textarea {
+  border-radius: 10px;
+}
+.create-form-stack textarea {
+  resize: none;
 }
 .source-choice-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  margin-bottom: 44px;
+  gap: 12px;
+  margin-bottom: 20px;
 }
 .source-choice-row button {
   display: flex;
   min-width: 0;
-  min-height: 78px;
+  min-height: 74px;
   align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
+  gap: 12px;
+  padding: 14px;
   border: 1px solid #e4e7ec;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #ffffff;
   color: #344054;
-  font-size: 16px;
+  font-size: 15px;
   cursor: pointer;
   text-align: left;
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
@@ -1448,15 +1535,15 @@ const styles = `
 }
 .source-choice-row .anticon {
   display: inline-flex;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   align-items: center;
   justify-content: center;
   border: 1px solid #e4e7ec;
   border-radius: 10px;
   color: #0646ff;
-  font-size: 20px;
+  font-size: 19px;
 }
 .source-choice-row button > span:last-child {
   min-width: 0;
@@ -1465,29 +1552,30 @@ const styles = `
   word-break: keep-all;
 }
 .source-connect-card {
-  min-height: 244px;
-  padding: 30px;
-  border-radius: 20px;
-  background: linear-gradient(90deg, #f3f5f8 0%, #fbfcff 72%, #ffffff 100%);
+  min-height: 210px;
+  padding: 26px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 12px;
+  background: #f8fafc;
 }
 .source-connect-icon {
   display: inline-flex;
-  width: 60px;
-  height: 60px;
+  width: 52px;
+  height: 52px;
   align-items: center;
   justify-content: center;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   border: 1px solid #e4e7ec;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #ffffff;
   color: #111827;
-  font-size: 26px;
+  font-size: 24px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 }
 .source-connect-card h3 {
   margin: 0 0 8px;
   color: #18223b;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 800;
 }
 .source-connect-card p {
@@ -1501,8 +1589,12 @@ const styles = `
   border-radius: 10px;
   background: #0646ff;
   border-color: #0646ff;
-}.upload-heading {
-  margin-top: 0 !important;
+}
+.upload-heading {
+  margin: 0 0 12px;
+  color: #1d2939;
+  font-size: 16px;
+  line-height: 1.2;
 }
 .create-upload.ant-upload-wrapper .ant-upload-drag {
   min-height: 176px;
@@ -1538,13 +1630,19 @@ const styles = `
 }
 .create-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #eaecf0;
 }
-.create-actions .ant-btn-primary {
-  min-width: 136px;
+.create-actions .ant-btn {
   height: 40px;
   border-radius: 10px;
+}
+.create-actions .ant-btn-primary {
+  min-width: 118px;
   background: #0646ff;
   border-color: #0646ff;
 }
@@ -1553,42 +1651,30 @@ const styles = `
   border-color: #dbe4ff !important;
   color: #ffffff !important;
 }
-.create-empty {
-  display: inline-flex;
-  width: min(100%, 960px);
-  align-items: center;
-  gap: 6px;
-  margin-top: 24px;
-  border: 0;
-  background: transparent;
-  color: #0646ff;
-  cursor: pointer;
-  font-size: 14px;
-}
 @media (max-width: 980px) {
+  .create-grid {
+    grid-template-columns: 1fr;
+  }
   .source-choice-row {
     grid-template-columns: 1fr;
   }
-  .create-steps {
-    justify-content: flex-start;
-    max-width: 100%;
-  }
 }
 @media (max-width: 720px) {
-  .create-topbar > b {
-    height: 56px;
-  }
-  .create-steps {
-    height: 48px;
-    padding: 0 16px;
-  }
   .create-body {
-    min-height: calc(100vh - 200px);
-    padding: 40px 20px 64px;
+    padding: 28px 16px 48px;
   }
-  .create-steps i {
-    width: 28px;
-    flex-basis: 28px;
+  .create-hero h2 {
+    font-size: 23px;
+  }
+  .create-info-panel,
+  .create-source-panel {
+    padding: 18px;
+  }
+  .create-actions {
+    justify-content: stretch;
+  }
+  .create-actions .ant-btn {
+    flex: 1 1 100%;
   }
 }
 .kb-dify-home {

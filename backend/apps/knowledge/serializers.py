@@ -32,9 +32,13 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 
 class KnowledgeFileSerializer(serializers.ModelSerializer):
     uploaded_by_username = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
 
     def get_uploaded_by_username(self, obj):
         return None
+
+    def get_download_url(self, obj):
+        return f"/api/knowledge/files/{obj.id}/download/"
 
     class Meta:
         model = KnowledgeFile
@@ -77,3 +81,4 @@ class KnowledgeAuditLogSerializer(serializers.ModelSerializer):
         model = KnowledgeAuditLog
         fields = "__all__"
         read_only_fields = ["actor", "created_at"]
+

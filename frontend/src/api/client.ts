@@ -443,6 +443,9 @@ export const getKnowledgeFileChunks = (fileId: number) =>
   api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
     .then((r) => r.data);
 
+export const downloadKnowledgeFile = (fileId: number) =>
+  api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);
+
 export const deleteKnowledgeFile = (fileId: number) =>
   api.delete(`/knowledge/files/${fileId}/`);
 

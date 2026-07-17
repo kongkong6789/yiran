@@ -23,6 +23,8 @@ from django.db import close_old_connections, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.skills.cos_storage import cos_enabled, fetch_object_bytes, upload_media_bytes
+
 from .models import KnowledgeBase, KnowledgeChunkRef, KnowledgeEmbedding, KnowledgeFile, KnowledgeIngestJob
 
 
@@ -153,24 +155,49 @@ def resolve_storage_path(path: str) -> Path:
     return storage_root().joinpath(*parts)
 
 
-def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes]:
-    storage_path = relative_storage_path(knowledge_base_id, file_id, filename)
-    destination = resolve_storage_path(storage_path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
+def cos_storage_path(bucket: str, key: str) -> str:
+    return f"cos://{bucket}/{key.lstrip('/')}"
+
+
+def parse_cos_storage_path(storage_path: str) -> tuple[str, str] | None:
+    if not storage_path.startswith("cos://"):
+        return None
+    bucket_and_key = storage_path.removeprefix("cos://")
+    bucket, _, key = bucket_and_key.partition("/")
+    if not bucket or not key:
+        raise TraditionalRagError("Invalid COS storage path.", "storage_error")
+    return bucket, key
+
+
+def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes, dict]:
+    relative_path = relative_storage_path(knowledge_base_id, file_id, filename)
     content = bytearray()
-    with destination.open("wb") as handle:
-        for chunk in upload.chunks():
-            handle.write(chunk)
-            digest.update(chunk)
-            content.extend(chunk)
+    for chunk in upload.chunks():
+        content.extend(chunk)
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
-    return storage_path, bytes(content)
+    data = bytes(content)
+    if cos_enabled():
+        media = upload_media_bytes(relative_path, data, content_type=getattr(upload, "content_type", "") or None)
+        return cos_storage_path(media["bucket"], media["cos_key"]), data, {
+            "storage_backend": "cos",
+            "cos_bucket": media["bucket"],
+            "cos_key": media["cos_key"],
+            "cos_url": media["cos_url"],
+        }
+
+    destination = resolve_storage_path(relative_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return relative_path, data, {"storage_backend": "local"}
 
 
 def read_stored_file(storage_path: str) -> bytes:
-    content = resolve_storage_path(storage_path).read_bytes()
+    cos_ref = parse_cos_storage_path(storage_path)
+    if cos_ref:
+        content = fetch_object_bytes(*cos_ref)
+    else:
+        content = resolve_storage_path(storage_path).read_bytes()
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
     return content
@@ -1000,7 +1027,7 @@ def enqueue_ingest_upload(
         created_by=None,
     )
     try:
-        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
         file.storage_path = storage_path
@@ -1009,6 +1036,7 @@ def enqueue_ingest_upload(
         file.metadata = {
             **(file.metadata or {}),
             "content_hash": digest,
+            **storage_metadata,
             "content_type": getattr(upload, "content_type", ""),
             "file_size": getattr(upload, "size", len(content)),
             "chunk_config": {
@@ -1058,7 +1086,7 @@ def ingest_upload(
         started_at=timezone.now(),
     )
     try:
-        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
         file.storage_path = storage_path
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
@@ -1070,6 +1098,7 @@ def ingest_upload(
             digest=digest,
             content_metadata={
                 "content_type": getattr(upload, "content_type", ""),
+                **storage_metadata,
                 "file_size": getattr(upload, "size", len(content)),
                 "ingest_mode": "traditional-rag",
             },
@@ -1154,3 +1183,4 @@ def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: i
             scored.append((score, chunk.created_at, chunk))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [chunk for _score, _created_at, chunk in scored[:cap]]
+
