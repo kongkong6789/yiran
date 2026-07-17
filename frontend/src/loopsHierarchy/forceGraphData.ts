@@ -1,9 +1,10 @@
 import { getLevelModel } from "./data";
 import type { LoopLevel, NamedLoop } from "./types";
 import { LEVEL_LABEL, LEVEL_ORDER } from "./types";
-import { CONTAINMENT_LABELS, hubDisplayName, LOOP_LEVEL_ONTOLOGY } from "./commerceLevels";
 
 export type LoopNodeKind = "hub" | "stock";
+/** 基础数据（采集/事实表）浅色；衍生数据（计算/上卷）深色 */
+export type LoopDataKind = "fact" | "derived";
 
 export type LoopGNode = {
   id: string;
@@ -12,11 +13,14 @@ export type LoopGNode = {
   level: LoopLevel;
   levelLabel: string;
   kind: LoopNodeKind;
+  dataKind: LoopDataKind;
   sub?: string;
   details?: string[];
   color: string;
+  softColor: string;
   val: number;
-  /** 固定层级列布局 */
+  custom?: boolean;
+  /** 固定层级行布局（自上而下） */
   fx?: number;
   fy?: number;
   x?: number;
@@ -36,6 +40,7 @@ export type LoopGLink = {
   kind: LoopLinkKind;
   level?: LoopLevel;
   chains: string[];
+  custom?: boolean;
 };
 
 export type LoopGraphBundle = {
@@ -44,13 +49,54 @@ export type LoopGraphBundle = {
   loops: (NamedLoop & { level: LoopLevel })[];
 };
 
-const LEVEL_COLOR: Record<LoopLevel, string> = {
+export type CustomStockNode = {
+  id: string;
+  level: LoopLevel;
+  code: string;
+  name: string;
+  sub?: string;
+  dataKind: LoopDataKind;
+  /** 相对本层横向索引偏移，可选 */
+  col?: number;
+};
+
+export type CustomCausalLink = {
+  id: string;
+  source: string;
+  target: string;
+  label: string;
+  polarity: "+" | "-";
+};
+
+export type LoopGraphCustomState = {
+  version: 1;
+  stocks: CustomStockNode[];
+  links: CustomCausalLink[];
+  /** 节点位置覆盖 id → {x,y} */
+  positions: Record<string, { x: number; y: number }>;
+};
+
+export const LOOP_CUSTOM_STORAGE_KEY = "lc-loop-graph-custom-v4";
+
+export const LEVEL_COLOR: Record<LoopLevel, string> = {
   company: "#0B2144",
   brand: "#B8863B",
   platform: "#3D6FA8",
   channel: "#6d28d9",
   link: "#0f766e",
   sku: "#ea580c",
+  fact: "#64748b",
+};
+
+/** 基础数据（浅）— 直接来自事实表或主数据 */
+const FACT_IDS: Record<LoopLevel, Set<string>> = {
+  company: new Set(["s1", "s4"]),
+  brand: new Set(["b1", "b3", "b7"]),
+  platform: new Set(["p1", "p2", "p3", "p4", "p6", "p7"]),
+  channel: new Set(["c1", "c2", "c4", "c5", "c6", "c7", "c8", "c9", "c10"]),
+  link: new Set(["l1", "l2", "l4", "l6", "l8"]),
+  sku: new Set(["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10"]),
+  fact: new Set(["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"]),
 };
 
 const FOCUS_IDS: Record<LoopLevel, string[]> = {
@@ -60,27 +106,125 @@ const FOCUS_IDS: Record<LoopLevel, string[]> = {
   channel: ["c1", "c2", "c3", "c5", "c7", "c8", "c9"],
   link: ["l1", "l2", "l3", "l4", "l6", "l7", "l8"],
   sku: ["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k11", "k12", "k13"],
+  fact: ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"],
 };
 
-const COL_X: Record<LoopLevel, number> = {
+/** 自上而下：公司在上，基础数据在最下 */
+export const ROW_Y: Record<LoopLevel, number> = {
   company: 0,
-  brand: 220,
-  platform: 440,
-  channel: 660,
-  link: 880,
-  sku: 1120,
+  brand: 260,
+  platform: 520,
+  channel: 780,
+  link: 1040,
+  sku: 1300,
+  fact: 1560,
 };
 
-const HUB_Y = 0;
-const STOCK_START_Y = 110;
-const STOCK_GAP = 58;
+/** @deprecated 兼容旧引用 */
+export const COL_X = ROW_Y;
+
+/** 语义泳道：上卷链纵向对齐，减少交叉 */
+const LANE_X = {
+  scale: 40, // 规模/矩阵
+  traffic: 220, // 流量/认知
+  sales: 420, // 销售主链
+  profit: 640, // 利润主链
+  cost: 860, // 费用/成本
+  inventory: 1080, // 库存/资源
+  extra: 1280, // 其余
+} as const;
+
+type LaneKey = keyof typeof LANE_X;
+
+const STOCK_LANE: Record<string, LaneKey> = {
+  s1: "scale", s2: "traffic", s3: "traffic", s4: "sales", s5: "scale", s6: "cost", s7: "cost", s8: "inventory",
+  b1: "scale", b2: "traffic", b3: "sales", b4: "profit", b5: "scale", b6: "cost", b7: "inventory",
+  p1: "scale", p2: "traffic", p3: "sales", p4: "cost", p5: "profit", p6: "inventory", p7: "traffic",
+  c1: "scale", c2: "sales", c3: "profit", c5: "inventory", c7: "cost", c8: "cost", c9: "traffic",
+  l1: "scale", l2: "traffic", l3: "traffic", l4: "sales", l6: "cost", l7: "profit", l8: "cost",
+  k1: "scale", k2: "traffic", k3: "sales", k4: "cost", k5: "cost", k6: "cost", k7: "traffic",
+  k8: "inventory", k9: "inventory", k11: "profit", k12: "extra", k13: "inventory",
+  f1: "sales", f2: "cost", f3: "traffic", f4: "traffic", f5: "inventory", f6: "scale", f7: "cost", f8: "scale",
+};
+
+/** 各层横向微错开，直线上卷不会叠成一条竖线 */
+const LEVEL_X_NUDGE: Record<LoopLevel, number> = {
+  company: 0,
+  brand: 28,
+  platform: -18,
+  channel: 34,
+  link: -14,
+  sku: 22,
+  fact: -8,
+};
+
+const LANE_SLOT: Record<string, number> = {};
+
+function layoutStockXY(level: LoopLevel, stockId: string, fallbackIdx: number): { x: number; y: number } {
+  const lane = STOCK_LANE[stockId] || "extra";
+  const slotKey = `${level}:${lane}`;
+  const used = LANE_SLOT[slotKey] ?? 0;
+  LANE_SLOT[slotKey] = used + 1;
+  // 同泳道内再错开一点，避免标签重叠
+  const x = LANE_X[lane] + LEVEL_X_NUDGE[level] + used * 78;
+  const y = ROW_Y[level] + (fallbackIdx % 2 === 0 ? -14 : 14);
+  return { x, y };
+}
+
+function clamp01(n: number) {
+  return Math.max(0, Math.min(1, n));
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const n = parseInt(full, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHex(r: number, g: number, b: number) {
+  const to = (v: number) => Math.round(clamp01(v / 255) * 255).toString(16).padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+/** t=0 浅（基础），t=1 深（衍生） */
+export function shadeLevelColor(hex: string, t: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  const mix = clamp01(t);
+  // 浅：与白混合；深：略压暗
+  const light = {
+    r: r + (255 - r) * 0.55,
+    g: g + (255 - g) * 0.55,
+    b: b + (255 - b) * 0.55,
+  };
+  const dark = {
+    r: r * 0.72,
+    g: g * 0.72,
+    b: b * 0.72,
+  };
+  return rgbToHex(
+    light.r + (dark.r - light.r) * mix,
+    light.g + (dark.g - light.g) * mix,
+    light.b + (dark.b - light.b) * mix,
+  );
+}
+
+export function softLevelColor(hex: string, dataKind: LoopDataKind): string {
+  return shadeLevelColor(hex, dataKind === "fact" ? 0.08 : 0.78);
+}
+
+export function nodeColorFor(level: LoopLevel, dataKind: LoopDataKind, kind: LoopNodeKind): string {
+  const base = LEVEL_COLOR[level];
+  if (kind === "hub") return base;
+  return softLevelColor(base, dataKind);
+}
+
+function resolveDataKind(level: LoopLevel, stockId: string): LoopDataKind {
+  return FACT_IDS[level].has(stockId) ? "fact" : "derived";
+}
 
 function nid(level: LoopLevel, id: string) {
   return `${level}:${id}`;
-}
-
-function hubId(level: LoopLevel) {
-  return `hub:${level}`;
 }
 
 const BRIDGES: {
@@ -88,65 +232,79 @@ const BRIDGES: {
   to: [LoopLevel, string];
   label: string;
   polarity: "+" | "-";
+  chain: "sales" | "profit" | "resource" | "source";
 }[] = [
-  { from: ["sku", "k3"], to: ["link", "l4"], label: "上卷销售", polarity: "+" },
-  { from: ["link", "l4"], to: ["channel", "c2"], label: "上卷销售", polarity: "+" },
-  { from: ["channel", "c2"], to: ["platform", "p3"], label: "上卷销售", polarity: "+" },
-  { from: ["platform", "p3"], to: ["brand", "b3"], label: "上卷销售", polarity: "+" },
-  { from: ["brand", "b3"], to: ["company", "s4"], label: "上卷销售", polarity: "+" },
-  { from: ["sku", "k13"], to: ["channel", "c5"], label: "上卷库存", polarity: "+" },
-  { from: ["channel", "c5"], to: ["platform", "p6"], label: "上卷占用", polarity: "+" },
-  { from: ["platform", "p6"], to: ["brand", "b7"], label: "上卷资源", polarity: "+" },
-  { from: ["brand", "b7"], to: ["company", "s8"], label: "上卷资源", polarity: "+" },
-  { from: ["sku", "k11"], to: ["link", "l7"], label: "上卷利润", polarity: "+" },
-  { from: ["link", "l7"], to: ["channel", "c3"], label: "上卷贡献", polarity: "+" },
-  { from: ["channel", "c3"], to: ["platform", "p5"], label: "上卷利润", polarity: "+" },
-  { from: ["platform", "p5"], to: ["brand", "b4"], label: "上卷利润池", polarity: "+" },
+  { from: ["fact", "f1"], to: ["sku", "k2"], label: "支撑销量", polarity: "+", chain: "sales" },
+  { from: ["fact", "f1"], to: ["sku", "k3"], label: "支撑销售", polarity: "+", chain: "sales" },
+  { from: ["fact", "f2"], to: ["sku", "k4"], label: "支撑退款", polarity: "+", chain: "source" },
+  { from: ["fact", "f3"], to: ["sku", "k7"], label: "支撑推广", polarity: "+", chain: "source" },
+  { from: ["fact", "f4"], to: ["sku", "k2"], label: "支撑流量转化", polarity: "+", chain: "sales" },
+  { from: ["fact", "f5"], to: ["sku", "k13"], label: "支撑库存", polarity: "+", chain: "resource" },
+  { from: ["fact", "f6"], to: ["sku", "k1"], label: "支撑价盘", polarity: "+", chain: "source" },
+  { from: ["fact", "f6"], to: ["sku", "k5"], label: "支撑成本", polarity: "+", chain: "source" },
+  { from: ["fact", "f7"], to: ["sku", "k6"], label: "支撑平台费", polarity: "+", chain: "source" },
+  { from: ["sku", "k3"], to: ["link", "l4"], label: "上卷销售", polarity: "+", chain: "sales" },
+  { from: ["link", "l4"], to: ["channel", "c2"], label: "上卷销售", polarity: "+", chain: "sales" },
+  { from: ["channel", "c2"], to: ["platform", "p3"], label: "上卷销售", polarity: "+", chain: "sales" },
+  { from: ["platform", "p3"], to: ["brand", "b3"], label: "上卷销售", polarity: "+", chain: "sales" },
+  { from: ["brand", "b3"], to: ["company", "s4"], label: "上卷销售", polarity: "+", chain: "sales" },
+  { from: ["sku", "k13"], to: ["channel", "c5"], label: "上卷库存", polarity: "+", chain: "resource" },
+  { from: ["channel", "c5"], to: ["platform", "p6"], label: "上卷占用", polarity: "+", chain: "resource" },
+  { from: ["platform", "p6"], to: ["brand", "b7"], label: "上卷资源", polarity: "+", chain: "resource" },
+  { from: ["brand", "b7"], to: ["company", "s8"], label: "上卷资源", polarity: "+", chain: "resource" },
+  { from: ["sku", "k11"], to: ["link", "l7"], label: "上卷利润", polarity: "+", chain: "profit" },
+  { from: ["link", "l7"], to: ["channel", "c3"], label: "上卷贡献", polarity: "+", chain: "profit" },
+  { from: ["channel", "c3"], to: ["platform", "p5"], label: "上卷利润", polarity: "+", chain: "profit" },
+  { from: ["platform", "p5"], to: ["brand", "b4"], label: "上卷利润池", polarity: "+", chain: "profit" },
 ];
 
-export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): LoopGraphBundle {
+export function emptyCustomState(): LoopGraphCustomState {
+  return { version: 1, stocks: [], links: [], positions: {} };
+}
+
+export function loadLoopCustomState(): LoopGraphCustomState {
+  try {
+    const rawCur = localStorage.getItem(LOOP_CUSTOM_STORAGE_KEY);
+    const rawPrev =
+      localStorage.getItem("lc-loop-graph-custom-v3")
+      || localStorage.getItem("lc-loop-graph-custom-v2")
+      || localStorage.getItem("lc-loop-graph-custom-v1");
+    const raw = rawCur || rawPrev;
+    if (!raw) return emptyCustomState();
+    const parsed = JSON.parse(raw) as LoopGraphCustomState;
+    if (!parsed) return emptyCustomState();
+    return {
+      version: 1,
+      stocks: Array.isArray(parsed.stocks) ? parsed.stocks : [],
+      links: Array.isArray(parsed.links) ? parsed.links : [],
+      positions: rawCur && parsed.positions && typeof parsed.positions === "object"
+        ? parsed.positions
+        : {},
+    };
+  } catch {
+    return emptyCustomState();
+  }
+}
+
+export function saveLoopCustomState(state: LoopGraphCustomState) {
+  localStorage.setItem(LOOP_CUSTOM_STORAGE_KEY, JSON.stringify(state));
+}
+
+export function buildLoopForceGraph(
+  filterLevel: LoopLevel | "all" = "all",
+  custom: LoopGraphCustomState = emptyCustomState(),
+): LoopGraphBundle {
   const nodes: LoopGNode[] = [];
   const links: LoopGLink[] = [];
   const loops: (NamedLoop & { level: LoopLevel })[] = [];
   const nodeSet = new Set<string>();
 
+  // 每次重建清空泳道占用
+  for (const k of Object.keys(LANE_SLOT)) delete LANE_SLOT[k];
+
   const levels = filterLevel === "all" ? LEVEL_ORDER : [filterLevel];
 
-  // 层级壳节点：公司（公司）/ 品牌（品牌）…
-  for (const level of levels) {
-    const id = hubId(level);
-    const ont = LOOP_LEVEL_ONTOLOGY[level];
-    nodes.push({
-      id,
-      name: hubDisplayName(level),
-      code: ont.otype,
-      level,
-      levelLabel: LEVEL_LABEL[level],
-      kind: "hub",
-      sub: `${ont.typeKey} · ${ont.description}`,
-      color: LEVEL_COLOR[level],
-      val: level === "company" ? 28 : 22,
-      fx: COL_X[level],
-      fy: HUB_Y,
-    });
-    nodeSet.add(id);
-  }
-
-  // 包含关系：公司 → 品牌 → … → SKU（与 Ontology contains 对齐）
-  if (filterLevel === "all") {
-    for (const edge of CONTAINMENT_LABELS) {
-      links.push({
-        id: `contain-${edge.from}-${edge.to}`,
-        source: hubId(edge.from),
-        target: hubId(edge.to),
-        label: edge.label,
-        polarity: "+",
-        cross: false,
-        kind: "contain",
-        chains: ["CONTAIN"],
-      });
-    }
-  }
+  // 不再绘制左侧「层级壳 + 包含」脊柱，只保留各层指标节点
 
   for (const level of levels) {
     const model = getLevelModel(level);
@@ -158,8 +316,10 @@ export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): Loo
       if (!s) return;
       const idFull = nid(level, id);
       nodeSet.add(idFull);
-      // 奇偶微错开，避免竖线完全重叠
-      const xJitter = (idx % 2 === 0 ? -28 : 28);
+      const dataKind = resolveDataKind(level, id);
+      const color = nodeColorFor(level, dataKind, "stock");
+      const laid = layoutStockXY(level, id, idx);
+      const pos = custom.positions[idFull];
       nodes.push({
         id: idFull,
         name: s.label,
@@ -167,25 +327,14 @@ export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): Loo
         level,
         levelLabel: LEVEL_LABEL[level],
         kind: "stock",
+        dataKind,
         sub: s.sub,
         details: s.details,
-        color: LEVEL_COLOR[level],
-        val: 10,
-        fx: COL_X[level] + xJitter,
-        fy: STOCK_START_Y + idx * STOCK_GAP,
-      });
-
-      // 层级壳「包含」本层指标
-      links.push({
-        id: `member-${idFull}`,
-        source: hubId(level),
-        target: idFull,
-        label: "含指标",
-        polarity: "+",
-        cross: false,
-        kind: "member",
-        level,
-        chains: ["MEMBER"],
+        color,
+        softColor: shadeLevelColor(LEVEL_COLOR[level], dataKind === "fact" ? 0.05 : 0.55),
+        val: dataKind === "fact" ? 8 : 10,
+        fx: pos?.x ?? laid.x,
+        fy: pos?.y ?? laid.y,
       });
     });
 
@@ -220,6 +369,51 @@ export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): Loo
     }
   }
 
+  // 自定义节点
+  for (const cs of custom.stocks) {
+    if (filterLevel !== "all" && cs.level !== filterLevel) continue;
+    const idFull = cs.id.startsWith(`${cs.level}:`) ? cs.id : nid(cs.level, cs.id);
+    if (nodeSet.has(idFull)) continue;
+    nodeSet.add(idFull);
+    const dataKind = cs.dataKind || "fact";
+    const color = nodeColorFor(cs.level, dataKind, "stock");
+    const siblings = nodes.filter((n) => n.level === cs.level && n.kind === "stock").length;
+    const col = cs.col ?? siblings;
+    const pos = custom.positions[idFull];
+    nodes.push({
+      id: idFull,
+      name: cs.name,
+      code: cs.code,
+      level: cs.level,
+      levelLabel: LEVEL_LABEL[cs.level],
+      kind: "stock",
+      dataKind,
+      sub: cs.sub,
+      color,
+      softColor: shadeLevelColor(LEVEL_COLOR[cs.level], dataKind === "fact" ? 0.05 : 0.55),
+      val: 10,
+      custom: true,
+      fx: pos?.x ?? (LANE_X.extra + col * 56),
+      fy: pos?.y ?? (ROW_Y[cs.level] + (col % 2 === 0 ? -10 : 10)),
+    });
+  }
+
+  // 自定义因果边
+  for (const cl of custom.links) {
+    if (!nodeSet.has(cl.source) || !nodeSet.has(cl.target)) continue;
+    links.push({
+      id: cl.id,
+      source: cl.source,
+      target: cl.target,
+      label: cl.label || (cl.polarity === "-" ? "抑制" : "促进"),
+      polarity: cl.polarity,
+      cross: false,
+      kind: "causal",
+      chains: ["CUSTOM"],
+      custom: true,
+    });
+  }
+
   if (filterLevel === "all") {
     BRIDGES.forEach((b, i) => {
       const s = nid(b.from[0], b.from[1]);
@@ -233,7 +427,7 @@ export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): Loo
         polarity: b.polarity,
         cross: true,
         kind: "rollup",
-        chains: ["ROLLUP"],
+        chains: ["ROLLUP", b.chain],
       });
     });
   }
@@ -241,4 +435,4 @@ export function buildLoopForceGraph(filterLevel: LoopLevel | "all" = "all"): Loo
   return { nodes, links, loops };
 }
 
-export { LEVEL_COLOR, COL_X };
+export { FACT_IDS };

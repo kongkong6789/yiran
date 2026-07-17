@@ -36,6 +36,11 @@ export const LOOP_LEVEL_ONTOLOGY: Record<
     otype: "SKU",
     description: "可售规格编码",
   },
+  fact: {
+    typeKey: "FactTable",
+    otype: "事实表",
+    description: "订单/退款/推广/库存等采集事实",
+  },
 };
 
 export const CONTAINMENT_LABELS: { from: LoopLevel; to: LoopLevel; label: string }[] = [
@@ -44,6 +49,7 @@ export const CONTAINMENT_LABELS: { from: LoopLevel; to: LoopLevel; label: string
   { from: "platform", to: "channel", label: "包含店铺" },
   { from: "channel", to: "link", label: "包含链接" },
   { from: "link", to: "sku", label: "包含SKU" },
+  { from: "sku", to: "fact", label: "依赖事实" },
 ];
 
 export function hubDisplayName(level: LoopLevel): string {

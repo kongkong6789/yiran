@@ -563,4 +563,81 @@ class PgSession:
         return self.lake._fetch(self._con, sql, params)
 
 
+class AgePgLake(PgLake):
+    """知识图谱 AGE 连接。
+
+    业务库(POSTGRES_*) 与知识库可分主机：优先 AGE_POSTGRES_*，其余字段回退 POSTGRES_*。
+    例如业务在 192.168.0.188、AGE 在 192.168.1.142。
+    """
+
+    def __init__(self):
+        super().__init__()
+        # AGE 查询走 public/ag_catalog，不强制 lake schema
+        self.schema = "public"
+
+    def enabled(self) -> bool:
+        return bool(self._hosts() and self._conn_params().get("dbname"))
+
+    def _hosts(self) -> list[str]:
+        self._reload_env()
+        out: list[str] = []
+        for keys in (
+            ("AGE_POSTGRES_HOST", "AGE_PG_HOST"),
+            ("POSTGRES_HOST", "PG_HOST"),
+            ("POSTGRES_HOST_FALLBACK", "PG_HOST_FALLBACK"),
+        ):
+            h = self._pg_env(*keys, default="").strip()
+            if h and h not in out:
+                out.append(h)
+        return out
+
+    def _conn_params(self) -> dict:
+        self._reload_env()
+        return {
+            "port": int(
+                self._pg_env(
+                    "AGE_POSTGRES_PORT", "AGE_PG_PORT", "POSTGRES_PORT", "PG_PORT",
+                    default=str(settings.PG_PORT),
+                )
+            ),
+            "dbname": self._pg_env(
+                "AGE_POSTGRES_DB", "AGE_PG_DB", "POSTGRES_DB", "PG_DB",
+                default=settings.PG_DB,
+            ),
+            "user": self._pg_env(
+                "AGE_POSTGRES_USER", "AGE_PG_USER", "POSTGRES_USER", "PG_USER",
+                default=settings.PG_USER,
+            ),
+            "password": self._pg_env(
+                "AGE_POSTGRES_PASSWORD", "AGE_PG_PASSWORD", "POSTGRES_PASSWORD", "PG_PASSWORD",
+                default=settings.PG_PASSWORD,
+            ),
+        }
+
+    def connect(self):
+        p = self._conn_params()
+        last_exc: Exception | None = None
+        for host in self._hosts():
+            try:
+                # AGE 需要 ag_catalog；连接后由 age._prepare_age 再 LOAD/SET
+                con = psycopg2.connect(
+                    host=host,
+                    port=p["port"],
+                    dbname=p["dbname"],
+                    user=p["user"],
+                    password=p["password"],
+                    connect_timeout=5,
+                    options="-c search_path=ag_catalog,public",
+                )
+                self._active_host = host
+                return con
+            except Exception as exc:
+                last_exc = exc
+        self._active_host = ""
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("未配置 AGE_POSTGRES_HOST / POSTGRES_HOST")
+
+
 pglake = PgLake()
+age_pglake = AgePgLake()

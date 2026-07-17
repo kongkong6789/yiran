@@ -1,12 +1,10 @@
 import { Layout, Menu, Grid, Space, Typography, Avatar, Dropdown } from "antd";
 import {
-  AlertOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
   ShareAltOutlined,
   HomeOutlined,
   SyncOutlined,
-  MessageOutlined,
   BookOutlined,
   ThunderboltOutlined,
   ApiOutlined,
@@ -17,6 +15,9 @@ import {
   UserOutlined,
   ApartmentOutlined,
   ShopOutlined,
+  MoonOutlined,
+  SunOutlined,
+  CheckSquareOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -24,7 +25,9 @@ import { useEffect, useMemo, useState } from "react";
 import UserSettingsModal from "./UserSettingsModal";
 import BrandLogo from "./BrandLogo";
 import CollabUnreadBell from "./CollabUnreadBell";
+import MeetingInviteAlert from "./MeetingInviteAlert";
 import { brand } from "../theme/brand";
+import { useThemeMode } from "../theme/mode";
 import { clearAuthToken, getAuthToken, getMe, logout, type AuthUser } from "../api/client";
 
 const { Header, Content } = Layout;
@@ -37,6 +40,10 @@ const WORK_NAV: NavItem[] = [
   { key: "/agent", icon: <MessageOutlined />, label: "对话" },
   { key: "/collab", icon: <AlertOutlined />, label: "协作" },
   { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
+  { key: "/home", icon: <HomeOutlined />, label: "首页" },
+  { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
+  { key: "/console", icon: <FlagOutlined />, label: "办流程" },
+  { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
 ];
 
 /** 沉淀与复用 */
@@ -56,7 +63,6 @@ const COMMERCE_NAV: NavItem[] = [
 
 /** 业务能力与外部系统 */
 const CAPABILITY_NAV: NavItem[] = [
-  { key: "/council", icon: <TeamOutlined />, label: "专家团" },
   { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
   { key: "/datalake", icon: <BarChartOutlined />, label: "数据" },
 ];
@@ -76,6 +82,7 @@ export default function AppLayout() {
   const nav = useNavigate();
   const loc = useLocation();
   const screens = Grid.useBreakpoint();
+  const { mode, toggle } = useThemeMode();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -129,11 +136,17 @@ export default function AppLayout() {
   const userMenu = {
     items: [
       { key: "settings", label: "个人信息", icon: <UserOutlined /> },
+      {
+        key: "theme",
+        label: mode === "dark" ? "浅色模式" : "深色模式",
+        icon: mode === "dark" ? <SunOutlined /> : <MoonOutlined />,
+      },
       { type: "divider" as const },
       { key: "logout", label: "退出登录", danger: true },
     ],
     onClick: ({ key }: { key: string }) => {
       if (key === "settings") setSettingsOpen(true);
+      if (key === "theme") toggle();
       if (key === "logout") handleLogout();
     },
   };
@@ -151,7 +164,7 @@ export default function AppLayout() {
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") nav("/home");
           }}
-          title="回到总览"
+          title="回到首页"
         >
           <BrandLogo size={40} className="app-brand-logo" />
           {screens.md !== false && (
@@ -199,6 +212,8 @@ export default function AppLayout() {
           </Dropdown>
         </Space>
       </Header>
+
+      {user ? <MeetingInviteAlert enabled /> : null}
 
       <UserSettingsModal
         open={settingsOpen}

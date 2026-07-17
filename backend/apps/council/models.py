@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -43,18 +44,29 @@ class Meeting(models.Model):
     """一场围绕核心问题的圆桌会议。"""
 
     class Status(models.TextChoices):
+        DRAFT = "draft", "草稿/待开始"
         ACTIVE = "active", "进行中"
         PAUSED = "paused", "已暂停"
         STOPPED = "stopped", "已结束"
 
     title = models.CharField("会议标题", max_length=200)
     question = models.TextField("核心问题(全程围绕它)")
-    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    intro = models.TextField("会议简介", blank=True, default="")
+    scheduled_at = models.DateTimeField("计划开始时间", null=True, blank=True)
+    duration_minutes = models.PositiveIntegerField("预计时长(分钟)", default=60)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT)
     participants = models.ManyToManyField(AgentProfile, verbose_name="参会 Agent", related_name="meetings")
+    human_participants = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        verbose_name="参会同事",
+        related_name="council_meetings",
+        blank=True,
+    )
     context_summary = models.TextField("压缩后的上下文", blank=True)
     round = models.IntegerField("当前轮次", default=0)
     next_speaker_idx = models.IntegerField("下一位发言者下标", default=0)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    started_at = models.DateTimeField("实际开始时间", null=True, blank=True)
 
     class Meta:
         verbose_name = "会议"
@@ -114,3 +126,44 @@ class Deliverable(models.Model):
 
     def __str__(self):
         return f"{self.title} v{self.version}"
+
+
+class MeetingInvite(models.Model):
+    """拉同事进会时的待处理邀请（用于对方醒目提醒）。"""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "待处理"
+        SEEN = "seen", "已查看"
+        JOINED = "joined", "已进入"
+        DISMISSED = "dismissed", "稍后再说"
+
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="invites")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="council_invites",
+    )
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="council_invites_sent",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "会议邀请"
+        verbose_name_plural = "会议邀请"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "status", "-created_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["meeting", "user"], name="uniq_council_invite_meeting_user"),
+        ]
+
+    def __str__(self):
+        return f"invite#{self.id} meeting={self.meeting_id} → user={self.user_id}"

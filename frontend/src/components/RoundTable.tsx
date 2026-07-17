@@ -1,113 +1,166 @@
 import { Avatar } from "antd";
-import type { Agent } from "../api/client";
-import { brand } from "../theme/brand";
+import type { Agent, CouncilHuman } from "../api/client";
+
+export type RoundSeat =
+  | { key: string; kind: "agent"; id: number; name: string; emoji: string; role?: string }
+  | { key: string; kind: "human"; id: number; name: string; avatarUrl?: string | null; role?: string };
 
 interface Props {
   question: string;
   agents: Agent[];
+  humans?: CouncilHuman[];
   activeAgentId: number | null;
+  hostName?: string;
   size?: number;
 }
 
-/** 圆桌可视化:中心大圆为核心问题,四周小圆为参会 Agent,当前发言者高亮。 */
-export default function RoundTable({ question, agents, activeAgentId, size = 360 }: Props) {
+function buildSeats(agents: Agent[], humans: CouncilHuman[]): RoundSeat[] {
+  return [
+    ...humans.map((h) => ({
+      key: `h-${h.id}`,
+      kind: "human" as const,
+      id: h.id,
+      name: h.display_name || h.username,
+      avatarUrl: h.avatar_url,
+      role: "同事",
+    })),
+    ...agents.map((a) => ({
+      key: `a-${a.id}`,
+      kind: "agent" as const,
+      id: a.id,
+      name: a.name,
+      emoji: a.emoji,
+      role: a.role || "AI",
+    })),
+  ];
+}
+
+/** 木纹圆台 + 环形座位（对齐开会中舞台稿） */
+export default function RoundTable({
+  question,
+  agents,
+  humans = [],
+  activeAgentId,
+  hostName,
+  size = 440,
+}: Props) {
+  const seats = buildSeats(agents, humans);
   const cx = size / 2;
   const cy = size / 2;
-  const radius = size / 2 - 46;
-  const bigR = 62;
+  const tableR = size * 0.28;
+  const seatR = size * 0.38;
 
   return (
-    <div
-      style={{
-        position: "relative",
-        width: size,
-        height: size,
-        margin: "0 auto",
-      }}
-    >
-      {/* 连线 */}
-      <svg width={size} height={size} style={{ position: "absolute", inset: 0 }}>
-        {agents.map((a, i) => {
-          const ang = (2 * Math.PI * i) / Math.max(agents.length, 1) - Math.PI / 2;
-          const x = cx + radius * Math.cos(ang);
-          const y = cy + radius * Math.sin(ang);
-          const active = a.id === activeAgentId;
-          return (
-            <line
-              key={a.id}
-              x1={cx}
-              y1={cy}
-              x2={x}
-              y2={y}
-              stroke={active ? brand.gold : brand.borderLight}
-              strokeWidth={active ? 2.5 : 1}
-              strokeDasharray={active ? "0" : "4 4"}
-            />
-          );
-        })}
-      </svg>
-
-      {/* 中心大圆:核心问题 */}
+    <div className="rt-stage" style={{ width: size, height: size }}>
       <div
+        className="rt-table"
         style={{
-          position: "absolute",
-          left: cx - bigR,
-          top: cy - bigR,
-          width: bigR * 2,
-          height: bigR * 2,
-          borderRadius: "50%",
-          background: brand.gradientGold,
-          color: "#fff",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          padding: 12,
-          fontSize: 12,
-          fontWeight: 600,
-          boxShadow: "0 6px 24px rgba(196, 146, 74, 0.35)",
+          width: tableR * 2,
+          height: tableR * 2,
+          left: cx - tableR,
+          top: cy - tableR,
         }}
       >
-        {question.length > 28 ? question.slice(0, 28) + "…" : question}
+        <div className="rt-table-inner">
+          <div className="rt-table-label">
+            {question.length > 36 ? `${question.slice(0, 36)}…` : question || "圆桌议题"}
+          </div>
+        </div>
       </div>
 
-      {/* 四周 Agent 小圆 */}
-      {agents.map((a, i) => {
-        const ang = (2 * Math.PI * i) / Math.max(agents.length, 1) - Math.PI / 2;
-        const x = cx + radius * Math.cos(ang);
-        const y = cy + radius * Math.sin(ang);
-        const active = a.id === activeAgentId;
+      {seats.map((s, i) => {
+        const ang = (2 * Math.PI * i) / Math.max(seats.length, 1) - Math.PI / 2;
+        const x = cx + seatR * Math.cos(ang);
+        const y = cy + seatR * Math.sin(ang);
+        const active = s.kind === "agent" && s.id === activeAgentId;
+        const isHost = hostName && s.name === hostName;
         return (
           <div
-            key={a.id}
-            style={{
-              position: "absolute",
-              left: x - 30,
-              top: y - 30,
-              width: 60,
-              textAlign: "center",
-              transition: "transform .2s",
-              transform: active ? "scale(1.15)" : "scale(1)",
-            }}
+            key={s.key}
+            className={`rt-seat${active ? " is-active" : ""}${isHost ? " is-host" : ""}`}
+            style={{ left: x - 36, top: y - 42 }}
           >
             <Avatar
-              size={48}
-              style={{
-                background: active ? brand.gold : brand.bgElevated,
-                border: active ? `2px solid ${brand.gold}` : `1px solid ${brand.borderLight}`,
-                fontSize: 22,
-                boxShadow: active ? "0 0 0 6px rgba(196, 146, 74, 0.2)" : "none",
-              }}
+              size={52}
+              src={s.kind === "human" ? s.avatarUrl || undefined : undefined}
+              className="rt-seat-avatar"
             >
-              {a.emoji}
+              {s.kind === "agent" ? s.emoji : (s.name[0] || "?").toUpperCase()}
             </Avatar>
-            <div style={{ fontSize: 11, marginTop: 2, color: active ? brand.goldPale : brand.textMuted }}>
-              {a.name}
-              {active && " 💬"}
+            <div className="rt-seat-name">{s.name.length > 6 ? `${s.name.slice(0, 6)}…` : s.name}</div>
+            <div className="rt-seat-role">
+              {isHost ? "主持人" : s.role || (s.kind === "agent" ? "AI" : "同事")}
+              {active ? " · 发言中" : ""}
             </div>
           </div>
         );
       })}
+
+      <style>{`
+        .rt-stage {
+          position: relative;
+          margin: 0 auto;
+        }
+        .rt-table {
+          position: absolute;
+          border-radius: 50%;
+          background:
+            radial-gradient(circle at 35% 30%, rgba(255,255,255,0.22), transparent 45%),
+            radial-gradient(circle at 50% 50%, #c4a06a 0%, #8b5a2b 55%, #5c3a1a 100%);
+          box-shadow:
+            0 18px 40px rgba(60, 35, 15, 0.28),
+            inset 0 0 0 10px rgba(90, 50, 20, 0.35),
+            inset 0 0 0 18px rgba(196, 160, 106, 0.25);
+        }
+        .rt-table-inner {
+          position: absolute;
+          inset: 18%;
+          border-radius: 50%;
+          background: radial-gradient(circle at 40% 35%, #e8d2a8, #b8894f 70%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          text-align: center;
+          box-shadow: inset 0 2px 8px rgba(255,255,255,0.25);
+        }
+        .rt-table-label {
+          color: #3b2410;
+          font-size: 12px;
+          font-weight: 700;
+          line-height: 1.4;
+        }
+        .rt-seat {
+          position: absolute;
+          width: 72px;
+          text-align: center;
+          transition: transform .2s;
+        }
+        .rt-seat.is-active { transform: scale(1.08); }
+        .rt-seat-avatar {
+          border: 2px solid #fff !important;
+          box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+          background: #e8eef6 !important;
+          font-size: 22px;
+        }
+        .rt-seat.is-active .rt-seat-avatar {
+          border-color: #C4924A !important;
+          box-shadow: 0 0 0 4px rgba(196, 146, 74, 0.28);
+        }
+        .rt-seat.is-host .rt-seat-avatar {
+          border-color: #3D6FA8 !important;
+        }
+        .rt-seat-name {
+          margin-top: 4px;
+          font-size: 12px;
+          font-weight: 600;
+          color: #172033;
+        }
+        .rt-seat-role {
+          font-size: 10px;
+          color: #7b879c;
+        }
+      `}</style>
     </div>
   );
 }

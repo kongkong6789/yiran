@@ -38,6 +38,7 @@ import {
   listAdminUsers,
   updateAdminUser,
   type AdminUserRow,
+  type AuthUser,
 } from "../api/client";
 import WeComBindingManager from "../features/wecom-bindings/WeComBindingManager";
 import WeComNotificationManager from "../features/wecom-bindings/WeComNotificationManager";
@@ -87,6 +88,7 @@ export default function Accounts() {
   const [pwdForm] = Form.useForm();
   const [phoneForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
+  const [me, setMe] = useState<AuthUser | null>(null);
   const [isSuperuserSelf, setIsSuperuserSelf] = useState(false);
   const [selfUserId, setSelfUserId] = useState<number>();
   const [activeTab, setActiveTab] = useState("accounts");
@@ -107,6 +109,7 @@ export default function Accounts() {
   useEffect(() => {
     getMe()
       .then((res) => {
+        setMe(res.user);
         const canManage = !!(res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage);
         setIsStaffSelf(canManage);
         setIsSuperuserSelf(!!res.user.is_superuser);
@@ -173,6 +176,30 @@ export default function Accounts() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDelete = (row: AdminUserRow) => {
+    if (me && row.id === me.id) {
+      message.warning("不能删除自己的账号");
+      return;
+    }
+    modal.confirm({
+      title: `删除账号「${row.username}」？`,
+      content: "删除后无法恢复，该账号的登录态也会失效。",
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await deleteAdminUser(row.id);
+          message.success("账号已删除");
+          await load();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || "删除失败");
+          throw e;
+        }
+      },
+    });
   };
 
   if (!isStaffSelf) {
@@ -429,11 +456,23 @@ export default function Accounts() {
                                   || row.organization_role === "owner"
                                   || (row.is_staff && !isSuperuserSelf),
                               },
+                              {
+                                key: "delete",
+                                icon: <DeleteOutlined />,
+                                label: "删除账号",
+                                danger: true,
+                                disabled: !!(me && row.id === me.id),
+                              },
                             ],
                             onClick: ({ key }) => {
                               if (key === "phone") openPhoneModal(row);
                               else if (key === "password") openPasswordModal(row);
                               else if (key === "delete") confirmDeleteAccount(row);
+                            },
+                            onClick: ({ key }) => {
+                              if (key === "phone") openPhoneModal(row);
+                              else if (key === "password") openPasswordModal(row);
+                              else if (key === "delete") handleDelete(row);
                             },
                           }}
                         >

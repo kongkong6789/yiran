@@ -78,16 +78,6 @@ REGISTRY: list[McpServerDef] = [
         ],
     ),
     McpServerDef(
-        id="tencent_docs", name="腾讯文档", desc="SOP · CLD 工作坊 · 协作文档",
-        layer="协作", transport="streamable_http", url_env="MCP_TENCENT_DOCS_URL",
-        tools=["read_doc", "write_doc", "list_docs", "search_docs"],
-    ),
-    McpServerDef(
-        id="wedrive", name="微盘", desc="资料分发 · 共享盘 · 权限",
-        layer="协作", transport="streamable_http", url_env="MCP_WEDRIVE_URL",
-        tools=["list_files", "upload_file", "download_file", "share_link"],
-    ),
-    McpServerDef(
         id="kingdee", name="金蝶云", desc="财务 · 对账 · 凭证 · 应收",
         layer="感知", transport="streamable_http", url_env="MCP_KINGDEE_URL",
         tools=["query_voucher", "query_receivable", "query_balance", "sync_gl"],
@@ -101,11 +91,6 @@ REGISTRY: list[McpServerDef] = [
         id="nas", name="NAS 文件库", desc="合同 · 归档 · 附件检索",
         layer="协作", transport="stdio", command_env="MCP_NAS_COMMAND", args_env="MCP_NAS_ARGS",
         tools=["list_directory", "read_file", "search_files", "get_metadata"],
-    ),
-    McpServerDef(
-        id="workbuddy", name="WorkBuddy", desc="企微 AI · 自然语言触发 Agent",
-        layer="终端", transport="sse", url_env="MCP_WORKBUDDY_URL",
-        tools=["chat", "trigger_agent", "list_sessions", "handoff_task"],
     ),
 ]
 

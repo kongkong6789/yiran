@@ -146,7 +146,7 @@ export function pickEntityAtLevel(
   if (onPath) return onPath;
 
   // 路径上没有该层：从最近的公共祖先向下取第一条枝
-  const order: LoopLevel[] = ["company", "brand", "platform", "channel", "link", "sku"];
+  const order: LoopLevel[] = ["company", "brand", "platform", "channel", "link", "sku", "fact"];
   const targetIdx = order.indexOf(targetLevel);
   let node = root;
   for (let i = 0; i <= targetIdx; i++) {

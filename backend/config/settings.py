@@ -28,6 +28,7 @@ DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -35,6 +36,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # 第三方
+    "channels",
     "rest_framework",
     "rest_framework.authtoken",
     "drf_spectacular",
@@ -87,6 +89,13 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
+
+# 圆桌/聊天 WebSocket（单进程开发用内存层；多进程部署请换 Redis）
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
 
 # 本地 SQLite 仅作为未配置 PostgreSQL 时的显式开发回退；下方会按环境变量切换 ORM 主库。
 DATABASES = {
@@ -193,8 +202,13 @@ if USE_POSTGRESQL:
     }
 
 # LightRAG / AGE 图谱
+# AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...
+# 未配置时回退 POSTGRES_*
 LIGHTRAG_SOURCE_ID = os.getenv("LIGHTRAG_SOURCE_ID", "")
 LIGHTRAG_WORKSPACE = os.getenv("LIGHTRAG_WORKSPACE", "")
+AGE_PG_HOST = _pg_env("AGE_POSTGRES_HOST", "AGE_PG_HOST", default=PG_HOST)
+AGE_PG_PORT = int(_pg_env("AGE_POSTGRES_PORT", "AGE_PG_PORT", default=str(PG_PORT)))
+AGE_PG_DB = _pg_env("AGE_POSTGRES_DB", "AGE_PG_DB", default=PG_DB)
 
 # LLM 配置(意图识别/生成),无 key 时降级为规则引擎
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -221,11 +235,8 @@ JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
 
 # MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
 MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")
-MCP_TENCENT_DOCS_URL = os.getenv("MCP_TENCENT_DOCS_URL", "")
-MCP_WEDRIVE_URL = os.getenv("MCP_WEDRIVE_URL", "")
 MCP_KINGDEE_URL = os.getenv("MCP_KINGDEE_URL", "")
 MCP_JACKYUN_URL = os.getenv("MCP_JACKYUN_URL", "")
-MCP_WORKBUDDY_URL = os.getenv("MCP_WORKBUDDY_URL", "")
 MCP_NAS_COMMAND = os.getenv("MCP_NAS_COMMAND", "")
 MCP_NAS_ARGS = os.getenv("MCP_NAS_ARGS", "")
 

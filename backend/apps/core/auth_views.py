@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import FileResponse, Http404
 from django.utils import timezone
+from django.http import FileResponse, Http404, HttpResponse
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -355,6 +356,7 @@ def admin_users(request):
 @permission_classes([IsAuthenticated])
 def admin_user_detail(request, user_id: int):
     """管理员：改密 / 启停 / 角色 / 删除账号。"""
+    """管理员：改密 / 启停 / 角色 / 删除。"""
     denied = _require_staff(request.user)
     if denied:
         return denied
@@ -373,6 +375,20 @@ def admin_user_detail(request, user_id: int):
             return Response({"ok": False, "error": "不能管理其他企业的用户"}, status=403)
     if target.is_superuser and not request.user.is_superuser:
         return Response({"ok": False, "error": "不能修改超级管理员"}, status=403)
+    if request.method == "DELETE":
+        if target.id == request.user.id:
+            return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)
+        if target.is_superuser and not request.user.is_superuser:
+            return Response({"ok": False, "error": "不能删除超级管理员"}, status=403)
+        if target.is_superuser:
+            other_supers = User.objects.filter(is_superuser=True).exclude(id=target.id).count()
+            if other_supers < 1:
+                return Response({"ok": False, "error": "不能删除唯一的超级管理员"}, status=400)
+        username = target.username
+        Token.objects.filter(user=target).delete()
+        target.delete()
+        return Response({"ok": True, "deleted": username})
+
     if request.method == "DELETE":
         if target.id == request.user.id:
             return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)
@@ -831,7 +847,7 @@ def change_password(request):
     })
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def serve_avatar(request, stored_id: str):
     """头像静态拉取：Header Token 或 ?token=。"""
@@ -858,4 +874,11 @@ def serve_avatar(request, stored_id: str):
     if not path.is_file():
         raise Http404()
     mime = mimetypes.guess_type(str(path))[0] or "image/png"
+    if request.method == "HEAD":
+        resp = HttpResponse(status=200, content_type=mime)
+        try:
+            resp["Content-Length"] = str(path.stat().st_size)
+        except OSError:
+            pass
+        return resp
     return FileResponse(path.open("rb"), as_attachment=False, filename=safe, content_type=mime)
