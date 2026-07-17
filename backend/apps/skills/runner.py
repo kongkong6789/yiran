@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from django.conf import settings
+
+from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
 
 from .cos_storage import cos_enabled, fetch_skill_bytes
 from .models import SkillAsset, UserSkill
@@ -163,24 +167,71 @@ def pick_command(skill: UserSkill, workspace: Path, brand: str, message: str) ->
     return ""
 
 
-def run_shell_command(workspace: Path, command: str, *, timeout: int | None = None) -> dict:
+def _stop_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            proc.kill()
+        proc.wait()
+
+
+def run_shell_command(
+    workspace: Path,
+    command: str,
+    *,
+    timeout: int | None = None,
+    cancel_check=None,
+    poll_interval: float = 0.1,
+) -> dict:
     timeout = timeout or int(getattr(settings, "SKILL_SCRIPT_TIMEOUT", 180))
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(workspace),
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=env,
+            start_new_session=True,
         )
-        stdout = proc.stdout or ""
+        started_at = time.monotonic()
+        while True:
+            raise_if_cancelled(cancel_check)
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0:
+                _stop_process(proc)
+                stdout, stderr = proc.communicate()
+                return {
+                    "ok": False,
+                    "command": command,
+                    "stdout": (stdout or "")[:16000],
+                    "stderr": (stderr or "")[:4000] or f"脚本超时(>{timeout}s)",
+                    "returncode": -1,
+                }
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=min(max(poll_interval, 0.01), remaining),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise_if_cancelled(cancel_check)
         # 若脚本把结果写入 json,尽量读入 stdout 供 LLM 使用
         extra = ""
         for pattern in (r'brand_[^"\s]+\.json', r'--clean-output\s+(\S+\.json)'):
@@ -196,18 +247,17 @@ def run_shell_command(workspace: Path, command: str, *, timeout: int | None = No
             "ok": proc.returncode == 0,
             "command": command,
             "stdout": (stdout + extra)[:16000],
-            "stderr": (proc.stderr or "")[:4000],
+            "stderr": (stderr or "")[:4000],
             "returncode": proc.returncode,
         }
-    except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "command": command,
-            "stdout": "",
-            "stderr": f"脚本超时(>{timeout}s)",
-            "returncode": -1,
-        }
+    except AgentRunCancelled:
+        if proc is not None:
+            _stop_process(proc)
+            proc.communicate()
+        raise
     except Exception as exc:
+        if proc is not None:
+            _stop_process(proc)
         return {
             "ok": False,
             "command": command,
@@ -258,6 +308,7 @@ def try_execute_skill_scripts(
     user,
     *,
     history: list[dict] | None = None,
+    cancel_check=None,
 ) -> list[dict]:
     """按 Skill 指令中的 bash 代码块尝试执行脚本,返回输出块。"""
     if not skills or not user:
@@ -266,6 +317,7 @@ def try_execute_skill_scripts(
     brand = extract_brand_from_context(message, history)
     results: list[dict] = []
     for skill in skills:
+        raise_if_cancelled(cancel_check)
         asset = skill.source_asset
         if not asset:
             results.append({
@@ -305,7 +357,7 @@ def try_execute_skill_scripts(
             })
             continue
 
-        run_result = run_shell_command(ws, run_cmd)
+        run_result = run_shell_command(ws, run_cmd, cancel_check=cancel_check)
         run_result["skill_id"] = skill.skill_id
         run_result["skill_name"] = skill.name
         results.append(run_result)
