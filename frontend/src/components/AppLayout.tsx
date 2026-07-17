@@ -101,15 +101,6 @@ export default function AppLayout() {
     return hit ? [hit.key] : [loc.pathname];
   }, [loc.pathname]);
 
-  const openKeys = useMemo(() => {
-    if (WORK_NAV.some((n) => selectedKeys.includes(n.key))) return ["work"];
-    if (KNOWLEDGE_NAV.some((n) => selectedKeys.includes(n.key))) return ["knowledge"];
-    if (COMMERCE_NAV.some((n) => selectedKeys.includes(n.key))) return ["commerce"];
-    if (CAPABILITY_NAV.some((n) => selectedKeys.includes(n.key))) return ["capability"];
-    if (ADMIN_NAV.some((n) => selectedKeys.includes(n.key))) return ["admin"];
-    return [];
-  }, [selectedKeys]);
-
   const menuItems = useMemo(() => [
     {
       key: "work",
@@ -185,7 +176,6 @@ export default function AppLayout() {
           theme="light"
           mode="horizontal"
           selectedKeys={selectedKeys}
-          defaultOpenKeys={openKeys}
           items={menuItems}
           onClick={(e) => {
             if (String(e.key).startsWith("/")) nav(e.key);
