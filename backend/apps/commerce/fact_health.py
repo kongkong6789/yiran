@@ -90,14 +90,23 @@ def _connector_summary() -> list[dict]:
 
 
 def fact_health() -> dict:
+    from .fact_catalog import resolve_fact_availability
+
     duck_ok, duck_tables, duck_err = _duck_tables()
     pg_ok, pg_tables, pg_err = _pg_tables()
     connectors = _connector_summary()
+    facts = resolve_fact_availability(duck_tables, pg_tables)
+    missing_n = sum(1 for f in facts if f["status"] in ("missing", "empty"))
+    partial_n = sum(1 for f in facts if f["status"] == "partial")
+    ok_n = sum(1 for f in facts if f["status"] == "ok")
+
     status = "ok" if (duck_ok or pg_ok) else "degraded"
     if not duck_ok and not pg_ok:
         status = "unavailable"
+    elif missing_n >= 5:
+        status = "degraded"
     return {
-        "schema": "liangce_commerce_fact_health_v1",
+        "schema": "liangce_commerce_fact_health_v2",
         "status": status,
         "duckdb": {
             "path": getattr(settings, "DUCKDB_PATH", ""),
@@ -113,9 +122,17 @@ def fact_health() -> dict:
             "error": pg_err,
         },
         "connectors": connectors,
+        "facts": facts,
+        "facts_summary": {
+            "total": len(facts),
+            "ok": ok_n,
+            "partial": partial_n,
+            "missing": missing_n,
+        },
         "guidance": [
             "平台导出 Excel/CSV 可入库 DataLake 后在此查看表",
             "ERP 实时查询默认只读，写回需审批（五期治理）",
             "可到「能力→数据 / 连接」做同步与查询",
+            f"基础数据 F1–F8：已接入 {ok_n} · 部分 {partial_n} · 缺失 {missing_n}",
         ],
     }

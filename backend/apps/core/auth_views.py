@@ -10,7 +10,7 @@ from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db.models import Q
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -398,7 +398,7 @@ def change_password(request):
     })
 
 
-@api_view(["GET"])
+@api_view(["GET", "HEAD"])
 @permission_classes([AllowAny])
 def serve_avatar(request, stored_id: str):
     """头像静态拉取：Header Token 或 ?token=。"""
@@ -425,4 +425,11 @@ def serve_avatar(request, stored_id: str):
     if not path.is_file():
         raise Http404()
     mime = mimetypes.guess_type(str(path))[0] or "image/png"
+    if request.method == "HEAD":
+        resp = HttpResponse(status=200, content_type=mime)
+        try:
+            resp["Content-Length"] = str(path.stat().st_size)
+        except OSError:
+            pass
+        return resp
     return FileResponse(path.open("rb"), as_attachment=False, filename=safe, content_type=mime)

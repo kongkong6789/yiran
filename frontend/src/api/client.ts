@@ -996,8 +996,25 @@ export const getCommerceFactsHealth = () =>
     duckdb: { available: boolean; path: string; table_count: number; tables: { schema?: string; name: string }[]; error?: string };
     postgres: { available: boolean; table_count: number; tables: Record<string, unknown>[]; error?: string };
     connectors: { id: string; name: string; status: string; note: string }[];
+    facts?: FactTableHealth[];
+    facts_summary?: { total: number; ok: number; partial: number; missing: number };
     guidance: string[];
   }>("/commerce/facts/health/").then((r) => r.data);
+
+export type FactTableHealth = {
+  id: string;
+  code: string;
+  name: string;
+  source: string;
+  grain: string;
+  status: "ok" | "empty" | "partial" | "missing";
+  available: boolean;
+  missing: boolean;
+  rows: number | null;
+  matched_tables: { table: string; engines: string[]; refs: string[]; rows: number | null }[];
+  expected_tables: string[];
+  note: string;
+};
 
 export const simulateCommerceLoops = (body?: {
   model_id?: string;
