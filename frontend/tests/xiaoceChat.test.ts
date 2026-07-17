@@ -78,3 +78,31 @@ test("API types include durable Xiaoce progress and realtime snapshots", () => {
   assert.match(source, /xiaoce_runs\?: XiaoceRun\[\]/);
   assert.match(source, /cancelXiaoceRun/);
 });
+
+test("collaboration chat wires Xiaoce progress, pause, history, and skill refresh", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /activeXiaoceRun/);
+  assert.match(source, /cancelXiaoceRun/);
+  assert.match(source, /<XiaoceProcess/);
+  assert.match(source, /process_steps/);
+  assert.match(source, /created_skill/);
+  assert.match(source, /refreshKey=\{skillRefreshKey\}/);
+  assert.match(source, /aria-label="暂停小策处理"/);
+});
+
+test("collaboration live hook forwards Xiaoce snapshots from websocket and fallback polling", () => {
+  const source = readFileSync(
+    new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /onXiaoceRuns/);
+  assert.match(source, /data\.xiaoce_runs/);
+  assert.match(source, /active_xiaoce_run/);
+});
+
+test("Xiaoce process presentation has dedicated responsive styles", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /\.xiaoce-process/);
+  assert.match(source, /\.xiaoce-live-process/);
+  assert.match(source, /\.xiaoce-created-skill/);
+});

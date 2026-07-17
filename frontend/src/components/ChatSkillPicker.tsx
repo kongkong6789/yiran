@@ -12,6 +12,7 @@ import {
 
 type Props = {
   onSelect: (skill: UserSkillItem) => void;
+  refreshKey?: number;
 };
 
 function skillInitial(skill: UserSkillItem) {
@@ -19,7 +20,7 @@ function skillInitial(skill: UserSkillItem) {
   return raw.slice(0, 1).toUpperCase();
 }
 
-export default function ChatSkillPicker({ onSelect }: Props) {
+export default function ChatSkillPicker({ onSelect, refreshKey = 0 }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [skills, setSkills] = useState<UserSkillItem[]>([]);
@@ -42,7 +43,7 @@ export default function ChatSkillPicker({ onSelect }: Props) {
       load();
       setKeyword("");
     }
-  }, [open, load]);
+  }, [open, load, refreshKey]);
 
   const filtered = useMemo(() => {
     const q = keyword.trim().toLowerCase();

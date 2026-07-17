@@ -27,6 +27,7 @@ import {
   deleteCollabMessage,
   refreshCollabInsights,
   checkCollabDraft,
+  cancelXiaoceRun,
   sendCollabMessage,
   updateCollabMemberNickname,
   updateCollabRoom,
@@ -38,14 +39,17 @@ import {
   type CollabDraftTip,
   type CollabUserBrief,
   type UserSkillItem,
+  type XiaoceRun,
 } from "../api/client";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
+import XiaoceProcess from "../components/XiaoceProcess";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabRoundTable from "../components/CollabRoundTable";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useSearchParams } from "react-router-dom";
+import { createXiaoceRunId, isXiaoceRoom, mergeXiaoceRunSnapshot } from "./xiaoceChat";
 
 const MSG_WINDOW = 50;
 const VIRT_BASE_INDEX = 100_000;
@@ -622,6 +626,9 @@ export default function CollabRisk() {
   } | null>(null);
   const [draftCoachLoading, setDraftCoachLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [activeXiaoceRun, setActiveXiaoceRun] = useState<XiaoceRun | null>(null);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
+  const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
   const [contacts, setContacts] = useState<CollabUserBrief[]>([]);
@@ -660,10 +667,15 @@ export default function CollabRisk() {
   const insightsRef = useRef<CollabInsight[]>([]);
   const contactKeywordRef = useRef("");
   const loadingOlderRef = useRef(false);
+  const activeIdRef = useRef<string | null>(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { insightsRef.current = insights; }, [insights]);
   useEffect(() => { contactKeywordRef.current = contactKeyword; }, [contactKeyword]);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+
+  const xiaoceRoom = isXiaoceRoom(activeRoom);
+  const xiaoceBusy = xiaoceRoom && activeXiaoceRun?.status === "running";
 
   const isParticipant = useMemo(() => {
     if (!me || !activeRoom) return false;
@@ -753,12 +765,17 @@ export default function CollabRisk() {
         getCollabRoom(id),
         listCollabMessages(id, { limit: MSG_WINDOW, includeParticipants: false }),
       ]);
-      setActiveRoom({
+      const hydratedRoom = {
         ...room,
+        ...page.room,
         // 首屏消息用分页窗口，避免一次拉全量历史
         messages: page.results,
         has_more_before: page.has_more_before,
-      } as CollabRoom);
+      } as CollabRoom;
+      setActiveRoom(hydratedRoom);
+      setActiveXiaoceRun(
+        isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null,
+      );
       setMessages(page.results || []);
       setHasMoreBefore(Boolean(page.has_more_before ?? room.has_more_before));
       setFirstItemIndex(VIRT_BASE_INDEX);
@@ -934,11 +951,15 @@ export default function CollabRisk() {
   useEffect(() => {
     if (!activeId) {
       setActiveRoom(null);
+      setActiveXiaoceRun(null);
+      setCancellingRunId(null);
       setMessages([]);
       setInsights([]);
       setRoomStats(null);
       return;
     }
+    setActiveXiaoceRun(null);
+    setCancellingRunId(null);
     stickBottomRef.current = true;
     loadRoomDetail(activeId);
   }, [activeId, loadRoomDetail]);
@@ -967,6 +988,9 @@ export default function CollabRisk() {
     if (shouldStick && incoming.length) {
       scrollMessagesToBottom("auto");
     }
+    if ([...incoming, ...(changed || [])].some((item) => Boolean(item.meta?.created_skill))) {
+      setSkillRefreshKey((value) => value + 1);
+    }
   }, [scrollMessagesToBottom]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
@@ -975,6 +999,17 @@ export default function CollabRisk() {
       const add = incoming.filter((i) => !known.has(i.id));
       return add.length ? [...prev, ...add] : prev;
     });
+  }, []);
+
+  const mergeLiveXiaoceRuns = useCallback((runs: XiaoceRun[]) => {
+    if (runs.length === 0) {
+      setActiveXiaoceRun(null);
+      return;
+    }
+    const newest = runs.reduce((latest, run) => (
+      Date.parse(run.updated_at || "") >= Date.parse(latest.updated_at || "") ? run : latest
+    ));
+    setActiveXiaoceRun((current) => mergeXiaoceRunSnapshot(current, newest));
   }, []);
 
   const patchRoomMeta = useCallback((meta: Partial<CollabRoom>) => {
@@ -987,6 +1022,14 @@ export default function CollabRisk() {
         && (meta.peer_online ?? prev.peer_online) === prev.peer_online
         && (meta.online_count ?? prev.online_count) === prev.online_count
         && (meta.updated_at ?? prev.updated_at) === prev.updated_at
+        && (
+          !("active_xiaoce_run" in meta)
+          || (
+            (meta.active_xiaoce_run?.id || "") === (prev.active_xiaoce_run?.id || "")
+            && (meta.active_xiaoce_run?.status || "") === (prev.active_xiaoce_run?.status || "")
+            && (meta.active_xiaoce_run?.updated_at || "") === (prev.active_xiaoce_run?.updated_at || "")
+          )
+        )
         && (!meta.participants || participantsPresenceEqual(prev.participants, nextParts))
         && (meta.display_title ?? prev.display_title) === prev.display_title
       ) {
@@ -1037,6 +1080,7 @@ export default function CollabRisk() {
     mergeMessages: mergeLiveMessages,
     mergeInsights: mergeLiveInsights,
     patchRoomMeta,
+    onXiaoceRuns: mergeLiveXiaoceRuns,
     setRoomStats,
     participantsEqual: participantsPresenceEqual,
   });
@@ -1323,6 +1367,11 @@ export default function CollabRisk() {
       message.warning("会话已结束");
       return false;
     }
+    if (xiaoceBusy) {
+      message.warning("小策bot 正在处理，请先暂停或等待完成");
+      return false;
+    }
+    const runId = xiaoceRoom ? createXiaoceRunId() : undefined;
     stickBottomRef.current = true;
     forceStickUntilRef.current = Date.now() + 1600;
     const tempId = -Date.now();
@@ -1340,6 +1389,7 @@ export default function CollabRisk() {
       mentions: [],
       msg_type: "user",
       status: "normal",
+      meta: runId ? { run_id: runId } : undefined,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -1347,7 +1397,13 @@ export default function CollabRisk() {
     scrollMessagesToBottom("auto");
     setSending(true);
     try {
-      const res = await sendCollabMessage(activeId, content.trim(), true, files.length ? files : undefined);
+      const res = await sendCollabMessage(
+        activeId,
+        content.trim(),
+        true,
+        files.length ? files : undefined,
+        runId,
+      );
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
         const next = [...withoutTemp];
@@ -1358,8 +1414,17 @@ export default function CollabRisk() {
         return next;
       });
       scrollMessagesToBottom("auto");
+      if (res.xiaoce_run) {
+        setActiveXiaoceRun((current) => mergeXiaoceRunSnapshot(current, res.xiaoce_run || null));
+      }
       if (res.room) {
-        setActiveRoom((prev) => (prev ? { ...prev, ...res.room } : prev));
+        setActiveRoom((prev) => (prev ? {
+          ...prev,
+          ...res.room,
+          active_xiaoce_run: "active_xiaoce_run" in res.room
+            ? res.room.active_xiaoce_run
+            : (res.xiaoce_run || prev.active_xiaoce_run),
+        } : prev));
         setRooms((prev) => prev.map((r) => (r.id === activeId ? { ...r, ...res.room, updated_at: res.room.updated_at || r.updated_at } : r)));
       }
       // 统计看板稍后刷新，不挡发送体感
@@ -1368,6 +1433,10 @@ export default function CollabRisk() {
       return true;
     } catch (e: any) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      const pendingRun = e?.response?.data?.xiaoce_run as XiaoceRun | undefined;
+      if (pendingRun) {
+        setActiveXiaoceRun((current) => mergeXiaoceRunSnapshot(current, pendingRun));
+      }
       message.error(e?.response?.data?.error || "发送失败");
       return false;
     } finally {
@@ -1376,7 +1445,7 @@ export default function CollabRisk() {
   };
 
   const handleSend = async () => {
-    if (!activeId || sending) return;
+    if (!activeId || sending || xiaoceBusy) return;
     if (!draft.trim() && pendingFiles.length === 0) return;
     const content = draft.trim();
     const files = pendingFiles.map((p) => p.file);
@@ -1400,6 +1469,42 @@ export default function CollabRisk() {
       })));
     } else {
       previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    }
+  };
+
+  const pauseXiaoce = async () => {
+    const roomId = activeId;
+    const runId = activeXiaoceRun?.id;
+    if (!roomId || !runId || cancellingRunId) return;
+    setCancellingRunId(runId);
+    try {
+      const response = await cancelXiaoceRun(roomId, runId);
+      setRooms((previous) => previous.map((room) => (
+        room.id === roomId ? { ...room, ...response.room, active_xiaoce_run: null } : room
+      )));
+      if (activeIdRef.current === roomId) {
+        setMessages((previous) => {
+          const index = previous.findIndex((item) => item.id === response.message.id);
+          if (index < 0) return [...previous, response.message];
+          const next = [...previous];
+          next[index] = response.message;
+          return next;
+        });
+        setActiveRoom((previous) => previous ? {
+          ...previous,
+          ...response.room,
+          active_xiaoce_run: null,
+        } : previous);
+        setActiveXiaoceRun(null);
+        scrollMessagesToBottom("auto");
+      }
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "暂停失败，请重试");
+      if (error?.response?.status === 409 && activeIdRef.current === roomId) {
+        void loadRoomDetail(roomId);
+      }
+    } finally {
+      setCancellingRunId((current) => (current === runId ? null : current));
     }
   };
 
@@ -2323,7 +2428,7 @@ export default function CollabRisk() {
                   || (m.ai_kind === "interject" && String(m.content || "").includes("【协作建议】"))
                 );
                 const isInterject = isAi && m.ai_kind === "interject" && !isCollabSuggest;
-                const isXiaoce = isAi && (
+                const isXiaoceMessage = isAi && (
                   m.ai_kind === "xiaoce"
                   || m.sender?.bot_id === "xiaoce"
                   || m.sender?.username === "小策bot"
@@ -2333,7 +2438,7 @@ export default function CollabRisk() {
                     ? "协作建议"
                     : isInterject
                       ? "监控提醒"
-                      : (isXiaoce ? "小策bot" : (m.sender?.display_name || "良策AI")))
+                      : (isXiaoceMessage ? "小策bot" : (m.sender?.display_name || "良策AI")))
                   : "";
                 const isSystem = m.msg_type === "system" || m.status === "recalled";
                 const mine = !isAi && !isSystem && me && m.sender.id === me.id;
@@ -2454,6 +2559,25 @@ export default function CollabRisk() {
                           </div>
                         )}
                         {m.content ? renderMessageBody(m.content, activeRoom, isAi) : null}
+                        {isXiaoceMessage && m.meta?.process_steps?.length ? (
+                          <XiaoceProcess
+                            steps={m.meta.process_steps}
+                            status={m.meta.process_status || "completed"}
+                            defaultExpanded={
+                              m.meta.process_status === "failed"
+                              || m.meta.process_status === "cancelled"
+                            }
+                            errorMessage={m.meta.error_message || ""}
+                          />
+                        ) : null}
+                        {isXiaoceMessage && m.meta?.created_skill && !m.meta.cancelled ? (
+                          <div className="xiaoce-created-skill" aria-label="Skill 已创建">
+                            <strong>{m.meta.created_skill.name}</strong>
+                            <span>@{m.meta.created_skill.skill_id}</span>
+                            <Tag>仅自己可见</Tag>
+                            {m.meta.created_skill.enabled ? <Tag color="success">已上传并启用</Tag> : null}
+                          </div>
+                        ) : null}
                       </div>
                       </div>
                     </div>
@@ -2464,6 +2588,18 @@ export default function CollabRisk() {
               />
               )}
             </div>
+
+            {xiaoceBusy && activeXiaoceRun ? (
+              <div className="xiaoce-live-process">
+                <span className="xiaoce-live-process-label">小策bot</span>
+                <XiaoceProcess
+                  steps={activeXiaoceRun.progress_steps}
+                  status={activeXiaoceRun.status}
+                  live
+                  errorMessage={activeXiaoceRun.error_message}
+                />
+              </div>
+            ) : null}
 
             <div className="agent-chat-input collab-agent-input">
               {pendingFiles.length > 0 && (
@@ -2599,10 +2735,12 @@ export default function CollabRisk() {
                       ? "旁观模式，仅可查看"
                       : activeRoom.status === "closed"
                         ? "会话已结束"
+                        : xiaoceBusy
+                          ? "小策bot 正在处理，可点击右侧暂停"
                         : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
                   }
                   autoSize={{ minRows: 2, maxRows: 6 }}
-                  disabled={!isParticipant || activeRoom.status === "closed" || sending}
+                  disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy}
                   onPaste={(e) => {
                     const cd = e.clipboardData;
                     if (!cd) return;
@@ -2679,7 +2817,7 @@ export default function CollabRisk() {
                 />
                 <div className="agent-chat-composer-bar">
                   <div className="agent-chat-composer-left">
-                    <ChatSkillPicker onSelect={insertSkill} />
+                    <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
                     <span className="collab-composer-hint">@成员 · @AI · Skill</span>
                   </div>
                   <div className="agent-chat-composer-right">
@@ -2689,27 +2827,42 @@ export default function CollabRisk() {
                         type="text"
                         shape="circle"
                         icon={<PlusOutlined />}
-                        disabled={!isParticipant || activeRoom.status === "closed" || sending || pendingFiles.length >= MAX_FILES}
+                        disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy || pendingFiles.length >= MAX_FILES}
                         onClick={() => fileInputRef.current?.click()}
                         aria-label="上传附件"
                       />
                     </Tooltip>
-                    <Tooltip title="发送">
-                      <Button
-                        className="agent-chat-send-circle"
-                        type="primary"
-                        shape="circle"
-                        icon={<SendOutlined />}
-                        loading={sending}
-                        disabled={
-                          (!draft.trim() && pendingFiles.length === 0)
-                          || !isParticipant
-                          || activeRoom.status === "closed"
-                        }
-                        onClick={handleSend}
-                        aria-label="发送"
-                      />
-                    </Tooltip>
+                    {xiaoceBusy ? (
+                      <Tooltip title={cancellingRunId ? "正在暂停" : "暂停处理"}>
+                        <Button
+                          className="agent-chat-stop-circle"
+                          type="primary"
+                          shape="circle"
+                          icon={<span className="agent-chat-stop-glyph" aria-hidden="true" />}
+                          loading={Boolean(cancellingRunId)}
+                          disabled={Boolean(cancellingRunId)}
+                          onClick={pauseXiaoce}
+                          aria-label="暂停小策处理"
+                        />
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title="发送">
+                        <Button
+                          className="agent-chat-send-circle"
+                          type="primary"
+                          shape="circle"
+                          icon={<SendOutlined />}
+                          loading={sending}
+                          disabled={
+                            (!draft.trim() && pendingFiles.length === 0)
+                            || !isParticipant
+                            || activeRoom.status === "closed"
+                          }
+                          onClick={handleSend}
+                          aria-label="发送"
+                        />
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3527,6 +3680,119 @@ const css = `
 .collab-agent-input {
   flex-shrink: 0;
 }
+.xiaoce-live-process {
+  flex-shrink: 0;
+  padding: 8px 14px 4px;
+  border-top: 1px solid #edf1f7;
+  background: #fff;
+}
+.xiaoce-live-process-label {
+  display: block;
+  margin: 0 0 5px 2px;
+  color: #5c6b84;
+  font-size: 11px;
+  font-weight: 600;
+}
+.xiaoce-process {
+  width: min(520px, 100%);
+  margin-top: 9px;
+  color: #31405b;
+  font-size: 12px;
+}
+.xiaoce-process.is-live {
+  margin-top: 0;
+  padding: 10px 12px;
+  border: 1px solid #dbe7ff;
+  border-radius: 12px;
+  background: #f7faff;
+}
+.xiaoce-process-live-title,
+.xiaoce-process-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #315efb;
+  font-size: 12px;
+  font-weight: 600;
+}
+.xiaoce-process-toggle {
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.xiaoce-process-toggle:hover {
+  color: #1d4ed8;
+}
+.xiaoce-process-steps {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.xiaoce-process-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  color: #6b7890;
+}
+.xiaoce-process-steps li.is-running {
+  color: #172033;
+  font-weight: 600;
+}
+.xiaoce-process-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+.xiaoce-process-icon.is-completed { color: #22a06b; }
+.xiaoce-process-icon.is-running { color: #315efb; }
+.xiaoce-process-icon.is-cancelled { color: #d48806; }
+.xiaoce-process-icon.is-failed { color: #cf1322; }
+.xiaoce-process-error {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #fff2f0;
+  color: #a8071a;
+  line-height: 1.5;
+}
+.xiaoce-created-skill {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid #d7eadf;
+  border-radius: 10px;
+  background: #f6ffed;
+}
+.xiaoce-created-skill strong {
+  color: #135c37;
+  font-size: 12px;
+}
+.xiaoce-created-skill > span:not(.ant-tag) {
+  color: #5d7466;
+  font-size: 11px;
+}
+.xiaoce-created-skill .ant-tag {
+  margin-inline-end: 0;
+}
+.agent-chat-stop-circle {
+  border-color: #172033 !important;
+  background: #172033 !important;
+  box-shadow: none !important;
+}
+.agent-chat-stop-glyph {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
+}
 .collab-agent-composer {
   position: relative;
 }
@@ -4105,5 +4371,7 @@ const css = `
   }
   .collab-sider, .collab-ai { max-height: 280px; }
   .collab-main { min-height: 520px; }
+  .xiaoce-live-process { padding-inline: 10px; }
+  .xiaoce-process { width: 100%; }
 }
 `;
