@@ -47,6 +47,18 @@ test("global theme tokens drive Xiaoce without changing avatar colors", () => {
   assert.doesNotMatch(xiaoceCss, /avatar/i);
 });
 
+test("Collab monitor uses monochrome tokens outside semantic status markers", () => {
+  const source = readFileSync(
+    new URL("../src/pages/CollabRisk.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /\.collab-kpi\.risk-green,[\s\S]*?background:\s*var\(--lc-surface\)/);
+  assert.match(source, /\.collab-mini-bar-wrap i\s*\{[^}]*background:\s*var\(--lc-ink\)/s);
+  assert.match(source, /\.collab-speaker-list \.track i\s*\{[^}]*background:\s*var\(--lc-ink\)/s);
+  assert.match(source, /\.collab-hint\s*\{[^}]*background:\s*transparent/s);
+  assert.doesNotMatch(source, /\.collab-kpi\.risk-green span,[\s\S]*?color:\s*#000/);
+});
+
 test("Collab composer includes pause, global theme, and Skill refresh wiring", () => {
   const source = readFileSync(
     new URL("../src/pages/CollabRisk.tsx", import.meta.url),

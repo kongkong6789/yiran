@@ -3832,20 +3832,24 @@ const css = `
   gap: 8px;
 }
 .collab-kpi {
-  background: #fff;
-  border: 1px solid #e8edf5;
+  background: var(--lc-surface);
+  border: 1px solid var(--lc-line);
   border-radius: 10px;
   padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.collab-kpi span { font-size: 11px; color: #8b96a8; }
-.collab-kpi strong { font-size: 18px; color: #172033; line-height: 1.2; }
-.collab-kpi em { font-style: normal; font-size: 11px; color: #66738a; }
-.collab-kpi.risk-yellow { border-color: #fde68a; background: #fffbeb; }
-.collab-kpi.risk-red { border-color: #fecaca; background: #fef2f2; }
-.collab-kpi.risk-green { border-color: #bbf7d0; background: #f0fdf4; }
+.collab-kpi span { font-size: 11px; color: var(--lc-muted); }
+.collab-kpi strong { font-size: 18px; color: var(--lc-ink); line-height: 1.2; }
+.collab-kpi em { font-style: normal; font-size: 11px; color: var(--lc-muted); }
+.collab-kpi.risk-green,
+.collab-kpi.risk-yellow,
+.collab-kpi.risk-red {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+}
 .collab-monitor-block h5 {
   margin: 0 0 8px;
   font-size: 12px;
@@ -3900,7 +3904,7 @@ const css = `
   display: block;
   width: 100%;
   border-radius: 2px 2px 0 0;
-  background: #93c5fd;
+  background: var(--lc-ink);
   min-height: 4px;
 }
 .collab-speaker-list {
@@ -3926,14 +3930,14 @@ const css = `
 }
 .collab-speaker-list .track {
   height: 8px;
-  background: #eef2f7;
+  background: var(--lc-hover);
   border-radius: 99px;
   overflow: hidden;
 }
 .collab-speaker-list .track i {
   display: block;
   height: 100%;
-  background: #60a5fa;
+  background: var(--lc-ink);
   border-radius: 99px;
 }
 .collab-speaker-list em {
@@ -4133,8 +4137,8 @@ const css = `
   margin: 12px;
   padding: 12px;
   border-radius: 12px;
-  background: #f5f8ff;
-  color: #7b879c;
+  background: transparent;
+  color: var(--lc-muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -4329,18 +4333,6 @@ const css = `
   color: var(--lc-muted);
   background: var(--lc-hover);
   border-color: var(--lc-line);
-}
-
-.collab-kpi.risk-green span,
-.collab-kpi.risk-green strong,
-.collab-kpi.risk-green em,
-.collab-kpi.risk-yellow span,
-.collab-kpi.risk-yellow strong,
-.collab-kpi.risk-yellow em,
-.collab-kpi.risk-red span,
-.collab-kpi.risk-red strong,
-.collab-kpi.risk-red em {
-  color: #000;
 }
 
 @media (max-width: 1100px) {
