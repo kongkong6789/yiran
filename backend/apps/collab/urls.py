@@ -6,6 +6,11 @@ urlpatterns = [
     path("rooms/", views.room_list, name="collab-rooms"),
     path("rooms/<uuid:room_id>/", views.room_detail, name="collab-room-detail"),
     path("rooms/<uuid:room_id>/messages/", views.room_messages, name="collab-room-messages"),
+    path(
+        "rooms/<uuid:room_id>/xiaoce-runs/<uuid:run_id>/cancel/",
+        views.xiaoce_run_cancel,
+        name="collab-xiaoce-run-cancel",
+    ),
     path("rooms/<uuid:room_id>/events/", realtime.room_events, name="collab-room-events"),
     path("rooms/<uuid:room_id>/presence/", realtime.room_presence, name="collab-room-presence"),
     path("rooms/<uuid:room_id>/insights/", views.room_insights, name="collab-room-insights"),

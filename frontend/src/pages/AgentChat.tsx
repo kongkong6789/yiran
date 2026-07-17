@@ -26,12 +26,7 @@ import {
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import ChatMarkdown, { isReportLike, looksBlocky } from "../components/ChatMarkdown";
-import {
-  getChatThemeStorage,
-  persistChatTheme,
-  readChatTheme,
-  type ChatTheme,
-} from "./agentChatTheme";
+import { useThemeMode } from "../theme/mode";
 
 const { TextArea } = Input;
 
@@ -123,9 +118,7 @@ const QUICK_PROMPTS = [
 
 export default function AgentChat() {
   const { message } = App.useApp();
-  const [chatTheme, setChatTheme] = useState<ChatTheme>(() => (
-    readChatTheme(getChatThemeStorage())
-  ));
+  const { mode, setMode } = useThemeMode();
   const [me, setMe] = useState<AuthUser | null>(null);
   const [sessions, setSessions] = useState<AgentChatSession[]>([]);
   const [isAdminView, setIsAdminView] = useState(false);
@@ -151,14 +144,6 @@ export default function AgentChat() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
-
-  useEffect(() => {
-    persistChatTheme(getChatThemeStorage(), chatTheme);
-    document.body.dataset.agentChatTheme = chatTheme;
-    return () => {
-      delete document.body.dataset.agentChatTheme;
-    };
-  }, [chatTheme]);
 
   const selectedKind = kindOfModel(selectedModel, modelPresets);
   const activeSession = sessions.find((s) => s.id === activeId) || null;
@@ -441,7 +426,7 @@ export default function AgentChat() {
   };
 
   return (
-    <div className="agent-chat-shell" data-chat-theme={chatTheme}>
+    <div className="agent-chat-shell" data-chat-theme={mode}>
       <aside className="agent-chat-history">
         <div className="agent-chat-history-head">
           <Typography.Text strong>
@@ -563,10 +548,10 @@ export default function AgentChat() {
               <Tooltip title="白色主题">
                 <button
                   type="button"
-                  className={chatTheme === "light" ? "active" : ""}
+                  className={mode === "light" ? "active" : ""}
                   aria-label="切换为白色主题"
-                  aria-pressed={chatTheme === "light"}
-                  onClick={() => setChatTheme("light")}
+                  aria-pressed={mode === "light"}
+                  onClick={() => setMode("light")}
                 >
                   <SunOutlined />
                 </button>
@@ -574,10 +559,10 @@ export default function AgentChat() {
               <Tooltip title="黑色主题">
                 <button
                   type="button"
-                  className={chatTheme === "dark" ? "active" : ""}
+                  className={mode === "dark" ? "active" : ""}
                   aria-label="切换为黑色主题"
-                  aria-pressed={chatTheme === "dark"}
-                  onClick={() => setChatTheme("dark")}
+                  aria-pressed={mode === "dark"}
+                  onClick={() => setMode("dark")}
                 >
                   <MoonOutlined />
                 </button>

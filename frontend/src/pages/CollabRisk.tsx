@@ -5,8 +5,8 @@ import {
 import type { TooltipPlacement } from "antd/es/tooltip";
 import {
   AlertOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined,
-  CloseOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
-  SendOutlined, SettingOutlined, StopOutlined,
+  CloseOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
+  SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
   TeamOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
@@ -28,6 +28,7 @@ import {
   deleteCollabMessage,
   refreshCollabInsights,
   checkCollabDraft,
+  cancelXiaoceRun,
   sendCollabMessage,
   summarizeCollabRoom,
   updateCollabMemberNickname,
@@ -48,6 +49,9 @@ import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabRoundTable from "../components/CollabRoundTable";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useSearchParams } from "react-router-dom";
+import { useThemeMode } from "../theme/mode";
+import { createXiaoceRunId, isXiaoceRoom } from "./xiaoceChat";
+import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
 const VIRT_BASE_INDEX = 100_000;
@@ -619,6 +623,7 @@ export default function CollabRisk({
   onStartRoundtable,
 }: CollabRiskProps) {
   const { message } = App.useApp();
+  const { mode, setMode } = useThemeMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const [me, setMe] = useState<AuthUser | null>(null);
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
@@ -639,6 +644,8 @@ export default function CollabRisk({
   } | null>(null);
   const [draftCoachLoading, setDraftCoachLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
+  const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
   const [contacts, setContacts] = useState<CollabUserBrief[]>([]);
@@ -692,6 +699,10 @@ export default function CollabRisk({
     if (!me || !activeRoom) return false;
     return activeRoom.participants.some((p) => p.id === me.id);
   }, [me, activeRoom]);
+
+  const isXiaoce = isXiaoceRoom(activeRoom);
+  const activeXiaoceRun = isXiaoce ? activeRoom?.active_xiaoce_run : null;
+  const xiaoceBusy = activeXiaoceRun?.status === "running";
 
   const canKickMembers = useMemo(() => {
     if (!me || !activeRoom || activeRoom.room_kind !== "group") return false;
@@ -778,6 +789,7 @@ export default function CollabRisk({
       ]);
       setActiveRoom({
         ...room,
+        ...page.room,
         // 首屏消息用分页窗口，避免一次拉全量历史
         messages: page.results,
         has_more_before: page.has_more_before,
@@ -976,6 +988,8 @@ export default function CollabRisk({
             && prev.risk_level === fresh.risk_level
             && prev.status === fresh.status
             && prev.updated_at === fresh.updated_at
+            && (prev.active_xiaoce_run?.id || "") === (fresh.active_xiaoce_run?.id || "")
+            && (prev.active_xiaoce_run?.status || "") === (fresh.active_xiaoce_run?.status || "")
             && participantsPresenceEqual(prev.participants, fresh.participants)
           ) {
             return prev;
@@ -988,6 +1002,7 @@ export default function CollabRisk({
             risk_level: fresh.risk_level,
             status: fresh.status,
             updated_at: fresh.updated_at,
+            active_xiaoce_run: fresh.active_xiaoce_run,
           };
         });
       } catch {
@@ -1054,6 +1069,9 @@ export default function CollabRisk({
     if (shouldStick && incoming.length) {
       scrollMessagesToBottom("auto");
     }
+    if (incoming.some((item) => Boolean(item.meta?.created_skill))) {
+      setSkillRefreshKey((value) => value + 1);
+    }
   }, [scrollMessagesToBottom]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
@@ -1074,6 +1092,13 @@ export default function CollabRisk({
         && (meta.peer_online ?? prev.peer_online) === prev.peer_online
         && (meta.online_count ?? prev.online_count) === prev.online_count
         && (meta.updated_at ?? prev.updated_at) === prev.updated_at
+        && (
+          !("active_xiaoce_run" in meta)
+          || (
+            (meta.active_xiaoce_run?.id || "") === (prev.active_xiaoce_run?.id || "")
+            && (meta.active_xiaoce_run?.status || "") === (prev.active_xiaoce_run?.status || "")
+          )
+        )
         && (!meta.participants || participantsPresenceEqual(prev.participants, nextParts))
         && (meta.display_title ?? prev.display_title) === prev.display_title
       ) {
@@ -1414,6 +1439,11 @@ export default function CollabRisk({
       message.warning("会话已结束");
       return false;
     }
+    if (xiaoceBusy) {
+      message.warning("小策bot 正在生成，请先暂停或等待完成");
+      return false;
+    }
+    const runId = isXiaoce && content.trim() ? createXiaoceRunId() : undefined;
     stickBottomRef.current = true;
     forceStickUntilRef.current = Date.now() + 1600;
     const tempId = -Date.now();
@@ -1442,6 +1472,7 @@ export default function CollabRisk({
         status: replyTarget.status,
         attachment_count: replyTarget.attachments?.length || 0,
       } : null,
+      meta: runId ? { run_id: runId } : {},
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -1455,6 +1486,7 @@ export default function CollabRisk({
         true,
         files.length ? files : undefined,
         replyTarget?.id,
+        runId,
       );
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
@@ -1467,7 +1499,13 @@ export default function CollabRisk({
       });
       scrollMessagesToBottom("auto");
       if (res.room) {
-        setActiveRoom((prev) => (prev ? { ...prev, ...res.room } : prev));
+        setActiveRoom((prev) => (prev ? {
+          ...prev,
+          ...res.room,
+          active_xiaoce_run: "active_xiaoce_run" in res.room
+            ? res.room.active_xiaoce_run
+            : res.xiaoce_run,
+        } : prev));
         setRooms((prev) => prev.map((r) => (r.id === activeId ? { ...r, ...res.room, updated_at: res.room.updated_at || r.updated_at } : r)));
       }
       // 统计看板稍后刷新，不挡发送体感
@@ -1476,6 +1514,10 @@ export default function CollabRisk({
       return true;
     } catch (e: any) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      const pendingRun = e?.response?.data?.xiaoce_run;
+      if (pendingRun) {
+        setActiveRoom((prev) => prev ? { ...prev, active_xiaoce_run: pendingRun } : prev);
+      }
       message.error(e?.response?.data?.error || "发送失败");
       return false;
     } finally {
@@ -1484,7 +1526,7 @@ export default function CollabRisk({
   };
 
   const handleSend = async () => {
-    if (!activeId || sending) return;
+    if (!activeId || sending || xiaoceBusy) return;
     if (!draft.trim() && pendingFiles.length === 0) return;
     const content = draft.trim();
     const files = pendingFiles.map((p) => p.file);
@@ -1511,6 +1553,32 @@ export default function CollabRisk({
       })));
     } else {
       previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    }
+  };
+
+  const pauseXiaoce = async () => {
+    const runId = activeXiaoceRun?.id;
+    if (!activeId || !runId || cancellingRunId) return;
+    setCancellingRunId(runId);
+    try {
+      const response = await cancelXiaoceRun(activeId, runId);
+      setMessages((previous) => {
+        if (previous.some((item) => item.id === response.message.id)) return previous;
+        return [...previous, response.message];
+      });
+      setActiveRoom((previous) => previous ? {
+        ...previous,
+        ...response.room,
+        active_xiaoce_run: null,
+      } : previous);
+      scrollMessagesToBottom("auto");
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "暂停失败，请重试");
+      if (error?.response?.status === 409 && activeId) {
+        void loadRoomDetail(activeId);
+      }
+    } finally {
+      setCancellingRunId(null);
     }
   };
 
@@ -2242,7 +2310,9 @@ export default function CollabRisk({
         )}
       </aside>
 
-      <section className="collab-main">
+      <section
+        className={`collab-main${isXiaoce ? " xiaoce-chat-shell" : ""}`}
+      >
         {!activeRoom ? (
           <div className="collab-empty">
             <CollabRoundTable variant="empty" />
@@ -2300,6 +2370,28 @@ export default function CollabRisk({
                 </Typography.Text>
               </div>
               <Space>
+                {isXiaoce ? (
+                  <div className="xiaoce-theme-switch" role="group" aria-label="对话主题">
+                    <Button
+                      type="text"
+                      size="small"
+                      className={mode === "light" ? "active" : ""}
+                      icon={<SunOutlined />}
+                      onClick={() => setMode("light")}
+                      aria-label="白色主题"
+                      aria-pressed={mode === "light"}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      className={mode === "dark" ? "active" : ""}
+                      icon={<MoonOutlined />}
+                      onClick={() => setMode("dark")}
+                      aria-label="黑色主题"
+                      aria-pressed={mode === "dark"}
+                    />
+                  </div>
+                ) : null}
                 {onStartRoundtable && isParticipant && activeRoom.status === "open" ? (
                   <Button
                     className="collab-roundtable-action"
@@ -2525,6 +2617,7 @@ export default function CollabRisk({
                 const timeSep = timeSepBeforeId.has(m.id)
                   ? formatChatTimeSep(m.created_at)
                   : "";
+                const createdSkill = isXiaoce ? m.meta?.created_skill : undefined;
                 if (isSystem) {
                   return (
                     <div className="collab-virt-item">
@@ -2639,6 +2732,13 @@ export default function CollabRisk({
                           </div>
                         )}
                         {m.content ? renderMessageBody(m.content, activeRoom, isAi) : null}
+                        {createdSkill && !m.meta?.cancelled ? (
+                          <div className="xiaoce-created-skill" aria-label="Skill 已创建">
+                            <Tag>{createdSkill.name}</Tag>
+                            <Tag>仅自己可见</Tag>
+                            {createdSkill.enabled ? <Tag>已启用</Tag> : null}
+                          </div>
+                        ) : null}
                       </div>
                       {mine && activeRoom.room_kind === "group" && m.id > 0 ? (
                         <Popover
@@ -2824,7 +2924,7 @@ export default function CollabRisk({
                         : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
                   }
                   autoSize={{ minRows: 2, maxRows: 6 }}
-                  disabled={!isParticipant || activeRoom.status === "closed" || sending}
+                  disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy}
                   onPaste={(e) => {
                     const cd = e.clipboardData;
                     if (!cd) return;
@@ -2901,7 +3001,7 @@ export default function CollabRisk({
                 />
                 <div className="agent-chat-composer-bar">
                   <div className="agent-chat-composer-left">
-                    <ChatSkillPicker onSelect={insertSkill} />
+                    <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
                     <span className="collab-composer-hint">@成员 · @AI · Skill</span>
                   </div>
                   <div className="agent-chat-composer-right">
@@ -2911,25 +3011,25 @@ export default function CollabRisk({
                         type="text"
                         shape="circle"
                         icon={<PlusOutlined />}
-                        disabled={!isParticipant || activeRoom.status === "closed" || sending || pendingFiles.length >= MAX_FILES}
+                        disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy || pendingFiles.length >= MAX_FILES}
                         onClick={() => fileInputRef.current?.click()}
                         aria-label="上传附件"
                       />
                     </Tooltip>
-                    <Tooltip title="发送">
+                    <Tooltip title={cancellingRunId ? "正在暂停" : xiaoceBusy ? "暂停生成" : "发送"}>
                       <Button
-                        className="agent-chat-send-circle"
+                        className={xiaoceBusy ? "agent-chat-stop-circle" : "agent-chat-send-circle"}
                         type="primary"
                         shape="circle"
-                        icon={<SendOutlined />}
-                        loading={sending}
-                        disabled={
+                        icon={xiaoceBusy ? <span className="agent-chat-stop-glyph" aria-hidden="true" /> : <SendOutlined />}
+                        loading={xiaoceBusy ? Boolean(cancellingRunId) : sending}
+                        disabled={xiaoceBusy ? Boolean(cancellingRunId) : (
                           (!draft.trim() && pendingFiles.length === 0)
                           || !isParticipant
                           || activeRoom.status === "closed"
-                        }
-                        onClick={handleSend}
-                        aria-label="发送"
+                        )}
+                        onClick={xiaoceBusy ? pauseXiaoce : handleSend}
+                        aria-label={cancellingRunId ? "正在暂停" : xiaoceBusy ? "暂停生成" : "发送"}
                       />
                     </Tooltip>
                   </div>
@@ -4432,20 +4532,24 @@ const css = `
   gap: 8px;
 }
 .collab-kpi {
-  background: #fff;
-  border: 1px solid #e8edf5;
+  background: var(--lc-surface);
+  border: 1px solid var(--lc-line);
   border-radius: 10px;
   padding: 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.collab-kpi span { font-size: 11px; color: #8b96a8; }
-.collab-kpi strong { font-size: 18px; color: #172033; line-height: 1.2; }
-.collab-kpi em { font-style: normal; font-size: 11px; color: #66738a; }
-.collab-kpi.risk-yellow { border-color: #fde68a; background: #fffbeb; }
-.collab-kpi.risk-red { border-color: #fecaca; background: #fef2f2; }
-.collab-kpi.risk-green { border-color: #bbf7d0; background: #f0fdf4; }
+.collab-kpi span { font-size: 11px; color: var(--lc-muted); }
+.collab-kpi strong { font-size: 18px; color: var(--lc-ink); line-height: 1.2; }
+.collab-kpi em { font-style: normal; font-size: 11px; color: var(--lc-muted); }
+.collab-kpi.risk-green,
+.collab-kpi.risk-yellow,
+.collab-kpi.risk-red {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+}
 .collab-monitor-block h5 {
   margin: 0 0 8px;
   font-size: 12px;
@@ -4500,7 +4604,7 @@ const css = `
   display: block;
   width: 100%;
   border-radius: 2px 2px 0 0;
-  background: #93c5fd;
+  background: var(--lc-ink);
   min-height: 4px;
 }
 .collab-speaker-list {
@@ -4526,14 +4630,14 @@ const css = `
 }
 .collab-speaker-list .track {
   height: 8px;
-  background: #eef2f7;
+  background: var(--lc-hover);
   border-radius: 99px;
   overflow: hidden;
 }
 .collab-speaker-list .track i {
   display: block;
   height: 100%;
-  background: #60a5fa;
+  background: var(--lc-ink);
   border-radius: 99px;
 }
 .collab-speaker-list em {
@@ -4733,8 +4837,8 @@ const css = `
   margin: 12px;
   padding: 12px;
   border-radius: 12px;
-  background: #f5f8ff;
-  color: #7b879c;
+  background: transparent;
+  color: var(--lc-muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -4789,6 +4893,146 @@ const css = `
   height: 22px;
   cursor: pointer;
   font-size: 11px;
+}
+
+/* 全站主题由根节点变量控制；头像与风险/在线语义色不在此覆盖。 */
+.collab-page,
+.collab-sider,
+.collab-ai,
+.collab-main,
+.collab-sider-head,
+.collab-ai-head,
+.collab-main-head,
+.collab-tabs,
+.collab-messages,
+.collab-virtuoso,
+.collab-monitor,
+.collab-agent-input,
+.collab-contact-pane,
+.collab-room-list,
+.collab-insight-list {
+  color: var(--lc-ink);
+  background: var(--lc-canvas);
+  border-color: var(--lc-line);
+}
+
+.collab-page,
+.collab-sider,
+.collab-ai,
+.collab-main-head,
+.collab-sider-head,
+.collab-ai-head,
+.collab-tabs,
+.collab-banner,
+.collab-kpi,
+.collab-alert-row {
+  border-color: var(--lc-line);
+}
+
+.collab-tabs button,
+.collab-ai-sub,
+.collab-msg-history-tip,
+.collab-contact-section-title,
+.collab-room-del,
+.collab-room-item em,
+.collab-room-preview span,
+.collab-contact-item span,
+.collab-msg-name,
+.collab-time-sep,
+.collab-system-tip,
+.collab-kpi span,
+.collab-kpi em,
+.collab-monitor-block h5,
+.collab-speaker-list em,
+.collab-alert-row em,
+.collab-composer-hint {
+  color: var(--lc-muted);
+}
+
+.collab-tabs button.active,
+.collab-room-item:hover,
+.collab-room-item.active,
+.collab-contact-item:hover,
+.collab-contact-item.is-bot,
+.collab-contact-item.is-bot:hover,
+.collab-room-del:hover,
+.collab-mention-menu button:hover,
+.collab-mention-menu button.active,
+.collab-alert-row:hover:not(:disabled) {
+  color: var(--lc-ink);
+  background: var(--lc-hover);
+  border-color: var(--lc-line);
+}
+
+.collab-room-item strong,
+.collab-contact-item strong,
+.collab-profile-card-main strong,
+.collab-profile-uname,
+.collab-profile-nick,
+.collab-profile-role,
+.collab-profile-bio,
+.collab-bubble p,
+.collab-md,
+.collab-md .agent-md-root,
+.collab-md .agent-md-p,
+.collab-md .agent-md-strong,
+.collab-md .agent-md-li,
+.collab-md .agent-md-h1,
+.collab-md .agent-md-h2,
+.collab-md .agent-md-h3,
+.collab-md .agent-md-h4,
+.collab-kpi strong,
+.collab-speaker-list .name,
+.collab-alert-title,
+.collab-mention-menu strong,
+.collab-mention-menu em {
+  color: var(--lc-ink);
+}
+
+.collab-bubble,
+.collab-msg.ai .collab-bubble,
+.collab-msg.peer .collab-bubble,
+.collab-kpi,
+.collab-alert-row,
+.collab-mention-menu,
+.collab-profile-popover .ant-popover-inner,
+.collab-md .agent-report-card,
+.collab-md .agent-md-section,
+.collab-md .agent-md-pre,
+.collab-md .agent-md-mermaid,
+.collab-md .agent-md-code,
+.collab-md .agent-md-table td,
+.collab-md .agent-md-table th {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+  box-shadow: none;
+}
+
+.collab-msg.mine .collab-bubble {
+  color: var(--lc-own-ink);
+  background: var(--lc-own-bg);
+  border-color: var(--lc-own-bg);
+}
+
+.collab-msg.mine .collab-bubble p,
+.collab-msg.mine .collab-md,
+.collab-msg.mine .collab-md .agent-md-root,
+.collab-msg.mine .collab-md .agent-md-p,
+.collab-msg.mine .collab-md .agent-md-strong,
+.collab-msg.mine .collab-md .agent-md-li,
+.collab-msg.mine .collab-md .agent-md-h1,
+.collab-msg.mine .collab-md .agent-md-h2,
+.collab-msg.mine .collab-md .agent-md-h3,
+.collab-msg.mine .collab-md .agent-md-h4 {
+  color: var(--lc-own-ink);
+}
+
+.collab-system-tip,
+.collab-speaker-list .track {
+  color: var(--lc-muted);
+  background: var(--lc-hover);
+  border-color: var(--lc-line);
 }
 
 @media (max-width: 1100px) {
