@@ -3,60 +3,44 @@
 }
 
 :root {
-  --lc-canvas: #fff;
-  --lc-surface: #fff;
-  --lc-ink: #000;
-  --lc-muted: rgba(0, 0, 0, 0.62);
-  --lc-line: rgba(0, 0, 0, 0.16);
-  --lc-hover: rgba(0, 0, 0, 0.06);
-  --lc-own-bg: #000;
-  --lc-own-ink: #fff;
-  --lc-navy: var(--lc-ink);
-  --lc-navy-light: rgba(0, 0, 0, 0.76);
-  --lc-gold: var(--lc-ink);
-  --lc-gold-light: var(--lc-ink);
-  --lc-gold-pale: var(--lc-muted);
-  --lc-bg: var(--lc-canvas);
-  --lc-bg-layout: var(--lc-canvas);
-  --lc-bg-elevated: var(--lc-surface);
-  --lc-border: var(--lc-line);
-  --lc-border-light: rgba(0, 0, 0, 0.1);
-  --lc-text: var(--lc-ink);
-  --lc-text-muted: var(--lc-muted);
-  --lc-accent-blue: var(--lc-ink);
-  --lc-gradient-gold: linear-gradient(135deg, var(--lc-ink), var(--lc-ink));
-  --lc-gradient-navy: linear-gradient(135deg, var(--lc-ink), var(--lc-ink));
-  --lc-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
-  --lc-panel: rgba(255, 255, 255, 0.96);
+  --lc-navy: #0b2144;
+  --lc-navy-light: #1a3560;
+  --lc-gold: #b8863b;
+  --lc-gold-light: #c99a4a;
+  --lc-gold-pale: #8a6a35;
+  --lc-bg: #f5f7fb;
+  --lc-bg-layout: #eef2f8;
+  --lc-bg-elevated: #ffffff;
+  --lc-border: #d7e0ec;
+  --lc-border-light: #e6ecf4;
+  --lc-text: #1a2740;
+  --lc-text-muted: #5c6b84;
+  --lc-accent-blue: #3d6fa8;
+  --lc-gradient-gold: linear-gradient(135deg, #c4924a, #d4a85c);
+  --lc-gradient-navy: linear-gradient(135deg, #0b2144, #1a3560);
+  --lc-shadow: 0 8px 28px rgba(26, 39, 64, 0.08);
+  --lc-panel: rgba(255, 255, 255, 0.82);
 }
 
 /* 深色模式变量 */
 :root[data-theme="dark"] {
-  --lc-canvas: #000;
-  --lc-surface: #000;
-  --lc-ink: #fff;
-  --lc-muted: rgba(255, 255, 255, 0.68);
-  --lc-line: rgba(255, 255, 255, 0.22);
-  --lc-hover: rgba(255, 255, 255, 0.1);
-  --lc-own-bg: #fff;
-  --lc-own-ink: #000;
-  --lc-navy: var(--lc-ink);
-  --lc-navy-light: rgba(255, 255, 255, 0.78);
-  --lc-gold: var(--lc-ink);
-  --lc-gold-light: var(--lc-ink);
-  --lc-gold-pale: var(--lc-muted);
-  --lc-bg: var(--lc-canvas);
-  --lc-bg-layout: var(--lc-canvas);
-  --lc-bg-elevated: var(--lc-surface);
-  --lc-border: var(--lc-line);
-  --lc-border-light: rgba(255, 255, 255, 0.12);
-  --lc-text: var(--lc-ink);
-  --lc-text-muted: var(--lc-muted);
-  --lc-accent-blue: var(--lc-ink);
-  --lc-gradient-gold: linear-gradient(135deg, var(--lc-ink), var(--lc-ink));
-  --lc-gradient-navy: linear-gradient(135deg, var(--lc-ink), var(--lc-ink));
+  --lc-navy: #d7e2f2;
+  --lc-navy-light: #b9c9e0;
+  --lc-gold: #c99a4a;
+  --lc-gold-light: #d9ad5f;
+  --lc-gold-pale: #c9a869;
+  --lc-bg: #0e1420;
+  --lc-bg-layout: #0a0f19;
+  --lc-bg-elevated: #151d2c;
+  --lc-border: #2a3650;
+  --lc-border-light: #222c42;
+  --lc-text: #e4e9f2;
+  --lc-text-muted: #93a1b8;
+  --lc-accent-blue: #6c9bd2;
+  --lc-gradient-gold: linear-gradient(135deg, #c4924a, #d4a85c);
+  --lc-gradient-navy: linear-gradient(135deg, #1a3560, #2a4a78);
   --lc-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-  --lc-panel: rgba(0, 0, 0, 0.96);
+  --lc-panel: rgba(18, 25, 40, 0.86);
   color-scheme: dark;
 }
 
@@ -70,10 +54,16 @@ body,
 body {
   overflow-x: hidden;
   color: var(--lc-text);
-  background: var(--lc-canvas);
+  background:
+    radial-gradient(920px 420px at 12% -10%, rgba(196, 146, 74, 0.14), transparent 55%),
+    radial-gradient(780px 380px at 92% 0%, rgba(61, 111, 168, 0.12), transparent 50%),
+    linear-gradient(180deg, #f7f9fc 0%, #eef2f8 48%, #e8edf5 100%);
 }
 :root[data-theme="dark"] body {
-  background: var(--lc-canvas);
+  background:
+    radial-gradient(920px 420px at 12% -10%, rgba(196, 146, 74, 0.1), transparent 55%),
+    radial-gradient(780px 380px at 92% 0%, rgba(61, 111, 168, 0.1), transparent 50%),
+    linear-gradient(180deg, #0d1320 0%, #0a0f19 48%, #080d16 100%);
 }
 
 /* 侧栏品牌 */
@@ -2983,125 +2973,4 @@ body {
 :root[data-theme="dark"] .brand-agency-loop-row:hover,
 :root[data-theme="dark"] .brand-agency-loop-row.on {
   background: rgba(108, 155, 210, 0.1);
-}
-
-/* 全站黑白主题最终层：仅使用纯黑/纯白表面与前景透明度。 */
-:root[data-theme] body,
-:root[data-theme] .ant-layout,
-:root[data-theme] .app-shell-topnav,
-:root[data-theme] .app-content-bleed,
-:root[data-theme] .app-content-padded,
-:root[data-theme] .agent-chat-page,
-:root[data-theme] .connectors-page,
-:root[data-theme] .skills-page,
-:root[data-theme] .login-page {
-  color: var(--lc-ink);
-  background: var(--lc-canvas) !important;
-}
-
-:root[data-theme] .app-topnav,
-:root[data-theme] .app-header,
-:root[data-theme] .agent-chat-header,
-:root[data-theme] .agent-chat-quick,
-:root[data-theme] .agent-chat-input,
-:root[data-theme] .agent-chat-composer,
-:root[data-theme] .agent-chat-bubble,
-:root[data-theme] .agent-report-card,
-:root[data-theme] .agent-md-section,
-:root[data-theme] .chat-skill-popover-wrap .ant-popover-inner,
-:root[data-theme] .login-card,
-:root[data-theme] .connectors-stats,
-:root[data-theme] .section-hub-card,
-:root[data-theme] .mcp-dock,
-:root[data-theme] .mcp-card,
-:root[data-theme] .user-skills-card,
-:root[data-theme] .user-skills-card .ant-card-head,
-:root[data-theme] .brand-sfd-canvas-wrap,
-:root[data-theme] .brand-sfd-legend > div,
-:root[data-theme] .brand-agency-catalog,
-:root[data-theme] .ant-card,
-:root[data-theme] .ant-modal-content,
-:root[data-theme] .ant-modal-header,
-:root[data-theme] .ant-drawer-content,
-:root[data-theme] .ant-drawer-header,
-:root[data-theme] .ant-dropdown-menu,
-:root[data-theme] .ant-popover-inner,
-:root[data-theme] .ant-select-dropdown {
-  color: var(--lc-ink) !important;
-  background: var(--lc-surface) !important;
-  border-color: var(--lc-line) !important;
-  box-shadow: none !important;
-}
-
-:root[data-theme] .app-topnav {
-  border-bottom-color: var(--lc-line) !important;
-  backdrop-filter: none;
-}
-
-:root[data-theme] .app-topnav::after {
-  background: var(--lc-ink);
-  opacity: 0.16;
-}
-
-:root[data-theme] .app-topnav-user,
-:root[data-theme] .task-view-switcher,
-:root[data-theme] .task-record-item,
-:root[data-theme] .task-detail-summary > div,
-:root[data-theme] .agent-chat-model-select .ant-select-selector,
-:root[data-theme] .agent-chat-kind-tag,
-:root[data-theme] .agent-chat-attach-tag,
-:root[data-theme] .chat-skill-search .ant-input-affix-wrapper,
-:root[data-theme] .agent-chat-pending-image,
-:root[data-theme] .agent-chat-attach-image,
-:root[data-theme] .mcp-kv code,
-:root[data-theme] .mcp-json,
-:root[data-theme] .agent-md-code,
-:root[data-theme] .agent-md-pre,
-:root[data-theme] .agent-md-mermaid,
-:root[data-theme] .agent-md-img {
-  color: var(--lc-ink) !important;
-  background: var(--lc-surface) !important;
-  border-color: var(--lc-line) !important;
-  box-shadow: none !important;
-}
-
-:root[data-theme] .agent-chat-row.user .agent-chat-bubble {
-  color: var(--lc-own-ink);
-  background: var(--lc-own-bg) !important;
-  border-color: var(--lc-own-bg) !important;
-}
-
-:root[data-theme] .agent-chat-session:hover,
-:root[data-theme] .agent-chat-session:focus-visible,
-:root[data-theme] .user-skills-page .user-skill-item:hover,
-:root[data-theme] .brand-agency-loop-row:hover,
-:root[data-theme] .brand-agency-loop-row.on {
-  background: var(--lc-hover) !important;
-}
-
-:root[data-theme] .ant-typography,
-:root[data-theme] .ant-card,
-:root[data-theme] .ant-modal-title,
-:root[data-theme] .ant-dropdown-menu-title-content,
-:root[data-theme] .ant-popover-title,
-:root[data-theme] .agent-md-root,
-:root[data-theme] .agent-md-p,
-:root[data-theme] .agent-md-li,
-:root[data-theme] .agent-md-strong,
-:root[data-theme] .agent-md-h1,
-:root[data-theme] .agent-md-h2,
-:root[data-theme] .agent-md-h3,
-:root[data-theme] .agent-md-h4 {
-  color: var(--lc-ink);
-}
-
-:root[data-theme] .ant-typography-secondary,
-:root[data-theme] .ant-input::placeholder,
-:root[data-theme] .ant-input-textarea-affix-wrapper textarea::placeholder {
-  color: var(--lc-muted) !important;
-}
-
-:root[data-theme] ::-webkit-scrollbar-thumb {
-  background: var(--lc-line);
-  background-clip: content-box;
 }

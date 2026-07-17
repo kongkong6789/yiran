@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 from django.conf import settings
-from django.utils.text import slugify
 
 from .cos_storage import (
     cos_enabled,
@@ -55,7 +54,6 @@ def _asset_payload(row: SkillAsset) -> dict:
     return {
         "id": row.id,
         "skill_id": row.skill_id,
-        "visibility": row.visibility,
         "name": row.name,
         "description": row.description,
         "original_filename": row.original_filename,
@@ -79,11 +77,7 @@ def _asset_payload(row: SkillAsset) -> dict:
 def list_skill_assets(user=None, *, shared: bool = True) -> list[SkillAsset]:
     """共享技能仓库：全员可见；按 skill_id 去重，取最新一条。"""
     if shared or user is None:
-        rows = list(
-            SkillAsset.objects.filter(visibility=SkillAsset.Visibility.SHARED)
-            .select_related("uploader")
-            .order_by("-updated_at")
-        )
+        rows = list(SkillAsset.objects.select_related("uploader").order_by("-updated_at"))
         seen: set[str] = set()
         unique: list[SkillAsset] = []
         for row in rows:
@@ -97,10 +91,7 @@ def list_skill_assets(user=None, *, shared: bool = True) -> list[SkillAsset]:
 
 def find_shared_asset(skill_id: str) -> SkillAsset | None:
     return (
-        SkillAsset.objects.filter(
-            skill_id=skill_id,
-            visibility=SkillAsset.Visibility.SHARED,
-        )
+        SkillAsset.objects.filter(skill_id=skill_id)
         .select_related("uploader")
         .order_by("-updated_at")
         .first()
@@ -181,20 +172,12 @@ def save_skill_asset_from_bytes(
     data: bytes,
     *,
     adopt: bool = False,
-    visibility: str = SkillAsset.Visibility.SHARED,
-    skill_id_override: str | None = None,
 ) -> tuple[SkillAsset, UserSkill | None]:
     extracted = extract_skill_from_upload(filename, data)
     parsed = {k: v for k, v in extracted.items() if k not in {"package_files", "upload_kind"}}
     package_files: list[tuple[str, bytes]] = extracted.get("package_files") or []
     upload_kind = extracted.get("upload_kind") or "single"
-    if visibility not in SkillAsset.Visibility.values:
-        raise ValueError("Skill 可见范围无效")
     skill_id = parsed["skill_id"]
-    if skill_id_override is not None:
-        skill_id = slugify(skill_id_override, allow_unicode=False)[:64]
-        if not skill_id:
-            raise ValueError("Skill ID 无效")
 
     skill_md_key = ""
     for path, _ in package_files:
@@ -235,7 +218,6 @@ def save_skill_asset_from_bytes(
             skill_id=skill_id,
             defaults={
                 "name": parsed["name"],
-                "visibility": visibility,
                 "description": parsed.get("description") or "",
                 "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
                 "cos_bucket": stored["bucket"],
@@ -259,7 +241,6 @@ def save_skill_asset_from_bytes(
         skill_id=skill_id,
         defaults={
             "name": parsed["name"],
-            "visibility": visibility,
             "description": parsed.get("description") or "",
             "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
             "cos_bucket": "",

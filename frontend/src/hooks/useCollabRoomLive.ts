@@ -131,12 +131,14 @@ export function useCollabRoomLive({
         if (!aliveRef.current) return;
         const incoming = page.results || [];
         const changed = page.changed || [];
-        applySync({
-          messages: incoming,
-          changed,
-          after_id: incoming.length ? incoming[incoming.length - 1].id : cursor,
-          room: page.room,
-        });
+        if (incoming.length || changed.length) {
+          applySync({
+            messages: incoming,
+            changed,
+            after_id: incoming.length ? incoming[incoming.length - 1].id : cursor,
+            room: page.room,
+          });
+        }
         const newInsights = insights.results || [];
         if (newInsights.length) {
           applySync({
@@ -190,7 +192,6 @@ export function useCollabRoomLive({
           participants: p.participants,
           member_count: p.member_count,
           display_title: p.display_title,
-          active_xiaoce_run: p.active_xiaoce_run,
         });
       } catch {
         /* ignore */

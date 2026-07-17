@@ -13,8 +13,6 @@ import urllib.error
 
 from django.conf import settings
 
-from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
-
 
 def _resolve_credentials(user=None) -> tuple[str, str, str]:
     """解析 LLM 凭据: 用户个人设置优先,否则回退全局 .env。"""
@@ -144,14 +142,12 @@ def chat_messages(
     model: str | None = None,
     timeout: int = 45,
     llm_user=None,
-    cancel_check=None,
 ) -> str:
     """多轮对话;失败返回空串。详细错误见 chat_messages_result。"""
     return chat_messages_result(
         system, messages,
         temperature=temperature, max_tokens=max_tokens,
         model=model, timeout=timeout, llm_user=llm_user,
-        cancel_check=cancel_check,
     ).get("content") or ""
 
 
@@ -167,7 +163,6 @@ def chat_messages_result(
     allow_images: bool = True,
     api_key: str | None = None,
     base_url: str | None = None,
-    cancel_check=None,
 ) -> dict:
     """多轮对话,返回 {content, error, configured, model, base_url, vision_unsupported}。
 
@@ -196,20 +191,12 @@ def chat_messages_result(
             "vision_unsupported": False,
         }
 
-    raise_if_cancelled(cancel_check)
-    completion = _chat_completions_stream_once if cancel_check else _chat_completions_once
-    completion_kwargs = {
-        "api_key": used_key,
-        "base_url": used_base,
-        "used_model": used_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "timeout": timeout,
-        "allow_images": allow_images,
-    }
-    if cancel_check:
-        completion_kwargs["cancel_check"] = cancel_check
-    result = completion(system, messages, **completion_kwargs)
+    result = _chat_completions_once(
+        system, messages,
+        api_key=used_key, base_url=used_base, used_model=used_model,
+        temperature=temperature, max_tokens=max_tokens, timeout=timeout,
+        allow_images=allow_images,
+    )
     # 个人设置优先，但个人 Key 失效时不能让整个问答不可用。
     # 仅对明确的鉴权失败回退全局凭据；超时、限流等错误仍保留原结果，
     # 避免一次请求在两个上游重复消耗。
@@ -231,14 +218,16 @@ def chat_messages_result(
         )
     )
     if personal_auth_failed:
-        raise_if_cancelled(cancel_check)
-        fallback_kwargs = {
-            **completion_kwargs,
-            "api_key": global_key,
-            "base_url": global_base,
-            "used_model": global_model or used_model,
-        }
-        fallback = completion(system, messages, **fallback_kwargs)
+        fallback = _chat_completions_once(
+            system, messages,
+            api_key=global_key,
+            base_url=global_base,
+            used_model=global_model or used_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            allow_images=allow_images,
+        )
         fallback["credential_fallback"] = "global"
         if not fallback.get("content") and fallback.get("error"):
             fallback["error"] = (
@@ -255,137 +244,6 @@ def chat_messages_result(
     return result
 
 
-def _completion_messages(
-    system: str,
-    messages: list[dict],
-    allow_images: bool,
-) -> list[dict]:
-    payload_messages = [{"role": "system", "content": system}]
-    for message in messages[-20:]:
-        role = message.get("role", "user")
-        if role not in ("user", "assistant", "system"):
-            role = "user"
-        content = message.get("content")
-        if isinstance(content, list):
-            if not allow_images:
-                texts = [
-                    str(part.get("text") or "").strip()
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                ]
-                text = "\n".join(item for item in texts if item)
-                if text:
-                    payload_messages.append({"role": role, "content": text})
-                continue
-            cleaned = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                part_type = part.get("type")
-                if part_type == "text" and str(part.get("text") or "").strip():
-                    cleaned.append({"type": "text", "text": str(part["text"]).strip()})
-                elif part_type == "image_url" and part.get("image_url"):
-                    cleaned.append({"type": "image_url", "image_url": part["image_url"]})
-            if cleaned:
-                normalized = (
-                    cleaned[0]["text"]
-                    if len(cleaned) == 1 and cleaned[0]["type"] == "text"
-                    else cleaned
-                )
-                payload_messages.append({"role": role, "content": normalized})
-            continue
-        text = (content or "").strip() if isinstance(content, str) else ""
-        if text:
-            payload_messages.append({"role": role, "content": text})
-    return payload_messages
-
-
-def _chat_completions_stream_once(
-    system: str,
-    messages: list[dict],
-    *,
-    api_key: str,
-    base_url: str,
-    used_model: str,
-    temperature: float,
-    max_tokens: int,
-    timeout: int,
-    allow_images: bool,
-    cancel_check,
-) -> dict:
-    url = base_url.rstrip("/") + "/chat/completions"
-    body = json.dumps({
-        "model": used_model,
-        "messages": _completion_messages(system, messages, allow_images),
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": "LiangceAgent/1.0 (OpenAI-compatible)",
-            "Accept": "text/event-stream",
-        },
-    )
-    try:
-        parts: list[str] = []
-        raise_if_cancelled(cancel_check)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            for raw_line in response:
-                raise_if_cancelled(cancel_check)
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if payload == "[DONE]":
-                    break
-                if not payload:
-                    continue
-                data = json.loads(payload)
-                delta = (data.get("choices") or [{}])[0].get("delta") or {}
-                content = delta.get("content") or ""
-                if isinstance(content, str):
-                    parts.append(content)
-            raise_if_cancelled(cancel_check)
-        content = "".join(parts).strip()
-        return {
-            "content": content,
-            "error": "" if content else "模型返回空内容",
-            "configured": True,
-            "model": used_model,
-            "base_url": base_url,
-            "vision_unsupported": False,
-        }
-    except AgentRunCancelled:
-        raise
-    except urllib.error.HTTPError as exc:
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
-        except Exception:
-            detail = str(exc)
-        return {
-            "content": "",
-            "error": f"LLM HTTP {exc.code}: {detail or exc.reason}",
-            "configured": True,
-            "model": used_model,
-            "base_url": base_url,
-            "vision_unsupported": False,
-        }
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError) as exc:
-        return {
-            "content": "",
-            "error": f"LLM 调用失败: {exc}",
-            "configured": True,
-            "model": used_model,
-            "base_url": base_url,
-            "vision_unsupported": False,
-        }
-
-
 def _chat_completions_once(
     system: str,
     messages: list[dict],
@@ -399,10 +257,46 @@ def _chat_completions_once(
     allow_images: bool,
 ) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
+    payload_messages = [{"role": "system", "content": system}]
+    for m in messages[-20:]:
+        role = m.get("role", "user")
+        if role not in ("user", "assistant", "system"):
+            role = "user"
+        content = m.get("content")
+        if isinstance(content, list):
+            if not allow_images:
+                texts = [
+                    str(p.get("text") or "").strip()
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = "\n".join(t for t in texts if t)
+                if text:
+                    payload_messages.append({"role": role, "content": text})
+                continue
+            cleaned = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "text" and str(part.get("text") or "").strip():
+                    cleaned.append({"type": "text", "text": str(part["text"]).strip()})
+                elif ptype == "image_url" and part.get("image_url"):
+                    cleaned.append({"type": "image_url", "image_url": part["image_url"]})
+            if cleaned:
+                # 若仅有 text 一个 part,多数纯文本 API 更接受 string 而不是 array
+                if len(cleaned) == 1 and cleaned[0]["type"] == "text":
+                    payload_messages.append({"role": role, "content": cleaned[0]["text"]})
+                else:
+                    payload_messages.append({"role": role, "content": cleaned})
+            continue
+        text = (content or "").strip() if isinstance(content, str) else ""
+        if text:
+            payload_messages.append({"role": role, "content": text})
     body = json.dumps(
         {
             "model": used_model,
-            "messages": _completion_messages(system, messages, allow_images),
+            "messages": payload_messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }

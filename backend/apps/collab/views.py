@@ -4,10 +4,8 @@ from __future__ import annotations
 import logging
 import mimetypes
 import threading
-import uuid
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
@@ -40,17 +38,8 @@ from .mentions import (
     reply_ai_mention,
     xiaoce_bot_brief,
 )
-from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
+from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
 from .presence import presence_map, touch_presence
-from .xiaoce_runs import (
-    cancel_xiaoce_run,
-    complete_xiaoce_run,
-    complete_xiaoce_run_with_skill,
-    create_xiaoce_run,
-    fail_xiaoce_run,
-    is_xiaoce_run_cancelled,
-    xiaoce_run_payload,
-)
 from . import ws_push
 from collections import Counter
 from datetime import timedelta
@@ -126,21 +115,6 @@ def _can_access_room(user, room: CollabRoom) -> bool:
     return CollabParticipant.objects.filter(room=room, user=user).exists()
 
 
-def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
-    if viewer is None or not getattr(viewer, "is_authenticated", False):
-        return None
-    run = (
-        XiaoceRun.objects.filter(
-            room=room,
-            user=viewer,
-            status=XiaoceRun.Status.RUNNING,
-        )
-        .order_by("-created_at")
-        .first()
-    )
-    return xiaoce_run_payload(run)
-
-
 def _nickname_map(room: CollabRoom) -> dict[int, str]:
     return {
         p.user_id: (p.nickname or "").strip()
@@ -192,7 +166,6 @@ def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
         "online_count": online_count,
         "peer_online": peer_online,
         "unread_count": 0,
-        "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
     }
 
 
@@ -257,7 +230,6 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         "message_count": room.messages.count(),
         "insight_count": room.insights.count(),
         "unread_count": 0,
-        "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
     }
     if viewer is not None:
         viewer_part = next((p for p in participant_rows if p.user_id == viewer.id), None)
@@ -386,7 +358,6 @@ def _message_payload(
         "content": msg.content or "",
         "attachments": msg.attachments or [],
         "mentions": msg.mentions or [],
-        "meta": msg.meta or {},
         "msg_type": msg.msg_type or "user",
         "ai_kind": (msg.ai_kind or "") if msg.msg_type == "ai" else "",
         "status": msg_status,
@@ -507,101 +478,63 @@ def _is_xiaoce_dm(room: CollabRoom) -> bool:
     ).exists()
 
 
-def _xiaoce_history_before(room: CollabRoom, trigger_message_id: int) -> list[dict]:
-    recent = list(
-        room.messages.select_related("sender")
-        .exclude(status__in=["deleted", "recalled"])
-        .filter(id__lt=trigger_message_id)
-        .order_by("-id")[:20]
-    )
-    history: list[dict] = []
-    for message in reversed(recent):
-        if message.msg_type not in {"user", "ai"}:
-            continue
-        if not (message.content or "").strip() or (message.meta or {}).get("cancelled"):
-            continue
-        history.append({
-            "role": "assistant" if message.msg_type == "ai" else "user",
-            "content": message.content,
-        })
-    return history
-
-
-def _publish_xiaoce_message(run: XiaoceRun, message: CollabMessage | None) -> None:
-    if message is None:
-        return
-    run.room.refresh_from_db(fields=["status", "risk_level", "updated_at"])
-    ws_push.publish_sync(
-        run.room_id,
-        messages=[_message_payload(message)],
-        room={
-            "id": str(run.room_id),
-            "status": run.room.status,
-            "risk_level": run.room.risk_level,
-            "updated_at": run.room.updated_at.isoformat(),
-            "active_xiaoce_run": None,
-        },
-    )
-
-
-def _run_xiaoce_reply_async(run_id) -> None:
+def _run_xiaoce_reply_async(room_id, user_id: int, trigger_content: str) -> None:
     """小策bot 单聊：复用 Agent 知识问答链路自动回复。"""
     try:
-        from apps.core.cancellation import AgentRunCancelled
         from apps.core.agent_chat import run_chat
-        from apps.core.conversation_skill import (
-            ConversationSkillError,
-            is_conversation_skill_request,
-            prepare_conversation_skill,
-        )
 
-        run = (
-            XiaoceRun.objects.select_related("room", "user", "trigger_message")
-            .get(id=run_id)
+        room = CollabRoom.objects.get(id=room_id)
+        user = User.objects.filter(id=user_id).first()
+        recent = list(
+            room.messages.select_related("sender")
+            .exclude(status="deleted")
+            .order_by("-id")[:21]
         )
-        trigger_content = run.trigger_message.content or ""
-        cancel_check = lambda: is_xiaoce_run_cancelled(run.id)
-        if is_conversation_skill_request(trigger_content):
-            try:
-                prepared = prepare_conversation_skill(
-                    run.user,
-                    run.room,
-                    exclude_message_id=run.trigger_message_id,
-                    cancel_check=cancel_check,
-                )
-                ai_msg = complete_xiaoce_run_with_skill(run.id, prepared)
-            except AgentRunCancelled:
-                raise
-            except Exception as exc:
-                detail = (
-                    str(exc)
-                    if isinstance(exc, ConversationSkillError)
-                    else "Skill 上传或保存失败，请稍后重试"
-                )
-                ai_msg = complete_xiaoce_run(
-                    run.id,
-                    f"Skill 自动生成失败：{detail}",
-                    {"skill_generation_failed": True},
-                )
-        else:
-            history = _xiaoce_history_before(run.room, run.trigger_message_id)
-            result = run_chat(
-                message=trigger_content,
-                history=history[-16:],
-                user=run.user,
-                cancel_check=cancel_check,
-            )
-            if result.get("ok"):
-                reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
+        recent.reverse()
+        if recent and recent[-1].sender_id == user_id and recent[-1].msg_type == "user":
+            recent = recent[:-1]
+        history = []
+        for m in recent:
+            if not (m.content or "").strip():
+                continue
+            if m.msg_type == "ai" or is_xiaoce_bot_user(m.sender):
+                history.append({"role": "assistant", "content": m.content or ""})
             else:
-                reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
-            ai_msg = complete_xiaoce_run(run.id, reply)
-        _publish_xiaoce_message(run, ai_msg)
-    except AgentRunCancelled:
-        return
-    except Exception as exc:
-        fail_xiaoce_run(run_id, exc)
-        logger.exception("xiaoce bot reply failed run=%s", run_id)
+                history.append({"role": "user", "content": m.content or ""})
+
+        result = run_chat(
+            message=trigger_content,
+            history=history[-16:],
+            user=user,
+        )
+        if result.get("ok"):
+            reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
+        else:
+            reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
+
+        bot = get_xiaoce_bot_user()
+        ai_msg = CollabMessage.objects.create(
+            room=room,
+            sender=bot,
+            content=reply[:8000],
+            attachments=[],
+            mentions=[],
+            msg_type="ai",
+            ai_kind="xiaoce",
+        )
+        room.save(update_fields=["updated_at"])
+        ws_push.publish_sync(
+            room.id,
+            messages=[_message_payload(ai_msg)],
+            room={
+                "id": str(room.id),
+                "status": room.status,
+                "risk_level": room.risk_level,
+                "updated_at": room.updated_at.isoformat(),
+            },
+        )
+    except Exception:
+        logger.exception("xiaoce bot reply failed room=%s", room_id)
 
 
 def _run_analysis_async(room_id, user_id: int, *, had_ai_reply: bool = False) -> None:
@@ -1143,25 +1076,6 @@ def room_messages(request, room_id):
         if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
             return Response({"ok": False, "error": "旁观者无法发送消息"}, status=403)
         content = str(request.data.get("content") or "").strip()
-        is_bot_dm = _is_xiaoce_dm(room)
-        xiaoce_run_id = None
-        if is_bot_dm and content:
-            active_run = XiaoceRun.objects.filter(
-                room=room,
-                user=request.user,
-                status=XiaoceRun.Status.RUNNING,
-            ).first()
-            if active_run is not None:
-                return Response({
-                    "ok": False,
-                    "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
-                    "xiaoce_run": xiaoce_run_payload(active_run),
-                }, status=409)
-            raw_run_id = str(request.data.get("run_id") or "").strip()
-            try:
-                xiaoce_run_id = uuid.UUID(raw_run_id) if raw_run_id else uuid.uuid4()
-            except (TypeError, ValueError):
-                return Response({"ok": False, "error": "run_id 格式无效"}, status=400)
         files = request.FILES.getlist("files") or request.FILES.getlist("file")
         attachments_meta: list[dict] = []
         if files:
@@ -1185,36 +1099,14 @@ def room_messages(request, room_id):
         )
         mentions = parse_mentions(content, member_names)
 
-        xiaoce_run = None
-        try:
-            with transaction.atomic():
-                msg = CollabMessage.objects.create(
-                    room=room,
-                    sender=request.user,
-                    content=content,
-                    attachments=attachments_meta,
-                    mentions=mentions,
-                    msg_type="user",
-                    meta={"run_id": str(xiaoce_run_id)} if xiaoce_run_id else {},
-                )
-                if xiaoce_run_id:
-                    xiaoce_run = create_xiaoce_run(
-                        xiaoce_run_id,
-                        room,
-                        request.user,
-                        msg,
-                    )
-        except IntegrityError:
-            active_run = XiaoceRun.objects.filter(
-                room=room,
-                user=request.user,
-                status=XiaoceRun.Status.RUNNING,
-            ).first()
-            return Response({
-                "ok": False,
-                "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
-                "xiaoce_run": xiaoce_run_payload(active_run),
-            }, status=409)
+        msg = CollabMessage.objects.create(
+            room=room,
+            sender=request.user,
+            content=content,
+            attachments=attachments_meta,
+            mentions=mentions,
+            msg_type="user",
+        )
         # 硬红线即时落标，不等后台 LLM 分析，前端立刻能画红线
         if content and _HARD_RISK_RE.search(content):
             from .analyze import infer_risk_label
@@ -1229,6 +1121,7 @@ def room_messages(request, room_id):
         need_ai_reply = has_ai_mention(mentions) or (
             "@" in content and collab_skill_hits(content, request.user)
         )
+        is_bot_dm = _is_xiaoce_dm(room)
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
         # 小策bot 单聊：每条用户消息自动走知识问答；群聊仍需 @AI / Skill
         if is_bot_dm and content:
@@ -1238,7 +1131,7 @@ def room_messages(request, room_id):
             if is_bot_dm:
                 threading.Thread(
                     target=_run_xiaoce_reply_async,
-                    args=(xiaoce_run.id,),
+                    args=(room.id, request.user.id, content),
                     daemon=True,
                 ).start()
             else:
@@ -1256,16 +1149,13 @@ def room_messages(request, room_id):
                 daemon=True,
             ).start()
 
-        response_body = {
+        return Response({
             "ok": True,
             "message": msg_payload,
             "room": room_lite,
             "analyze_pending": bool(analyze),
             "ai_pending": bool(need_ai_reply),
-        }
-        if xiaoce_run is not None:
-            response_body["xiaoce_run"] = xiaoce_run_payload(xiaoce_run)
-        return Response(response_body, status=201)
+        }, status=201)
 
     after_id = int(request.query_params.get("after_id") or 0)
     before_id = int(request.query_params.get("before_id") or 0)
@@ -1332,7 +1222,6 @@ def room_messages(request, room_id):
         "risk_level": room.risk_level,
         "updated_at": room.updated_at.isoformat(),
         "unread_count": 0,
-        "active_xiaoce_run": _active_xiaoce_run_payload(room, request.user),
     }
     if include_participants:
         room_view = _room_payload(room, viewer=request.user)
@@ -1368,45 +1257,6 @@ def room_messages(request, room_id):
         "changed": changed,
         "has_more_before": has_more_before,
         "room": room_meta,
-    })
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def xiaoce_run_cancel(request, room_id, run_id):
-    room = get_object_or_404(CollabRoom, id=room_id)
-    run = (
-        XiaoceRun.objects.filter(
-            id=run_id,
-            room=room,
-            user=request.user,
-        )
-        .select_related("room", "cancel_message", "cancel_message__sender")
-        .first()
-    )
-    if run is None:
-        return Response({"ok": False, "error": "未找到可暂停的运行"}, status=404)
-    was_cancelled = run.status == XiaoceRun.Status.CANCELLED
-    try:
-        cancelled = cancel_xiaoce_run(run)
-    except ValueError as exc:
-        return Response({"ok": False, "error": str(exc)}, status=409)
-
-    message = cancelled.cancel_message
-    message_payload = _message_payload(message)
-    room_payload = _room_payload_lite(room, viewer=request.user)
-    if not was_cancelled:
-        ws_push.publish_sync(
-            room.id,
-            messages=[message_payload],
-            room=room_payload,
-        )
-    return Response({
-        "ok": True,
-        "xiaoce_run": xiaoce_run_payload(cancelled),
-        "active_xiaoce_run": None,
-        "message": message_payload,
-        "room": room_payload,
     })
 
 

@@ -77,7 +77,6 @@ class CollabMessage(models.Model):
     content = models.TextField("内容", blank=True, default="")
     attachments = models.JSONField("附件", default=list, blank=True)
     mentions = models.JSONField("提及", default=list, blank=True)
-    meta = models.JSONField("元数据", default=dict, blank=True)
     msg_type = models.CharField(
         "消息类型",
         max_length=16,
@@ -95,7 +94,6 @@ class CollabMessage(models.Model):
             ("reply", "应答"),
             ("interject", "插嘴"),
             ("suggest", "建议"),
-            ("xiaoce", "小策bot"),
         ],
         db_index=True,
     )
@@ -125,61 +123,6 @@ class CollabMessage(models.Model):
         ordering = ["id"]
         verbose_name = "协作消息"
         verbose_name_plural = "协作消息"
-
-
-class XiaoceRun(models.Model):
-    """一次可取消的小策bot回答执行。"""
-
-    class Status(models.TextChoices):
-        RUNNING = "running", "运行中"
-        CANCELLED = "cancelled", "已暂停"
-        COMPLETED = "completed", "已完成"
-        FAILED = "failed", "失败"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    room = models.ForeignKey(
-        CollabRoom,
-        related_name="xiaoce_runs",
-        on_delete=models.CASCADE,
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        related_name="xiaoce_runs",
-        on_delete=models.CASCADE,
-    )
-    trigger_message = models.OneToOneField(
-        CollabMessage,
-        related_name="xiaoce_run",
-        on_delete=models.CASCADE,
-    )
-    cancel_message = models.OneToOneField(
-        CollabMessage,
-        related_name="cancelled_xiaoce_run",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-    )
-    status = models.CharField(
-        max_length=16,
-        choices=Status.choices,
-        default=Status.RUNNING,
-        db_index=True,
-    )
-    error = models.TextField(blank=True, default="")
-    cancelled_at = models.DateTimeField(null=True, blank=True)
-    finished_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["room", "user"],
-                condition=models.Q(status="running"),
-                name="uniq_running_xiaoce_per_user_room",
-            ),
-        ]
 
 
 class CollabInsight(models.Model):

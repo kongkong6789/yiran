@@ -8,8 +8,6 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
-
 from .registry import get_def, resolve_config
 
 
@@ -32,10 +30,9 @@ def _decode_response(raw: bytes, content_type: str) -> dict[str, Any]:
 
 
 class StreamableHttpClient:
-    def __init__(self, url: str, timeout: int = 20, cancel_check=None):
+    def __init__(self, url: str, timeout: int = 20):
         self.url = url
         self.timeout = timeout
-        self.cancel_check = cancel_check
         self.session_id = ""
         self._request_id = 0
 
@@ -53,28 +50,16 @@ class StreamableHttpClient:
             method="POST",
         )
         try:
-            raise_if_cancelled(self.cancel_check)
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raise_if_cancelled(self.cancel_check)
                 session_id = resp.headers.get("Mcp-Session-Id")
                 if session_id:
                     self.session_id = session_id
                 if notification or resp.status == 202:
                     return {}
-                chunks: list[bytes] = []
-                while True:
-                    raise_if_cancelled(self.cancel_check)
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                raise_if_cancelled(self.cancel_check)
                 return _decode_response(
-                    b"".join(chunks),
+                    resp.read(),
                     resp.headers.get("Content-Type", ""),
                 )
-        except AgentRunCancelled:
-            raise
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise McpClientError(f"MCP HTTP {exc.code}: {detail or exc.reason}") from exc
@@ -156,7 +141,6 @@ def _is_wecom_api_error(text: str) -> str:
 
 
 def _read_smartsheet(client: StreamableHttpClient, document_url: str) -> dict[str, Any]:
-    raise_if_cancelled(client.cancel_check)
     sheet_result = client.call_tool("smartsheet_get_sheet", {"url": document_url})
     if sheet_result.get("isError"):
         raise McpClientError(_content_text(sheet_result) or "smartsheet_get_sheet 失败")
@@ -173,7 +157,6 @@ def _read_smartsheet(client: StreamableHttpClient, document_url: str) -> dict[st
     chunks: list[str] = []
     used_tools: list[str] = []
     for sheet in sheets[:5]:
-        raise_if_cancelled(client.cancel_check)
         sheet_id = str(sheet.get("sheet_id") or "").strip()
         title = str(sheet.get("title") or sheet_id)
         if not sheet_id:
@@ -288,12 +271,7 @@ def _content_text(result: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def read_wecom_document(
-    question: str,
-    document_url: str | None = None,
-    user=None,
-    cancel_check=None,
-) -> dict[str, Any]:
+def read_wecom_document(question: str, document_url: str | None = None, user=None) -> dict[str, Any]:
     """识别企微文档链接，通过已配置的 MCP 自动发现并调用只读工具。"""
     document_url = document_url or _extract_document_url(question)
     if not document_url:
@@ -311,7 +289,7 @@ def read_wecom_document(
         }
 
     try:
-        client = StreamableHttpClient(cfg["url"], cancel_check=cancel_check)
+        client = StreamableHttpClient(cfg["url"])
         client.initialize()
 
         if "/smartsheet/" in document_url:
@@ -326,7 +304,6 @@ def read_wecom_document(
 
         errors: list[str] = []
         for tool in readable[:5]:
-            raise_if_cancelled(cancel_check)
             try:
                 arguments = _build_arguments(tool, document_url)
                 result = client.call_tool(str(tool["name"]), arguments)
@@ -349,8 +326,6 @@ def read_wecom_document(
             except McpClientError as exc:
                 errors.append(str(exc))
         raise McpClientError("; ".join(errors[-3:]) or "读取工具未返回文档内容")
-    except AgentRunCancelled:
-        raise
     except McpClientError as exc:
         return {
             "attempted": True,
