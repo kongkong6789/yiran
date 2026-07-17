@@ -879,17 +879,12 @@ export default function Knowledge() {
               <Tag color={kindColor(detailTemplate.kind)}>{detailTemplate.category}</Tag>
               <Tag>{engineLabels[detailTemplate.strategy]}</Tag>
               <Tag>{visibilityLabels[detailTemplate.visibility]}</Tag>
-              <Button type="primary" onClick={() => { applyTemplate(detailTemplate.id); message.success("已选用该知识库模板"); }}>选用这个模板</Button>
             </Space>
           </div>
 
           <div className="doc-window-header">
             <div>
               <Title level={3}>文档</Title>
-              <Paragraph>
-                {detailTemplate.name} 的所有文件都在这里显示，整个知识库都可以链接到 Dify 引用或通过 Chat 插件进行索引。
-                <a onClick={() => message.info("后续可跳转到知识库索引说明文档")}> 了解更多↗</a>
-              </Paragraph>
             </div>
             <div className="doc-window-summary">
               <div><b>{filteredDetailFiles.length}</b><span>文件</span></div>
@@ -1110,7 +1105,7 @@ export default function Knowledge() {
           </Form.Item>
         </Form>
       </Modal>
-      <Drawer title={detailTemplate?.name || "方案模板详情"} width={720} open={false} onClose={() => setDetailTemplateId(null)} extra={detailTemplate ? <Button type="primary" onClick={() => { applyTemplate(detailTemplate.id); setDetailTemplateId(null); }}>选用这个模板</Button> : null}>
+      <Drawer title={detailTemplate?.name || "方案模板详情"} width={720} open={false} onClose={() => setDetailTemplateId(null)}>
         {detailTemplate ? (
           <Space direction="vertical" size={18} style={{ width: "100%" }}>
             <div>
