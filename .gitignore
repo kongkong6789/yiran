@@ -23,3 +23,10 @@ frontend/tsconfig.tsbuildinfo
 
 # Local feature worktrees
 .worktrees/
+
+# local runtime logs
+*.log
+backend/runserver.*.log
+backend/wecom-queue.*.log
+frontend/vite.*.log
+

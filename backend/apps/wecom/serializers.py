@@ -1,37 +1,65 @@
 from rest_framework import serializers
+from django.contrib.auth import get_user_model
 
+from apps.core.models import OrganizationMembership
+from apps.core.organizations import current_organization
 from .models import (
     UserWeComBinding, WeComApiConfig, WeComBindingAuditLog, WeComBindingSyncJob,
     WeComCallbackEvent, WeComGroupWebhook, WeComNotificationRecord,
 )
 from .phone import mask_phone
+from .services import user_friendly_wecom_error
 from .callback_service import callback_url
 from urllib.parse import parse_qs, urlparse
 
 
 MASK = "***"
+User = get_user_model()
 
 
 class WeComApiConfigSerializer(serializers.Serializer):
     corpId = serializers.CharField(max_length=128, allow_blank=False)
     agentId = serializers.CharField(max_length=64, allow_blank=False)
     secret = serializers.CharField(max_length=512, allow_blank=False, trim_whitespace=False)
+    accessScope = serializers.ChoiceField(choices=WeComApiConfig.AccessScope.choices, required=False)
+    allowedUserIds = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False)
 
     def validate(self, attrs):
         instance = getattr(self, "instance", None)
         if attrs.get("secret") == MASK and not getattr(instance, "secret_encrypted", ""):
             raise serializers.ValidationError({"secret": "请填写应用 Secret。"})
+        request = self.context.get("request")
+        organization = getattr(instance, "organization", None) or (current_organization(request.user) if request else None)
+        allowed_ids = attrs.get("allowedUserIds")
+        if allowed_ids is not None and organization:
+            valid_ids = set(OrganizationMembership.objects.filter(
+                organization=organization,
+                user_id__in=allowed_ids,
+                is_active=True,
+            ).values_list("user_id", flat=True))
+            if valid_ids != set(allowed_ids):
+                raise serializers.ValidationError({"allowedUserIds": "指定成员必须属于当前企业。"})
         return attrs
 
     def to_representation(self, instance: WeComApiConfig):
         instance.ensure_callback_credentials()
+        request = self.context.get("request")
+        can_manage = instance.can_manage(request.user) if request else False
         return {
             "corpId": instance.corp_id,
             "agentId": instance.agent_id,
-            "secret": MASK if instance.secret_encrypted else "",
-            "callbackUrl": callback_url(instance, self.context.get("request")),
-            "token": instance.token,
-            "encodingAesKey": instance.encoding_aes_key,
+            "secret": MASK if can_manage and instance.secret_encrypted else "",
+            "callbackUrl": callback_url(instance, request) if can_manage else "",
+            "token": instance.token if can_manage else "",
+            "encodingAesKey": instance.encoding_aes_key if can_manage else "",
+            "organization": {
+                "id": instance.organization_id,
+                "name": instance.organization.name,
+            } if instance.organization_id else None,
+            "accessScope": instance.access_scope,
+            "allowedUserIds": list(instance.allowed_users.values_list("id", flat=True)) if can_manage else [],
+            "canManage": can_manage,
+            "ownerName": instance.user.username,
             "callbackVerified": bool(instance.callback_verified_at),
             "callbackVerifiedAt": instance.callback_verified_at.isoformat() if instance.callback_verified_at else None,
             "lastEventAt": instance.last_event_at.isoformat() if instance.last_event_at else None,
@@ -49,6 +77,7 @@ class WeComApiConfigSerializer(serializers.Serializer):
         scalar_fields = {
             "corpId": "corp_id",
             "agentId": "agent_id",
+            "accessScope": "access_scope",
         }
         for api_name, model_name in scalar_fields.items():
             if api_name in validated_data:
@@ -61,6 +90,8 @@ class WeComApiConfigSerializer(serializers.Serializer):
             if api_name in validated_data and validated_data[api_name] != MASK:
                 setattr(instance, model_name, validated_data[api_name])
         instance.save()
+        if "allowedUserIds" in validated_data:
+            instance.allowed_users.set(User.objects.filter(id__in=validated_data["allowedUserIds"]))
         if cache_identity_changed:
             instance.contacts.all().delete()
             instance.contacts_synced_at = None
@@ -70,11 +101,12 @@ class WeComApiConfigSerializer(serializers.Serializer):
 
     def create(self, validated_data: dict):
         user = self.context["request"].user
-        instance = WeComApiConfig(user=user)
+        instance = WeComApiConfig(user=user, organization=current_organization(user))
         return self.update(instance, validated_data)
 
 
 class WeComContactSerializer(serializers.Serializer):
+    contactId = serializers.IntegerField()
     key = serializers.CharField()
     name = serializers.CharField()
     department = serializers.CharField(allow_blank=True)
@@ -92,18 +124,23 @@ class UserWeComBindingSerializer(serializers.ModelSerializer):
     phoneMasked = serializers.SerializerMethodField()
     weComUserId = serializers.CharField(source="wecom_userid", read_only=True)
     weComMember = serializers.SerializerMethodField()
+    weComAvatar = serializers.SerializerMethodField()
+    weComDepartment = serializers.SerializerMethodField()
+    weComPosition = serializers.SerializerMethodField()
+    weComAvailable = serializers.SerializerMethodField()
     statusLabel = serializers.CharField(source="get_status_display", read_only=True)
     sourceLabel = serializers.CharField(source="get_source_display", read_only=True)
     matchedAt = serializers.DateTimeField(source="matched_at", read_only=True)
     verifiedAt = serializers.DateTimeField(source="verified_at", read_only=True)
     nextRetryAt = serializers.DateTimeField(source="next_retry_at", read_only=True)
-    failureReason = serializers.CharField(source="failure_reason", read_only=True)
+    failureReason = serializers.SerializerMethodField()
 
     class Meta:
         model = UserWeComBinding
         fields = [
             "id", "platformUserId", "platformUser", "phoneMasked", "weComUserId",
-            "weComMember", "status", "statusLabel", "source", "sourceLabel",
+            "weComMember", "weComAvatar", "weComDepartment", "weComPosition", "weComAvailable",
+            "status", "statusLabel", "source", "sourceLabel",
             "matchedAt", "verifiedAt", "nextRetryAt", "failureReason", "retry_count",
         ]
 
@@ -115,8 +152,37 @@ class UserWeComBindingSerializer(serializers.ModelSerializer):
         profile = getattr(obj.platform_user, "settings", None)
         return mask_phone(getattr(profile, "phone", ""))
 
+    def get_failureReason(self, obj):
+        return user_friendly_wecom_error(obj.failure_code, obj.failure_reason) if obj.failure_reason else ""
+
     def get_weComMember(self, obj):
-        return obj.wecom_userid or ""
+        contact = self._contact(obj)
+        return contact.name if contact else (obj.wecom_userid or "")
+
+    def get_weComAvatar(self, obj):
+        contact = self._contact(obj)
+        return contact.avatar_url if contact else ""
+
+    def get_weComDepartment(self, obj):
+        contact = self._contact(obj)
+        return contact.department if contact else ""
+
+    def get_weComPosition(self, obj):
+        contact = self._contact(obj)
+        return contact.position if contact else ""
+
+    def get_weComAvailable(self, obj):
+        contact = self._contact(obj)
+        return contact.available if contact else None
+
+    def _contact(self, obj):
+        if not obj.wecom_config_id or not obj.wecom_userid:
+            return None
+        contact_map = self.context.get("contact_map", {})
+        cached = contact_map.get((obj.wecom_config_id, obj.wecom_userid))
+        if cached:
+            return cached
+        return obj.wecom_config.contacts.filter(wecom_userid=obj.wecom_userid).first()
 
 
 class ManualBindingSerializer(serializers.Serializer):
@@ -132,10 +198,15 @@ class BindingSyncJobSerializer(serializers.ModelSerializer):
 
 class BindingAuditLogSerializer(serializers.ModelSerializer):
     actorName = serializers.CharField(source="actor.username", read_only=True, default="系统")
+    message = serializers.SerializerMethodField()
 
     class Meta:
         model = WeComBindingAuditLog
         fields = ["id", "action", "status", "message", "metadata", "actorName", "created_at"]
+
+    def get_message(self, obj):
+        code = str((obj.metadata or {}).get("failure_code") or "")
+        return user_friendly_wecom_error(code, obj.message)
 
 
 class WeComCallbackEventSerializer(serializers.ModelSerializer):
@@ -147,15 +218,32 @@ class WeComCallbackEventSerializer(serializers.ModelSerializer):
 class WeComGroupWebhookSerializer(serializers.ModelSerializer):
     webhookUrl = serializers.CharField(write_only=True, required=False, allow_blank=False, max_length=1000)
     maskedWebhook = serializers.SerializerMethodField()
+    accessScope = serializers.ChoiceField(source="access_scope", choices=WeComGroupWebhook.AccessScope.choices, required=False)
+    allowedUserIds = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, write_only=True)
+    canManage = serializers.SerializerMethodField()
 
     class Meta:
         model = WeComGroupWebhook
-        fields = ["id", "name", "webhookUrl", "maskedWebhook", "enabled", "last_success_at", "last_failure_at", "last_error_code", "last_error_reason", "created_at", "updated_at"]
-        read_only_fields = ["id", "maskedWebhook", "last_success_at", "last_failure_at", "last_error_code", "last_error_reason", "created_at", "updated_at"]
+        fields = ["id", "name", "webhookUrl", "maskedWebhook", "enabled", "accessScope", "allowedUserIds", "canManage", "last_success_at", "last_failure_at", "last_error_code", "last_error_reason", "created_at", "updated_at"]
+        read_only_fields = ["id", "maskedWebhook", "canManage", "last_success_at", "last_failure_at", "last_error_code", "last_error_reason", "created_at", "updated_at"]
 
     def get_maskedWebhook(self, obj):
         key = obj.webhook_key
         return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***{key[-6:]}" if key else ""
+
+    def get_canManage(self, obj):
+        request = self.context.get("request")
+        return obj.can_manage(request.user) if request else False
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        data["allowedUserIds"] = (
+            list(instance.allowed_users.values_list("id", flat=True))
+            if request and instance.can_manage(request.user)
+            else []
+        )
+        return data
 
     def validate_webhookUrl(self, value):
         parsed = urlparse(value.strip())
@@ -168,28 +256,44 @@ class WeComGroupWebhookSerializer(serializers.ModelSerializer):
         if self.instance is None and not attrs.get("webhookUrl"):
             raise serializers.ValidationError({"webhookUrl": "请填写完整 Webhook 地址。"})
         request = self.context.get("request")
+        organization = getattr(self.instance, "organization", None) or (current_organization(request.user) if request else None)
         if request and "name" in attrs:
-            duplicate = WeComGroupWebhook.objects.filter(user=request.user, name=attrs["name"])
+            duplicate = WeComGroupWebhook.objects.filter(organization=organization, name=attrs["name"])
             if self.instance:
                 duplicate = duplicate.exclude(pk=self.instance.pk)
             if duplicate.exists():
                 raise serializers.ValidationError({"name": "该群聊名称已经存在。"})
+        allowed_ids = attrs.get("allowedUserIds")
+        if allowed_ids is not None and organization:
+            valid_ids = set(OrganizationMembership.objects.filter(
+                organization=organization,
+                user_id__in=allowed_ids,
+                is_active=True,
+            ).values_list("user_id", flat=True))
+            if valid_ids != set(allowed_ids):
+                raise serializers.ValidationError({"allowedUserIds": "指定成员必须属于当前企业。"})
         return attrs
 
     def create(self, validated_data):
         key = validated_data.pop("webhookUrl", "")
-        row = WeComGroupWebhook(user=self.context["request"].user, **validated_data)
+        allowed_ids = validated_data.pop("allowedUserIds", [])
+        user = self.context["request"].user
+        row = WeComGroupWebhook(user=user, organization=current_organization(user), **validated_data)
         row.webhook_key = key
         row.save()
+        row.allowed_users.set(User.objects.filter(id__in=allowed_ids))
         return row
 
     def update(self, instance, validated_data):
         key = validated_data.pop("webhookUrl", "")
+        allowed_ids = validated_data.pop("allowedUserIds", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         if key:
             instance.webhook_key = key
         instance.save()
+        if allowed_ids is not None:
+            instance.allowed_users.set(User.objects.filter(id__in=allowed_ids))
         return instance
 
 
@@ -211,6 +315,52 @@ class TaskNotificationSerializer(serializers.Serializer):
         if attrs["mode"] == "group" and not attrs.get("groupWebhookId"):
             raise serializers.ValidationError({"groupWebhookId": "请选择群机器人 Webhook。"})
         return attrs
+
+
+class WorkTodoCreateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=200, allow_blank=False)
+    description = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")
+    assigneeIds = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="旧版兼容字段，仅表示平台负责人；新接入请使用 platformAssigneeIds。",
+    )
+    platformAssigneeIds = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="平台负责人 ID，仅创建平台待办，不会自动加入企业微信待办。",
+    )
+    wecomContactIds = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list, max_length=100,
+        help_text="企业微信通讯录 contactId，精确决定企业微信待办参与人。",
+    )
+    dueAt = serializers.DateTimeField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(
+        choices=["normal", "high", "urgent"], required=False, default="normal"
+    )
+    remindTypes = serializers.ListField(
+        child=serializers.IntegerField(min_value=0), required=False, default=list, max_length=10
+    )
+    syncToWeCom = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        platform_ids = list(dict.fromkeys([*attrs.get("platformAssigneeIds", []), *attrs.get("assigneeIds", [])]))
+        contact_ids = list(dict.fromkeys(attrs.get("wecomContactIds", [])))
+        if not platform_ids and not contact_ids:
+            raise serializers.ValidationError("请至少选择一位平台负责人或企业微信负责人。")
+        if attrs.get("syncToWeCom") and not contact_ids:
+            raise serializers.ValidationError({"wecomContactIds": "开启企业微信同步后，请至少选择一位企业微信负责人。"})
+        if contact_ids and not attrs.get("syncToWeCom"):
+            raise serializers.ValidationError({"wecomContactIds": "企业微信负责人必须开启企业微信待办同步。"})
+        attrs["platformAssigneeIds"] = platform_ids
+        attrs["wecomContactIds"] = contact_ids
+        return attrs
+
+    def validate_assigneeIds(self, value):
+        return list(dict.fromkeys(value))
+
+
+class WorkTodoStatusSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=["pending", "completed"])
 
 
 class WeComNotificationRecordSerializer(serializers.ModelSerializer):

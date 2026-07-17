@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Card, Row, Col, Form, Input, Button, Space, Avatar, Popconfirm,
-  message, Empty, Tag, Alert, Modal, AutoComplete, Collapse, InputNumber, Select, Switch,
+  message, Empty, Tag, Alert, Modal, AutoComplete, Collapse, InputNumber, Select, Switch, Typography,
 } from "antd";
 import { DeleteOutlined, PlusOutlined, EditOutlined } from "@ant-design/icons";
 import { listAgents, createAgent, updateAgent, deleteAgent, type Agent } from "../api/client";
@@ -76,7 +76,12 @@ export default function Agents() {
               </Tag>
             </div>
             {a.persona && (
-              <div style={{ color: "#9096b3", fontSize: 12, marginTop: 4 }}>{a.persona}</div>
+              <Typography.Paragraph
+                className="agent-card-persona"
+                ellipsis={{ rows: 2, tooltip: a.persona }}
+              >
+                {a.persona}
+              </Typography.Paragraph>
             )}
           </div>
           <Space direction="vertical" size={2} style={{ flexShrink: 0 }}>

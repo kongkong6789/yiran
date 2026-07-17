@@ -234,8 +234,8 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
                     <Tag color={BINDING_STATUS_COLOR[wecomBinding.status] || "default"}>
                       {wecomBinding.statusLabel}
                     </Tag>
-                    {wecomBinding.weComUserId ? (
-                      <small>UserID：{wecomBinding.weComUserId}</small>
+                    {wecomBinding.weComMember ? (
+                      <small>企微成员：{wecomBinding.weComMember}</small>
                     ) : null}
                     {wecomBinding.failureReason ? (
                       <small className="user-profile-wecom-binding-error">{wecomBinding.failureReason}</small>

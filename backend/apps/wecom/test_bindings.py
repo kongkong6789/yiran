@@ -7,12 +7,12 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from apps.core.models import UserSettings
+from apps.core.models import Organization, OrganizationMembership, UserSettings
 
 from .binding_service import candidate_user_ids, manual_bind, match_user
 from .models import UserWeComBinding, WeComApiConfig, WeComBindingAuditLog
 from .phone import hash_phone, mask_phone, normalize_phone
-from .services import WeComApiError
+from .services import USER_NOT_FOUND_DETAIL, WeComApiError, _classify_error, user_friendly_wecom_error
 
 
 User = get_user_model()
@@ -22,13 +22,16 @@ User = get_user_model()
 class PhoneAndBindingTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser("admin", "a@example.com", "password123")
-        self.config = WeComApiConfig.objects.create(user=self.admin, corp_id="corp", agent_id="1")
+        self.organization = Organization.objects.create(name="绑定测试企业", created_by=self.admin)
+        OrganizationMembership.objects.create(organization=self.organization, user=self.admin, role="owner")
+        self.config = WeComApiConfig.objects.create(user=self.admin, organization=self.organization, corp_id="corp", agent_id="1")
         self.config.secret = "secret"
         self.config.save()
 
     def make_user(self, username="member", phone="13800000000"):
         user = User.objects.create_user(username, password="password123")
         UserSettings.objects.create(user=user, phone=phone)
+        OrganizationMembership.objects.create(organization=self.organization, user=user, role="member")
         return user
 
     def test_phone_normalization_and_masking(self):
@@ -106,6 +109,15 @@ class PhoneAndBindingTests(TestCase):
         self.assertEqual(row.retry_count, 1)
         self.assertGreater(row.next_retry_at, timezone.now())
 
+    def test_user_not_found_error_is_safe_for_business_users(self):
+        raw = "user no exist, hint: [1784251482201850264600801], from ip: 116.31.233.4, more info at https://open.work.weixin.qq.com/devtool/query?e=46004"
+        error = _classify_error({"errcode": 46004, "errmsg": raw})
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "WEWORK_USER_NOT_FOUND")
+        self.assertEqual(error.detail, USER_NOT_FOUND_DETAIL)
+        self.assertNotIn("116.31.233.4", error.detail)
+        self.assertEqual(user_friendly_wecom_error("WEWORK_API_ERROR", raw), USER_NOT_FOUND_DETAIL)
+
     @patch("apps.wecom.binding_service.WeComClient.get_wecom_user", return_value={"status": 1})
     @patch("apps.wecom.binding_service.WeComClient.get_wecom_userid_by_mobile", return_value="manual_user")
     def test_manual_binding_is_not_overwritten_by_scheduled_sync(self, *_):
@@ -115,7 +127,11 @@ class PhoneAndBindingTests(TestCase):
         row = match_user(user.id, source="scheduled_sync", config=self.config)
         self.assertEqual(row.wecom_userid, "manual_user")
 
-    def test_admin_api_is_isolated_and_audited(self):
+    @patch(
+        "apps.wecom.binding_service.WeComClient.get_wecom_user",
+        return_value={"userid": "manual", "name": "人工绑定成员", "status": 1, "department": [], "position": "", "avatar": ""},
+    )
+    def test_admin_api_is_isolated_and_audited(self, _mock_get_user):
         user = self.make_user()
         normal = APIClient()
         normal.force_authenticate(user=user)

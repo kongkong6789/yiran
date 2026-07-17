@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
+from apps.core.models import Organization, OrganizationMembership
 from .models import WeComApiConfig, WeComGroupWebhook, WeComNotificationRecord
 from .services import WeComApiError, WeComClient, send_group_webhook_text
 
@@ -15,7 +16,15 @@ class WeComNotificationApiTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user("sender", password="password123")
         self.other = User.objects.create_user("other", password="password123")
-        self.config = WeComApiConfig.objects.create(user=self.user, corp_id="wwcorp", agent_id="100001")
+        self.organization = Organization.objects.create(name="通知测试企业", created_by=self.user)
+        OrganizationMembership.objects.create(organization=self.organization, user=self.user, role="owner")
+        OrganizationMembership.objects.create(organization=self.organization, user=self.other, role="member")
+        self.config = WeComApiConfig.objects.create(
+            user=self.user,
+            organization=self.organization,
+            corp_id="wwcorp",
+            agent_id="100001",
+        )
         self.config.secret = "secret"
         self.config.save()
         self.client.force_authenticate(self.user)

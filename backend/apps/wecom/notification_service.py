@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from .models import WeComApiConfig, WeComGroupWebhook, WeComNotificationRecord
 from .services import WeComApiError, WeComClient, send_group_webhook_markdown
+from .access import resolve_accessible_config, resolve_accessible_webhook
 
 
 PRIORITY_LABELS = {"normal": "普通", "high": "高", "urgent": "紧急"}
@@ -83,9 +84,9 @@ def _attempt(record: WeComNotificationRecord) -> WeComNotificationRecord:
     record.next_retry_at = None
     try:
         if record.channel == WeComNotificationRecord.Channel.PERSON:
-            config = record.config or WeComApiConfig.objects.filter(user=record.user).first()
-            if not config or not config.configured:
-                raise WeComApiError("WECOM_NOT_CONFIGURED", "请先配置企业微信自建应用。", status_code=409)
+            config = record.config or resolve_accessible_config(record.user)
+            if not config or not config.configured or not config.can_use(record.user):
+                raise WeComApiError("WECOM_NOT_AUTHORIZED", "当前企业未配置企业微信应用，或你没有使用权限。", status_code=403)
             record.config = config
             result = WeComClient(config).send_app_text(record.target_ids, record.content)
             record.wecom_msgid = result["msgid"]
@@ -93,8 +94,8 @@ def _attempt(record: WeComNotificationRecord) -> WeComNotificationRecord:
             record.status = WeComNotificationRecord.Status.PARTIAL if result["invalidUsers"] else WeComNotificationRecord.Status.ACCEPTED
         else:
             webhook = record.group_webhook
-            if not webhook or webhook.user_id != record.user_id or not webhook.enabled:
-                raise WeComApiError("WECOM_GROUP_WEBHOOK_NOT_FOUND", "群机器人 Webhook 不存在或已停用。", status_code=404)
+            if not webhook or not webhook.can_use(record.user):
+                raise WeComApiError("WECOM_GROUP_WEBHOOK_NOT_AUTHORIZED", "群机器人不存在、已停用或你没有使用权限。", status_code=403)
             send_group_webhook_markdown(webhook.webhook_key, record.content)
             _mark_webhook_success(webhook)
             record.status = WeComNotificationRecord.Status.ACCEPTED
@@ -131,12 +132,12 @@ def send_task_notification(*, user, data: dict) -> WeComNotificationRecord:
         webhook = None
         target_label = data.get("targetLabel", "")
         if data["mode"] == WeComNotificationRecord.Channel.GROUP:
-            webhook = WeComGroupWebhook.objects.filter(id=data["groupWebhookId"], user=user).first()
+            webhook = resolve_accessible_webhook(user, data["groupWebhookId"])
             if not webhook:
-                raise WeComApiError("WECOM_GROUP_WEBHOOK_NOT_FOUND", "群机器人 Webhook 不存在。", status_code=404)
+                raise WeComApiError("WECOM_GROUP_WEBHOOK_NOT_FOUND", "群机器人不存在或你没有使用权限。", status_code=404)
             target_label = webhook.name
         record = WeComNotificationRecord.objects.create(
-            user=user, channel=data["mode"], config=WeComApiConfig.objects.filter(user=user).first(),
+            user=user, channel=data["mode"], config=resolve_accessible_config(user),
             group_webhook=webhook, target_ids=data.get("recipientUserIds", []), target_label=target_label,
             content=content, content_preview=content[:500], task_trace_id=data.get("taskTraceId", ""),
             idempotency_key=key, status=WeComNotificationRecord.Status.PENDING,

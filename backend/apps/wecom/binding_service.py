@@ -9,12 +9,14 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.core.models import UserSettings
+from apps.core.organizations import current_organization, organization_user_ids
 
 from .models import (
     UserWeComBinding,
     WeComApiConfig,
     WeComBindingAuditLog,
     WeComBindingSyncJob,
+    WeComContact,
 )
 from .phone import hash_phone, mask_phone, normalize_phone
 from .services import WeComApiError, WeComClient
@@ -24,11 +26,32 @@ User = get_user_model()
 RETRY_DELAYS = [timedelta(minutes=5), timedelta(minutes=30), timedelta(hours=2), timedelta(days=1)]
 
 
+def _cache_wecom_member(config: WeComApiConfig, member: dict, *, wecom_userid: str = "") -> WeComContact:
+    user_id = str(member.get("userid") or wecom_userid or "").strip()
+    existing = WeComContact.objects.filter(config=config, wecom_userid=user_id).first()
+    defaults = {
+        "name": str(member.get("name") or user_id),
+        "department_ids": list(member.get("department") or []),
+        "position": str(member.get("position") or ""),
+        "available": int(member.get("status", 1) or 1) == 1,
+        "synced_at": timezone.now(),
+        "department": existing.department if existing else "",
+        "avatar_url": str(member.get("avatar") or "") or (existing.avatar_url if existing else ""),
+    }
+    contact, _ = WeComContact.objects.update_or_create(
+        config=config,
+        wecom_userid=user_id,
+        defaults=defaults,
+    )
+    return contact
+
+
 def resolve_binding_config(actor=None, config_user_id: int | None = None) -> WeComApiConfig | None:
     if config_user_id:
         return WeComApiConfig.objects.filter(user_id=config_user_id).first()
     if actor and getattr(actor, "is_authenticated", False):
-        config = WeComApiConfig.objects.filter(user=actor).first()
+        from .access import resolve_accessible_config
+        config = resolve_accessible_config(actor)
         if config and config.configured:
             return config
     configured_id = int(getattr(settings, "WECOM_BINDING_CONFIG_USER_ID", 0) or 0)
@@ -86,7 +109,7 @@ def mark_pending_and_dispatch(user_id: int, *, source: str):
     binding.failure_reason = ""
     binding.next_retry_at = None
     binding.save()
-    config = resolve_binding_config()
+    config = resolve_binding_config(actor=user)
     if config and config.configured:
         if getattr(settings, "WECOM_BINDING_ASYNC_ENABLED", True):
             create_sync_job(config=config, source=source, batch_size=1)
@@ -128,6 +151,7 @@ def match_user(user_id: int, *, source: str, config: WeComApiConfig, actor=None,
     try:
         wecom_userid = client.get_wecom_userid_by_mobile(normalized)
         member = client.get_wecom_user(wecom_userid)
+        _cache_wecom_member(config, member, wecom_userid=wecom_userid)
     except WeComApiError as exc:
         if exc.code == "WEWORK_USER_NOT_FOUND":
             status = UserWeComBinding.Status.NOT_FOUND
@@ -144,7 +168,10 @@ def match_user(user_id: int, *, source: str, config: WeComApiConfig, actor=None,
 
     with transaction.atomic():
         binding = UserWeComBinding.objects.select_for_update().get(pk=binding.pk)
-        conflict = UserWeComBinding.objects.select_for_update().filter(wecom_userid=wecom_userid).exclude(pk=binding.pk).first()
+        conflict = UserWeComBinding.objects.select_for_update().filter(
+            wecom_config=config,
+            wecom_userid=wecom_userid,
+        ).exclude(pk=binding.pk).first()
         if conflict:
             return _save_failure(binding, status=UserWeComBinding.Status.CONFLICT, code="WECOM_USER_ALREADY_BOUND", reason="该企业微信成员已绑定其他平台用户，需要管理员确认。", source=source, actor=actor)
         if binding.wecom_userid and binding.wecom_userid != wecom_userid:
@@ -171,9 +198,12 @@ def match_user(user_id: int, *, source: str, config: WeComApiConfig, actor=None,
         return binding
 
 
-def candidate_user_ids(*, limit: int | None = None):
+def candidate_user_ids(*, config: WeComApiConfig | None = None, limit: int | None = None):
     stale_before = timezone.now() - timedelta(days=30)
-    qs = User.objects.filter(is_active=True, settings__phone__gt="").filter(
+    qs = User.objects.filter(is_active=True, settings__phone__gt="")
+    if config and config.organization_id:
+        qs = qs.filter(id__in=organization_user_ids(config.organization))
+    qs = qs.filter(
         Q(wecom_binding__isnull=True)
         | (
             Q(wecom_binding__status__in=[
@@ -199,7 +229,7 @@ def run_sync_job(job: WeComBindingSyncJob) -> WeComBindingSyncJob:
         "permission_denied_count", "retry_waiting_count",
     ]}
     try:
-        user_ids = candidate_user_ids()
+        user_ids = candidate_user_ids(config=job.config)
         for offset in range(0, len(user_ids), job.batch_size):
             for user_id in user_ids[offset:offset + job.batch_size]:
                 counts["scanned_count"] += 1
@@ -254,8 +284,19 @@ def dispatch_sync_job(job_id: int):
 
 
 def manual_bind(*, platform_user, wecom_userid: str, config: WeComApiConfig, actor) -> UserWeComBinding:
+    try:
+        member = dict(WeComClient(config).get_wecom_user(wecom_userid))
+    except WeComApiError as exc:
+        raise ValueError(exc.detail) from exc
+    member.setdefault("userid", wecom_userid)
+    if int(member.get("status", 1) or 1) != 1:
+        raise ValueError("该企业微信成员已停用，不能建立绑定。")
+    _cache_wecom_member(config, member, wecom_userid=wecom_userid)
     with transaction.atomic():
-        existing = UserWeComBinding.objects.select_for_update().filter(wecom_userid=wecom_userid).exclude(platform_user=platform_user).first()
+        existing = UserWeComBinding.objects.select_for_update().filter(
+            wecom_config=config,
+            wecom_userid=wecom_userid,
+        ).exclude(platform_user=platform_user).first()
         if existing:
             raise ValueError("该企业微信 UserID 已绑定其他平台用户")
         binding, _ = UserWeComBinding.objects.select_for_update().get_or_create(platform_user=platform_user)

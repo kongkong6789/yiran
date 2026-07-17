@@ -9,6 +9,8 @@ import { brand } from "../theme/brand";
 export default function Connectors() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [weComOpen, setWeComOpen] = useState(false);
+  const requestedWeComTab = searchParams.get("tab");
+  const initialWeComTab = requestedWeComTab === "cli" || requestedWeComTab === "webhooks" ? requestedWeComTab : "api";
 
   useEffect(() => {
     if (searchParams.get("section") === "wecom") setWeComOpen(true);
@@ -19,6 +21,7 @@ export default function Connectors() {
     if (searchParams.get("section") === "wecom") {
       const next = new URLSearchParams(searchParams);
       next.delete("section");
+      next.delete("tab");
       setSearchParams(next, { replace: true });
     }
   };
@@ -59,7 +62,7 @@ export default function Connectors() {
 
       <McpServers variant="page" title="平台连接器" />
 
-      <WeComConfigModal open={weComOpen} onClose={closeWeCom} />
+      <WeComConfigModal open={weComOpen} onClose={closeWeCom} initialTab={initialWeComTab} />
     </div>
   );
 }

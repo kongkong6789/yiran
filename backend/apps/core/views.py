@@ -5,10 +5,12 @@ import io
 import re
 from urllib.parse import quote
 
+from django.contrib.auth import get_user_model
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -23,11 +25,40 @@ from .attachments import (
     resolve_attachment_path,
     resolve_attachment_path_any,
 )
-from .models import AuditLog, ChatMessage, ChatSession, TaskFollowUp, TaskResultRecord, WorkTask, WorkTaskArtifact
+from .models import AuditLog, ChatMessage, ChatSession, TaskFollowUp, TaskResultRecord, WorkTask, WorkTaskArtifact, WorkTodo
+from .organizations import current_organization, organization_user_ids
+
+User = get_user_model()
 
 
 def _is_admin(user) -> bool:
     return bool(getattr(user, "is_authenticated", False) and (user.is_staff or user.is_superuser))
+
+
+def _display_name(user) -> str:
+    profile = getattr(user, "settings", None)
+    return (getattr(profile, "display_name", "") or user.username).strip()
+
+
+def _work_todo_payload(row: WorkTodo) -> dict:
+    return {
+        "id": str(row.public_id),
+        "title": row.title,
+        "description": row.description,
+        "priority": row.priority,
+        "priorityLabel": row.get_priority_display(),
+        "status": row.status,
+        "statusLabel": row.get_status_display(),
+        "dueAt": row.due_at.isoformat() if row.due_at else None,
+        "creator": {"id": row.creator_id, "name": _display_name(row.creator)},
+        "assignee": {"id": row.assignee_id, "name": _display_name(row.assignee)},
+        "syncStatus": row.sync_status,
+        "syncErrorReason": row.sync_error_reason,
+        "remindTypes": row.remind_types,
+        "completedAt": row.completed_at.isoformat() if row.completed_at else None,
+        "createdAt": row.created_at.isoformat(),
+        "updatedAt": row.updated_at.isoformat(),
+    }
 
 
 @api_view(["GET"])
@@ -185,29 +216,83 @@ def _flatten(prefix: str, value, rows: list[tuple[str, str]]) -> None:
         rows.append((prefix, "" if value is None else str(value)))
 
 
+def _markdown_table(rows: list[tuple[str, str]]) -> list[str]:
+    lines = ["| 项目 | 内容 |", "| --- | --- |"]
+    for key, value in rows:
+        lines.append(f"| {key} | {value or '—'} |")
+    return lines
+
+
+def _humanize_scalar(value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, (int, float)):
+        return f"{value:,}" if isinstance(value, int) else str(value)
+    return str(value)
+
+
+def _humanize_mapping(value: dict, depth: int = 0) -> list[str]:
+    lines: list[str] = []
+    for key, item in value.items():
+        label = str(key)
+        if isinstance(item, dict):
+            lines.append(f"### {label}")
+            lines.extend(_humanize_mapping(item, depth + 1))
+        elif isinstance(item, list):
+            lines.append(f"### {label}")
+            if not item:
+                lines.append("- 无")
+            elif all(not isinstance(entry, (dict, list)) for entry in item):
+                for entry in item:
+                    lines.append(f"- {_humanize_scalar(entry)}")
+            else:
+                for index, entry in enumerate(item, start=1):
+                    lines.append(f"#### 第 {index} 项")
+                    if isinstance(entry, dict):
+                        lines.extend(_markdown_table([(str(k), _humanize_scalar(v) if not isinstance(v, (dict, list)) else json.dumps(v, ensure_ascii=False)) for k, v in entry.items()]))
+                        lines.append("")
+                    else:
+                        lines.append(f"- {_humanize_scalar(entry)}")
+        else:
+            lines.append(f"- **{label}**：{_humanize_scalar(item)}")
+    return lines
+
+
 def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: dict) -> list[WorkTaskArtifact]:
     from openpyxl import Workbook
 
     summary = [
         f"# {row.title}",
         "",
-        f"- Trace ID：{row.trace_id}",
-        f"- SOP：{row.sop_id or '未匹配'}",
-        f"- 执行智能体：{row.agent_name or '未设置'}",
-        f"- 优先级：{row.get_priority_display()}",
-        f"- 截止时间：{row.deadline.isoformat() if row.deadline else '未设置'}",
-        f"- 负责人：{'、'.join(row.assignee_names) or '未设置'}",
+        "## 任务概览",
+        "",
+        *_markdown_table([
+            ("任务编号", row.trace_id),
+            ("SOP", row.sop_id or "未匹配"),
+            ("执行智能体", row.agent_name or "未设置"),
+            ("优先级", row.get_priority_display()),
+            ("截止时间", row.deadline.isoformat() if row.deadline else "未设置"),
+            ("负责人", "、".join(row.assignee_names) or "未设置"),
+        ]),
         "",
         "## 执行参数",
-        "```json",
-        json.dumps(parameters, ensure_ascii=False, indent=2),
-        "```",
         "",
-        "## 执行结果",
-        "```json",
-        json.dumps(result_data, ensure_ascii=False, indent=2),
-        "```",
     ]
+    if parameters:
+        summary.extend(_humanize_mapping(parameters))
+    else:
+        summary.append("- 无额外参数")
+    summary.extend(["", "## 执行结果", ""])
+    if result_data:
+        summary.extend(_humanize_mapping(result_data))
+    else:
+        summary.append("- 暂无结果数据")
+    summary.extend([
+        "",
+        "> 如需查看完整原始数据，请下载 JSON 或 Excel 附件。",
+    ])
     markdown = "\n".join(summary).encode("utf-8")
     json_bytes = json.dumps({
         "traceId": row.trace_id, "task": row.title, "sopId": row.sop_id,
@@ -275,6 +360,12 @@ def work_tasks(request):
     if deadline and timezone.is_naive(deadline):
         deadline = timezone.make_aware(deadline)
     recipient_userids = [str(value) for value in request.data.get("recipientUserIds", []) if str(value)]
+    raw_assignee_userids = request.data.get("assigneeWeComUserIds")
+    assignee_userids = (
+        [str(value) for value in raw_assignee_userids if str(value)]
+        if isinstance(raw_assignee_userids, list)
+        else recipient_userids
+    )
     assignee_names = [str(value)[:128] for value in request.data.get("assigneeNames", []) if str(value)]
     timeline = request.data.get("timeline") if isinstance(request.data.get("timeline"), list) else []
     row, _ = WorkTask.objects.update_or_create(
@@ -288,7 +379,7 @@ def work_tasks(request):
             "deadline": deadline,
             "status": WorkTask.Status.RUNNING,
             "progress": min(max(int(request.data.get("progress") or 75), 0), 100),
-            "assignee_wecom_userids": recipient_userids,
+            "assignee_wecom_userids": assignee_userids,
             "assignee_names": assignee_names,
             "notification_mode": str(request.data.get("notificationMode") or "")[:16],
             "notification_target": str(request.data.get("notificationTarget") or "")[:500],
@@ -296,10 +387,19 @@ def work_tasks(request):
         },
     )
     from apps.wecom.models import UserWeComBinding
-    platform_ids = UserWeComBinding.objects.filter(
-        wecom_userid__in=recipient_userids,
+    organization = current_organization(request.user)
+    bindings = UserWeComBinding.objects.filter(
+        wecom_userid__in=assignee_userids,
         status=UserWeComBinding.Status.MATCHED,
-    ).values_list("platform_user_id", flat=True)
+    )
+    if organization is not None:
+        bindings = bindings.filter(
+            platform_user_id__in=organization_user_ids(organization),
+            wecom_config__organization=organization,
+        )
+    else:
+        bindings = bindings.none()
+    platform_ids = bindings.values_list("platform_user_id", flat=True)
     row.assignees.set(platform_ids)
     parameters = request.data.get("parameters") if isinstance(request.data.get("parameters"), dict) else {}
     result_data = request.data.get("resultData") if isinstance(request.data.get("resultData"), dict) else {}

@@ -19,6 +19,7 @@ import SkillsPage from "./pages/SkillsPage";
 import CollabRisk from "./pages/CollabRisk";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
+import WorkTodos from "./pages/WorkTodos";
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="commerce/loops" element={<Loops />} />
           <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
           <Route path="console" element={<AgentConsole />} />
+          <Route path="todos" element={<WorkTodos />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="datalake" element={<DataLake />} />
           <Route path="my/knowledge" element={(

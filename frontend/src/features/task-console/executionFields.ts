@@ -111,6 +111,16 @@ export function isExecutionFieldPending(field: ExecutionField) {
   return field.required && (!field.value || field.status === "missing" || field.status === "needs_confirmation");
 }
 
+export function pendingFieldHint(field: ExecutionField): string {
+  if (field.status === "missing" || !field.value) {
+    return field.options?.length ? `请选择${field.label}` : `请填写${field.label}`;
+  }
+  if (field.status === "needs_confirmation") {
+    return `请确认${field.label}`;
+  }
+  return "";
+}
+
 export function executionFieldDisplayValue(field: ExecutionField) {
   if (!field.value) return field.status === "missing" ? "尚未填写" : `请选择${field.label}`;
   const optionLabel = field.options?.find((option) => option.value === field.value)?.label;
