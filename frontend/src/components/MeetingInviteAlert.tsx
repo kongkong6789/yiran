@@ -143,7 +143,7 @@ export default function MeetingInviteAlert({ enabled = true }: Props) {
       /* ignore */
     }
     if (action === "join") {
-      nav(`/council?meeting=${inv.meeting_id}`);
+      nav(`/collab?view=roundtable&meeting=${inv.meeting_id}`);
     } else {
       // 稍后再说后，尝试展示下一条
       window.setTimeout(() => { void refreshPending(); }, 400);

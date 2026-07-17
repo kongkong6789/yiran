@@ -27,7 +27,7 @@ const DOMAINS: Domain[] = [
   },
   {
     name: "圆桌会议", sub: "Council", desc: "多个专家一起研讨方案",
-    color: "#5bd5f2", route: "/council", countLabel: "128 个节点",
+    color: "#5bd5f2", route: "/collab?view=roundtable", countLabel: "128 个节点",
     samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 14,
   },
   {

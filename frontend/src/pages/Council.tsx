@@ -40,6 +40,18 @@ type Phase = "setup" | "lobby" | "live";
 type SetupView = "list" | "create";
 type ListFilter = "all" | "active" | "paused" | "draft" | "stopped";
 
+export type CouncilDraftSeed = {
+  title: string;
+  intro: string;
+  userIds: number[];
+  sourceRoomId?: string;
+};
+
+type CouncilProps = {
+  embedded?: boolean;
+  initialDraft?: CouncilDraftSeed | null;
+};
+
 const STATUS_META: Record<Meeting["status"], { label: string; color: string }> = {
   draft: { label: "待开始", color: "gold" },
   active: { label: "进行中", color: "processing" },
@@ -69,10 +81,13 @@ function buildAgenda(question: string, intro?: string) {
   ];
 }
 
-export default function Council() {
+export default function Council({
+  embedded = false,
+  initialDraft = null,
+}: CouncilProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>("setup");
-  const [setupView, setSetupView] = useState<SetupView>("list");
+  const [setupView, setSetupView] = useState<SetupView>(initialDraft ? "create" : "list");
   const [listFilter, setListFilter] = useState<ListFilter>("all");
   const [listQuery, setListQuery] = useState("");
   const [pausing, setPausing] = useState(false);
@@ -81,12 +96,12 @@ export default function Council() {
   const [users, setUsers] = useState<CollabUserBrief[]>([]);
   const [history, setHistory] = useState<Meeting[]>([]);
 
-  const [title, setTitle] = useState("");
-  const [intro, setIntro] = useState("");
+  const [title, setTitle] = useState(initialDraft?.title || "");
+  const [intro, setIntro] = useState(initialDraft?.intro || "");
   const [scheduledAt, setScheduledAt] = useState<Dayjs | null>(dayjs().add(30, "minute"));
   const [duration, setDuration] = useState(60);
   const [memberQuery, setMemberQuery] = useState("");
-  const [selectedUsers, setSelectedUsers] = useState<number[]>([]);
+  const [selectedUsers, setSelectedUsers] = useState<number[]>([...(initialDraft?.userIds || [])]);
   const [selectedAgents, setSelectedAgents] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -148,7 +163,7 @@ export default function Council() {
     }
   };
 
-  // 从邀请弹窗跳转：/council?meeting=123
+  // 从邀请弹窗跳转：/collab?view=roundtable&meeting=123
   useEffect(() => {
     const raw = searchParams.get("meeting");
     if (!raw) return;
@@ -575,7 +590,7 @@ export default function Council() {
   if (phase === "setup") {
     if (setupView === "list") {
       return (
-        <div className="council-page">
+        <div className={`council-page${embedded ? " council-page--embedded" : ""}`}>
           <header className="council-hero council-hero-row">
             <div>
               <Typography.Title level={3} style={{ margin: 0 }}>圆桌会议</Typography.Title>
@@ -705,7 +720,7 @@ export default function Council() {
     }
 
     return (
-      <div className="council-page council-create">
+      <div className={`council-page council-create${embedded ? " council-page--embedded" : ""}`}>
         <button
           type="button"
           className="council-back-link"
@@ -719,7 +734,9 @@ export default function Council() {
             <p className="council-create-kicker">NEW MEETING</p>
             <h1 className="council-create-title">新建圆桌</h1>
             <p className="council-create-lead">
-              写清议题，点选同事与 Agent。创建后会出现在列表里，随时再进。
+              {initialDraft
+                ? "已带入团队会话的议题与成员，确认 Agent 后即可开始。"
+                : "写清议题，点选同事与 Agent。创建后会出现在列表里，随时再进。"}
             </p>
 
             <label className="council-field">
@@ -927,7 +944,7 @@ export default function Council() {
   if (phase === "lobby" && meeting) {
     const humans = meeting.human_participants || [];
     return (
-      <div className="council-page">
+      <div className={`council-page${embedded ? " council-page--embedded" : ""}`}>
         <Button icon={<ArrowLeftOutlined />} onClick={backToSetup} style={{ marginBottom: 12 }}>
           返回会议列表
         </Button>
@@ -1050,7 +1067,7 @@ export default function Council() {
   })();
 
   return (
-    <div className="council-live">
+    <div className={`council-live${embedded ? " council-live--embedded" : ""}`}>
       <div className="council-live-left">
         <Card size="small" className="council-card" title="会议信息">
           <Space direction="vertical" size={6} style={{ width: "100%" }}>

@@ -12,6 +12,7 @@ urlpatterns = [
     path("rooms/<uuid:room_id>/draft-check/", views.room_draft_check, name="collab-room-draft-check"),
     path("rooms/<uuid:room_id>/members/", views.room_members, name="collab-room-members"),
     path("rooms/<uuid:room_id>/stats/", views.room_stats, name="collab-room-stats"),
+    path("rooms/<uuid:room_id>/summaries/", views.room_summaries, name="collab-room-summaries"),
     path("rooms/<uuid:room_id>/read/", views.room_mark_read, name="collab-room-read"),
     path("unread/", views.unread_summary, name="collab-unread"),
     path("users/", views.list_users, name="collab-users"),

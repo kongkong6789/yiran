@@ -38,6 +38,32 @@ def llm_available(user=None) -> bool:
     return bool(api_key)
 
 
+def credential_status(user=None) -> dict:
+    """返回当前用户实际会使用的模型配置状态，不暴露密钥或网关地址。"""
+    source = "platform"
+    if user is not None and getattr(user, "is_authenticated", False):
+        from apps.core.models import UserSettings
+
+        us = UserSettings.objects.filter(user=user).only("llm_api_key").first()
+        if us and (us.llm_api_key or "").strip():
+            source = "personal"
+
+    api_key, base_url, model = _resolve_credentials(user)
+    missing = []
+    if not api_key:
+        missing.append("api_key")
+    if not base_url:
+        missing.append("base_url")
+    if not model:
+        missing.append("model")
+    return {
+        "configured": not missing,
+        "model": model,
+        "source": source,
+        "missing": missing,
+    }
+
+
 def fast_model(user=None) -> str:
     """逐轮发言/压缩用的快模型。"""
     _, _, model = _resolve_credentials(user)

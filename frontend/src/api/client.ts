@@ -1248,6 +1248,7 @@ export interface CollabUserBrief {
   date_joined?: string | null;
   kind?: "human" | "bot";
   bot_id?: string;
+  last_read_message_id?: number;
 }
 
 export interface CollabRoom {
@@ -1301,8 +1302,59 @@ export interface CollabMessage {
   status?: "normal" | "recalled" | "deleted";
   risk_flag?: string;
   risk_flag_level?: "" | "yellow" | "red";
+  reply_to?: {
+    id: number;
+    sender: Pick<CollabUserBrief, "id" | "username" | "display_name">;
+    content: string;
+    status?: "normal" | "recalled" | "deleted";
+    attachment_count?: number;
+  } | null;
+  read_state?: {
+    reader_count: number;
+    unread_count: number;
+    read_by: string[];
+    unread_by: string[];
+  };
   created_at: string;
   updated_at?: string;
+}
+
+export interface CollabSummary {
+  id: number;
+  room_id: string;
+  range_mode: "auto" | "latest" | "time" | "custom";
+  start_message_id?: number | null;
+  end_message_id?: number | null;
+  start_at?: string | null;
+  end_at?: string | null;
+  message_count: number;
+  selection_reason: string;
+  content: string;
+  key_points: string[];
+  decisions: string[];
+  action_items: string[];
+  participants: string[];
+  generated_by: "llm" | "local";
+  model_name?: string;
+  model_source?: "personal" | "platform" | "platform_fallback" | "";
+  created_by: string;
+  created_at: string;
+}
+
+export interface CollabSummaryModel {
+  configured: boolean;
+  model: string;
+  source: "personal" | "platform";
+  missing: ("api_key" | "base_url" | "model")[];
+}
+
+export interface CollabSummarySuggestion {
+  should_summarize: boolean;
+  reason: string;
+  pending_message_count: number;
+  span_minutes: number;
+  suggested_range: "auto";
+  last_summary_message_id?: number | null;
 }
 
 export interface CollabInsight {
@@ -1341,6 +1393,19 @@ export interface CollabRoomStats {
     draft_reply: string;
     created_at: string;
   }[];
+  messages_today?: number;
+  messages_7d?: number;
+  read_metrics?: {
+    receipt_count: number;
+    unique_readers: number;
+    avg_read_latency_ms: number;
+    total_active_read_ms: number;
+    avg_session_read_ms: number;
+    session_count: number;
+  };
+  summary_model?: CollabSummaryModel;
+  latest_summary?: CollabSummary | null;
+  summary_suggestion?: CollabSummarySuggestion;
 }
 
 export const listCollabRooms = (params?: { status?: string }) =>
@@ -1604,11 +1669,13 @@ export const sendCollabMessage = (
   content: string,
   analyze = true,
   files?: File[],
+  replyToId?: number,
 ) => {
   if (files?.length) {
     const form = new FormData();
     form.append("content", content || "");
     form.append("analyze", analyze ? "1" : "0");
+    if (replyToId) form.append("reply_to_id", String(replyToId));
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -1631,9 +1698,48 @@ export const sendCollabMessage = (
       insight?: CollabInsight;
       analyze_pending?: boolean;
       ai_pending?: boolean;
-    }>(`/collab/rooms/${id}/messages/`, { content, analyze: analyze ? "1" : "0" }, { timeout: 120_000 })
+    }>(
+      `/collab/rooms/${id}/messages/`,
+      {
+        content,
+        analyze: analyze ? "1" : "0",
+        ...(replyToId ? { reply_to_id: replyToId } : {}),
+      },
+      { timeout: 120_000 },
+    )
     .then((r) => r.data);
 };
+
+export const listCollabSummaries = (id: string) =>
+  api
+    .get<{
+      ok: boolean;
+      model: CollabSummaryModel;
+      suggestion: CollabSummarySuggestion;
+      latest: CollabSummary | null;
+      results: CollabSummary[];
+    }>(`/collab/rooms/${id}/summaries/`)
+    .then((r) => r.data);
+
+export const summarizeCollabRoom = (
+  id: string,
+  body: {
+    range_mode?: "auto" | "latest" | "time" | "custom";
+    message_count?: number;
+    minutes?: number;
+    start_message_id?: number;
+    end_message_id?: number;
+  } = {},
+) =>
+  api
+    .post<{
+      ok: boolean;
+      summary: CollabSummary;
+      model: CollabSummaryModel;
+      suggestion: CollabSummarySuggestion;
+      error?: string;
+    }>(`/collab/rooms/${id}/summaries/`, body, { timeout: 60_000 })
+    .then((r) => r.data);
 
 export const listCollabInsights = (id: string, afterId = 0) =>
   api.get<{ count: number; results: CollabInsight[]; room_risk_level: string }>(
@@ -1725,11 +1831,35 @@ export const getCollabUnread = () =>
     .then((r) => r.data);
 
 /** 标记会话已读 */
-export const markCollabRoomRead = (id: string, upToId?: number) =>
+export const markCollabRoomRead = (
+  id: string,
+  upToId?: number,
+  tracking?: {
+    sessionId?: string;
+    activeDurationMs?: number;
+    ended?: boolean;
+  },
+) =>
   api
-    .post<{ ok: boolean; last_read_message_id: number; unread_count: number; room_id: string }>(
+    .post<{
+      ok: boolean;
+      last_read_message_id: number;
+      unread_count: number;
+      room_id: string;
+      session?: {
+        session_id: string;
+        active_duration_ms: number;
+        ended: boolean;
+      } | null;
+    }>(
       `/collab/rooms/${id}/read/`,
-      upToId ? { up_to_id: upToId } : {},
+      {
+        ...(upToId ? { up_to_id: upToId } : {}),
+        ...(tracking?.sessionId ? { session_id: tracking.sessionId } : {}),
+        ...(tracking?.activeDurationMs
+          ? { active_duration_ms: Math.round(tracking.activeDurationMs) }
+          : {}),
+        ...(tracking?.ended ? { ended: true } : {}),
+      },
     )
     .then((r) => r.data);
-
