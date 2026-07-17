@@ -211,9 +211,10 @@ def run_shell_command(
             start_new_session=True,
         )
         started_at = time.monotonic()
-        while proc.poll() is None:
+        while True:
             raise_if_cancelled(cancel_check)
-            if time.monotonic() - started_at >= timeout:
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0:
                 _stop_process(proc)
                 stdout, stderr = proc.communicate()
                 return {
@@ -223,9 +224,14 @@ def run_shell_command(
                     "stderr": (stderr or "")[:4000] or f"脚本超时(>{timeout}s)",
                     "returncode": -1,
                 }
-            time.sleep(max(poll_interval, 0.01))
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=min(max(poll_interval, 0.01), remaining),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
         raise_if_cancelled(cancel_check)
-        stdout, stderr = proc.communicate()
         # 若脚本把结果写入 json,尽量读入 stdout 供 LLM 使用
         extra = ""
         for pattern in (r'brand_[^"\s]+\.json', r'--clean-output\s+(\S+\.json)'):

@@ -59,6 +59,7 @@ from .summary import (
     summary_payload,
     summary_suggestion,
 )
+from .xiaoce_progress import XiaoceProgressReporter, xiaoce_run_payload
 from .xiaoce_runs import (
     cancel_xiaoce_run,
     complete_xiaoce_run,
@@ -66,7 +67,6 @@ from .xiaoce_runs import (
     create_xiaoce_run,
     fail_xiaoce_run,
     is_xiaoce_run_cancelled,
-    xiaoce_run_payload,
 )
 from . import ws_push
 from collections import Counter
@@ -636,7 +636,12 @@ def _xiaoce_history_before(room: CollabRoom, trigger_message_id: int) -> list[di
     for message in reversed(recent):
         if message.msg_type not in {"user", "ai"}:
             continue
-        if not (message.content or "").strip() or (message.meta or {}).get("cancelled"):
+        meta = message.meta or {}
+        if (
+            not (message.content or "").strip()
+            or meta.get("cancelled")
+            or meta.get("process_status") in {"cancelled", "failed"}
+        ):
             continue
         history.append({
             "role": "assistant" if message.msg_type == "ai" else "user",
@@ -649,9 +654,11 @@ def _publish_xiaoce_message(run: XiaoceRun, message: CollabMessage | None) -> No
     if message is None:
         return
     run.room.refresh_from_db(fields=["status", "risk_level", "updated_at"])
+    run.refresh_from_db()
     ws_push.publish_sync(
         run.room_id,
         messages=[_message_payload(message)],
+        xiaoce_runs=[xiaoce_run_payload(run)],
         room={
             "id": str(run.room_id),
             "status": run.room.status,
@@ -662,8 +669,30 @@ def _publish_xiaoce_message(run: XiaoceRun, message: CollabMessage | None) -> No
     )
 
 
+def _progress_callback(reporter: XiaoceProgressReporter):
+    def report(code: str, status: str, data: dict) -> None:
+        if status == "running":
+            reporter.start(code)
+        elif status == "completed":
+            reporter.complete(code, tool_count=(data or {}).get("tool_count", 0))
+        elif status == "failed":
+            reporter.fail(code, error_code=(data or {}).get("error_code", "stage_failed"))
+    return report
+
+
+def _worker_error_code(current_stage: str, error) -> str:
+    text = str(error or "")
+    if current_stage == "skill_upload":
+        return "skill_upload_failed"
+    if current_stage == "package_validation" or any(term in text for term in ("校验", "结构", "目录")):
+        return "package_invalid"
+    if current_stage in {"history_read", "redaction", "skill_summary"}:
+        return "skill_generation_failed"
+    return "stage_failed"
+
+
 def _run_xiaoce_reply_async(run_id) -> None:
-    """小策bot 单聊：复用 Agent 知识问答链路自动回复。"""
+    """小策bot 单聊：执行普通问答或安全的会话 Skill 打包。"""
     try:
         from apps.core.cancellation import AgentRunCancelled
         from apps.core.agent_chat import run_chat
@@ -677,6 +706,8 @@ def _run_xiaoce_reply_async(run_id) -> None:
             XiaoceRun.objects.select_related("room", "user", "trigger_message")
             .get(id=run_id)
         )
+        reporter = XiaoceProgressReporter(run.id)
+        progress_callback = _progress_callback(reporter)
         trigger_content = run.trigger_message.content or ""
         cancel_check = lambda: is_xiaoce_run_cancelled(run.id)
         if is_conversation_skill_request(trigger_content):
@@ -686,7 +717,9 @@ def _run_xiaoce_reply_async(run_id) -> None:
                     run.room,
                     exclude_message_id=run.trigger_message_id,
                     cancel_check=cancel_check,
+                    progress_callback=progress_callback,
                 )
+                reporter.start("skill_upload")
                 ai_msg = complete_xiaoce_run_with_skill(run.id, prepared)
             except AgentRunCancelled:
                 raise
@@ -708,6 +741,7 @@ def _run_xiaoce_reply_async(run_id) -> None:
                 history=history[-16:],
                 user=run.user,
                 cancel_check=cancel_check,
+                progress_callback=progress_callback,
             )
             if result.get("ok"):
                 reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
@@ -718,7 +752,20 @@ def _run_xiaoce_reply_async(run_id) -> None:
     except AgentRunCancelled:
         return
     except Exception as exc:
-        fail_xiaoce_run(run_id, exc)
+        current_stage = (
+            XiaoceRun.objects.filter(id=run_id)
+            .values_list("current_stage", flat=True)
+            .first()
+            or "understanding"
+        )
+        failed_message = fail_xiaoce_run(
+            run_id,
+            exc,
+            error_code=_worker_error_code(current_stage, exc),
+        )
+        failed_run = XiaoceRun.objects.select_related("room").filter(id=run_id).first()
+        if failed_run is not None:
+            _publish_xiaoce_message(failed_run, failed_message)
         logger.exception("xiaoce bot reply failed run=%s", run_id)
 
 
@@ -1350,6 +1397,7 @@ def room_messages(request, room_id):
                 return Response({"ok": False, "error": "引用消息不存在或已删除"}, status=400)
 
         xiaoce_run = None
+        xiaoce_payload = None
         try:
             with transaction.atomic():
                 msg = CollabMessage.objects.create(
@@ -1380,6 +1428,8 @@ def room_messages(request, room_id):
                 "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
                 "xiaoce_run": xiaoce_run_payload(active_run),
             }, status=409)
+        if xiaoce_run is not None:
+            xiaoce_payload = XiaoceProgressReporter(xiaoce_run.id).start("understanding")
         # 硬红线即时落标，不等后台 LLM 分析，前端立刻能画红线
         if content and _HARD_RISK_RE.search(content):
             from .analyze import infer_risk_label
@@ -1433,7 +1483,7 @@ def room_messages(request, room_id):
             "ai_pending": bool(need_ai_reply),
         }
         if xiaoce_run is not None:
-            response_body["xiaoce_run"] = xiaoce_run_payload(xiaoce_run)
+            response_body["xiaoce_run"] = xiaoce_payload
         return Response(response_body, status=201)
 
     after_id = int(request.query_params.get("after_id") or 0)
@@ -1584,6 +1634,7 @@ def xiaoce_run_cancel(request, room_id, run_id):
         ws_push.publish_sync(
             room.id,
             messages=[message_payload],
+            xiaoce_runs=[xiaoce_run_payload(cancelled)],
             room=room_payload,
         )
     return Response({

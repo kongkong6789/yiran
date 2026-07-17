@@ -291,12 +291,22 @@ class XiaoceRun(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
     )
+    result_message = models.OneToOneField(
+        CollabMessage,
+        related_name="result_xiaoce_run",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
         default=Status.RUNNING,
         db_index=True,
     )
+    current_stage = models.CharField(max_length=64, blank=True, default="")
+    progress_steps = models.JSONField(default=list, blank=True)
+    error_code = models.CharField(max_length=64, blank=True, default="")
     error = models.TextField(blank=True, default="")
     cancelled_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

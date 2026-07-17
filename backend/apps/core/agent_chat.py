@@ -17,6 +17,7 @@ from apps.skills.runner import (
 )
 from .attachments import format_attachment_context, vision_image_parts
 from .cancellation import raise_if_cancelled
+from .progress import emit_progress
 from pathlib import Path
 
 DOC_SYSTEM_APPEND = """
@@ -152,6 +153,7 @@ def run_chat(
     cancel_check=None,
     knowledge_mode: str = "auto",
     knowledge_base_ids: list[int] | None = None,
+    progress_callback=None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -161,9 +163,13 @@ def run_chat(
         return {"ok": False, "error": "\u8bf7\u8f93\u5165\u6d88\u606f\u6216\u4e0a\u4f20\u9644\u4ef6\u3002"}
 
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "understanding", "running")
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
+    emit_progress(progress_callback, "understanding", "completed")
+    if active_skills:
+        emit_progress(progress_callback, "skill", "running")
     script_blocks = (
         try_execute_skill_scripts(
             active_skills,
@@ -174,12 +180,15 @@ def run_chat(
         )
         if active_skills else []
     )
+    if active_skills:
+        emit_progress(progress_callback, "skill", "completed")
     raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
     knowledge = ""
     graph: dict = {"refs": []}
+    emit_progress(progress_callback, "knowledge_search", "running")
     if not doc_mode:
         knowledge = gather_knowledge(message, top_k=4)
         raise_if_cancelled(cancel_check)
@@ -198,6 +207,24 @@ def run_chat(
         else read_wecom_document(message, user=user, cancel_check=cancel_check)
     )
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "knowledge_search", "completed")
+    tool_count = len(script_blocks) + (1 if mcp.get("attempted") else 0)
+    if tool_count:
+        emit_progress(
+            progress_callback,
+            "tools",
+            "completed",
+            tool_count=tool_count,
+        )
+    has_evidence = bool(
+        selected_knowledge
+        or knowledge
+        or graph.get("refs")
+        or mcp.get("content")
+        or script_blocks
+    )
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "running")
     refs = {
         "rag": [],
         "knowledge_bases": selected_knowledge_refs,
@@ -221,6 +248,8 @@ def run_chat(
             for a in attachments
         ],
     }
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "completed")
 
     reference_blocks: list[str] = []
     attach_ctx = format_attachment_context(attachments)
@@ -337,6 +366,7 @@ def run_chat(
         "content": "", "error": "", "configured": True,
         "model": "", "vision_unsupported": False,
     }
+    emit_progress(progress_callback, "composing", "running")
     if not skip_llm:
         # Chat and vision analysis use chat completions; image generation uses images API.
         chat_kwargs: dict = {
@@ -418,6 +448,7 @@ def run_chat(
         )
 
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "composing", "completed")
     return {
         "ok": True,
         "reply": reply,

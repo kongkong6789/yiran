@@ -1482,6 +1482,28 @@ export interface CreatedSkillItem {
   storage?: "cos" | "local";
 }
 
+export interface XiaoceProgressStep {
+  code: string;
+  label: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  tool_count: number;
+  detail: string;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface XiaoceRun {
+  id: string;
+  status: "running" | "cancelled" | "completed" | "failed";
+  room_id: string;
+  current_stage: string;
+  progress_steps: XiaoceProgressStep[];
+  error_code: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CollabRoom {
   id: string;
   title: string;
@@ -1511,7 +1533,7 @@ export interface CollabRoom {
   has_more_before?: boolean;
   unread_count?: number;
   last_read_message_id?: number;
-  active_xiaoce_run?: XiaoceRunSummary | null;
+  active_xiaoce_run?: XiaoceRun | null;
 }
 
 export interface CollabMessage {
@@ -1531,7 +1553,11 @@ export interface CollabMessage {
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   meta?: {
     run_id?: string;
+    process_steps?: XiaoceProgressStep[];
+    process_status?: XiaoceRun["status"];
     cancelled?: boolean;
+    error_code?: string;
+    error_message?: string;
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
     [key: string]: unknown;
@@ -1769,7 +1795,7 @@ export const getCollabRoomPresence = (id: string) =>
     participants: CollabUserBrief[];
     member_count?: number;
     display_title?: string;
-    active_xiaoce_run?: XiaoceRunSummary | null;
+    active_xiaoce_run?: XiaoceRun | null;
   }>(`/collab/rooms/${id}/presence/`).then((r) => r.data);
 
 export type CollabSyncEvent = {
@@ -1777,6 +1803,7 @@ export type CollabSyncEvent = {
   changed?: CollabMessage[];
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
+  xiaoce_runs?: XiaoceRun[];
   after_id?: number;
   after_insight_id?: number;
 };
@@ -1928,7 +1955,7 @@ export const sendCollabMessage = (
         insight?: CollabInsight;
         analyze_pending?: boolean;
         ai_pending?: boolean;
-        xiaoce_run?: XiaoceRunSummary;
+        xiaoce_run?: XiaoceRun;
       }>(`/collab/rooms/${id}/messages/`, form, { timeout: 120_000 })
       .then((r) => r.data);
   }
@@ -1941,7 +1968,7 @@ export const sendCollabMessage = (
       insight?: CollabInsight;
       analyze_pending?: boolean;
       ai_pending?: boolean;
-      xiaoce_run?: XiaoceRunSummary;
+      xiaoce_run?: XiaoceRun;
     }>(
       `/collab/rooms/${id}/messages/`,
       {
@@ -1958,7 +1985,7 @@ export const sendCollabMessage = (
 export const cancelXiaoceRun = (roomId: string, runId: string) =>
   api.post<{
     ok: boolean;
-    xiaoce_run: XiaoceRunSummary;
+    xiaoce_run: XiaoceRun;
     active_xiaoce_run: null;
     message: CollabMessage;
     room: Partial<CollabRoom>;

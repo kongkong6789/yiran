@@ -10,6 +10,7 @@ import {
   type CollabRoom,
   type CollabRoomStats,
   type CollabSyncEvent,
+  type XiaoceRun,
 } from "../api/client";
 
 type Args = {
@@ -19,6 +20,7 @@ type Args = {
   mergeMessages: (incoming: CollabMessage[], changed?: CollabMessage[]) => void;
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
+  onXiaoceRuns?: (runs: XiaoceRun[]) => void;
   setRoomStats: React.Dispatch<React.SetStateAction<CollabRoomStats | null>>;
   /** 兼容旧调用，当前未使用 */
   participantsEqual?: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
@@ -34,6 +36,7 @@ export function useCollabRoomLive({
   mergeMessages,
   mergeInsights,
   patchRoomMeta,
+  onXiaoceRuns,
   setRoomStats,
 }: Args) {
   const aliveRef = useRef(true);
@@ -82,6 +85,11 @@ export function useCollabRoomLive({
       }
       if (data.room) {
         patchRoomMeta(data.room);
+      }
+      if (data.xiaoce_runs) {
+        onXiaoceRuns?.(data.xiaoce_runs);
+      } else if (data.room && "active_xiaoce_run" in data.room) {
+        onXiaoceRuns?.(data.room.active_xiaoce_run ? [data.room.active_xiaoce_run] : []);
       }
       if (data.messages?.length || data.insights?.length) {
         getCollabRoomStats(roomId).then((st) => {
@@ -192,6 +200,7 @@ export function useCollabRoomLive({
           display_title: p.display_title,
           active_xiaoce_run: p.active_xiaoce_run,
         });
+        onXiaoceRuns?.(p.active_xiaoce_run ? [p.active_xiaoce_run] : []);
       } catch {
         /* ignore */
       }
@@ -228,6 +237,7 @@ export function useCollabRoomLive({
     mergeMessages,
     mergeInsights,
     patchRoomMeta,
+    onXiaoceRuns,
     setRoomStats,
   ]);
 }
