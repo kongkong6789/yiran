@@ -3,6 +3,10 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from apps.core.conversation_skill import ConversationSkillError
+from apps.skills.models import SkillAsset
+from apps.skills.repository import save_skill_asset_from_bytes
+
 from .mentions import get_xiaoce_bot_user
 from .models import CollabMessage, XiaoceRun
 
@@ -112,6 +116,44 @@ def complete_xiaoce_run(
     if locked.status != XiaoceRun.Status.RUNNING:
         return None
     return _complete_locked_run(locked, reply, meta)
+
+
+@transaction.atomic
+def complete_xiaoce_run_with_skill(run_id, prepared) -> CollabMessage | None:
+    locked = (
+        XiaoceRun.objects.select_for_update()
+        .select_related("room", "user")
+        .get(id=run_id)
+    )
+    if locked.status != XiaoceRun.Status.RUNNING:
+        return None
+    asset, personal = save_skill_asset_from_bytes(
+        locked.user,
+        prepared.filename,
+        prepared.package_data,
+        adopt=True,
+        visibility=SkillAsset.Visibility.PRIVATE,
+        skill_id_override=prepared.skill_id,
+    )
+    if personal is None:
+        raise ConversationSkillError("Skill 已生成但未能自动启用")
+    created = {
+        "asset_id": asset.id,
+        "personal_id": personal.id,
+        "skill_id": asset.skill_id,
+        "name": personal.name,
+        "description": personal.description,
+        "visibility": asset.visibility,
+        "enabled": personal.enabled,
+        "package_kind": asset.package_kind,
+        "storage": "cos" if asset.cos_bucket else "local",
+    }
+    reply = (
+        f"已将这次对话提炼为 Skill「{personal.name}」，"
+        "已自动上传并启用（仅你可见）。\n\n"
+        f"Skill ID：`{asset.skill_id}`"
+    )
+    return _complete_locked_run(locked, reply, {"created_skill": created})
 
 
 def fail_xiaoce_run(run_id, error) -> None:
