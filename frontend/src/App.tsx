@@ -4,7 +4,6 @@ import AppLayout from "./components/AppLayout";
 import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
-import AgentChat from "./pages/AgentChat";
 import AgentConsole from "./pages/AgentConsole";
 import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
@@ -29,7 +28,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/home" replace />} />
           <Route path="home" element={<Home />} />
-          <Route path="agent" element={<AgentChat />} />
+          <Route path="agent" element={<Navigate to="/collab?bot=xiaoce" replace />} />
           <Route path="collab" element={<CollabRisk />} />
           <Route path="ontology" element={<OntologyGraph />} />
           <Route path="knowledge" element={<Knowledge />} />

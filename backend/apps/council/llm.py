@@ -197,6 +197,44 @@ def chat_messages_result(
         temperature=temperature, max_tokens=max_tokens, timeout=timeout,
         allow_images=allow_images,
     )
+    # 个人设置优先，但个人 Key 失效时不能让整个问答不可用。
+    # 仅对明确的鉴权失败回退全局凭据；超时、限流等错误仍保留原结果，
+    # 避免一次请求在两个上游重复消耗。
+    error = str(result.get("error") or "")
+    global_key = (getattr(settings, "LLM_API_KEY", "") or "").strip()
+    global_base = (getattr(settings, "LLM_BASE_URL", "") or "").strip()
+    global_model = (getattr(settings, "LLM_MODEL", "") or "").strip()
+    personal_auth_failed = (
+        api_key is None
+        and llm_user is not None
+        and getattr(llm_user, "is_authenticated", False)
+        and bool(global_key and global_base)
+        and used_key != global_key
+        and (
+            "LLM HTTP 401" in error
+            or "LLM HTTP 403" in error
+            or "invalid token" in error.lower()
+            or "invalid api key" in error.lower()
+        )
+    )
+    if personal_auth_failed:
+        fallback = _chat_completions_once(
+            system, messages,
+            api_key=global_key,
+            base_url=global_base,
+            used_model=global_model or used_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            allow_images=allow_images,
+        )
+        fallback["credential_fallback"] = "global"
+        if not fallback.get("content") and fallback.get("error"):
+            fallback["error"] = (
+                "个人 LLM 凭据已失效，且全局模型重试失败："
+                f"{fallback['error']}"
+            )
+        result = fallback
     if (
         allow_images
         and not result.get("content")

@@ -27,11 +27,16 @@ from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk, 
 from .draft_coach import analyze_draft
 from .interject import maybe_interject
 from .mentions import (
+    XIAOCE_BOT_DISPLAY,
+    XIAOCE_BOT_USERNAME,
     collab_skill_hits,
     get_collab_ai_user,
+    get_xiaoce_bot_user,
     has_ai_mention,
+    is_xiaoce_bot_user,
     parse_mentions,
     reply_ai_mention,
+    xiaoce_bot_brief,
 )
 from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
 from .presence import presence_map, touch_presence
@@ -87,12 +92,20 @@ def _user_brief(
         "display_name": nick or profile_name or user.username,
         "avatar_url": profile.get("avatar_url") or "",
         "bio": profile.get("bio") or "",
-        "online": False,
-        "last_seen": None,
+        "kind": "bot" if is_xiaoce_bot_user(user) else "human",
     }
-    if presence and user.id in presence:
+    if is_xiaoce_bot_user(user):
+        info["bot_id"] = "xiaoce"
+        info["display_name"] = nick or profile_name or XIAOCE_BOT_DISPLAY
+        info["online"] = True
+    else:
+        info["online"] = False
+        info["last_seen"] = None
+    if presence and user.id in presence and not is_xiaoce_bot_user(user):
         info["online"] = bool(presence[user.id].get("online"))
         info["last_seen"] = presence[user.id].get("last_seen")
+    elif "last_seen" not in info:
+        info["last_seen"] = None
     return info
 
 
@@ -325,13 +338,16 @@ def _message_payload(
         profile = _profile_map([msg.sender_id]).get(msg.sender_id)
     sender_brief = _user_brief(msg.sender, nickname=nick, profile=profile)
     if msg.msg_type == "ai":
+        ai_name = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(msg.sender) else "良策AI"
         sender_brief = {
             **sender_brief,
-            "username": "良策AI",
+            "username": ai_name,
             "nickname": "",
-            "display_name": "良策AI",
-            "avatar_url": "",
+            "display_name": ai_name,
+            "avatar_url": sender_brief.get("avatar_url") or "",
             "online": True,
+            "kind": "bot",
+            "bot_id": "xiaoce" if is_xiaoce_bot_user(msg.sender) else "liangce-ai",
         }
     msg_status = getattr(msg, "status", None) or "normal"
     updated = getattr(msg, "updated_at", None) or msg.created_at
@@ -353,7 +369,7 @@ def _message_payload(
     if msg_status == "recalled":
         who = sender_brief.get("display_name") or sender_brief.get("username") or "有人"
         if msg.msg_type == "ai":
-            who = "良策AI"
+            who = sender_brief.get("display_name") or "良策AI"
         base.update({
             "content": f"{who} 撤回了一条消息",
             "attachments": [],
@@ -453,6 +469,74 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
     return insight
 
 
+def _is_xiaoce_dm(room: CollabRoom) -> bool:
+    if getattr(room, "room_kind", "") != "dm":
+        return False
+    return CollabParticipant.objects.filter(
+        room=room,
+        user__username=XIAOCE_BOT_USERNAME,
+    ).exists()
+
+
+def _run_xiaoce_reply_async(room_id, user_id: int, trigger_content: str) -> None:
+    """小策bot 单聊：复用 Agent 知识问答链路自动回复。"""
+    try:
+        from apps.core.agent_chat import run_chat
+
+        room = CollabRoom.objects.get(id=room_id)
+        user = User.objects.filter(id=user_id).first()
+        recent = list(
+            room.messages.select_related("sender")
+            .exclude(status="deleted")
+            .order_by("-id")[:21]
+        )
+        recent.reverse()
+        if recent and recent[-1].sender_id == user_id and recent[-1].msg_type == "user":
+            recent = recent[:-1]
+        history = []
+        for m in recent:
+            if not (m.content or "").strip():
+                continue
+            if m.msg_type == "ai" or is_xiaoce_bot_user(m.sender):
+                history.append({"role": "assistant", "content": m.content or ""})
+            else:
+                history.append({"role": "user", "content": m.content or ""})
+
+        result = run_chat(
+            message=trigger_content,
+            history=history[-16:],
+            user=user,
+        )
+        if result.get("ok"):
+            reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
+        else:
+            reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
+
+        bot = get_xiaoce_bot_user()
+        ai_msg = CollabMessage.objects.create(
+            room=room,
+            sender=bot,
+            content=reply[:8000],
+            attachments=[],
+            mentions=[],
+            msg_type="ai",
+            ai_kind="xiaoce",
+        )
+        room.save(update_fields=["updated_at"])
+        ws_push.publish_sync(
+            room.id,
+            messages=[_message_payload(ai_msg)],
+            room={
+                "id": str(room.id),
+                "status": room.status,
+                "risk_level": room.risk_level,
+                "updated_at": room.updated_at.isoformat(),
+            },
+        )
+    except Exception:
+        logger.exception("xiaoce bot reply failed room=%s", room_id)
+
+
 def _run_analysis_async(room_id, user_id: int, *, had_ai_reply: bool = False) -> None:
     """旁路分析放到后台，避免拖慢每条消息的发送响应。"""
     try:
@@ -549,6 +633,12 @@ def room_list(request):
         if not peer_usernames:
             return Response({"ok": False, "error": "请选择至少一位聊天对象"}, status=400)
 
+        # 确保小策bot 账号存在，可被选为单聊对象
+        if XIAOCE_BOT_USERNAME in peer_usernames:
+            get_xiaoce_bot_user()
+            if len(peer_usernames) > 1:
+                return Response({"ok": False, "error": "小策bot 仅支持单聊，不能拉入群聊"}, status=400)
+
         peers = list(User.objects.filter(username__in=peer_usernames, is_active=True))
         found = {u.username for u in peers}
         missing = [u for u in peer_usernames if u not in found]
@@ -571,8 +661,26 @@ def room_list(request):
                     _room_payload(existing, include_messages=True, viewer=request.user),
                     status=200,
                 )
-            title = str(request.data.get("title") or peers[0].username).strip() or peers[0].username
+            peer = peers[0]
+            title = str(request.data.get("title") or "").strip()
+            if not title:
+                title = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(peer) else peer.username
             room = _create_room(creator=request.user, peers=peers, room_kind="dm", title=title)
+            if is_xiaoce_bot_user(peer):
+                welcome = CollabMessage.objects.create(
+                    room=room,
+                    sender=peer,
+                    content=(
+                        "你好，我是小策bot。\n"
+                        "可以直接问我经营指标、知识库、图谱或业务问题；"
+                        "我会结合平台知识与数据作答。"
+                    ),
+                    attachments=[],
+                    mentions=[],
+                    msg_type="ai",
+                    ai_kind="xiaoce",
+                )
+                ws_push.publish_sync(room.id, messages=[_message_payload(welcome)])
             return Response(
                 _room_payload(room, include_messages=True, viewer=request.user),
                 status=201,
@@ -876,6 +984,9 @@ def room_members(request, room_id):
     if not is_member:
         return Response({"ok": False, "error": "仅群成员可邀请他人"}, status=403)
 
+    if XIAOCE_BOT_USERNAME in usernames:
+        return Response({"ok": False, "error": "小策bot 仅支持单聊，不能拉入群聊"}, status=400)
+
     existing_ids = set(
         CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
     )
@@ -1010,15 +1121,26 @@ def room_messages(request, room_id):
         need_ai_reply = has_ai_mention(mentions) or (
             "@" in content and collab_skill_hits(content, request.user)
         )
+        is_bot_dm = _is_xiaoce_dm(room)
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
-        # @AI 与旁路分析都后台跑，发送只落库用户消息
+        # 小策bot 单聊：每条用户消息自动走知识问答；群聊仍需 @AI / Skill
+        if is_bot_dm and content:
+            need_ai_reply = True
+            analyze = False
         if need_ai_reply:
-            threading.Thread(
-                target=_run_ai_reply_async,
-                args=(room.id, request.user.id, content, mentions),
-                kwargs={"also_analyze": analyze},
-                daemon=True,
-            ).start()
+            if is_bot_dm:
+                threading.Thread(
+                    target=_run_xiaoce_reply_async,
+                    args=(room.id, request.user.id, content),
+                    daemon=True,
+                ).start()
+            else:
+                threading.Thread(
+                    target=_run_ai_reply_async,
+                    args=(room.id, request.user.id, content, mentions),
+                    kwargs={"also_analyze": analyze},
+                    daemon=True,
+                ).start()
         elif analyze:
             threading.Thread(
                 target=_run_analysis_async,
@@ -1388,7 +1510,7 @@ def room_draft_check(request, room_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    """供创建会话时选择对方账号。新注册靠前；排除 AI 机器人。"""
+    """供创建会话时选择对方账号。新注册靠前；通讯录置顶小策bot。"""
     from .mentions import AI_USERNAMES
 
     touch_presence(request.user)
@@ -1409,15 +1531,26 @@ def list_users(request):
     ids = [u.id for u in rows]
     pmap = presence_map(ids)
     profiles = _profile_map(ids)
+    results = [
+        {
+            **_user_brief(u, presence=pmap, profile=profiles.get(u.id)),
+            "date_joined": u.date_joined.isoformat() if u.date_joined else None,
+        }
+        for u in rows
+    ]
+
+    bot = xiaoce_bot_brief()
+    q_l = q.lower()
+    bot_hit = (not q) or any(
+        q_l in str(bot.get(k) or "").lower()
+        for k in ("username", "display_name", "bio", "bot_id")
+    )
+    if bot_hit and bot["id"] != request.user.id:
+        results = [bot, *[r for r in results if r.get("username") != XIAOCE_BOT_USERNAME]]
+
     return Response({
-        "count": len(rows),
-        "results": [
-            {
-                **_user_brief(u, presence=pmap, profile=profiles.get(u.id)),
-                "date_joined": u.date_joined.isoformat() if u.date_joined else None,
-            }
-            for u in rows
-        ],
+        "count": len(results),
+        "results": results,
     })
 
 

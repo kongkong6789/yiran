@@ -27,18 +27,17 @@ Skill 脚本执行规则(必须遵守):
 4. 若仅有【Skill 执行状态】,按其中原因引导(重传 zip、补参数等),不要重复 Skill 原文的手工步骤清单。
 """
 
-AI_USERNAMES = ("良策AI", "AI助手")
-AI_ALIASES = {"ai", "AI", "Ai", "良策ai", "良策AI", "助手"}
+AI_USERNAMES = ("良策AI", "AI助手", "小策bot")
+AI_ALIASES = {"ai", "AI", "Ai", "良策ai", "良策AI", "助手", "小策bot", "小策"}
 ALL_ALIASES = {"所有人", "全体", "全体成员", "everyone", "all", "ALL"}
 
-_TOKEN_RE = re.compile(r"@([^\s@]+)")
-_MENTION_TARGET_RE = re.compile(
-    r"@(?:AI|ai|良策AI|良策ai)\s*.*?@([^\s@]+)|@([^\s@]+)\s*.*?@(?:AI|ai|良策AI|良策ai)"
-)
+XIAOCE_BOT_USERNAME = "小策bot"
+XIAOCE_BOT_DISPLAY = "小策bot"
+XIAOCE_BOT_BIO = "AI 知识问答助手 · 经营指标 / 知识库 / 图谱"
 
 
 def get_collab_ai_user():
-    """专用 AI 发言账号（不加入群成员列表）。"""
+    """专用 AI 发言账号（群内 @AI / 插嘴，可不在成员列表展示）。"""
     user, created = User.objects.get_or_create(
         username="良策AI",
         defaults={
@@ -51,6 +50,64 @@ def get_collab_ai_user():
         user.set_unusable_password()
         user.save(update_fields=["password"])
     return user
+
+
+def get_xiaoce_bot_user():
+    """团队聊天通讯录中的「小策bot」知识问答助手。"""
+    user, created = User.objects.get_or_create(
+        username=XIAOCE_BOT_USERNAME,
+        defaults={
+            "is_active": True,
+            "is_staff": False,
+            "is_superuser": False,
+        },
+    )
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    try:
+        from apps.core.models import UserSettings
+
+        settings_row, _ = UserSettings.objects.get_or_create(user=user)
+        dirty = False
+        if (settings_row.display_name or "").strip() != XIAOCE_BOT_DISPLAY:
+            settings_row.display_name = XIAOCE_BOT_DISPLAY
+            dirty = True
+        if (settings_row.bio or "").strip() != XIAOCE_BOT_BIO:
+            settings_row.bio = XIAOCE_BOT_BIO
+            dirty = True
+        if dirty:
+            settings_row.save(update_fields=["display_name", "bio", "updated_at"])
+    except Exception:
+        logger.exception("ensure xiaoce bot profile failed")
+    return user
+
+
+def is_xiaoce_bot_user(user) -> bool:
+    return bool(user) and getattr(user, "username", "") == XIAOCE_BOT_USERNAME
+
+
+def xiaoce_bot_brief() -> dict:
+    bot = get_xiaoce_bot_user()
+    return {
+        "id": bot.id,
+        "username": bot.username,
+        "nickname": "",
+        "display_name": XIAOCE_BOT_DISPLAY,
+        "avatar_url": "",
+        "bio": XIAOCE_BOT_BIO,
+        "online": True,
+        "last_seen": None,
+        "date_joined": bot.date_joined.isoformat() if bot.date_joined else None,
+        "kind": "bot",
+        "bot_id": "xiaoce",
+    }
+
+
+_TOKEN_RE = re.compile(r"@([^\s@]+)")
+_MENTION_TARGET_RE = re.compile(
+    r"@(?:AI|ai|良策AI|良策ai|小策bot|小策)\s*.*?@([^\s@]+)|@([^\s@]+)\s*.*?@(?:AI|ai|良策AI|良策ai|小策bot|小策)"
+)
 
 
 def parse_mentions(content: str, member_usernames: list[str] | None = None) -> list[dict[str, Any]]:

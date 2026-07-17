@@ -1246,6 +1246,8 @@ export interface CollabUserBrief {
   online?: boolean;
   last_seen?: string | null;
   date_joined?: string | null;
+  kind?: "human" | "bot";
+  bot_id?: string;
 }
 
 export interface CollabRoom {
@@ -1295,7 +1297,7 @@ export interface CollabMessage {
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   msg_type?: "user" | "system" | "ai";
-  ai_kind?: "" | "reply" | "interject" | "suggest";
+  ai_kind?: "" | "reply" | "interject" | "suggest" | "xiaoce";
   status?: "normal" | "recalled" | "deleted";
   risk_flag?: string;
   risk_flag_level?: "" | "yellow" | "red";

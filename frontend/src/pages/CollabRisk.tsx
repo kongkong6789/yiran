@@ -809,6 +809,33 @@ export default function CollabRisk() {
     setSearchParams({}, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  // 从「AI 问答」入口带 ?bot=xiaoce 进入时，直聊小策bot
+  useEffect(() => {
+    const bot = searchParams.get("bot");
+    if (bot !== "xiaoce" && bot !== "小策bot") return;
+    setSiderTab("contacts");
+    setSearchParams({}, { replace: true });
+    let cancelled = false;
+    (async () => {
+      setCreating(true);
+      try {
+        const room = await createCollabRoom({
+          peer_username: "小策bot",
+          room_kind: "dm",
+        });
+        if (cancelled) return;
+        await loadRooms();
+        setActiveId(room.id);
+        setSiderTab("chats");
+      } catch (e: any) {
+        if (!cancelled) message.error(e?.response?.data?.error || "打开小策bot 失败");
+      } finally {
+        if (!cancelled) setCreating(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams, setSearchParams, loadRooms, message]);
+
   useEffect(() => {
     if (!activeId) return;
     setRooms((prev) => prev.map((r) => (r.id === activeId ? { ...r, unread_count: 0 } : r)));
@@ -1674,7 +1701,9 @@ export default function CollabRisk() {
     const isSystem = m.msg_type === "system" || m.status === "recalled";
     const isAi = m.msg_type === "ai";
     const isRecalled = m.status === "recalled";
-    const label = isAi ? "良策AI" : memberLabel(m.sender);
+    const label = isAi
+      ? (m.sender?.display_name || m.sender?.username || "良策AI")
+      : memberLabel(m.sender);
     const excerpt = (m.content || "").trim().slice(0, 120);
     const canModerate = Boolean(me?.is_staff || (activeRoom && me && activeRoom.created_by?.id === me.id));
     const canDelete = (() => {
@@ -1796,11 +1825,25 @@ export default function CollabRisk() {
       const name = (c.display_name || "").toLowerCase();
       const nick = (c.nickname || "").toLowerCase();
       const user = (c.username || "").toLowerCase();
-      return user.includes(q) || name.includes(q) || nick.includes(q);
+      const bio = (c.bio || "").toLowerCase();
+      return user.includes(q) || name.includes(q) || nick.includes(q) || bio.includes(q);
     });
   }, [contacts, contactKeyword]);
 
+  const botContacts = useMemo(
+    () => filteredContacts.filter((c) => c.kind === "bot" || c.bot_id === "xiaoce" || c.username === "小策bot"),
+    [filteredContacts],
+  );
+  const humanContacts = useMemo(
+    () => filteredContacts.filter((c) => !(c.kind === "bot" || c.bot_id === "xiaoce" || c.username === "小策bot")),
+    [filteredContacts],
+  );
+
+  const isBotContact = (user: CollabUserBrief) =>
+    user.kind === "bot" || user.bot_id === "xiaoce" || user.username === "小策bot";
+
   const isNewlyJoined = (user: CollabUserBrief) => {
+    if (isBotContact(user)) return false;
     if (!user.date_joined) return false;
     const t = Date.parse(user.date_joined);
     if (Number.isNaN(t)) return false;
@@ -1813,7 +1856,7 @@ export default function CollabRisk() {
 
   const inviteCandidateOptions = useMemo(() => {
     return contacts
-      .filter((u) => !memberUsernameSet.has(u.username))
+      .filter((u) => !isBotContact(u) && !memberUsernameSet.has(u.username))
       .map((u) => ({
         value: u.username,
         label: u.online ? `${u.username}（在线）` : u.username,
@@ -1994,37 +2037,75 @@ export default function CollabRisk() {
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   description={contactKeyword.trim() ? "没有匹配的联系人" : "暂无其他账号"}
                 />
-              ) : filteredContacts.map((user) => (
-                <button
-                  key={user.id}
-                  type="button"
-                  className="collab-contact-item"
-                  disabled={creating}
-                  onClick={() => openDm(user.username)}
-                >
-                  <ProfileAvatarPopover user={user} online={Boolean(user.online)} placement="rightTop">
-                    <AvatarWithPresence
-                      name={memberLabel(user) || user.username}
-                      online={Boolean(user.online)}
-                      avatarUrl={user.avatar_url}
-                    />
-                  </ProfileAvatarPopover>
-                  <div>
-                    <strong>
-                      {memberLabel(user) || user.username}
-                      {isNewlyJoined(user) ? (
-                        <Tag color="green" style={{ marginLeft: 6, fontSize: 11, lineHeight: "18px" }}>新</Tag>
+              ) : (
+                <>
+                  {botContacts.length > 0 ? (
+                    <div className="collab-contact-section">
+                      <div className="collab-contact-section-title">应用</div>
+                      {botContacts.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          className="collab-contact-item is-bot"
+                          disabled={creating}
+                          onClick={() => openDm(user.username)}
+                        >
+                          <span className="collab-bot-avatar" aria-hidden>
+                            <RobotOutlined />
+                          </span>
+                          <div>
+                            <strong>
+                              {memberLabel(user) || user.username}
+                              <Tag color="blue" style={{ marginLeft: 6, fontSize: 11, lineHeight: "18px" }}>Bot</Tag>
+                            </strong>
+                            <span className="collab-status-on">
+                              {user.bio || "AI 知识问答助手"}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {humanContacts.length > 0 ? (
+                    <div className="collab-contact-section">
+                      {botContacts.length > 0 ? (
+                        <div className="collab-contact-section-title">同事</div>
                       ) : null}
-                    </strong>
-                    <span className={user.online ? "collab-status-on" : "collab-status-off"}>
-                      {user.online ? "在线" : "离线"}
-                      {memberLabel(user) && memberLabel(user) !== user.username
-                        ? ` · ${user.username}`
-                        : ""}
-                    </span>
-                  </div>
-                </button>
-              ))}
+                      {humanContacts.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          className="collab-contact-item"
+                          disabled={creating}
+                          onClick={() => openDm(user.username)}
+                        >
+                          <ProfileAvatarPopover user={user} online={Boolean(user.online)} placement="rightTop">
+                            <AvatarWithPresence
+                              name={memberLabel(user) || user.username}
+                              online={Boolean(user.online)}
+                              avatarUrl={user.avatar_url}
+                            />
+                          </ProfileAvatarPopover>
+                          <div>
+                            <strong>
+                              {memberLabel(user) || user.username}
+                              {isNewlyJoined(user) ? (
+                                <Tag color="green" style={{ marginLeft: 6, fontSize: 11, lineHeight: "18px" }}>新</Tag>
+                              ) : null}
+                            </strong>
+                            <span className={user.online ? "collab-status-on" : "collab-status-off"}>
+                              {user.online ? "在线" : "离线"}
+                              {memberLabel(user) && memberLabel(user) !== user.username
+                                ? ` · ${user.username}`
+                                : ""}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
           </div>
         )}
@@ -2038,7 +2119,7 @@ export default function CollabRisk() {
               协作会话
             </Typography.Title>
             <Typography.Text type="secondary" style={{ maxWidth: 360 }}>
-              中间是主场聊天；输入 @AI、右键引用消息；右侧为会话级旁路监控。
+              中间是主场聊天；通讯录里的小策bot 可做知识问答；群聊可输入 @AI。
             </Typography.Text>
             <Space style={{ marginTop: 12 }}>
               <Button type="primary" onClick={() => setSiderTab("contacts")}>打开通讯录</Button>
@@ -2200,12 +2281,14 @@ export default function CollabRisk() {
                 className="collab-virtuoso"
                 data={visibleMessages}
                 firstItemIndex={firstItemIndex}
-                initialTopMostItemIndex={Math.max(0, visibleMessages.length - 1)}
+                initialTopMostItemIndex={{
+                  index: Math.max(0, visibleMessages.length - 1),
+                  align: "end",
+                }}
                 followOutput={() => {
                   if (Date.now() < forceStickUntilRef.current) return "auto";
                   return stickBottomRef.current ? "auto" : false;
                 }}
-                alignToBottom
                 atBottomThreshold={100}
                 atBottomStateChange={(bottom) => {
                   if (Date.now() < forceStickUntilRef.current) {
@@ -2240,8 +2323,17 @@ export default function CollabRisk() {
                   || (m.ai_kind === "interject" && String(m.content || "").includes("【协作建议】"))
                 );
                 const isInterject = isAi && m.ai_kind === "interject" && !isCollabSuggest;
+                const isXiaoce = isAi && (
+                  m.ai_kind === "xiaoce"
+                  || m.sender?.bot_id === "xiaoce"
+                  || m.sender?.username === "小策bot"
+                );
                 const aiLabel = isAi
-                  ? (isCollabSuggest ? "协作建议" : isInterject ? "监控提醒" : "良策AI")
+                  ? (isCollabSuggest
+                    ? "协作建议"
+                    : isInterject
+                      ? "监控提醒"
+                      : (isXiaoce ? "小策bot" : (m.sender?.display_name || "良策AI")))
                   : "";
                 const isSystem = m.msg_type === "system" || m.status === "recalled";
                 const mine = !isAi && !isSystem && me && m.sender.id === me.id;
@@ -2661,7 +2753,9 @@ export default function CollabRisk() {
               value={groupMembers}
               onChange={setGroupMembers}
               onSearch={(q) => loadContacts(q)}
-              options={contacts.map((u) => ({ value: u.username, label: u.username }))}
+              options={contacts
+                .filter((u) => !(u.kind === "bot" || u.bot_id === "xiaoce" || u.username === "小策bot"))
+                .map((u) => ({ value: u.username, label: u.username }))}
               filterOption={false}
             />
           </div>
@@ -2915,6 +3009,34 @@ const css = `
   user-select: none;
 }
 .collab-contact-pane .collab-room-list { padding: 0 0 10px; }
+.collab-contact-section { margin-bottom: 6px; }
+.collab-contact-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  padding: 8px 10px 4px;
+  user-select: none;
+}
+.collab-bot-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: linear-gradient(145deg, #e8f1ff 0%, #dbeafe 100%);
+  color: #2563eb;
+  font-size: 18px;
+  border: 1px solid #bfdbfe;
+}
+.collab-contact-item.is-bot {
+  background: rgba(37, 99, 235, 0.04);
+  border-color: rgba(37, 99, 235, 0.12);
+}
+.collab-contact-item.is-bot:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
 .collab-room-item, .collab-contact-item {
   width: 100%;
   text-align: left;

@@ -6,7 +6,6 @@ import {
   ShareAltOutlined,
   HomeOutlined,
   SyncOutlined,
-  MessageOutlined,
   BookOutlined,
   ThunderboltOutlined,
   ApiOutlined,
@@ -38,7 +37,6 @@ type NavItem = { key: string; icon: ReactNode; label: string };
 /** 日常高频：先做事 */
 const WORK_NAV: NavItem[] = [
   { key: "/home", icon: <HomeOutlined />, label: "首页" },
-  { key: "/agent", icon: <MessageOutlined />, label: "AI 问答" },
   { key: "/collab", icon: <AlertOutlined />, label: "团队聊天" },
   { key: "/council", icon: <TeamOutlined />, label: "圆桌会议" },
   { key: "/console", icon: <FlagOutlined />, label: "办流程" },
