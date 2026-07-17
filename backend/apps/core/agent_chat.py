@@ -15,6 +15,7 @@ from apps.skills.runner import (
     try_execute_skill_scripts,
 )
 from .attachments import format_attachment_context, vision_image_parts
+from .cancellation import raise_if_cancelled
 from pathlib import Path
 
 DOC_SYSTEM_APPEND = """
@@ -84,6 +85,7 @@ def run_chat(
     skill_ids: list[str] | None = None,
     attachments: list[dict] | None = None,
     model: str | None = None,
+    cancel_check=None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -92,13 +94,21 @@ def run_chat(
     if not message and not attachments:
         return {"ok": False, "error": "消息不能为空"}
 
+    raise_if_cancelled(cancel_check)
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
     script_blocks = (
-        try_execute_skill_scripts(active_skills, message, user, history=history)
+        try_execute_skill_scripts(
+            active_skills,
+            message,
+            user,
+            history=history,
+            cancel_check=cancel_check,
+        )
         if active_skills else []
     )
+    raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
@@ -106,9 +116,21 @@ def run_chat(
     graph: dict = {"refs": []}
     if not doc_mode:
         knowledge = gather_knowledge(message, top_k=4)
+        raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
+        raise_if_cancelled(cancel_check)
 
-    mcp = read_wecom_document(message, document_url=doc_url, user=user) if doc_url else read_wecom_document(message, user=user)
+    mcp = (
+        read_wecom_document(
+            message,
+            document_url=doc_url,
+            user=user,
+            cancel_check=cancel_check,
+        )
+        if doc_url
+        else read_wecom_document(message, user=user, cancel_check=cancel_check)
+    )
+    raise_if_cancelled(cancel_check)
     refs = {
         "rag": [],
         "graph": graph.get("refs") or [],
@@ -174,6 +196,7 @@ def run_chat(
     generated_images: list[dict] = []
 
     # 文生图 / 图生图:走独立 images API + 生图密钥
+    raise_if_cancelled(cancel_check)
     if image_intent == "generate" and image_svc.image_api_available() and user is not None:
         prompt = image_svc.extract_generation_prompt(message)
         gen = image_svc.generate_image_with_fallback(
@@ -215,6 +238,7 @@ def run_chat(
                     generated_images.extend(edited.get("images") or [])
                     if edited.get("model"):
                         model_override = model_override or edited["model"]
+    raise_if_cancelled(cancel_check)
 
     if image_parts:
         user_content: str | list = [
@@ -258,6 +282,8 @@ def run_chat(
             "llm_user": user,
             "timeout": 90,
         }
+        if cancel_check:
+            chat_kwargs["cancel_check"] = cancel_check
         tried_models: list[str] = []
         if image_parts:
             # 个人设置若是 DeepSeek 等纯文本模型,识图改用全局 .env 的 Key/URL + 视觉模型
@@ -293,6 +319,7 @@ def run_chat(
             if model_override:
                 chat_kwargs["model"] = model_override
             llm_result = llm.chat_messages_result(system, messages, **chat_kwargs)
+        raise_if_cancelled(cancel_check)
 
     reply = llm_result.get("content") or ""
     llm_error = llm_result.get("error") or ""
@@ -336,6 +363,7 @@ def run_chat(
             configured=llm_configured,
         )
 
+    raise_if_cancelled(cancel_check)
     return {
         "ok": True,
         "reply": reply,
