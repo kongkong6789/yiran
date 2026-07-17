@@ -20,6 +20,7 @@ from xml.etree import ElementTree
 
 from django.conf import settings
 from django.db import close_old_connections, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import KnowledgeBase, KnowledgeChunkRef, KnowledgeEmbedding, KnowledgeFile, KnowledgeIngestJob
@@ -41,9 +42,34 @@ TEXT_FILE_TYPES = {"docx", "html", "json", "markdown", "txt"}
 TABLE_FILE_TYPES = {"csv", "xlsx"}
 
 KEYWORD_STOPWORDS = {
-    "and", "or", "the", "for", "with", "from", "this", "that", "into", "about", "http", "https",
-    "www", "com", "cn", "html", "prodid", "产品", "商品", "编号", "备案", "系统", "中文名",
-    "使用", "测试", "结果", "说明", "具有", "可以", "通过", "以及", "或者", "一个", "这个",
+    "and",
+    "or",
+    "the",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "into",
+    "about",
+    "http",
+    "https",
+    "www",
+    "com",
+    "cn",
+    "html",
+    "prodid",
+    "\u4ea7\u54c1",
+    "\u5546\u54c1",
+    "\u7f16\u53f7",
+    "\u5907\u6848",
+    "\u7cfb\u7edf",
+    "\u4e2d\u6587\u540d",
+    "\u6210\u5206",
+    "\u529f\u6548",
+    "\u5ba3\u79f0",
+    "\u8bc4\u4ef7",
+    "\u7ed3\u8bba",
 }
 
 
@@ -52,7 +78,7 @@ def extract_chunk_keywords(text: str, *, limit: int = 12) -> list[str]:
     scores: dict[str, float] = {}
     first_seen: dict[str, int] = {}
     for index, token in enumerate(tokens):
-        normalized = token.strip().strip("_-./:：，,。；;、（）()[]【】\"' ").lower()
+        normalized = token.strip(" _-./:,;:!?()[]{}<>\"'`").lower()
         if not normalized or normalized in KEYWORD_STOPWORDS:
             continue
         if len(normalized) < 2:
@@ -1054,6 +1080,43 @@ def ingest_upload(
         _mark_ingest_failed(file, job, error)
         raise
 
+_QUERY_STOPWORDS = {
+    "ai",
+    "AI",
+    "\u5e2e\u6211",
+    "\u67e5\u4e00\u4e0b",
+    "\u67e5\u8be2",
+    "\u68c0\u7d22",
+    "\u627e\u4e00\u4e0b",
+    "\u770b\u4e00\u4e0b",
+    "\u6709\u6ca1\u6709",
+    "\u662f\u4ec0\u4e48",
+    "\u8bf7\u95ee",
+}
+
+
+def _keyword_terms(query: str) -> list[str]:
+    text = re.sub(r"@[A-Za-z0-9_\-\u4e00-\u9fff]+", " ", query or "")
+    raw_terms = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fffA-Za-z0-9-]{2,}", text)
+    out: list[str] = []
+    seen: set[str] = set()
+    strip_chars = " \t\r\n,.;:!?()[]{}<>\"'`"
+    for term in raw_terms:
+        item = term.strip(strip_chars)
+        if not item or item in _QUERY_STOPWORDS or len(item) < 2:
+            continue
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+        if "-" in item:
+            for part in item.split("-"):
+                part = part.strip(strip_chars)
+                if len(part) >= 2 and part not in _QUERY_STOPWORDS and part not in seen:
+                    seen.add(part)
+                    out.append(part)
+    return out[:12]
+
+
 def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: int = 10) -> list[KnowledgeChunkRef]:
     normalized = query.strip()
     if not normalized:
@@ -1064,4 +1127,30 @@ def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: i
     )
     if knowledge_base_id:
         rows = rows.filter(file__knowledge_base_id=knowledge_base_id)
-    return list(rows.filter(text_preview__icontains=normalized).order_by("-created_at")[: max(1, min(limit, 50))])
+
+    cap = max(1, min(limit, 50))
+    exact = list(rows.filter(text_preview__icontains=normalized).order_by("-created_at")[:cap])
+    if exact:
+        return exact
+
+    terms = _keyword_terms(normalized)
+    if not terms:
+        return []
+    candidates = rows
+    q_filter = None
+    for term in terms:
+        term_q = Q(text_preview__icontains=term)
+        q_filter = term_q if q_filter is None else q_filter | term_q
+    if q_filter is None:
+        return []
+    scored = []
+    for chunk in candidates.filter(q_filter).order_by("-created_at")[:500]:
+        text = chunk.text_preview or ""
+        score = 0
+        for term in terms:
+            if term and term in text:
+                score += max(1, min(len(term), 12))
+        if score:
+            scored.append((score, chunk.created_at, chunk))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [chunk for _score, _created_at, chunk in scored[:cap]]
