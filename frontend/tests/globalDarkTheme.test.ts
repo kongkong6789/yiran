@@ -8,6 +8,11 @@ import {
   getThemeCssVariables,
   getThemePalette,
 } from "../src/theme/palette.ts";
+import {
+  getVisualizationTheme,
+  graphTooltipStyle,
+  semanticSoftColor,
+} from "../src/theme/visualization.ts";
 
 test("dark palette keeps a pure-black canvas with distinct surfaces", () => {
   const dark = getThemePalette("dark");
@@ -140,4 +145,27 @@ test("every standard formal route has an explicit dark-mode root hook", () => {
       `missing dark-mode root hook for .${hook}`,
     );
   }
+});
+
+test("visualization theme supplies dark canvas, grid, labels, and tooltip", () => {
+  const visual = getVisualizationTheme("dark");
+
+  assert.equal(visual.canvas, "#050505");
+  assert.equal(visual.grid, "#1c1c1c");
+  assert.equal(visual.tooltipText, "#f5f5f5");
+  assert.match(graphTooltipStyle(visual), /background:#151515/);
+  assert.equal(
+    semanticSoftColor("#7c53c4", "dark", "#f2ecfd"),
+    "rgba(124, 83, 196, 0.22)",
+  );
+});
+
+test("ontology graph consumes the shared visualization theme", () => {
+  const source = readFileSync(new URL("../src/pages/OntologyGraph.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /useVisualizationTheme/);
+  assert.match(source, /visualTheme\.canvas/);
+  assert.match(source, /graphTooltipStyle\(visualTheme\)/);
+  assert.doesNotMatch(source, /linear-gradient\(180deg, #f4f7fb/);
+  assert.doesNotMatch(source, /background:#fff;border:1px solid #d7e0ec/);
 });

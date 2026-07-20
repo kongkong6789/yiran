@@ -9416,3 +9416,39 @@ body {
   .agent-memory-page .ant-space { max-width: 100%; }
   .agent-memory-page .ant-input { max-width: 100%; }
 }
+
+/* Ontology graph: the canvas and surrounding controls share one visual depth model. */
+.ontology-page {
+  min-height: calc(100vh - 96px);
+  background: var(--lc-canvas);
+}
+.ontology-toolbar {
+  color: var(--lc-ink);
+  background: var(--lc-surface-raised);
+  border-color: var(--lc-border-light) !important;
+}
+.ontology-connect-banner {
+  color: var(--lc-status-warning);
+  background: var(--lc-status-warning-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--lc-status-warning) 28%, transparent);
+}
+:root[data-theme="dark"] .ontology-page,
+:root[data-theme="dark"] .ontology-graph-card,
+:root[data-theme="dark"] .ontology-page .ant-card,
+:root[data-theme="dark"] .ontology-page .ant-list,
+:root[data-theme="dark"] .ontology-page .ant-list-item {
+  color: var(--lc-ink);
+  background: var(--lc-canvas);
+  border-color: var(--lc-border-light);
+}
+:root[data-theme="dark"] .ontology-page .ant-card-head,
+:root[data-theme="dark"] .ontology-page .ant-card-body {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-border-light);
+}
+:root[data-theme="dark"] .ontology-page .ant-statistic-content,
+:root[data-theme="dark"] .ontology-page .ant-statistic-content-value,
+:root[data-theme="dark"] .ontology-page .ant-typography {
+  color: var(--lc-ink);
+}
