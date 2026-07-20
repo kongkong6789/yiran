@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 import mimetypes
 import json
 import io
@@ -11,7 +12,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Min, Q
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -25,10 +26,71 @@ from .attachments import (
     resolve_attachment_path,
     resolve_attachment_path_any,
 )
-from .models import AuditLog, ChatMessage, ChatSession, TaskFollowUp, TaskResultRecord, WorkTask, WorkTaskArtifact, WorkTodo
+from .models import AuditLog, ChatMessage, ChatSession, TaskFollowUp, TaskResultRecord, WorkAutomation, WorkAutomationRun, WorkTask, WorkTaskArtifact, WorkTodo
 from .organizations import current_organization, organization_user_ids
 
 User = get_user_model()
+
+
+def _work_automation_payload(row: WorkAutomation) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "triggerType": row.trigger_type,
+        "triggerRule": row.trigger_rule,
+        "action": row.action,
+        "channel": row.notification_channel,
+        "recipientContactIds": row.recipient_contact_ids,
+        "enabled": row.enabled,
+        "nextRunAt": row.next_run_at.isoformat() if row.next_run_at else None,
+        "lastRunAt": row.last_run_at.isoformat() if row.last_run_at else None,
+        "lastRunStatus": row.last_run_status,
+        "lastError": row.last_error,
+        "runCount": row.run_count,
+        "lastTestedAt": row.last_tested_at.isoformat() if row.last_tested_at else None,
+        "lastTestStatus": row.last_test_status,
+        "createdAt": row.created_at.isoformat(),
+        "updatedAt": row.updated_at.isoformat(),
+    }
+
+
+def _validate_work_automation(user, data: dict, current: WorkAutomation | None = None):
+    name = str(data.get("name", current.name if current else "")).strip()[:128]
+    action = str(data.get("action", current.action if current else "")).strip()
+    trigger_type = str(data.get("triggerType", current.trigger_type if current else WorkAutomation.TriggerType.SCHEDULE))
+    trigger_rule = str(data.get("triggerRule", current.trigger_rule if current else "")).strip()[:255]
+    channel = str(data.get("channel", current.notification_channel if current else WorkAutomation.NotificationChannel.NONE))
+    enabled = bool(data.get("enabled", current.enabled if current else False))
+    raw_recipients = data.get("recipientContactIds", current.recipient_contact_ids if current else [])
+    recipient_ids = list(dict.fromkeys(int(value) for value in raw_recipients if str(value).isdigit()))
+    if not name or not action or not trigger_rule:
+        raise ValueError("自动化名称、触发规则和执行动作必填。")
+    if trigger_type not in WorkAutomation.TriggerType.values:
+        raise ValueError("触发方式无效。")
+    if channel not in WorkAutomation.NotificationChannel.values:
+        raise ValueError("通知方式无效。")
+    if enabled and trigger_type == WorkAutomation.TriggerType.DATA and trigger_rule != "待办状态变化时":
+        raise ValueError("当前仅“待办状态变化时”已接入真实事件源；该规则可先保存为停用，接入对应数据源后再启用。")
+    if channel == WorkAutomation.NotificationChannel.WECOM:
+        if not recipient_ids:
+            raise ValueError("请选择至少一位企业微信接收人。")
+        from apps.wecom.access import resolve_accessible_config
+        from apps.wecom.models import WeComContact
+        config = resolve_accessible_config(user)
+        available = set(WeComContact.objects.filter(
+            config=config, available=True, id__in=recipient_ids,
+        ).values_list("id", flat=True)) if config else set()
+        if available != set(recipient_ids):
+            raise ValueError("部分企业微信接收人不存在、已停用或不属于当前企业。")
+    return {
+        "name": name,
+        "trigger_type": trigger_type,
+        "trigger_rule": trigger_rule,
+        "action": action,
+        "notification_channel": channel,
+        "recipient_contact_ids": recipient_ids if channel == WorkAutomation.NotificationChannel.WECOM else [],
+        "enabled": enabled,
+    }
 
 
 def _is_admin(user) -> bool:
@@ -426,6 +488,65 @@ def work_tasks(request):
     if request.data.get("generateArtifacts", True):
         _generate_work_task_artifacts(row, parameters, result_data)
     return Response({"ok": True, "task": _work_task_payload(row)}, status=201)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def work_automations(request):
+    organization = current_organization(request.user)
+    if organization is None:
+        return Response({"ok": False, "detail": "当前账号尚未加入企业。"}, status=400)
+    rows = WorkAutomation.objects.filter(organization=organization, creator=request.user)
+    if request.method == "GET":
+        local_now = timezone.localtime()
+        day_start = timezone.make_aware(datetime.combine(local_now.date(), datetime.min.time()))
+        stats = {
+            "saved": rows.count(),
+            "enabled": rows.filter(enabled=True).count(),
+            "nextRunAt": rows.filter(enabled=True, next_run_at__isnull=False).aggregate(value=Min("next_run_at"))["value"],
+            "todayRuns": WorkAutomationRun.objects.filter(
+                organization=organization, creator=request.user, started_at__gte=day_start,
+            ).count(),
+        }
+        stats["nextRunAt"] = stats["nextRunAt"].isoformat() if stats["nextRunAt"] else None
+        return Response({"ok": True, "count": stats["saved"], "stats": stats, "results": [_work_automation_payload(row) for row in rows]})
+    try:
+        values = _validate_work_automation(request.user, request.data)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    from .automation_scheduler import configure_next_run
+    row = WorkAutomation(organization=organization, creator=request.user, **values)
+    try:
+        configure_next_run(row)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    row.save()
+    return Response({"ok": True, "automation": _work_automation_payload(row)}, status=201)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def work_automation_detail(request, automation_id: int):
+    organization = current_organization(request.user)
+    row = get_object_or_404(
+        WorkAutomation, id=automation_id, organization=organization, creator=request.user,
+    )
+    if request.method == "DELETE":
+        row.delete()
+        return Response({"ok": True})
+    try:
+        values = _validate_work_automation(request.user, request.data, row)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    for key, value in values.items():
+        setattr(row, key, value)
+    from .automation_scheduler import configure_next_run
+    try:
+        configure_next_run(row)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    row.save()
+    return Response({"ok": True, "automation": _work_automation_payload(row)})
 
 
 @api_view(["PATCH"])
