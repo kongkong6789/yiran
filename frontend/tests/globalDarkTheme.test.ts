@@ -195,3 +195,8 @@ test("graph modules no longer emit light-only tooltip or label backgrounds", () 
     assert.doesNotMatch(source, /labelBgStyle:\s*\{\s*fill:\s*"#ffffff"/i, `${file} has a light-only edge label`);
   }
 });
+
+test("package exposes the dark-mode source audit", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.scripts["audit:dark"], "node scripts/audit-dark-mode.mjs");
+});
