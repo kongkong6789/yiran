@@ -176,7 +176,6 @@ export default function AppLayout() {
           theme="light"
           mode="horizontal"
           selectedKeys={selectedKeys}
-          triggerSubMenuAction="click"
           items={menuItems}
           onClick={(e) => {
             if (String(e.key).startsWith("/")) nav(e.key);
