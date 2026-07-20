@@ -5,6 +5,7 @@ from django.db.models import Q
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -57,6 +58,12 @@ def _log(user, knowledge_base, action: str, target_type: str = "", target_id: st
     )
 
 
+def _can_manage_knowledge_base(user, kb: KnowledgeBase) -> bool:
+    if not getattr(user, "is_authenticated", False):
+        return False
+    return bool(user.is_staff or user.is_superuser or kb.owner_user_id == user.id)
+
+
 def _visible_knowledge_bases(user):
     qs = KnowledgeBase.objects.filter(archived_at__isnull=True)
     if not getattr(user, "is_authenticated", False):
@@ -105,11 +112,16 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         _log(self.request.user, kb, "knowledge_base.created", "knowledge_base", kb.id)
 
     def perform_update(self, serializer):
+        kb = self.get_object()
+        if not _can_manage_knowledge_base(self.request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can edit it")
         kb = serializer.save()
         _log(self.request.user, kb, "knowledge_base.updated", "knowledge_base", kb.id)
 
     def destroy(self, request, *args, **kwargs):
         kb = self.get_object()
+        if not _can_manage_knowledge_base(request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can delete it")
         with transaction.atomic():
             purge = _purge_knowledge_base_vectors(kb)
             kb.status = KnowledgeBase.Status.ARCHIVED
@@ -142,6 +154,8 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request, pk=None):
         kb = self.get_object()
+        if not _can_manage_knowledge_base(request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can upload files")
         upload = request.FILES.get("file")
         if upload is None:
             return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)

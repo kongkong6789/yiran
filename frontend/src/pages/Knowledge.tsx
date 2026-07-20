@@ -112,6 +112,7 @@ type KnowledgeTemplate = {
   readiness: number;
   limitations: string[];
   sampleQuestion: string;
+  canEdit?: boolean;
 };
 
 type KnowledgeSource = {
@@ -287,6 +288,18 @@ const visibilityLabels: Record<Visibility, string> = {
   company: "公司",
 };
 
+const visibilityDescriptions: Record<Visibility, string> = {
+  private: "仅自己可见",
+  team: "所有成员可见",
+  company: "公司范围可见",
+};
+
+const visibilityColors: Record<Visibility, string> = {
+  private: "blue",
+  team: "green",
+  company: "purple",
+};
+
 const engineLabels: Record<Engine, string> = {
   "naive-rag": "证据优先 RAG",
   "graph-rag": "关系图谱 RAG",
@@ -338,6 +351,7 @@ function mapKnowledgeBase(base: KnowledgeBaseItem): KnowledgeTemplate {
     readiness: base.status === "ready" ? 90 : base.status === "processing" ? 65 : 45,
     limitations: ["PDF/PPT parser is not connected yet", "Semantic search requires local embedding service"],
     sampleQuestion: `Search key facts in ${base.name}`,
+    canEdit: base.can_edit ?? true,
   };
 }
 
@@ -392,6 +406,7 @@ export default function Knowledge() {
   const [editForm] = Form.useForm<{ name: string; description: string; visibility: Visibility }>();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
+  const [scopeFilter, setScopeFilter] = useState<Visibility | "all">("all");
   const [templateId, setTemplateId] = useState("customer-360");
   const [visibility, setVisibility] = useState<Visibility>("team");
   const [engine, setEngine] = useState<Engine>("hybrid-rag");
@@ -434,9 +449,10 @@ export default function Knowledge() {
     return baseTemplates.filter((item) => {
       const categoryOk = category === "全部" || item.category === category;
       const queryOk = !keyword || `${item.name} ${item.headline} ${item.bestFor.join(" ")} ${item.outputs.join(" ")}`.toLowerCase().includes(keyword);
-      return categoryOk && queryOk;
+      const scopeOk = scopeFilter === "all" || item.visibility === scopeFilter;
+      return categoryOk && queryOk && scopeOk;
     });
-  }, [baseTemplates, category, query]);
+  }, [baseTemplates, category, query, scopeFilter]);
   const selectedTemplate = baseTemplates.find((item) => item.id === templateId) ?? baseTemplates[0] ?? templates[0];
   const detailTemplate = baseTemplates.find((item) => item.id === detailTemplateId) ?? null;
   const deletedNames = detailTemplate ? deletedTemplateFiles[detailTemplate.id] ?? [] : [];
@@ -523,6 +539,7 @@ export default function Knowledge() {
     setCreateSource("file");
     setCreateName("");
     setCreateDescription("");
+    setVisibility("team");
     setCreateMode(true);
   }
 
@@ -623,6 +640,7 @@ export default function Knowledge() {
       await updateKnowledgeBase(id, {
         name: values.name.trim(),
         description: values.description?.trim() || "",
+        visibility: values.visibility,
       });
       await refreshKnowledgeBases();
       setEditingKnowledgeBase(null);
@@ -855,6 +873,20 @@ export default function Knowledge() {
                     <small>必填</small>
                   </div>
                   <div className="create-form-stack">
+                    <label className="create-scope-field">
+                      <span>权限标签</span>
+                      <Segmented
+                        block
+                        value={visibility}
+                        onChange={(value) => setVisibility(value as Visibility)}
+                        options={[
+                          { label: "个人", value: "private" },
+                          { label: "团队", value: "team" },
+                          { label: "公司", value: "company" },
+                        ]}
+                      />
+                      <small className="create-scope-hint">{visibilityDescriptions[visibility]}</small>
+                    </label>
                     <label>
                       <span>知识库名称</span>
                       <Input
@@ -1070,11 +1102,16 @@ export default function Knowledge() {
                 className="tag-filter"
               />
               <Input prefix={<SearchOutlined />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" allowClear className="dify-search" />
-              <label className="all-kb-check">
-                <input type="checkbox" />
-                <span>所有知识库</span>
-                <small>?</small>
-              </label>
+              <Segmented
+                value={scopeFilter}
+                onChange={(value) => setScopeFilter(value as Visibility | "all")}
+                options={[
+                  { label: "全部", value: "all" },
+                  { label: "个人", value: "private" },
+                  { label: "团队", value: "team" },
+                  { label: "公司", value: "company" },
+                ]}
+              />
               <span className="toolbar-spacer" />
               <Button type="primary" icon={<PlusOutlined />} loading={baseLoading} onClick={() => void handleCreateKnowledgeBase()}>创建</Button>
             </div>
@@ -1093,35 +1130,38 @@ export default function Knowledge() {
                     onDoubleClick={() => setDetailTemplateId(template.id)}
                     title="双击打开知识库文档"
                   >
-                    <Dropdown
-                      trigger={["click"]}
-                      menu={{
-                        items: [
-                          { key: "edit", label: "编辑" },
-                          { key: "delete", label: "删除", danger: true },
-                        ],
-                        onClick: ({ key, domEvent }) => {
-                          domEvent.stopPropagation();
-                          if (key === "edit") openEditKnowledgeBase(template);
-                          if (key === "delete") confirmDeleteKnowledgeBase(template);
-                        },
-                      }}
-                    >
-                      <Button
-                        className="dify-card-more"
-                        type="text"
-                        shape="circle"
-                        icon={<MoreOutlined />}
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                    </Dropdown>
+                    {template.canEdit === false ? null : (
+                      <Dropdown
+                        trigger={["click"]}
+                        menu={{
+                          items: [
+                            { key: "edit", label: "编辑" },
+                            { key: "delete", label: "删除", danger: true },
+                          ],
+                          onClick: ({ key, domEvent }) => {
+                            domEvent.stopPropagation();
+                            if (key === "edit") openEditKnowledgeBase(template);
+                            if (key === "delete") confirmDeleteKnowledgeBase(template);
+                          },
+                        }}
+                      >
+                        <Button
+                          className="dify-card-more"
+                          type="text"
+                          shape="circle"
+                          icon={<MoreOutlined />}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      </Dropdown>
+                    )}
                     <div className="dify-card-mainrow">
                       <div className="dify-kb-icon"><DatabaseOutlined /></div>
                       <div className="dify-title-block">
                         <h3>{template.name}</h3>
                         <div className="dify-subline">
                           <span>通用</span>
-                          <span>{visibilityLabels[template.visibility]}可见</span>
+                          <Tag color={visibilityColors[template.visibility]}>{visibilityLabels[template.visibility]}</Tag>
+                          <span>{visibilityDescriptions[template.visibility]}</span>
                         </div>
                       </div>
                     </div>
@@ -1503,6 +1543,8 @@ const styles = `
 .create-form-stack textarea {
   resize: none;
 }
+.create-scope-field .ant-segmented { width: 100%; padding: 3px; background: #f3f6fb; }
+.create-scope-hint { display: block; margin-top: 8px; color: #667085; font-size: 13px; }
 .source-choice-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

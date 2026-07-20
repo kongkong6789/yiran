@@ -334,6 +334,8 @@ export interface KnowledgeBaseItem {
   id: number;
   template: number | null;
   owner_username?: string;
+  owner_user_id?: number | null;
+  can_edit?: boolean;
   name: string;
   description: string;
   category: string;
