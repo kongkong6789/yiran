@@ -6,6 +6,7 @@ import {
   createXiaoceRunId,
   isXiaoceRoom,
   mergeXiaoceRunSnapshot,
+  partitionXiaoceRooms,
 } from "../src/pages/xiaoceChat.ts";
 
 
@@ -28,6 +29,49 @@ test("recognizes only Xiaoce direct messages", () => {
     isXiaoceRoom({ room_kind: "dm", participants: [{ username: "同事" }] }),
     false,
   );
+});
+
+test("partitions multiple Xiaoce tasks without reordering either group", () => {
+  const rooms = [
+    { id: "task-a", room_kind: "dm", participants: [{ bot_id: "xiaoce" }] },
+    { id: "person", room_kind: "dm", participants: [{ username: "同事" }] },
+    { id: "task-b", room_kind: "dm", participants: [{ username: "小策bot" }] },
+    { id: "group", room_kind: "group", participants: [{ username: "小策bot" }] },
+  ];
+
+  const result = partitionXiaoceRooms(rooms);
+
+  assert.deepEqual(result.xiaoceTasks.map((room) => room.id), ["task-a", "task-b"]);
+  assert.deepEqual(result.otherRooms.map((room) => room.id), ["person", "group"]);
+});
+
+test("API client exposes the dedicated Xiaoce task endpoint", () => {
+  const source = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
+  assert.ok(source.includes("export const createXiaoceTask"));
+  assert.ok(source.includes('api.post<CollabRoom>("/collab/xiaoce-tasks/"'));
+});
+
+test("Xiaoce task list exposes create, select, rename, delete, and running state", () => {
+  const source = readFileSync(
+    new URL("../src/components/XiaoceTaskList.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(source.includes('aria-label="新建小策bot任务"'));
+  assert.ok(source.includes("处理中"));
+  assert.ok(source.includes("修改任务名称"));
+  assert.ok(source.includes("删除任务"));
+  assert.ok(source.includes("onSelect(task.id)"));
+});
+
+test("Xiaoce task list styles use semantic theme variables", () => {
+  const css = readFileSync(
+    new URL("../src/styles/xiaoceTaskList.css", import.meta.url),
+    "utf8",
+  );
+  assert.ok(css.includes("var(--lc-surface"));
+  assert.ok(css.includes("var(--lc-border"));
+  assert.ok(css.includes("var(--lc-ink)"));
+  assert.ok(css.includes(":focus-visible"));
 });
 
 test("creates a UUID v4 for each Xiaoce run", () => {

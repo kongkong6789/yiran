@@ -1,0 +1,126 @@
+.xiaoce-task-section {
+  border-bottom: 1px solid var(--lc-border-light);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+
+.xiaoce-task-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  padding: 0 8px;
+  color: var(--lc-text-muted);
+  font-size: 12px;
+}
+
+.xiaoce-task-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+  color: var(--lc-ink);
+}
+
+.xiaoce-task-item:hover {
+  background: var(--lc-surface-raised);
+}
+
+.xiaoce-task-item.active {
+  background: var(--lc-selected);
+}
+
+.xiaoce-task-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 9px 36px 9px 8px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xiaoce-task-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 9px;
+}
+
+.xiaoce-task-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xiaoce-task-title,
+.xiaoce-task-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xiaoce-task-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.xiaoce-task-preview {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
+
+.xiaoce-task-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.xiaoce-task-state .ant-tag {
+  margin-inline-end: 0;
+}
+
+.xiaoce-task-menu {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--lc-text-muted);
+  background: transparent;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.xiaoce-task-menu:hover {
+  color: var(--lc-ink);
+  background: var(--lc-hover);
+}
+
+.xiaoce-task-main:focus-visible,
+.xiaoce-task-menu:focus-visible {
+  outline: 2px solid var(--lc-accent-blue);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .xiaoce-task-menu {
+    opacity: 1;
+  }
+}

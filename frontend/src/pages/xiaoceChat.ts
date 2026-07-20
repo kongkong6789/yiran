@@ -1,7 +1,7 @@
 import type { XiaoceRun } from "../api/client";
 
 
-type XiaoceRoomLike = {
+export type XiaoceRoomLike = {
   room_kind?: string;
   participants?: Array<{ username?: string; bot_id?: string }>;
 };
@@ -16,6 +16,18 @@ export function isXiaoceRoom(room: XiaoceRoomLike | null | undefined): boolean {
       ),
     ),
   );
+}
+
+export function partitionXiaoceRooms<T extends XiaoceRoomLike>(rooms: T[]): {
+  xiaoceTasks: T[];
+  otherRooms: T[];
+} {
+  const xiaoceTasks: T[] = [];
+  const otherRooms: T[] = [];
+  for (const room of rooms) {
+    (isXiaoceRoom(room) ? xiaoceTasks : otherRooms).push(room);
+  }
+  return { xiaoceTasks, otherRooms };
 }
 
 

@@ -1895,6 +1895,9 @@ export const createCollabRoom = (body: {
 }) =>
   api.post<CollabRoom>("/collab/rooms/", body).then((r) => r.data);
 
+export const createXiaoceTask = (body: { title?: string } = {}) =>
+  api.post<CollabRoom>("/collab/xiaoce-tasks/", body).then((response) => response.data);
+
 export const getCollabRoom = (id: string) =>
   api.get<CollabRoom>(`/collab/rooms/${id}/`).then((r) => r.data);
 
