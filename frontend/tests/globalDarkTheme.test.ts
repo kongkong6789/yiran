@@ -97,3 +97,47 @@ test("collaboration visual components use theme-aware panel surfaces", () => {
   assert.match(collab, /var\(--lc-status-warning-bg\)/);
   assert.match(collab, /var\(--lc-status-error-bg\)/);
 });
+
+test("Agent memory debug output uses a semantic class", () => {
+  const source = readFileSync(new URL("../src/pages/AgentMemory.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /className="agent-memory-debug"/);
+  assert.doesNotMatch(source, /#f5f5f5/);
+});
+
+test("data lake and audit pages expose stable dark-mode roots", () => {
+  const dataLake = readFileSync(new URL("../src/pages/DataLake.tsx", import.meta.url), "utf8");
+  const audit = readFileSync(new URL("../src/pages/Audit.tsx", import.meta.url), "utf8");
+
+  assert.match(dataLake, /className="data-lake-page"/);
+  assert.match(audit, /className="audit-page"/);
+  assert.match(audit, /className="audit-debug"/);
+});
+
+test("every standard formal route has an explicit dark-mode root hook", () => {
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  const routeHooks = [
+    "agent-memory-page",
+    "kgv3-page",
+    "task-workspace",
+    "work-todos-page",
+    "work-automation-page",
+    "knowledge-console",
+    "skills-page",
+    "connectors-page",
+    "st-root",
+    "data-lake-page",
+    "agents-page",
+    "account-admin-page",
+    "audit-page",
+    "section-hub",
+    "login-page",
+  ];
+
+  for (const hook of routeHooks) {
+    assert.ok(
+      css.includes(`:root[data-theme="dark"] .${hook}`),
+      `missing dark-mode root hook for .${hook}`,
+    );
+  }
+});

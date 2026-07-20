@@ -23,6 +23,7 @@ export default function Audit() {
 
   return (
     <Card
+      className="audit-page"
       title="闸机审计日志"
       size="small"
       extra={<Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>}
@@ -34,7 +35,7 @@ export default function Audit() {
         dataSource={logs}
         expandable={{
           expandedRowRender: (r) => (
-            <pre style={{ margin: 0, fontSize: 12 }}>
+            <pre className="audit-debug">
               {JSON.stringify({ payload: r.payload, checks: r.checks, result: r.result }, null, 2)}
             </pre>
           ),

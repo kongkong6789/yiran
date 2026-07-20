@@ -58,7 +58,7 @@ export default function DataLake() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Space className="data-lake-page" direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
         <Space wrap>
           <DatabaseOutlined />

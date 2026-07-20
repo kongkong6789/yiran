@@ -9177,3 +9177,242 @@ body {
 :root[data-theme="dark"] .company-operating-legend strong { color: #e4e9f1; }
 :root[data-theme="dark"] .company-operating-source-list code { color: #c6cfdb; background: #303947; }
 :root[data-theme="dark"] .company-operating-missing-list span { color: #e0b979; background: #3c3224; }
+
+/* Standard route dark-mode compatibility */
+.agent-memory-page {
+  min-height: 100%;
+  padding: 24px;
+  color: var(--lc-text);
+  background: var(--lc-canvas);
+}
+.agent-memory-debug,
+.audit-debug {
+  min-height: 72px;
+  max-height: 480px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-input);
+  border: 1px solid var(--lc-border-light);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.data-lake-page code {
+  padding: 2px 5px;
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-input);
+  border: 1px solid var(--lc-border-light);
+  border-radius: 5px;
+}
+
+:root[data-theme="dark"] .agent-memory-page,
+:root[data-theme="dark"] .kgv3-page,
+:root[data-theme="dark"] .task-workspace,
+:root[data-theme="dark"] .work-todos-page,
+:root[data-theme="dark"] .work-automation-page,
+:root[data-theme="dark"] .knowledge-console,
+:root[data-theme="dark"] .skills-page,
+:root[data-theme="dark"] .connectors-page,
+:root[data-theme="dark"] .st-root,
+:root[data-theme="dark"] .data-lake-page,
+:root[data-theme="dark"] .agents-page,
+:root[data-theme="dark"] .account-admin-page,
+:root[data-theme="dark"] .audit-page,
+:root[data-theme="dark"] .section-hub,
+:root[data-theme="dark"] .login-page {
+  color: var(--lc-ink);
+  background: var(--lc-canvas) !important;
+}
+
+:root[data-theme="dark"] .page-hero-title,
+:root[data-theme="dark"] .agents-page__header h3,
+:root[data-theme="dark"] .account-admin-heading h3,
+:root[data-theme="dark"] .section-hub h2,
+:root[data-theme="dark"] .knowledge-console h1,
+:root[data-theme="dark"] .knowledge-console h2,
+:root[data-theme="dark"] .knowledge-console h3 {
+  color: var(--lc-ink) !important;
+}
+
+:root[data-theme="dark"] .page-hero-desc,
+:root[data-theme="dark"] .page-hero-kicker,
+:root[data-theme="dark"] .agents-page__header .ant-typography-secondary,
+:root[data-theme="dark"] .account-admin-heading .ant-typography-secondary {
+  color: var(--lc-muted) !important;
+}
+
+:root[data-theme="dark"] .agent-memory-page .ant-tabs-nav,
+:root[data-theme="dark"] .agent-memory-page .ant-card,
+:root[data-theme="dark"] .data-lake-page .ant-card,
+:root[data-theme="dark"] .audit-page.ant-card,
+:root[data-theme="dark"] .section-hub-card,
+:root[data-theme="dark"] .login-card {
+  color: var(--lc-ink);
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+}
+
+:root[data-theme="dark"] .task-workspace {
+  --task-bg: var(--lc-canvas);
+  --task-surface: var(--lc-surface);
+  --task-border: var(--lc-border-light);
+  --task-ink: var(--lc-ink);
+  --task-text: var(--lc-text-secondary);
+  --task-muted: var(--lc-muted);
+}
+:root[data-theme="dark"] .task-module-sidebar,
+:root[data-theme="dark"] .task-module-sidebar-footer,
+:root[data-theme="dark"] .task-workspace-header,
+:root[data-theme="dark"] .task-console-card,
+:root[data-theme="dark"] .work-todos-card,
+:root[data-theme="dark"] .task-record-item,
+:root[data-theme="dark"] .task-detail-summary > div {
+  color: var(--lc-ink);
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none;
+}
+:root[data-theme="dark"] .task-module-nav-item:hover,
+:root[data-theme="dark"] .task-module-nav-item.is-active,
+:root[data-theme="dark"] .task-record-item:hover,
+:root[data-theme="dark"] .task-record-item.is-active {
+  color: var(--lc-ink);
+  background: var(--lc-hover) !important;
+}
+:root[data-theme="dark"] .work-todos-view-tabs,
+:root[data-theme="dark"] .work-todos-status-tabs,
+:root[data-theme="dark"] .task-artifact-preview-modal .ant-modal-confirm-content {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-input) !important;
+  border-color: var(--lc-border-light);
+}
+:root[data-theme="dark"] .work-todos-view-tabs .ant-segmented-item-selected,
+:root[data-theme="dark"] .work-todos-status-tabs .ant-segmented-item-selected {
+  color: var(--lc-ink);
+  background: var(--lc-selected) !important;
+  box-shadow: inset 0 0 0 1px var(--lc-border-strong);
+}
+
+:root[data-theme="dark"] .work-automation-notice,
+:root[data-theme="dark"] .work-automation-stats > div,
+:root[data-theme="dark"] .work-automation-toolbar,
+:root[data-theme="dark"] .work-automation-list-panel,
+:root[data-theme="dark"] .work-automation-template-panel,
+:root[data-theme="dark"] .work-automation-draft-card {
+  color: var(--lc-ink);
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none;
+}
+:root[data-theme="dark"] .work-automation-notice > span,
+:root[data-theme="dark"] .work-automation-notice .work-automation-stage-tag {
+  color: var(--lc-status-info) !important;
+  background: var(--lc-status-info-bg) !important;
+}
+:root[data-theme="dark"] .work-automation-notice strong,
+:root[data-theme="dark"] .work-automation-stats strong,
+:root[data-theme="dark"] .work-automation-draft-card strong {
+  color: var(--lc-ink);
+}
+:root[data-theme="dark"] .work-automation-notice p,
+:root[data-theme="dark"] .work-automation-stats span,
+:root[data-theme="dark"] .work-automation-stats small,
+:root[data-theme="dark"] .work-automation-draft-card p {
+  color: var(--lc-muted);
+}
+
+:root[data-theme="dark"] .knowledge-console::before {
+  background: none !important;
+}
+:root[data-theme="dark"] .knowledge-console .create-topbar,
+:root[data-theme="dark"] .knowledge-console .create-body,
+:root[data-theme="dark"] .knowledge-console .knowledge-doc-window,
+:root[data-theme="dark"] .knowledge-console .doc-window-topbar,
+:root[data-theme="dark"] .knowledge-console .doc-window-header,
+:root[data-theme="dark"] .knowledge-console .doc-toolbar,
+:root[data-theme="dark"] .knowledge-console .doc-table-wrap,
+:root[data-theme="dark"] .knowledge-console .source-connect-card,
+:root[data-theme="dark"] .knowledge-console .dify-card,
+:root[data-theme="dark"] .knowledge-console .ant-card {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .knowledge-console .ant-tabs-tab-active,
+:root[data-theme="dark"] .knowledge-console .ant-segmented-item-selected,
+:root[data-theme="dark"] .knowledge-console .doc-table tbody tr:hover {
+  color: var(--lc-ink) !important;
+  background: var(--lc-selected) !important;
+}
+
+:root[data-theme="dark"] .st-side,
+:root[data-theme="dark"] .st-main,
+:root[data-theme="dark"] .st-toolbar,
+:root[data-theme="dark"] .st-body,
+:root[data-theme="dark"] .st-field-row,
+:root[data-theme="dark"] .st-kanban-col,
+:root[data-theme="dark"] .st-kanban-card {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .st-tabs,
+:root[data-theme="dark"] .st-crumb,
+:root[data-theme="dark"] .st-kanban-head,
+:root[data-theme="dark"] .st-side-head,
+:root[data-theme="dark"] .st-side-foot,
+:root[data-theme="dark"] .st-col-head-inner {
+  color: var(--lc-text-secondary) !important;
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
+
+:root[data-theme="dark"] .kgv3-workspace,
+:root[data-theme="dark"] .kgv3-graph-card,
+:root[data-theme="dark"] .kgv3-card,
+:root[data-theme="dark"] .kgv3-toolbar,
+:root[data-theme="dark"] .kgv3-node-popover,
+:root[data-theme="dark"] .kgv3-legend {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .kgv3-metric,
+:root[data-theme="dark"] .kgv3-zoom,
+:root[data-theme="dark"] .kgv3-mode {
+  color: var(--lc-text-secondary) !important;
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
+
+:root[data-theme="dark"] .agents-toolbar,
+:root[data-theme="dark"] .agents-card,
+:root[data-theme="dark"] .account-admin-header,
+:root[data-theme="dark"] .account-admin-workspace,
+:root[data-theme="dark"] .account-admin-tabs > .ant-tabs-nav,
+:root[data-theme="dark"] .account-admin-overview > div,
+:root[data-theme="dark"] .wecom-connector-card,
+:root[data-theme="dark"] .connectors-stats,
+:root[data-theme="dark"] .user-skills-card {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .agents-card__description,
+:root[data-theme="dark"] .agents-card__remaining,
+:root[data-theme="dark"] .account-admin-overview span,
+:root[data-theme="dark"] .account-admin-overview small {
+  color: var(--lc-muted) !important;
+}
+
+@media (max-width: 600px) {
+  .agent-memory-page { padding: 16px 12px 24px; }
+  .agent-memory-page .ant-space { max-width: 100%; }
+  .agent-memory-page .ant-input { max-width: 100%; }
+}
