@@ -117,7 +117,7 @@ Extend the test setup with an ordinary user and add:
 Run:
 
 ```bash
-backend/.venv/bin/python backend/manage.py test apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_create_xiaoce_task_always_creates_an_independent_room apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_create_xiaoce_task_trims_and_limits_custom_title apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_room_list_uses_task_title_only_for_xiaoce_direct_messages apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_existing_room_endpoint_reuses_the_latest_xiaoce_task -v 2
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py test apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_create_xiaoce_task_always_creates_an_independent_room apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_create_xiaoce_task_trims_and_limits_custom_title apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_room_list_uses_task_title_only_for_xiaoce_direct_messages apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_existing_room_endpoint_reuses_the_latest_xiaoce_task -v 2
 ```
 
 Expected: FAIL because `/api/collab/xiaoce-tasks/` returns 404 and Xiaoce `display_title` still resolves to the peer name.
@@ -207,7 +207,7 @@ In `_room_payload`, calculate the room kind before the direct-message title over
 Run:
 
 ```bash
-backend/.venv/bin/python backend/manage.py test apps.collab.tests.test_xiaoce_api -v 2
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py test apps.collab.tests.test_xiaoce_api -v 2
 ```
 
 Expected: PASS with all tests in `test_xiaoce_api.py` successful.
@@ -317,7 +317,7 @@ Add to `XiaoceApiTests`:
 Run:
 
 ```bash
-backend/.venv/bin/python backend/manage.py test apps.collab.tests.test_xiaoce_runs.XiaoceRunLifecycleTests.test_same_user_can_run_in_two_rooms_but_not_twice_in_one_room apps.collab.tests.test_xiaoce_runs.XiaoceRunLifecycleTests.test_deleted_run_is_cancelled_and_late_writes_are_noops apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_delete_running_xiaoce_task_prevents_late_worker_output -v 2
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py test apps.collab.tests.test_xiaoce_runs.XiaoceRunLifecycleTests.test_same_user_can_run_in_two_rooms_but_not_twice_in_one_room apps.collab.tests.test_xiaoce_runs.XiaoceRunLifecycleTests.test_deleted_run_is_cancelled_and_late_writes_are_noops apps.collab.tests.test_xiaoce_api.XiaoceApiTests.test_delete_running_xiaoce_task_prevents_late_worker_output -v 2
 ```
 
 Expected: the concurrency assertion passes under the current constraint, while deleted-run completion and the late worker error because helpers use `.get()` and missing runs are not considered cancelled.
@@ -433,8 +433,8 @@ Add this API test to confirm Xiaoce rename behavior without a group announcement
 Run:
 
 ```bash
-backend/.venv/bin/python backend/manage.py test apps.collab.tests.test_xiaoce_runs apps.collab.tests.test_xiaoce_api -v 2
-backend/.venv/bin/python backend/manage.py check
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py test apps.collab.tests.test_xiaoce_runs apps.collab.tests.test_xiaoce_api -v 2
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py check
 ```
 
 Expected: all selected tests pass and Django reports `System check identified no issues`.
@@ -1140,8 +1140,8 @@ git commit -m "feat: enable multiple xiaoce task conversations"
 Run:
 
 ```bash
-backend/.venv/bin/python backend/manage.py test apps.collab -v 2
-backend/.venv/bin/python backend/manage.py check
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py test apps.collab.tests.test_xiaoce_progress apps.collab.tests.test_xiaoce_runs apps.collab.tests.test_xiaoce_api -v 2
+'/Users/lhlforever/Documents/Yiran Agent SAAS、/backend/.venv/bin/python' backend/manage.py check
 ```
 
 Expected: all collaboration tests pass and Django reports no system-check issues.
