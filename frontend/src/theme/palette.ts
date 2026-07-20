@@ -201,6 +201,7 @@ export function getAntComponentTokens(mode: ThemeMode) {
     },
     Button: {
       primaryShadow: "none",
+      primaryColor: palette.textInverse,
       defaultBg: palette.surfaceInput,
       defaultColor: palette.text,
       defaultBorderColor: palette.border,

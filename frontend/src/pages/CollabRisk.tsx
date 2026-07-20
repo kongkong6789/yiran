@@ -5585,6 +5585,63 @@ const css = `
   box-shadow: none;
 }
 
+:root[data-theme="dark"] .collab-intelligence-tabs {
+  background: var(--lc-surface);
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .collab-intelligence-tabs button {
+  color: var(--lc-muted);
+}
+
+:root[data-theme="dark"] .collab-intelligence-tabs button.active {
+  color: var(--lc-ink);
+  background: var(--lc-surface-raised);
+  box-shadow: inset 0 0 0 1px var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .collab-summary-model,
+:root[data-theme="dark"] .collab-summary-nudge,
+:root[data-theme="dark"] .collab-summary-controls,
+:root[data-theme="dark"] .collab-summary-card,
+:root[data-theme="dark"] .collab-summary-selection {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-raised);
+  border-color: var(--lc-border-light);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .collab-summary-model.is-missing {
+  color: var(--lc-status-error);
+  background: var(--lc-status-error-bg);
+  border-color: color-mix(in srgb, var(--lc-status-error) 42%, transparent);
+}
+
+:root[data-theme="dark"] .collab-summary-nudge.is-ready {
+  color: var(--lc-status-warning);
+  background: var(--lc-status-warning-bg);
+  border-color: color-mix(in srgb, var(--lc-status-warning) 42%, transparent);
+}
+
+:root[data-theme="dark"] .collab-summary-model strong,
+:root[data-theme="dark"] .collab-summary-nudge strong,
+:root[data-theme="dark"] .collab-summary-card > header strong,
+:root[data-theme="dark"] .collab-summary-card section h5,
+:root[data-theme="dark"] .collab-summary-empty strong {
+  color: var(--lc-ink);
+}
+
+:root[data-theme="dark"] .collab-summary-model p,
+:root[data-theme="dark"] .collab-summary-nudge p,
+:root[data-theme="dark"] .collab-summary-controls label,
+:root[data-theme="dark"] .collab-summary-controls > span:last-child,
+:root[data-theme="dark"] .collab-summary-meta,
+:root[data-theme="dark"] .collab-summary-selection,
+:root[data-theme="dark"] .collab-summary-card li,
+:root[data-theme="dark"] .collab-summary-empty {
+  color: var(--lc-muted);
+}
+
 :root[data-theme="dark"] .collab-banner.risk-yellow,
 :root[data-theme="dark"] .collab-insight.risk-yellow {
   color: var(--lc-status-warning);

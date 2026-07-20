@@ -51,6 +51,7 @@ test("Ant component tokens use raised surfaces for overlays and inputs", () => {
   const components = getAntComponentTokens("dark");
 
   assert.equal(components.Card.colorBgContainer, dark.surface);
+  assert.equal(components.Button.primaryColor, dark.textInverse);
   assert.equal(components.Select.selectorBg, dark.surfaceInput);
   assert.equal(components.Modal.contentBg, dark.surfaceRaised);
   assert.equal(components.Table.headerBg, dark.surfaceRaised);
@@ -86,6 +87,7 @@ test("conversation styles use the global pure-black semantic surfaces", () => {
   assert.match(chatCss, /--chat-surface:\s*var\(--lc-surface-raised\)/);
   assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace-bar[\s\S]*background:\s*var\(--lc-surface\)/);
   assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace-tab-indicator[\s\S]*background:\s*var\(--lc-surface-raised\)/);
+  assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace \.collab-room-item\.active[\s\S]*background:\s*var\(--lc-selected\)/);
   assert.match(xiaoceCss, /background:\s*var\(--lc-status-error-bg\)/);
   assert.match(xiaoceCss, /background:\s*var\(--lc-status-warning-bg\)/);
 });
@@ -99,6 +101,8 @@ test("collaboration visual components use theme-aware panel surfaces", () => {
   assert.doesNotMatch(roundTable, /background:\s*#fff(?:fff)?/i);
   assert.doesNotMatch(roundTable, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9[56]\)/i);
   assert.match(collab, /:root\[data-theme="dark"\] \.collab-insight/);
+  assert.match(collab, /:root\[data-theme="dark"\] \.collab-intelligence-tabs[\s\S]*background:\s*var\(--lc-surface\)/);
+  assert.match(collab, /:root\[data-theme="dark"\] \.collab-summary-controls[\s\S]*background:\s*var\(--lc-surface-raised\)/);
   assert.match(collab, /var\(--lc-status-warning-bg\)/);
   assert.match(collab, /var\(--lc-status-error-bg\)/);
 });
@@ -199,4 +203,11 @@ test("graph modules no longer emit light-only tooltip or label backgrounds", () 
 test("package exposes the dark-mode source audit", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.scripts["audit:dark"], "node scripts/audit-dark-mode.mjs");
+});
+
+test("home knowledge graph right rail has explicit dark surfaces and text", () => {
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+
+  assert.match(css, /:root\[data-theme="dark"\] \.kgv3-right[\s\S]*background:\s*var\(--lc-surface\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.kgv3-card h3[\s\S]*color:\s*var\(--lc-ink\)/);
 });

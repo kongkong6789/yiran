@@ -9621,3 +9621,27 @@ body {
 :root[data-theme="dark"] .commerce-fusion-page h5 {
   color: var(--lc-ink) !important;
 }
+
+/* Browser-verified Home graph rail: remove the translucent white gutter and restore contrast. */
+:root[data-theme="dark"] .kgv3-page {
+  --kg-bg: var(--lc-canvas);
+  --kg-panel: var(--lc-surface);
+  --kg-text: var(--lc-ink);
+  --kg-muted: var(--lc-muted);
+  --kg-line: var(--lc-border-light);
+}
+:root[data-theme="dark"] .kgv3-right {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+}
+:root[data-theme="dark"] .kgv3-card h3 {
+  color: var(--lc-ink) !important;
+}
+:root[data-theme="dark"] .kgv3-card h2,
+:root[data-theme="dark"] .kgv3-card p,
+:root[data-theme="dark"] .kgv3-stat span,
+:root[data-theme="dark"] .kgv3-feed-item,
+:root[data-theme="dark"] .kgv3-bar-row {
+  color: var(--lc-text-secondary) !important;
+}
