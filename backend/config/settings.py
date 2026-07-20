@@ -93,52 +93,13 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# Django 主库:配置 POSTGRES_HOST/POSTGRES_DB 时使用 PostgreSQL;否则回退 SQLite。
-if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "HOST": os.getenv("POSTGRES_HOST"),
-            "PORT": os.getenv("POSTGRES_PORT", "5432"),
-            "NAME": os.getenv("POSTGRES_DB"),
-            "USER": os.getenv("POSTGRES_USER", "postgres"),
-            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-        }
-    }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
-    }
-# ??/?? WebSocket?????????????????? Redis?
+# Channels / WebSocket（开发默认内存层；生产可换 Redis）
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     }
 }
 
-# Django main database uses SQLite by default; the knowledge app uses PostgreSQL through a router.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
-if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
-    DATABASES["knowledge"] = {
-        "ENGINE": "django.db.backends.postgresql",
-        "HOST": os.getenv("POSTGRES_HOST"),
-        "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        "NAME": os.getenv("POSTGRES_DB"),
-        "USER": os.getenv("POSTGRES_USER", "postgres"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-    }
-else:
-    DATABASES["knowledge"] = DATABASES["default"]
-
-DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 # DuckDB 数据底座文件路径
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(BASE_DIR / "data" / "datalake.duckdb"))
 
@@ -212,8 +173,9 @@ PG_USER = _pg_env("POSTGRES_USER", "PG_USER", default="postgres")
 PG_PASSWORD = _pg_env("POSTGRES_PASSWORD", "PG_PASSWORD")
 PG_SCHEMA = _pg_env("POSTGRES_SCHEMA", "PG_SCHEMA", default="lake")
 
-# PostgreSQL is the Django ORM primary database whenever it is configured.
-# SQLite remains available only as an explicit local fallback.
+# 主库选择（只在这里赋值一次，避免多处 DATABASES 互相覆盖）：
+# - 未设 DATABASE_ENGINE 且配置了 POSTGRES_* → PostgreSQL（账号/业务/knowledge 同库）
+# - DATABASE_ENGINE=sqlite → 显式本地 SQLite 回退（账号也在 SQLite，勿与生产账号混用）
 DATABASE_ENGINE = os.getenv("DATABASE_ENGINE", "").strip().lower()
 USE_POSTGRESQL = DATABASE_ENGINE in {"postgres", "postgresql"} or (
     DATABASE_ENGINE == "" and bool(PG_HOST and PG_DB)
@@ -236,8 +198,16 @@ if USE_POSTGRESQL:
             },
         }
     }
-    # apps.knowledge 通过 KnowledgeDatabaseRouter 固定走 knowledge 别名
-    DATABASES["knowledge"] = DATABASES["default"]
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+# apps.knowledge 通过 KnowledgeDatabaseRouter 固定走 knowledge 别名（与 default 同实例）
+DATABASES["knowledge"] = DATABASES["default"]
+DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 
 # LightRAG / AGE 图谱
 # AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...
@@ -301,6 +271,8 @@ TENCENT_COS_REGION = os.getenv("TENCENT_COS_REGION", "ap-guangzhou")
 TENCENT_COS_CUSTOM_DOMAIN = os.getenv("TENCENT_COS_CUSTOM_DOMAIN", "")
 TENCENT_COS_SCHEME = os.getenv("TENCENT_COS_SCHEME", "https")
 TENCENT_COS_LOCATION = os.getenv("TENCENT_COS_LOCATION", "media")
+TENCENT_COS_AVATAR_LOCATION = os.getenv("TENCENT_COS_AVATAR_LOCATION", "media/avatars")
+TENCENT_COS_AVATAR_ACL = os.getenv("TENCENT_COS_AVATAR_ACL", "private")
 TENCENT_COS_ACL = os.getenv("TENCENT_COS_ACL", "public-read")
 # Skill 专用:可单独建桶;未配置则复用主桶但使用独立路径前缀 skills/
 TENCENT_COS_SKILLS_BUCKET = os.getenv("TENCENT_COS_SKILLS_BUCKET", "")

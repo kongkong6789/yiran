@@ -206,21 +206,34 @@ class WeComClient:
         }
         members_payload = self._token_call("GET", "user/list", params={"department_id": 1, "fetch_child": 1})
         contacts = []
+        avatar_from_list = 0
+        avatar_from_detail = 0
+        avatar_missing = 0
+        detail_errors: dict[str, int] = {}
         for member in members_payload.get("userlist", []):
             user_id = str(member.get("userid", "")).strip()
             if not user_id:
                 continue
             department_ids = [int(value) for value in member.get("department", [])]
+            # 企业微信自 2022-08-15 起，user/list 不再返回 avatar，需回退到 user/get 逐个读取。
             avatar = str(member.get("avatar") or member.get("thumb_avatar") or "").strip()
             if avatar.startswith("http://"):
                 avatar = f"https://{avatar[7:]}"
-            if not avatar:
+            if avatar:
+                avatar_from_list += 1
+            else:
                 try:
                     detail = self.get_wecom_user(user_id)
                     avatar = str(detail.get("avatar") or "")
-                except WeComApiError:
-                    # 头像属于可选资料；单个成员详情不可见时仍保存基础通讯录。
+                    if avatar:
+                        avatar_from_detail += 1
+                    else:
+                        avatar_missing += 1
+                except WeComApiError as exc:
+                    # 头像属于可选资料；单个成员详情不可见时仍保存基础通讯录，但记录原因便于排查。
                     avatar = ""
+                    key = f"{exc.code}:{exc.upstream_code}"
+                    detail_errors[key] = detail_errors.get(key, 0) + 1
             contacts.append({
                 "key": f"wecom:{user_id}",
                 "name": str(member.get("name", "") or user_id),
@@ -232,6 +245,23 @@ class WeComClient:
                 "available": int(member.get("status", 1) or 1) == 1,
                 "source": "wecom",
             })
+        logger.info(
+            "WeCom contact sync: config=%s members=%s avatar_from_list=%s avatar_from_detail=%s "
+            "avatar_missing=%s detail_errors=%s",
+            self.config.pk,
+            len(contacts),
+            avatar_from_list,
+            avatar_from_detail,
+            avatar_missing,
+            detail_errors or "{}",
+        )
+        if detail_errors:
+            logger.warning(
+                "WeCom avatar fetch via user/get failed for some members (config=%s): %s. "
+                "常见原因：应用无「通讯录」权限或成员不在应用可见范围。",
+                self.config.pk,
+                detail_errors,
+            )
         return sorted(contacts, key=lambda item: (item["department"], item["name"]))
 
 

@@ -509,6 +509,14 @@ body {
 .account-contact-cell small,
 .account-muted { color: var(--lc-text-muted); font-size: 11px; }
 .account-role-cell .ant-tag { align-self: flex-start; margin: 0; }
+.account-role-cell > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.account-role-cell > span > span { min-width: 0; }
+.account-organization-filter { min-width: 168px; }
+.organization-scope-select { width: 240px; }
 .account-admin-table .ant-pagination { margin: 14px !important; }
 .account-admin-denied {
   max-width: 680px;
@@ -547,6 +555,53 @@ body {
   font-size: 12px;
 }
 .organization-manager { min-width: 0; }
+
+/* 分配企业弹窗保持浅色企业表单语义，不继承全局黑白主题中的深色提示面。 */
+:root[data-theme] .organization-assignment-modal .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid #e2e7ef;
+  border-radius: 16px;
+  background: #fff !important;
+}
+:root[data-theme] .organization-assignment-modal .ant-modal-header {
+  margin-bottom: 18px;
+  background: #fff !important;
+}
+.organization-assignment-modal .ant-modal-title { color: #17233d !important; }
+.organization-assignment-modal .ant-alert-info {
+  border: 1px solid #d8e5f4 !important;
+  border-radius: 10px;
+  color: #344861 !important;
+  background: #f5f8fc !important;
+}
+.organization-assignment-modal .ant-alert-info .ant-alert-icon { color: #4f79a7 !important; }
+.organization-assignment-modal .ant-alert-message {
+  color: #213653 !important;
+  font-weight: 600;
+}
+.organization-assignment-modal .ant-alert-description {
+  color: #607089 !important;
+  line-height: 1.65;
+}
+.organization-assignment-modal .ant-form-item-label > label {
+  color: #273650 !important;
+  font-weight: 600;
+}
+.organization-assignment-modal .ant-select-selector {
+  border-color: #d8dee8 !important;
+  border-radius: 9px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+.organization-assignment-modal .ant-select:hover .ant-select-selector,
+.organization-assignment-modal .ant-select-focused .ant-select-selector {
+  border-color: #b88943 !important;
+  box-shadow: 0 0 0 3px rgba(184, 137, 67, .1) !important;
+}
+.organization-assignment-modal .ant-select-disabled .ant-select-selector {
+  color: #8b95a5 !important;
+  background: #f5f7fa !important;
+}
 .organization-toolbar-actions {
   display: flex;
   align-items: center;
@@ -782,6 +837,144 @@ body {
   box-shadow: 0 8px 18px rgba(79, 70, 229, .3);
 }
 .team-primary-btn.ant-btn-primary:hover { background: linear-gradient(135deg, #7275f4, #5b52ec) !important; }
+
+/* ===== 个人信息 / 设置弹窗 (UserSettingsModal) ===== */
+.ups-modal .ant-modal-content { padding: 0; border-radius: 16px; overflow: hidden; }
+.ups-modal .ant-modal-header { padding: 20px 24px 14px; margin: 0; border: 0; border-bottom: 1px solid #f0f1f6; background: transparent; }
+.ups-modal .ant-modal-body { padding: 0; }
+.ups-modal .ant-modal-close { top: 20px; inset-inline-end: 20px; }
+
+.ups-title { display: flex; align-items: center; gap: 12px; }
+.ups-title-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 11px; color: #fff; font-size: 18px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  box-shadow: 0 8px 18px rgba(109, 40, 217, .32);
+}
+.ups-title strong { font-size: 17px; color: #1f2430; line-height: 1.2; }
+.ups-title small { display: block; margin-top: 2px; color: #98a1b2; font-size: 12px; font-weight: 400; }
+
+.ups-body { display: flex; min-height: 460px; }
+
+/* 左侧导航 */
+.ups-nav {
+  flex: none; width: 168px; padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
+  background: #fafbfe; border-right: 1px solid #f0f1f6;
+}
+.ups-nav button {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; border: 0; border-radius: 10px; cursor: pointer;
+  background: transparent; color: #5b647a; font-size: 14px; font-weight: 600; text-align: left;
+  transition: background .15s ease, color .15s ease;
+}
+.ups-nav button:hover { background: #f0ecfb; color: #6d28d9; }
+.ups-nav button.is-on {
+  color: #fff;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  box-shadow: 0 6px 16px rgba(109, 40, 217, .28);
+}
+.ups-nav-icon { font-size: 15px; display: inline-flex; }
+
+/* 右侧内容 */
+.ups-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ups-section { flex: 1; overflow-y: auto; padding: 20px 24px 8px; }
+.ups-section .ant-form-item { margin-bottom: 16px; }
+.ups-section .ant-form-item-label { padding-bottom: 5px; }
+.ups-section .ant-form-item-label > label { color: #59617a; font-weight: 600; font-size: 13px; }
+.ups-section .ant-form-item-extra { color: #9aa4b6; font-size: 12px; margin-top: 4px; }
+.ups-section .ant-input-affix-wrapper,
+.ups-section .ant-input,
+.ups-section textarea.ant-input { border-radius: 10px; border-color: #e6e8ef; }
+.ups-section .ant-input-prefix { color: #b3bccb; margin-inline-end: 8px; }
+
+/* 头像卡片 */
+.ups-avatar-card {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px; margin-bottom: 20px; border-radius: 14px;
+  border: 1px solid #eef0f6; background: #fbfaff;
+}
+.ups-avatar-wrap { position: relative; width: 64px; height: 64px; border-radius: 50%; cursor: pointer; }
+.ups-avatar-wrap .ant-avatar {
+  background: linear-gradient(135deg, #a78bfa, #6d28d9);
+  box-shadow: 0 6px 16px rgba(109, 40, 217, .22);
+}
+.ups-avatar-cam {
+  position: absolute; right: -2px; bottom: -2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #6d28d9; color: #fff; font-size: 12px; border: 2px solid #fff;
+  transition: transform .15s ease;
+}
+.ups-avatar-wrap:hover .ups-avatar-cam { transform: scale(1.08); }
+.ups-avatar-name { font-size: 16px; font-weight: 700; color: #1f2430; }
+.ups-avatar-sub { font-size: 12.5px; color: #6b7488; margin-top: 3px; }
+.ups-avatar-hint { font-size: 12px; color: #a3abbc; margin-top: 4px; }
+
+/* 企微绑定行 */
+.ups-binding {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: -4px 0 16px; padding: 10px 12px; border-radius: 10px;
+  background: #f6f4fd; font-size: 13px;
+}
+.ups-binding-label { color: #5c6778; font-weight: 600; }
+.ups-binding-member { color: #6b7488; }
+.ups-binding-hint { color: #7b8494; width: 100%; line-height: 1.5; }
+.ups-binding-error { color: #cf4f4f !important; width: 100%; }
+
+/* 提示卡片（密码 / 模型） */
+.ups-hero-note {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 16px; margin-bottom: 20px; border-radius: 12px;
+  background: #eef2fb;
+}
+.ups-hero-note-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 10px; color: #fff; font-size: 18px; flex: none;
+}
+.ups-hero-note-icon.is-shield { background: linear-gradient(135deg, #34d399, #059669); box-shadow: 0 6px 14px rgba(5, 150, 105, .28); }
+.ups-hero-note-icon.is-key { background: linear-gradient(135deg, #8b5cf6, #6d28d9); box-shadow: 0 6px 14px rgba(109, 40, 217, .28); }
+.ups-hero-note strong { font-size: 14px; color: #1f2430; }
+.ups-hero-note small { display: block; margin-top: 3px; color: #6b7488; font-size: 12.5px; line-height: 1.5; }
+
+/* 密码强度 */
+.ups-pwd-strength { display: flex; align-items: center; gap: 10px; margin: -6px 0 14px; }
+.ups-pwd-bars { display: flex; gap: 5px; flex: 1; }
+.ups-pwd-bars span { height: 5px; flex: 1; border-radius: 999px; background: #e8eaf1; transition: background .2s ease; }
+.ups-pwd-bars[data-score="1"] span:nth-child(1) { background: #f5766f; }
+.ups-pwd-bars[data-score="2"] span:nth-child(-n+2) { background: #f6b545; }
+.ups-pwd-bars[data-score="3"] span { background: #34c77b; }
+.ups-pwd-strength em { font-style: normal; font-size: 12px; font-weight: 700; color: #8a93a6; min-width: 16px; }
+
+/* 密码安全建议 */
+.ups-pwd-tips { margin-top: 4px; padding: 14px 16px; border-radius: 12px; background: #f6f4fd; }
+.ups-pwd-tips-title { font-size: 13px; font-weight: 700; color: #59617a; margin-bottom: 10px; }
+.ups-pwd-tips-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.ups-pwd-tips-grid span { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: #9aa4b6; }
+.ups-pwd-tips-grid span .anticon { font-size: 14px; }
+.ups-pwd-tips-grid span.is-ok { color: #3f4759; }
+.ups-pwd-tips-grid span.is-ok .anticon { color: #34c77b; }
+
+/* 高级选项折叠 */
+.ups-advanced-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 0; margin-bottom: 4px; border: 0; background: transparent; cursor: pointer;
+  color: #6d28d9; font-size: 13px; font-weight: 600;
+}
+.ups-advanced-toggle .anticon { font-size: 11px; transition: transform .2s ease; }
+.ups-advanced-toggle.is-open .anticon { transform: rotate(180deg); }
+
+/* 底部按钮 */
+.ups-footer {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 14px 24px; border-top: 1px solid #f0f1f6; background: #fff;
+}
+.ups-footer .ant-btn { border-radius: 9px; height: 38px; padding-inline: 22px; font-weight: 600; }
+.ups-primary.ant-btn-primary {
+  border: 0;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  box-shadow: 0 8px 18px rgba(109, 40, 217, .3);
+}
+.ups-primary.ant-btn-primary:hover { background: linear-gradient(135deg, #9b6ff8, #7c3aed) !important; }
 
 /* 下拉浮层：强制干净的浅色，避免深色主题下发灰发暗 */
 :root .team-select-dropdown.ant-select-dropdown,
@@ -2600,7 +2793,21 @@ body {
   margin-top: 4px;
   font-size: 11px;
 }
-.wecom-webhook-tab-intro { margin-bottom: 12px; }
+/* 全局：info 类 Alert 的主题色被设成了纯黑（colorInfo:#000），会渲染成黑底横幅。
+   在浅色主题下统一改回干净的浅色信息条，避免各处再单独打补丁。 */
+:root[data-theme="light"] .ant-alert-info {
+  border: 1px solid #dbe6f4 !important;
+  background: #f4f8fd !important;
+}
+:root[data-theme="light"] .ant-alert-info .ant-alert-icon { color: #4f79a7 !important; }
+:root[data-theme="light"] .ant-alert-info .ant-alert-message { color: #1f2f45 !important; }
+:root[data-theme="light"] .ant-alert-info .ant-alert-description { color: #5b6b82 !important; }
+
+.wecom-webhook-tab-intro.ant-alert {
+  margin-bottom: 12px;
+  border-radius: 12px;
+}
+.wecom-webhook-tab-intro.ant-alert .ant-alert-message { font-weight: 600; }
 .wecom-group-webhook-manager {
   display: flex;
   flex-direction: column;
@@ -10513,4 +10720,315 @@ body {
 :root[data-theme="dark"] .kgv3-feed-item,
 :root[data-theme="dark"] .kgv3-bar-row {
   color: var(--lc-text-secondary) !important;
+}
+
+/* ===== 个人资料：个人主信息与当前企业 ===== */
+.ups-modal .ant-modal {
+  max-width: calc(100vw - 32px);
+}
+.ups-profile-header {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(250px, .9fr) max-content;
+  align-items: center;
+  gap: 16px;
+  min-height: 128px;
+  margin: 0 auto 20px;
+  padding: 20px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+}
+.ups-profile-person {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 16px;
+}
+.ups-profile-person .ups-avatar-wrap {
+  display: block;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.ups-profile-person .ups-avatar-wrap:focus-visible {
+  outline: 3px solid rgba(124, 58, 237, .2);
+  outline-offset: 4px;
+}
+.ups-profile-person-copy { min-width: 0; }
+.ups-profile-person-copy > strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: #111827;
+  font-size: 20px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ups-profile-account {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  margin-top: 7px;
+  color: #667085;
+  font-size: 13px;
+}
+.ups-profile-account > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ups-platform-role.ant-tag {
+  flex: none;
+  margin: 0;
+  padding-inline: 7px;
+  border: 0;
+  border-radius: 6px;
+  color: #6d28d9;
+  background: #f1edff;
+  font-size: 12px;
+  line-height: 22px;
+}
+.ups-contact-info {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, .72fr);
+  min-width: 0;
+  gap: 14px 22px;
+}
+.ups-contact-item { min-width: 0; }
+.ups-contact-item > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #98a2b3;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.ups-contact-item > strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #25324a;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ups-profile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.ups-profile-actions .ant-btn,
+.ups-switch-enterprise.ant-btn {
+  height: 36px;
+  border-color: #d9dde6;
+  border-radius: 9px;
+  color: #475467;
+  background: #fff;
+  box-shadow: none;
+}
+.ups-profile-actions .ant-btn:hover,
+.ups-switch-enterprise.ant-btn:hover {
+  border-color: #a78bfa !important;
+  color: #6d28d9 !important;
+  background: #faf8ff !important;
+}
+.ups-profile-actions .ant-btn:focus-visible,
+.ups-switch-enterprise.ant-btn:focus-visible,
+.ups-enterprise-list button:focus-visible,
+.ups-enterprise-create:focus-visible {
+  outline: 3px solid rgba(124, 58, 237, .18);
+  outline-offset: 2px;
+}
+.ups-profile-actions .ant-btn:disabled,
+.ups-switch-enterprise.ant-btn:disabled { opacity: .48; }
+
+.ups-current-enterprise-section {
+  max-width: 1200px;
+  margin: 0 auto 20px;
+}
+.ups-current-enterprise-section > h3 {
+  margin: 0 0 10px;
+  color: #1f2937;
+  font-size: 15px;
+  font-weight: 650;
+}
+.ups-current-enterprise-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  padding: 12px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.ups-current-enterprise-icon,
+.ups-enterprise-list-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid #ede9fe;
+  border-radius: 10px;
+  color: #7c3aed;
+  background: #fff;
+}
+.ups-current-enterprise-copy,
+.ups-enterprise-list-copy { min-width: 0; }
+.ups-current-enterprise-copy > strong,
+.ups-enterprise-list-copy > strong {
+  display: block;
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ups-current-enterprise-copy > small,
+.ups-enterprise-list-copy > small {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #7b8494;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ups-current-enterprise-tag.ant-tag {
+  flex: none;
+  margin: 0;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 6px;
+  color: #5b4fc7;
+  background: #eeefff;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.ups-enterprise-popover-overlay .ant-popover-inner {
+  width: min(380px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, .12);
+}
+.ups-enterprise-popover-title {
+  margin: 2px 4px 10px;
+  color: #1f2937;
+  font-size: 15px;
+  font-weight: 650;
+}
+.ups-enterprise-popover .ant-input-affix-wrapper {
+  height: 36px;
+  margin-bottom: 8px;
+  border-color: #e5e7eb;
+  border-radius: 8px;
+}
+.ups-enterprise-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 292px;
+  overflow-y: auto;
+}
+.ups-enterprise-list button {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  color: #667085;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background .15s ease, color .15s ease;
+}
+.ups-enterprise-list button:hover { color: #6d28d9; background: #f7f5ff; }
+.ups-enterprise-list button.is-current { background: #f1edff; }
+.ups-enterprise-list button .ups-enterprise-list-icon { width: 36px; height: 36px; }
+.ups-enterprise-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 11px 10px 4px;
+  border: 0;
+  border-top: 1px solid #eef0f3;
+  color: #6d28d9;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.ups-enterprise-create:hover { color: #5b21b6; }
+
+@media (max-width: 900px) {
+  .ups-profile-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    min-height: 0;
+  }
+  .ups-contact-info {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .ups-profile-actions { grid-column: 2; grid-row: 1; }
+}
+
+@media (max-width: 600px) {
+  .ups-modal .ant-modal { max-width: calc(100vw - 16px); margin: 8px auto; }
+  .ups-modal .ant-modal-header { padding-inline: 18px; }
+  .ups-body { display: block; }
+  .ups-nav {
+    width: 100%;
+    padding: 10px 12px;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid #f0f1f6;
+  }
+  .ups-nav button { min-width: max-content; justify-content: center; }
+  .ups-section { padding: 16px 14px 8px; }
+  .ups-profile-header { padding: 16px; gap: 14px; }
+  .ups-profile-person { gap: 12px; }
+  .ups-profile-person-copy > strong { font-size: 18px; }
+  .ups-contact-info { grid-template-columns: minmax(0, 1fr) minmax(112px, .72fr); gap: 12px; }
+  .ups-contact-item:first-child > strong { max-width: 150px; }
+  .ups-profile-actions { gap: 6px; }
+  .ups-profile-actions .ant-btn { width: 36px; padding-inline: 0; }
+  .ups-action-label { display: none; }
+  .ups-current-enterprise-card {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 12px;
+  }
+  .ups-current-enterprise-card > .ups-current-enterprise-tag { grid-column: 2; justify-self: start; }
+  .ups-switch-enterprise.ant-btn {
+    grid-column: 3;
+    grid-row: 1;
+    width: 36px;
+    padding-inline: 0;
+    font-size: 0;
+  }
+  .ups-switch-enterprise.ant-btn .anticon { font-size: 14px; }
+  .ups-footer { padding-inline: 14px; }
 }

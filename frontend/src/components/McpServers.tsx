@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Drawer, Tag, Button, Space, Typography, message, Tooltip,
-  Form, Input, Switch, Empty, Segmented, Skeleton,
+  Form, Input, Switch, Empty, Segmented, Skeleton, Alert,
 } from "antd";
 import {
   AccountBookOutlined,
@@ -55,6 +55,7 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   personal: "个人配置",
+  organization: "企业配置",
   ui: "界面配置",
   env: ".env 默认",
   none: "未配置",
@@ -181,6 +182,10 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const doSave = async () => {
     if (!openId) return;
+    if (detail?.can_manage === false) {
+      message.warning("仅当前企业的所有者或管理员可以修改连接器");
+      return;
+    }
     const values = await form.validateFields();
     setSaving(true);
     try {
@@ -210,6 +215,10 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const doImport = async () => {
     if (!openId) return;
+    if (detail?.can_manage === false) {
+      message.warning("仅当前企业的所有者或管理员可以导入连接器配置");
+      return;
+    }
     const raw = (form.getFieldValue("paste_json") || "").trim();
     if (!raw) {
       message.warning("请先粘贴 Cursor mcp.json 片段");
@@ -571,13 +580,14 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           ) : detail && isNas ? (
             <Space>
               <Button onClick={() => setNasDrawerMode("files")}>返回文件库</Button>
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>连接并打开</Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={detail.can_manage === false} onClick={doSave}>连接并打开</Button>
             </Space>
           ) : detail ? (
             <Button
               type="primary"
               icon={configInputMode === "import" ? <ImportOutlined /> : <SaveOutlined />}
               loading={configInputMode === "import" ? importing : saving}
+              disabled={detail.can_manage === false}
               onClick={configInputMode === "import" ? doImport : doSave}
             >
               {configInputMode === "import" ? "导入并保存" : "保存"}
@@ -593,7 +603,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           />
         ) : detail && (
           <div className={`mcp-config-shell${isNas ? " nas-settings-panel" : ""}`}>
-            <Form form={form} layout="vertical" requiredMark={false} className="mcp-config-form">
+            <Form form={form} layout="vertical" requiredMark={false} className="mcp-config-form" disabled={detail.can_manage === false}>
               <section className="mcp-config-summary">
                 <span
                   className="mcp-config-summary-icon"
@@ -612,6 +622,16 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                   <Switch size="small" aria-label="启用连接器" />
                 </Form.Item>
               </section>
+
+              <Alert
+                type={detail.can_manage === false ? "info" : "success"}
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={`当前企业：${detail.organization_name || "未加入企业"}`}
+                description={detail.can_manage === false
+                  ? "该连接由企业管理员统一维护，你可以使用但不能修改。"
+                  : "此处保存的连接配置只对当前企业生效，切换企业后会加载对应企业的配置。"}
+              />
 
               {!!detail.hints?.length && (
                 <details className="mcp-config-help">
