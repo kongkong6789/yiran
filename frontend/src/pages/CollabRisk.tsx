@@ -64,6 +64,7 @@ import {
   partitionXiaoceRooms,
   resolveXiaoceDeleteState,
   setRoomPending,
+  transitionRoomComposer,
   xiaoceDeleteContent,
 } from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
@@ -923,12 +924,18 @@ export default function CollabRisk({
     // 先把当前会话的输入框状态存起来
     const prevId = beginRoomSelection(activeIdRef, roomLoadSeqRef, roomId);
     setStatsLoading(false);
-    if (prevId) {
-      roomComposerCacheRef.current.set(prevId, {
+    const composerTransition = transitionRoomComposer(
+      roomComposerCacheRef.current,
+      prevId,
+      roomId,
+      {
         draft: draftRef.current,
         pendingFiles: pendingFilesRef.current,
         replyingTo: replyingToRef.current,
-      });
+      },
+    );
+    roomComposerCacheRef.current = composerTransition.cache;
+    if (prevId) {
       const previousRoom = activeRoomRef.current;
       if (previousRoom && previousRoom.id === prevId) {
         roomViewCacheRef.current.set(prevId, {
@@ -943,10 +950,10 @@ export default function CollabRisk({
       }
     }
     // 立刻切 UI：恢复该会话草稿 / 缓存消息，避免共用输入框和白屏等待
-    const composer = roomComposerCacheRef.current.get(roomId);
-    setDraft(composer?.draft || "");
-    setPendingFiles(composer?.pendingFiles || []);
-    setReplyingTo(composer?.replyingTo || null);
+    const composer = composerTransition.composer;
+    setDraft(composer.draft);
+    setPendingFiles(composer.pendingFiles);
+    setReplyingTo(composer.replyingTo);
     setMention(null);
     setMentionIndex(0);
     setDraftCoach(null);
@@ -1070,7 +1077,6 @@ export default function CollabRisk({
   useEffect(() => {
     if (!activeId) return;
     setRooms((prev) => prev.map((r) => (r.id === activeId ? { ...r, unread_count: 0 } : r)));
-    setReplyingTo(null);
   }, [activeId]);
 
   // 消息级已读回执：新消息进入视区后短暂稳定再上报，避免“收到即已读”。

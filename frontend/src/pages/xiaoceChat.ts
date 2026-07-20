@@ -8,6 +8,12 @@ export type XiaoceRoomLike = {
 
 type MutableValueRef<T> = { current: T };
 
+export type RoomComposerSnapshot<TFile, TReply> = {
+  draft: string;
+  pendingFiles: TFile[];
+  replyingTo: TReply | null;
+};
+
 type XiaoceRunStateLike = { status?: string };
 
 type XiaoceTaskStateLike = {
@@ -57,6 +63,32 @@ export function setRoomPending(
   if (pending) next.add(roomId);
   else next.delete(roomId);
   return next;
+}
+
+
+export function transitionRoomComposer<TFile, TReply>(
+  cache: ReadonlyMap<string, RoomComposerSnapshot<TFile, TReply>>,
+  previousRoomId: string | null,
+  destinationRoomId: string,
+  current: RoomComposerSnapshot<TFile, TReply>,
+): {
+  cache: Map<string, RoomComposerSnapshot<TFile, TReply>>;
+  composer: RoomComposerSnapshot<TFile, TReply>;
+} {
+  const nextCache = new Map(cache);
+  if (previousRoomId) {
+    nextCache.set(previousRoomId, {
+      ...current,
+      pendingFiles: [...current.pendingFiles],
+    });
+  }
+  const destination = nextCache.get(destinationRoomId);
+  return {
+    cache: nextCache,
+    composer: destination
+      ? { ...destination, pendingFiles: [...destination.pendingFiles] }
+      : { draft: "", pendingFiles: [], replyingTo: null },
+  };
 }
 
 

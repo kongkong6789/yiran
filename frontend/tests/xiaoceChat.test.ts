@@ -140,6 +140,49 @@ test("pending sends are tracked independently by room", () => {
   assert.deepEqual([...roomAFinished], ["room-b"]);
 });
 
+test("room composer transition restores A reply target after A to B to A", () => {
+  type ReplyTarget = { id: number; content: string };
+  type Composer = {
+    draft: string;
+    pendingFiles: string[];
+    replyingTo: ReplyTarget | null;
+  };
+  const transitionComposer = (xiaoceChatHelpers as Record<string, unknown>)
+    .transitionRoomComposer as ((
+      cache: ReadonlyMap<string, Composer>,
+      previousRoomId: string | null,
+      destinationRoomId: string,
+      current: Composer,
+    ) => { cache: Map<string, Composer>; composer: Composer }) | undefined;
+  assert.equal(typeof transitionComposer, "function");
+
+  const replyA = { id: 17, content: "A 基础消息" };
+  const emptyCache = new Map<string, Composer>();
+  const toB = transitionComposer!(emptyCache, "room-a", "room-b", {
+    draft: "A draft",
+    pendingFiles: ["a.txt"],
+    replyingTo: replyA,
+  });
+
+  assert.notEqual(toB.cache, emptyCache);
+  assert.equal(emptyCache.has("room-a"), false);
+  assert.deepEqual(toB.composer, {
+    draft: "",
+    pendingFiles: [],
+    replyingTo: null,
+  });
+
+  const backToA = transitionComposer!(toB.cache, "room-b", "room-a", {
+    draft: "B draft",
+    pendingFiles: [],
+    replyingTo: null,
+  });
+
+  assert.equal(backToA.composer.replyingTo, replyA);
+  assert.equal(backToA.composer.draft, "A draft");
+  assert.deepEqual(backToA.composer.pendingFiles, ["a.txt"]);
+});
+
 test("room selection synchronously invalidates an earlier load", async () => {
   const beginSelection = (xiaoceChatHelpers as Record<string, unknown>)
     .beginRoomSelection as ((
@@ -378,8 +421,19 @@ test("collaboration chat wires room-scoped async send and selection guards", () 
   assert.match(source, /isRoomAsyncResultCurrent\(activeIdRef\.current, targetRoomId\)/);
   assert.match(source, /roomsRef\.current\.some\(\(room\) => room\.id === targetRoomId\)/);
   assert.match(source, /beginRoomSelection\(activeIdRef, roomLoadSeqRef, roomId\)/);
+  assert.match(selectionSource, /transitionRoomComposer\(/);
   assert.match(selectionSource, /setStatsLoading\(false\)/);
   assert.doesNotMatch(source, /const \[sending, setSending\] = useState\(false\)/);
+});
+
+test("active room detail loading does not clear a restored reply target", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const effectStart = source.indexOf("useEffect(() => {\n    if (!activeId) return;\n    setRooms");
+  const effectEnd = source.indexOf("// 消息级已读回执");
+  assert.ok(effectStart >= 0);
+  assert.ok(effectEnd > effectStart);
+  const activeRoomEffect = source.slice(effectStart, effectEnd);
+  assert.doesNotMatch(activeRoomEffect, /setReplyingTo\(null\)/);
 });
 
 test("collaboration chat refreshes Xiaoce state before opening delete confirmation", () => {
