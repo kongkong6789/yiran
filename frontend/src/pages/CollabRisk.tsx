@@ -51,6 +51,7 @@ import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
 import { createXiaoceRunId, isXiaoceRoom } from "./xiaoceChat";
+import type { NasResourceHandoff } from "../features/agent-handoff/resourceHandoff";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
@@ -848,15 +849,21 @@ export default function CollabRisk({
     setSearchParams({}, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  // 从「AI 问答」入口带 ?bot=xiaoce 进入时，直聊小策bot
+  // 从资源交接入口进入时，按稳定 bot_id 创建/复用目标单聊。
   useEffect(() => {
-    const bot = searchParams.get("bot");
-    if (bot !== "xiaoce" && bot !== "小策bot") return;
-    const nasPrompt = (location.state as { nasPrompt?: string } | null)?.nasPrompt?.trim() || "";
+    const botId = searchParams.get("bot");
+    if (!botId) return;
+    const navigationState = location.state as {
+      resourceHandoff?: NasResourceHandoff;
+      nasPrompt?: string;
+    } | null;
+    const handoffPrompt = navigationState?.resourceHandoff?.prompt?.trim()
+      || navigationState?.nasPrompt?.trim()
+      || "";
     setSiderTab("contacts");
     let cancelled = false;
     const roomRequest = botRoomRequestRef.current || createCollabRoom({
-      peer_username: "小策bot",
+      peer_bot_id: botId,
       room_kind: "dm",
     });
     botRoomRequestRef.current = roomRequest;
@@ -868,8 +875,8 @@ export default function CollabRisk({
         await loadRooms();
         setActiveId(room.id);
         setSiderTab("chats");
-        if (nasPrompt) {
-          setDraft(nasPrompt);
+        if (handoffPrompt) {
+          setDraft(handoffPrompt);
           window.setTimeout(() => composerRef.current?.focus?.(), 0);
         }
         const nextParams = new URLSearchParams(searchParams);
@@ -880,7 +887,7 @@ export default function CollabRisk({
           state: null,
         });
       } catch (e: any) {
-        if (!cancelled) message.error(e?.response?.data?.error || "打开小策bot 失败");
+        if (!cancelled) message.error(e?.response?.data?.error || "打开目标智能体失败");
       } finally {
         if (botRoomRequestRef.current === roomRequest) botRoomRequestRef.current = null;
         if (!cancelled) setCreating(false);

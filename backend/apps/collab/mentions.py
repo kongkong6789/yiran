@@ -84,6 +84,14 @@ def get_xiaoce_bot_user():
     return user
 
 
+def get_collab_bot_user(bot_id: str):
+    """用稳定 bot_id 解析协作智能体，避免业务入口依赖可变的用户名。"""
+    normalized = str(bot_id or "").strip().casefold()
+    if normalized == "xiaoce":
+        return get_xiaoce_bot_user()
+    raise ValueError("目标 bot 不存在或未启用")
+
+
 def is_xiaoce_bot_user(user) -> bool:
     return bool(user) and getattr(user, "username", "") == XIAOCE_BOT_USERNAME
 

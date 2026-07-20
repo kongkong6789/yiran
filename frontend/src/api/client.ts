@@ -1709,6 +1709,7 @@ export const listCollabRooms = (params?: { status?: string }) =>
 export const createCollabRoom = (body: {
   title?: string;
   peer_username?: string;
+  peer_bot_id?: string;
   peer_usernames?: string[];
   room_kind?: "dm" | "group";
 }) =>
