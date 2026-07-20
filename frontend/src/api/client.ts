@@ -546,9 +546,34 @@ export const uploadSkillAsset = (file: File, adopt = true) => {
   }).then((r) => r.data);
 };
 
+export const uploadSkillAssetFolder = (files: File[], adopt = true) => {
+  const form = new FormData();
+  files.forEach((file) => {
+    form.append("files", file, file.name);
+    form.append("paths", file.webkitRelativePath || file.name);
+  });
+  if (adopt) form.append("adopt", "1");
+  return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  }).then((r) => r.data);
+};
+
 export const getSkillAssets = () =>
   api.get<{ count: number; results: SkillAssetItem[]; cos_enabled: boolean }>("/skills/assets/")
     .then((r) => r.data);
+
+export const getSkillAnalytics = () =>
+  api.get<SkillAnalyticsResponse>("/skills/analytics/").then((r) => r.data);
+
+export const updateSkillAssetOwner = (assetId: number, ownerId: number | null) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/owner/`, {
+    owner_id: ownerId,
+  }).then((r) => r.data);
+
+export const updateSkillAssetVisibility = (assetId: number, visibility: "shared" | "private") =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem; revoked_count: number }>(`/skills/assets/id/${assetId}/visibility/`, {
+    visibility,
+  }).then((r) => r.data);
 
 export const adoptSkillAsset = (skillId: string) =>
   api.post<{ ok: boolean; personal: UserSkillItem; asset: SkillAssetItem }>(`/skills/assets/${skillId}/adopt/`)
@@ -717,11 +742,14 @@ export interface UserSkillItem {
   updated_at: string;
   raw_content?: string;
   instructions?: string;
+  owner_id?: number | null;
+  owner?: string;
 }
 
 export interface SkillAssetItem {
   id: number;
   skill_id: string;
+  visibility: "shared" | "private";
   name: string;
   description: string;
   original_filename: string;
@@ -735,8 +763,67 @@ export interface SkillAssetItem {
   has_scripts?: boolean;
   storage: "cos" | "local";
   uploader?: string;
+  is_uploader?: boolean;
+  owner_id?: number | null;
+  owner?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface SkillAnalyticsSummary {
+  total_skills: number;
+  total_invocations: number;
+  invocations_30d: number;
+  active_skills_30d: number;
+  utilization_rate: number;
+  shared_skills: number;
+  shared_adoptions: number;
+  owner_count: number;
+  responsibility_coverage: number;
+}
+
+export interface SkillAnalyticsRow {
+  asset_id: number;
+  skill_id: string;
+  name: string;
+  description: string;
+  visibility: "shared" | "private";
+  owner_id: number | null;
+  owner: string;
+  owner_team: string;
+  uploader: string;
+  is_uploader: boolean;
+  adoption_count: number;
+  enabled_count: number;
+  usage_count_30d: number;
+  unique_users_30d: number;
+  last_used_at: string | null;
+  last_used_by: string;
+  last_source: string;
+  recent_usage: SkillUsageEventItem[];
+  updated_at: string;
+}
+
+export interface SkillUsageEventItem {
+  id: number;
+  skill_id: string;
+  skill_name: string;
+  user_id: number | null;
+  user: string;
+  source: "agent" | "collab" | "direct";
+  source_label: string;
+  used_at: string;
+}
+
+export interface SkillAnalyticsResponse {
+  scope_label: string;
+  can_manage: boolean;
+  summary: SkillAnalyticsSummary;
+  skills: SkillAnalyticsRow[];
+  ranking: SkillAnalyticsRow[];
+  trend: Array<{ date: string; label: string; count: number }>;
+  recent_usage: SkillUsageEventItem[];
+  owner_options: Array<{ id: number; name: string; username: string }>;
 }
 
 export interface SopStep {

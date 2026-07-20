@@ -1,6 +1,7 @@
 """Skill 上传 / 管理 / 调用 API。"""
 from __future__ import annotations
 
+from django.contrib.auth import get_user_model
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -8,12 +9,12 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .analytics import build_skill_analytics, management_scope
 from .cos_storage import cos_enabled
 from .models import SkillAsset, UserSkill
-from .parser import extract_skill_from_upload, parse_skill_markdown
+from .parser import build_skill_folder_archive, extract_skill_from_upload, parse_skill_markdown
 from .repository import (
     delete_skill_asset,
-    ensure_shared_skills_for_user,
     find_shared_asset,
     list_skill_assets,
     materialize_user_skill,
@@ -26,6 +27,12 @@ def _skill_row_payload(row: UserSkill) -> dict:
     payload = {
         "id": row.id,
         "skill_id": row.skill_id,
+        "owner_id": row.source_asset.owner_id if row.source_asset_id and row.source_asset else None,
+        "owner": (
+            (row.source_asset.owner.get_full_name().strip() or row.source_asset.owner.username)
+            if row.source_asset_id and row.source_asset and row.source_asset.owner_id
+            else ""
+        ),
         "visibility": (
             row.source_asset.visibility
             if row.source_asset_id and row.source_asset
@@ -45,7 +52,7 @@ def _skill_row_payload(row: UserSkill) -> dict:
     return payload
 
 
-def _asset_row_payload(row: SkillAsset) -> dict:
+def _asset_row_payload(row: SkillAsset, user=None) -> dict:
     return {
         "id": row.id,
         "skill_id": row.skill_id,
@@ -66,6 +73,13 @@ def _asset_row_payload(row: SkillAsset) -> dict:
         ),
         "storage": "cos" if row.cos_bucket else "local",
         "uploader": getattr(row.uploader, "username", "") or "",
+        "is_uploader": bool(user and row.uploader_id == user.id),
+        "owner_id": row.owner_id,
+        "owner": (
+            (row.owner.get_full_name().strip() or row.owner.username)
+            if row.owner_id
+            else ""
+        ),
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
@@ -75,6 +89,16 @@ def _read_upload(request) -> tuple[str, bytes]:
     if request.FILES.get("file"):
         upload = request.FILES["file"]
         return upload.name, upload.read()
+    folder_uploads = request.FILES.getlist("files")
+    if folder_uploads:
+        paths = request.data.getlist("paths")
+        if paths and len(paths) != len(folder_uploads):
+            raise ValueError("技能文件夹路径信息不完整,请重新选择文件夹")
+        folder_files = [
+            (str(paths[index] if paths else upload.name), upload.read())
+            for index, upload in enumerate(folder_uploads)
+        ]
+        return build_skill_folder_archive(folder_files)
     content = str(request.data.get("content") or "").strip()
     if not content:
         raise ValueError("请上传文件或提供 content")
@@ -87,8 +111,6 @@ def _read_upload(request) -> tuple[str, bytes]:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def skill_list(request):
-    # 共享仓库自动同步到当前用户，避免别人账号打开对话空 Skill
-    ensure_shared_skills_for_user(request.user)
     rows = list_user_skills(request.user)
     return Response({"count": len(rows), "results": [_skill_row_payload(r) for r in rows]})
 
@@ -96,12 +118,69 @@ def skill_list(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def asset_list(request):
-    rows = list_skill_assets(shared=True)
+    rows = list_skill_assets(user=request.user, shared=True)
     return Response({
         "count": len(rows),
-        "results": [_asset_row_payload(r) for r in rows],
+        "results": [_asset_row_payload(r, request.user) for r in rows],
         "cos_enabled": cos_enabled(),
         "shared": True,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def skill_analytics(request):
+    return Response(build_skill_analytics(request.user))
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def asset_owner_update(request, asset_id: int):
+    can_manage, _, scoped_user_ids = management_scope(request.user)
+    if not can_manage:
+        return Response({"ok": False, "error": "仅企业管理员可调整技能责任人"}, status=403)
+
+    assets = SkillAsset.objects.select_related("owner", "uploader")
+    if scoped_user_ids is not None:
+        assets = assets.filter(uploader_id__in=scoped_user_ids)
+    asset = get_object_or_404(assets, id=asset_id)
+
+    owner_id = request.data.get("owner_id")
+    if owner_id in (None, ""):
+        owner = None
+    else:
+        owners = get_user_model().objects.filter(is_active=True)
+        if scoped_user_ids is not None:
+            owners = owners.filter(id__in=scoped_user_ids)
+        owner = get_object_or_404(owners, id=owner_id)
+    asset.owner = owner
+    asset.save(update_fields=["owner", "updated_at"])
+    return Response({"ok": True, "asset": _asset_row_payload(asset, request.user)})
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def asset_visibility_update(request, asset_id: int):
+    asset = get_object_or_404(
+        SkillAsset.objects.select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    if asset.uploader_id != request.user.id and not (request.user.is_staff or request.user.is_superuser):
+        return Response({"ok": False, "error": "仅上传者可发布或取消共享"}, status=403)
+
+    visibility = str(request.data.get("visibility") or "")
+    if visibility not in SkillAsset.Visibility.values:
+        return Response({"ok": False, "error": "技能可见范围无效"}, status=400)
+
+    revoked_count = 0
+    if visibility == SkillAsset.Visibility.PRIVATE:
+        revoked_count, _ = UserSkill.objects.filter(source_asset=asset).exclude(user_id=asset.uploader_id).delete()
+    asset.visibility = visibility
+    asset.save(update_fields=["visibility", "updated_at"])
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(asset, request.user),
+        "revoked_count": revoked_count,
     })
 
 
@@ -111,18 +190,17 @@ def asset_upload(request):
     """上传到 COS Skill 仓库(路径与 media 分离);默认不自动加入个人 Skill。"""
     try:
         filename, data = _read_upload(request)
+        adopt = bool(request.data.get("adopt", False))
+        asset, personal = save_skill_asset_from_bytes(
+            request.user, filename, data, adopt=adopt,
+        )
     except ValueError as exc:
         return Response({"ok": False, "error": str(exc)}, status=400)
-
-    adopt = bool(request.data.get("adopt", False))
-    asset, personal = save_skill_asset_from_bytes(
-        request.user, filename, data, adopt=adopt,
-    )
 
     if asset:
         body = {
             "ok": True,
-            "asset": _asset_row_payload(asset),
+            "asset": _asset_row_payload(asset, request.user),
             "cos_enabled": True,
             "adopted": bool(personal),
         }
@@ -154,7 +232,7 @@ def asset_adopt(request, skill_id: str):
     return Response({
         "ok": True,
         "personal": _skill_row_payload(personal),
-        "asset": _asset_row_payload(asset),
+        "asset": _asset_row_payload(asset, request.user),
     })
 
 
@@ -206,7 +284,7 @@ def skill_upload(request):
         return Response({
             "ok": True,
             "created": True,
-            **_asset_row_payload(asset),
+            **_asset_row_payload(asset, request.user),
             "adopted": bool(personal),
             "personal": _skill_row_payload(personal) if personal else None,
         }, status=status.HTTP_201_CREATED)
@@ -236,6 +314,7 @@ def skill_invoke(request, skill_id: str):
         history=request.data.get("history") or [],
         user=request.user,
         skill_ids=[row.skill_id],
+        usage_source="direct",
     )
     result["skills"] = skills_payload([row])
     code = 200 if result.get("ok") else 400

@@ -1,5 +1,5 @@
 import { Typography } from "antd";
-import { BookOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { DeploymentUnitOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
 import UserSkills from "../components/UserSkills";
 
 export default function SkillsPage() {
@@ -7,17 +7,17 @@ export default function SkillsPage() {
     <div className="skills-page">
       <header className="skills-page-head page-hero-head">
         <div className="page-hero-kicker">
-          <BookOutlined />
-          知识 · 技能库
+          <SafetyCertificateOutlined />
+          Skill governance
         </div>
         <Typography.Title level={2} className="page-hero-title">
-          团队技能中心
+          技能治理中心
         </Typography.Title>
         <Typography.Paragraph type="secondary" className="page-hero-desc">
-          分类沉淀团队能力，统一管理共享技能与个人启用状态。启用后可在对话 Agent 中通过 <code>@skill-id</code> 直接调用。
+          用责任人、共用范围与真实调用证据管理每一项团队能力，让管理者看清技能是否被采用、由谁维护，以及最近由谁在何时使用。
         </Typography.Paragraph>
         <div className="skills-page-head-mark" aria-hidden="true">
-          <ThunderboltOutlined />
+          <DeploymentUnitOutlined />
         </div>
       </header>
       <div className="skills-page-body">
