@@ -13,7 +13,7 @@ import {
   type WeComBindingStatus,
   type AdminUserRow,
 } from "../../api/client";
-import { getWeComUsers, type WeComMember } from "../task-console/mockWeCom";
+import { getManagedWeComUsers, type ManagedWeComMember } from "../task-console/mockWeCom";
 
 const statusColors: Record<WeComBindingStatus, string> = {
   matched: "green",
@@ -42,6 +42,10 @@ const formatTime = (value?: string | null) => value
   ? new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
   : "—";
 
+const compareText = (left?: string | null, right?: string | null) =>
+  String(left || "").localeCompare(String(right || ""), "zh-CN", { numeric: true, sensitivity: "base" });
+const timeValue = (value?: string | null) => (value ? new Date(value).getTime() : 0);
+
 export default function WeComBindingManager() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<WeComBindingRow[]>([]);
@@ -52,7 +56,7 @@ export default function WeComBindingManager() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logs, setLogs] = useState<Array<{ id: number; message: string; actorName: string; created_at: string }>>([]);
   const [platformUsers, setPlatformUsers] = useState<AdminUserRow[]>([]);
-  const [weComMembers, setWeComMembers] = useState<WeComMember[]>([]);
+  const [weComMembers, setWeComMembers] = useState<ManagedWeComMember[]>([]);
   const [optionLoading, setOptionLoading] = useState(false);
   const [form] = Form.useForm();
 
@@ -61,7 +65,7 @@ export default function WeComBindingManager() {
     try {
       const [data, contacts] = await Promise.all([
         listWeComBindings({ q: q || undefined, status, page_size: 100 }),
-        getWeComUsers().catch(() => [] as WeComMember[]),
+        getManagedWeComUsers().catch(() => [] as ManagedWeComMember[]),
       ]);
       const contactMap = new Map(contacts.map((item) => [item.weComUserId, item]));
       setRows(data.results.map((row) => {
@@ -101,7 +105,7 @@ export default function WeComBindingManager() {
     setManualOpen(true);
     setOptionLoading(true);
     try {
-      const [users, members] = await Promise.all([listAdminUsers(), getWeComUsers()]);
+      const [users, members] = await Promise.all([listAdminUsers(), getManagedWeComUsers()]);
       setPlatformUsers(users.results.filter((item) => item.is_active));
       setWeComMembers(members.filter((item) => item.available));
     } catch (error: any) {
@@ -162,6 +166,7 @@ export default function WeComBindingManager() {
         rowKey="id"
         loading={loading}
         dataSource={rows}
+        showSorterTooltip={{ title: "点击切换升序或降序" }}
         scroll={{ x: 1180 }}
         pagination={{
           defaultPageSize: 20,
@@ -174,6 +179,7 @@ export default function WeComBindingManager() {
           {
             title: "平台用户",
             width: 190,
+            sorter: (left, right) => compareText(left.platformUser, right.platformUser),
             render: (_: unknown, row) => (
               <div className="account-member-cell">
                 <Avatar>{row.platformUser.slice(0, 1).toUpperCase()}</Avatar>
@@ -188,11 +194,13 @@ export default function WeComBindingManager() {
             title: "手机号",
             dataIndex: "phoneMasked",
             width: 130,
+            sorter: (left, right) => compareText(left.phoneMasked, right.phoneMasked),
             render: (value: string) => value || <span className="account-muted">未填写</span>,
           },
           {
             title: "企业微信成员",
             width: 250,
+            sorter: (left, right) => compareText(left.weComMember, right.weComMember),
             render: (_: unknown, row) => row.weComUserId ? (
               <div className="wecom-binding-member">
                 <Avatar src={row.weComAvatar || undefined} icon={<UserOutlined />}>
@@ -211,10 +219,22 @@ export default function WeComBindingManager() {
             title: "绑定状态",
             dataIndex: "statusLabel",
             width: 120,
+            sorter: (left, right) => compareText(left.statusLabel, right.statusLabel),
             render: (value: string, row) => <Tag color={statusColors[row.status]}>{value}</Tag>,
           },
-          { title: "匹配来源", dataIndex: "sourceLabel", width: 110 },
-          { title: "最后验证", dataIndex: "verifiedAt", width: 140, render: formatTime },
+          {
+            title: "匹配来源",
+            dataIndex: "sourceLabel",
+            width: 110,
+            sorter: (left, right) => compareText(left.sourceLabel, right.sourceLabel),
+          },
+          {
+            title: "最后验证",
+            dataIndex: "verifiedAt",
+            width: 140,
+            sorter: (left, right) => timeValue(left.verifiedAt) - timeValue(right.verifiedAt),
+            render: formatTime,
+          },
           {
             title: "失败原因",
             dataIndex: "failureReason",

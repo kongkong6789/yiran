@@ -17,7 +17,7 @@ import {
   ShopOutlined,
   MoonOutlined,
   SunOutlined,
-  CheckSquareOutlined,
+  MessageOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -36,10 +36,10 @@ type NavItem = { key: string; icon: ReactNode; label: string };
 
 /** 日常高频：先做事 */
 const WORK_NAV: NavItem[] = [
-  { key: "/home", icon: <HomeOutlined />, label: "首页" },
-  { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
-  { key: "/console", icon: <FlagOutlined />, label: "办流程" },
-  { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
+  { key: "/home", icon: <HomeOutlined />, label: "总览" },
+  { key: "/agent", icon: <MessageOutlined />, label: "对话" },
+  { key: "/collab", icon: <TeamOutlined />, label: "协作" },
+  { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
 ];
 
 /** 沉淀与复用 */
@@ -72,7 +72,7 @@ const ADMIN_NAV: NavItem[] = [
 
 const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
 
-const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/ontology", "/connectors", "/commerce/loops"]);
+const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/work", "/ontology", "/connectors", "/commerce/loops"]);
 
 export default function AppLayout() {
   const nav = useNavigate();

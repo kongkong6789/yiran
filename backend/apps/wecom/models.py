@@ -20,7 +20,11 @@ class WeComCliConfig(models.Model):
         "core.Organization", related_name="wecom_cli_config", on_delete=models.CASCADE
     )
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, related_name="wecom_cli_configs", on_delete=models.CASCADE
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        related_name="wecom_cli_configs",
+        on_delete=models.SET_NULL,
     )
     bot_id = models.CharField(max_length=128, blank=True, default="")
     bot_secret_encrypted = models.TextField(blank=True, default="")

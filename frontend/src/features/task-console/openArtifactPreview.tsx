@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { FileTextOutlined } from "@ant-design/icons";
 import { api } from "../../api/client";
 import TaskArtifactPreview from "./TaskArtifactPreview";
 import type { ArtifactPreviewMeta } from "./artifactPreview";
@@ -11,6 +12,7 @@ interface ArtifactPreviewModal {
     closable?: boolean;
     maskClosable?: boolean;
     footer?: null;
+    icon?: ReactNode;
     className?: string;
     content?: ReactNode;
   }) => unknown;
@@ -27,12 +29,21 @@ export async function openArtifactPreview(
     const response = await api.get(url, { responseType: "text" });
     const content = typeof response.data === "string" ? response.data : JSON.stringify(response.data, null, 2);
     modal.info({
-      title: name,
-      width: 860,
+      title: (
+        <div className="task-artifact-preview-title">
+          <span className="task-artifact-preview-title-icon"><FileTextOutlined /></span>
+          <span className="task-artifact-preview-title-copy">
+            <strong>{name}</strong>
+            <small>{[meta.format, meta.filename].filter(Boolean).join(" · ") || "任务产物预览"}</small>
+          </span>
+        </div>
+      ),
+      width: 760,
       centered: true,
       closable: true,
       maskClosable: true,
       footer: null,
+      icon: null,
       className: "task-artifact-preview-modal",
       content: <TaskArtifactPreview content={content} meta={{ ...meta, name }} />,
     });

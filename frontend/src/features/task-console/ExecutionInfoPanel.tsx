@@ -15,6 +15,7 @@ import {
 interface Props {
   fields: ExecutionField[];
   onChange: (fields: ExecutionField[]) => void;
+  embedded?: boolean;
 }
 
 const STATUS_LABELS: Record<ExecutionFieldStatus, string> = {
@@ -24,7 +25,7 @@ const STATUS_LABELS: Record<ExecutionFieldStatus, string> = {
   missing: "必填缺失",
 };
 
-export default function ExecutionInfoPanel({ fields, onChange }: Props) {
+export default function ExecutionInfoPanel({ fields, onChange, embedded = false }: Props) {
   const pendingCount = useMemo(() => fields.filter(isExecutionFieldPending).length, [fields]);
   const fieldKeys = useMemo(() => fields.map((field) => field.key).join("|"), [fields]);
   const contentId = useId();
@@ -76,7 +77,7 @@ export default function ExecutionInfoPanel({ fields, onChange }: Props) {
   };
 
   return (
-    <section className="task-step-section task-execution-info">
+    <section className={`task-execution-info${embedded ? " is-embedded" : " task-step-section"}`}>
       <button
         type="button"
         className="task-execution-info-toggle"
@@ -85,8 +86,8 @@ export default function ExecutionInfoPanel({ fields, onChange }: Props) {
         onClick={() => setExpanded((value) => !value)}
       >
         <TaskStepHeader
-          step={3}
-          title="确认执行信息"
+          step={embedded ? undefined : 3}
+          title={embedded ? "AI 识别的任务配置" : "确认执行信息"}
           description={expanded
             ? "AI 已根据任务指令识别以下信息，只需确认不确定的内容。"
             : summary}

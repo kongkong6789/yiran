@@ -289,6 +289,9 @@ export default function OrganizationManager({
             render: (_: unknown, row) => organization?.canManage && row.role !== "owner"
               ? (
                 <Select
+                  className="organization-role-select"
+                  popupClassName="organization-role-dropdown"
+                  popupMatchSelectWidth={160}
                   value={row.role}
                   style={{ width: 140 }}
                   options={[

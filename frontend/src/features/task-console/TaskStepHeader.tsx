@@ -3,7 +3,7 @@ import { Tooltip, Typography } from "antd";
 import type { ReactNode } from "react";
 
 interface Props {
-  step: number;
+  step?: number;
   title: string;
   description?: string;
   tooltip?: string;
@@ -14,7 +14,7 @@ export default function TaskStepHeader({ step, title, description, tooltip, extr
   return (
     <div className="task-step-header">
       <div className="task-step-header-main">
-        <span className="task-step-index">{step}</span>
+        {step !== undefined && <span className="task-step-index">{step}</span>}
         <div>
           <div className="task-step-title-row">
             <Typography.Text strong className="task-step-title">{title}</Typography.Text>

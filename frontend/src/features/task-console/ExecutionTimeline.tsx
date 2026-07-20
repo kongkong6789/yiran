@@ -7,7 +7,7 @@ import {
 export type ExecutionState = "waiting" | "running" | "completed" | "failed" | "skipped";
 
 export interface ExecutionStep {
-  key: string;
+  key?: string;
   title: string;
   status: ExecutionState;
   time?: string;

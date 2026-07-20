@@ -1,6 +1,5 @@
-import { Input, Tag, Typography } from "antd";
-import { BulbOutlined } from "@ant-design/icons";
-import TaskStepHeader from "./TaskStepHeader";
+import { Input, Typography } from "antd";
+import { BulbOutlined, CheckCircleFilled } from "@ant-design/icons";
 
 const { TextArea } = Input;
 
@@ -11,28 +10,48 @@ interface Props {
 }
 
 const EXAMPLE = "帮我生成昨天的运营日报，并发送给运营负责人。";
+const QUICK_EXAMPLES = ["运营日报", "销售周报", "库存分析", "竞品监控"];
 
 export default function TaskCommandSection({ value, onChange, recognized }: Props) {
   return (
-    <section className="task-step-section">
-      <TaskStepHeader
-        step={1}
-        title="输入任务指令"
-        description="用一句话描述你希望系统完成的工作。"
-        extra={recognized ? <Tag color="success" className="task-step-badge">AI 已识别</Tag> : undefined}
-      />
-      <div className="task-step-body">
+    <section className="task-editor-section task-description-section">
+      <div className="task-editor-section-heading">
+        <div>
+          <Typography.Title level={5}>任务描述</Typography.Title>
+          <Typography.Text type="secondary">直接告诉 AI 你希望完成的工作</Typography.Text>
+        </div>
+      </div>
+      <div className="task-editor-section-body">
+        <label className="task-editor-field-label" htmlFor="task-command">你想让 AI 做什么？</label>
         <TextArea
-          rows={3}
+          id="task-command"
+          autoSize={{ minRows: 4, maxRows: 8 }}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={EXAMPLE}
           className="task-command-input"
         />
-        <div className="task-command-example">
-          <BulbOutlined />
-          <Typography.Text type="secondary">示例：{EXAMPLE}</Typography.Text>
+        <div className="task-command-examples" aria-label="常用任务示例">
+          <span>常用示例</span>
+          {QUICK_EXAMPLES.map((example) => (
+            <button
+              type="button"
+              key={example}
+              onClick={() => onChange(`帮我生成${example}`)}
+            >
+              {example}
+            </button>
+          ))}
         </div>
+        {recognized && (
+          <div className="task-understanding">
+            <span className="task-understanding-icon"><BulbOutlined /></span>
+            <div>
+              <div><strong>AI 理解结果</strong><span><CheckCircleFilled /> 已识别</span></div>
+              <p>AI 将根据“{value.trim()}”匹配业务流程、读取所需数据，并按确认后的配置生成结果。</p>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

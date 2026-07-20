@@ -111,11 +111,15 @@ class WeComContactSerializer(serializers.Serializer):
     name = serializers.CharField()
     department = serializers.CharField(allow_blank=True)
     departmentIds = serializers.ListField(child=serializers.IntegerField())
-    weComUserId = serializers.CharField()
     position = serializers.CharField(allow_blank=True)
     avatar = serializers.URLField(allow_blank=True)
     available = serializers.BooleanField()
     source = serializers.ChoiceField(choices=["wecom"])
+
+
+class WeComManagedContactSerializer(WeComContactSerializer):
+    """Manage-only contact shape used by account binding tools."""
+    weComUserId = serializers.CharField()
 
 
 class UserWeComBindingSerializer(serializers.ModelSerializer):
@@ -299,6 +303,7 @@ class WeComGroupWebhookSerializer(serializers.ModelSerializer):
 
 class TaskNotificationSerializer(serializers.Serializer):
     mode = serializers.ChoiceField(choices=["person", "group"])
+    recipientContactIds = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=1000)
     recipientUserIds = serializers.ListField(child=serializers.CharField(max_length=128), required=False, max_length=1000)
     groupWebhookId = serializers.IntegerField(required=False, min_value=1)
     task = serializers.CharField(max_length=2000)
@@ -310,8 +315,8 @@ class TaskNotificationSerializer(serializers.Serializer):
     idempotencyKey = serializers.CharField(max_length=200, required=False, allow_blank=True)
 
     def validate(self, attrs):
-        if attrs["mode"] == "person" and not attrs.get("recipientUserIds"):
-            raise serializers.ValidationError({"recipientUserIds": "请选择至少一位企业微信成员。"})
+        if attrs["mode"] == "person" and not (attrs.get("recipientContactIds") or attrs.get("recipientUserIds")):
+            raise serializers.ValidationError({"recipientContactIds": "请选择至少一位企业微信成员。"})
         if attrs["mode"] == "group" and not attrs.get("groupWebhookId"):
             raise serializers.ValidationError({"groupWebhookId": "请选择群机器人 Webhook。"})
         return attrs
@@ -361,6 +366,18 @@ class WorkTodoCreateSerializer(serializers.Serializer):
 class WorkTodoStatusSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     status = serializers.ChoiceField(choices=["pending", "completed"])
+
+
+class WorkTodoUpdateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=200, allow_blank=False, required=False)
+    description = serializers.CharField(max_length=1000, allow_blank=True, required=False)
+    dueAt = serializers.DateTimeField(required=False, allow_null=True)
+    priority = serializers.ChoiceField(choices=["normal", "high", "urgent"], required=False)
+    remindTypes = serializers.ListField(
+        child=serializers.ChoiceField(choices=[0, 1, 3, 5, 6, 7, 8, 9]),
+        required=False,
+        max_length=10,
+    )
 
 
 class WeComNotificationRecordSerializer(serializers.ModelSerializer):

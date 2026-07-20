@@ -45,10 +45,10 @@ export default function TaskResultPanel({ result }: Props) {
   };
 
   const shareResult = async () => {
-    const contacts = await getWeComUsers(); let recipients: string[] = [];
-    modal.confirm({ title: "发送给其他人", content: <Select mode="multiple" style={{ width: "100%" }} placeholder="选择企业微信成员" options={contacts.map((item) => ({ label: `${item.name} · ${item.department}`, value: item.weComUserId }))} onChange={(value) => { recipients = value; }} />, okText: "发送", onOk: async () => {
+    const contacts = await getWeComUsers(); let recipients: number[] = [];
+    modal.confirm({ title: "发送给其他人", content: <Select mode="multiple" style={{ width: "100%" }} placeholder="选择企业微信成员" options={contacts.map((item) => ({ label: `${item.name} · ${item.department}`, value: item.contactId }))} onChange={(value) => { recipients = value; }} />, okText: "发送", onOk: async () => {
       if (!recipients.length) throw new Error("请选择接收成员");
-      await api.post("/wecom/notifications/", { mode: "person", recipientUserIds: recipients, task: `${displayed.title}\n${displayed.description}`, agentName: displayed.executor?.agentName, targetLabel: "其他接收人", taskTraceId: traceId, idempotencyKey: `${traceId}:share:${recipients.sort().join(",")}` });
+      await api.post("/wecom/notifications/", { mode: "person", recipientContactIds: recipients, task: `${displayed.title}\n${displayed.description}`, agentName: displayed.executor?.agentName, targetLabel: "其他接收人", taskTraceId: traceId, idempotencyKey: `${traceId}:share:${recipients.sort((a, b) => a - b).join(",")}` });
       message.success("结果通知已被企业微信受理");
     } });
   };
