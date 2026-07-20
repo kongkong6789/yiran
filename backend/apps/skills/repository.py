@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils.text import slugify
 
 from .cos_storage import (
@@ -77,13 +78,18 @@ def _asset_payload(row: SkillAsset) -> dict:
 
 
 def list_skill_assets(user=None, *, shared: bool = True) -> list[SkillAsset]:
-    """共享技能仓库：全员可见；按 skill_id 去重，取最新一条。"""
+    """列出共享技能以及当前用户自己的私有技能，并按 skill_id 去重。"""
     if shared or user is None:
+        visibility_filter = Q(visibility=SkillAsset.Visibility.SHARED)
+        if user is not None:
+            visibility_filter |= Q(uploader=user)
         rows = list(
-            SkillAsset.objects.filter(visibility=SkillAsset.Visibility.SHARED)
-            .select_related("uploader")
+            SkillAsset.objects.filter(visibility_filter)
+            .select_related("uploader", "owner")
             .order_by("-updated_at")
         )
+        if user is not None:
+            rows.sort(key=lambda row: (row.uploader_id == user.id, row.updated_at), reverse=True)
         seen: set[str] = set()
         unique: list[SkillAsset] = []
         for row in rows:
@@ -92,7 +98,7 @@ def list_skill_assets(user=None, *, shared: bool = True) -> list[SkillAsset]:
             seen.add(row.skill_id)
             unique.append(row)
         return unique
-    return list(SkillAsset.objects.filter(uploader=user).order_by("-updated_at"))
+    return list(SkillAsset.objects.filter(uploader=user).select_related("uploader", "owner").order_by("-updated_at"))
 
 
 def find_shared_asset(skill_id: str) -> SkillAsset | None:
@@ -105,25 +111,6 @@ def find_shared_asset(skill_id: str) -> SkillAsset | None:
         .order_by("-updated_at")
         .first()
     )
-
-
-def ensure_shared_skills_for_user(user) -> list[UserSkill]:
-    """把共享仓库里的 Skill 自动启用到当前用户，其他人打开对话即可看到。"""
-    if user is None or not getattr(user, "is_authenticated", False):
-        return []
-    owned = {
-        row.skill_id
-        for row in UserSkill.objects.filter(user=user).only("skill_id")
-    }
-    created: list[UserSkill] = []
-    for asset in list_skill_assets(shared=True):
-        if asset.skill_id in owned:
-            continue
-        try:
-            created.append(materialize_user_skill(user, asset))
-        except Exception:
-            continue
-    return created
 
 
 def _skill_md_from_manifest(asset: SkillAsset) -> tuple[str, bytes]:
@@ -181,7 +168,7 @@ def save_skill_asset_from_bytes(
     data: bytes,
     *,
     adopt: bool = False,
-    visibility: str = SkillAsset.Visibility.SHARED,
+    visibility: str = SkillAsset.Visibility.PRIVATE,
     skill_id_override: str | None = None,
 ) -> tuple[SkillAsset, UserSkill | None]:
     extracted = extract_skill_from_upload(filename, data)
@@ -230,7 +217,7 @@ def save_skill_asset_from_bytes(
             skill_md_key = single_name
             package_kind = "single"
 
-        asset, _ = SkillAsset.objects.update_or_create(
+        asset, created = SkillAsset.objects.update_or_create(
             uploader=user,
             skill_id=skill_id,
             defaults={
@@ -248,13 +235,16 @@ def save_skill_asset_from_bytes(
                 "skill_md_key": skill_md_key or stored["cos_key"],
             },
         )
+        if created or asset.owner_id is None:
+            asset.owner = user
+            asset.save(update_fields=["owner"])
         personal = materialize_user_skill(user, asset) if adopt else None
         return asset, personal
 
     # 未启用 COS:写入本地工作区
     manifest, skill_md_key = _write_local_package(user.id, skill_id, package_files)
     package_kind = "package" if len(package_files) > 1 else "single"
-    asset, _ = SkillAsset.objects.update_or_create(
+    asset, created = SkillAsset.objects.update_or_create(
         uploader=user,
         skill_id=skill_id,
         defaults={
@@ -272,6 +262,9 @@ def save_skill_asset_from_bytes(
             "skill_md_key": skill_md_key or "SKILL.md",
         },
     )
+    if created or asset.owner_id is None:
+        asset.owner = user
+        asset.save(update_fields=["owner"])
     personal = materialize_user_skill(user, asset) if adopt else None
     return asset, personal
 
@@ -288,4 +281,5 @@ def delete_skill_asset(user, skill_id: str) -> None:
     if local_root.exists():
         import shutil
         shutil.rmtree(local_root, ignore_errors=True)
+    UserSkill.objects.filter(source_asset=asset).delete()
     asset.delete()

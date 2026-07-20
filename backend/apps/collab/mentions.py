@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 
 from apps.council import llm
 from apps.core.agent_chat import _selected_knowledge_context
+from apps.skills.analytics import record_skill_usage
 from apps.skills.service import build_skill_system_block, resolve_skills
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -288,6 +289,7 @@ def reply_ai_mention(
         try:
             active_skills = resolve_skills(trigger_content, llm_user)
             if active_skills:
+                record_skill_usage(active_skills, llm_user, source="collab")
                 history_for_skill = [
                     {
                         "role": "user" if (m.get("msg_type") or "user") == "user" else "assistant",
