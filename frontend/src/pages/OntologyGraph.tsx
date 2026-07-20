@@ -47,6 +47,10 @@ const ageGraphName = (workspace?: string) =>
   workspace ? `${workspace}_chunk_entity_relation` : "";
 
 const TOP_N_DEFAULT = 90;
+const FULL_NODE_LIMIT = 10000;
+const FULL_EDGE_LIMIT = 20000;
+const SAMPLE_NODE_LIMIT = 1000;
+const SAMPLE_EDGE_LIMIT = 1500;
 const OVERVIEW_ZOOM_PADDING = 130;
 const LOOPS_PER_BATCH = 5;
 const NODES_PER_BATCH = 100;
@@ -137,9 +141,10 @@ export default function OntologyGraph() {
   const load = useCallback((refresh = false, fullFetch = false, quiet = false) => {
     if (!quiet) setLoading(true);
     const limits = fullFetch
-      ? { limit: 2000, edge_limit: 3000 }
-      : { limit: 1000, edge_limit: 1500 };
-    return getAgeLiveGraph({ ...limits, ...(refresh ? { refresh: 1 as const } : {}) })
+      ? { limit: FULL_NODE_LIMIT, edge_limit: FULL_EDGE_LIMIT }
+      : { limit: SAMPLE_NODE_LIMIT, edge_limit: SAMPLE_EDGE_LIMIT };
+    const focusAgeId = pendingFocusRef.current ?? undefined;
+    return getAgeLiveGraph({ ...limits, ...(focusAgeId ? { focus_age_id: focusAgeId } : {}), ...(refresh ? { refresh: 1 as const } : {}) })
       .then(setGraph)
       .finally(() => { if (!quiet) setLoading(false); });
   }, []);
@@ -290,6 +295,14 @@ export default function OntologyGraph() {
       }
       const keepIds = new Set(objects.map((o) => o.id));
       relations = relations.filter((r) => keepIds.has(r.source) && keepIds.has(r.target));
+      if (!selected) {
+        const connectedIds = new Set<number>();
+        relations.forEach((r) => {
+          connectedIds.add(r.source);
+          connectedIds.add(r.target);
+        });
+        objects = objects.filter((o) => connectedIds.has(o.id));
+      }
     }
     return { objects, relations, loopCount: 0 };
   }, [graph, baseScope, displayMode, selected, batchIndex, loopCandidates, connectedNodeBatches]);

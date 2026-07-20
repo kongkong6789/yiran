@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     "apps.mcp",
     "apps.skills",
     "apps.collab",
+    "apps.knowledge",
     "apps.commerce",
     "apps.wecom",
 ]
@@ -90,21 +91,52 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# 圆桌/聊天 WebSocket（单进程开发用内存层；多进程部署请换 Redis）
+# Django 主库:配置 POSTGRES_HOST/POSTGRES_DB 时使用 PostgreSQL;否则回退 SQLite。
+if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "HOST": os.getenv("POSTGRES_HOST"),
+            "PORT": os.getenv("POSTGRES_PORT", "5432"),
+            "NAME": os.getenv("POSTGRES_DB"),
+            "USER": os.getenv("POSTGRES_USER", "postgres"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
+        }
+    }
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+# ??/?? WebSocket?????????????????? Redis?
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
-    },
+    }
 }
 
-# 本地 SQLite 仅作为未配置 PostgreSQL 时的显式开发回退；下方会按环境变量切换 ORM 主库。
+# Django main database uses SQLite by default; the knowledge app uses PostgreSQL through a router.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
     }
 }
+if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
+    DATABASES["knowledge"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "HOST": os.getenv("POSTGRES_HOST"),
+        "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        "NAME": os.getenv("POSTGRES_DB"),
+        "USER": os.getenv("POSTGRES_USER", "postgres"),
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
+    }
+else:
+    DATABASES["knowledge"] = DATABASES["default"]
 
+DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 # DuckDB 数据底座文件路径
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(BASE_DIR / "data" / "datalake.duckdb"))
 
@@ -218,6 +250,20 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 圆桌发言/上下文压缩用的"快模型";最终方案仍用 LLM_MODEL(更强)。
 LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", LLM_MODEL)
+# Traditional RAG embedding. Default format matches the local /v1/embeddings service:
+# {"inputs": [{"text": "..."}], "normalize": true, "pooling": "mean"}
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "local-embedding")
+EMBEDDING_API_FORMAT = os.getenv("EMBEDDING_API_FORMAT", "local-inputs")
+EMBEDDING_NORMALIZE = os.getenv("EMBEDDING_NORMALIZE", "true").lower() == "true"
+EMBEDDING_POOLING = os.getenv("EMBEDDING_POOLING", "mean")
+EMBEDDING_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
+EMBEDDING_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_RETRY_ATTEMPTS", "5"))
+EMBEDDING_OPTIONAL_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_OPTIONAL_TIMEOUT_SECONDS", "90"))
+EMBEDDING_OPTIONAL_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_OPTIONAL_RETRY_ATTEMPTS", "1"))
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "4"))
+EMBEDDING_MAX_TEXT_CHARS = int(os.getenv("EMBEDDING_MAX_TEXT_CHARS", "300"))
 
 # 图片 API(文生图/图生图),与对话 Key 可分离
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")

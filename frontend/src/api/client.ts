@@ -326,6 +326,134 @@ export const uploadUserAvatar = (file: File) => {
     .then((r) => r.data);
 };
 
+// ================= Knowledge Center =================
+export type KnowledgeBaseStatus = "draft" | "processing" | "ready" | "review" | "archived";
+export type KnowledgeFileStatus = "uploaded" | "processing" | "ready" | "review" | "failed" | "archived";
+
+export interface KnowledgeBaseItem {
+  id: number;
+  template: number | null;
+  owner_username?: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  tags: string[];
+  visibility: "private" | "team" | "company";
+  retrieval_mode: "naive-rag" | "graph-rag" | "hybrid-rag";
+  review_policy: string;
+  status: KnowledgeBaseStatus;
+  config: Record<string, unknown>;
+  file_count: number;
+  app_count: number;
+  recall_count: number;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeFileItem {
+  id: number;
+  knowledge_base: number;
+  uploaded_by_username?: string;
+  original_filename: string;
+  file_type: string;
+  segment_mode: string;
+  char_count: number;
+  chunk_count: number;
+  recall_count: number;
+  status: KnowledgeFileStatus;
+  storage_path: string;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  uploaded_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeIngestJobItem {
+  id: number;
+  file: number;
+  status: "pending" | "parsing" | "chunking" | "embedding" | "graphing" | "ready" | "failed";
+  stage: string;
+  progress: number;
+  error: Record<string, unknown> | null;
+  metrics: Record<string, unknown>;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface KnowledgeChunkItem {
+  id: number;
+  file: number;
+  chunk_index: number;
+  chunk_ref: string;
+  text_preview: string;
+  embedding_ref: string;
+  graph_entity_ref: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export const listKnowledgeBases = (params?: { q?: string; category?: string; visibility?: string }) =>
+  api.get<KnowledgeBaseItem[] | { count?: number; results: KnowledgeBaseItem[] }>("/knowledge/bases/", { params })
+    .then((r) => Array.isArray(r.data) ? r.data : r.data.results);
+
+export const createKnowledgeBase = (body: Partial<KnowledgeBaseItem>) =>
+  api.post<KnowledgeBaseItem>("/knowledge/bases/", body).then((r) => r.data);
+
+export const updateKnowledgeBase = (id: number, body: Partial<KnowledgeBaseItem>) =>
+  api.patch<KnowledgeBaseItem>(`/knowledge/bases/${id}/`, body).then((r) => r.data);
+
+export const deleteKnowledgeBase = (id: number) =>
+  api.delete(`/knowledge/bases/${id}/`);
+
+export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: string; file_type?: string }) =>
+  api.get<{ knowledge_base: KnowledgeBaseItem; count: number; results: KnowledgeFileItem[] }>(
+    `/knowledge/bases/${knowledgeBaseId}/files/`,
+    { params },
+  ).then((r) => r.data);
+
+export const uploadKnowledgeFile = (
+  knowledgeBaseId: number,
+  file: File,
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (body?.segment_mode) form.append("segment_mode", body.segment_mode);
+  if (body?.chunk_size) form.append("chunk_size", String(body.chunk_size));
+  if (body?.chunk_overlap !== undefined) form.append("chunk_overlap", String(body.chunk_overlap));
+  return api.post<{
+    file: KnowledgeFileItem;
+    job: KnowledgeIngestJobItem;
+    chunk_count: number;
+    job_id: number;
+    chunks_preview: KnowledgeChunkItem[];
+  }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60_000,
+  }).then((r) => r.data);
+};
+
+export const getKnowledgeJob = (jobId: number) =>
+  api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
+export const getKnowledgeFileChunks = (fileId: number) =>
+  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+    .then((r) => r.data);
+
+export const deleteKnowledgeFile = (fileId: number) =>
+  api.delete(`/knowledge/files/${fileId}/`);
+
+export const deleteKnowledgeChunk = (fileId: number, chunkId: number) =>
+  api.delete<{ deleted: boolean; chunk_id: number }>(`/knowledge/files/${fileId}/chunks/${chunkId}/`)
+    .then((r) => r.data);
+
+export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic"; limit?: number }) =>
+  api.get<{ query: string; mode?: string; count: number; results: KnowledgeChunkItem[] }>("/knowledge/traditional-search/", { params })
+    .then((r) => r.data);
+
 // ================= Agent Skills =================
 export const getSkills = () =>
   api.get<{ count: number; results: UserSkillItem[] }>("/skills/").then((r) => r.data);
@@ -1065,7 +1193,7 @@ export interface OntGraph {
   source?: string;
 }
 
-export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; refresh?: 1 }) =>
+export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; focus_age_id?: number; refresh?: 1 }) =>
   api.get<OntGraph>("/ontology/graph/age-live/", { params }).then((r) => r.data);
 
 export const getGraph = (params?: { scope?: "age" | "all" }) =>
