@@ -94,6 +94,25 @@ export function isXiaoceTaskRunning(
 }
 
 
+export async function resolveXiaoceDeleteState<T extends XiaoceTaskStateLike>(
+  roomId: string,
+  loadRoom: (roomId: string) => Promise<T>,
+): Promise<{ room: T; running: boolean }> {
+  const room = await loadRoom(roomId);
+  return {
+    room,
+    running: room.active_xiaoce_run?.status === "running",
+  };
+}
+
+
+export function xiaoceDeleteContent(running: boolean): string {
+  return running
+    ? "将永久删除该任务及全部聊天记录，正在处理的任务也会停止。"
+    : "将永久删除该任务及全部聊天记录。";
+}
+
+
 export function createXiaoceRunId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
@@ -115,4 +134,17 @@ export function mergeXiaoceRunSnapshot(
   const currentTime = Date.parse(current.updated_at || "") || 0;
   const incomingTime = Date.parse(incoming.updated_at || "") || 0;
   return incomingTime >= currentTime ? incoming : current;
+}
+
+
+export function mergeXiaoceRunSnapshots(
+  incoming: XiaoceRun,
+  snapshots: Array<XiaoceRun | null | undefined>,
+): XiaoceRun {
+  let merged = incoming;
+  for (const snapshot of snapshots) {
+    if (!snapshot || snapshot.id !== incoming.id) continue;
+    merged = mergeXiaoceRunSnapshot(merged, snapshot) || merged;
+  }
+  return merged;
 }

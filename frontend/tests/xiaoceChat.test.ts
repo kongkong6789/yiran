@@ -207,6 +207,115 @@ test("active Xiaoce running detection prefers live active state", () => {
   );
 });
 
+test("inactive Xiaoce deletion waits for authoritative running status and exact copy", async () => {
+  const resolveDeleteState = (xiaoceChatHelpers as Record<string, unknown>)
+    .resolveXiaoceDeleteState as ((
+      roomId: string,
+      loadRoom: (roomId: string) => Promise<{
+        id: string;
+        active_xiaoce_run?: { status?: string } | null;
+      }>,
+    ) => Promise<{ room: { id: string }; running: boolean }>) | undefined;
+  const deleteContent = (xiaoceChatHelpers as Record<string, unknown>)
+    .xiaoceDeleteContent as ((running: boolean) => string) | undefined;
+  assert.equal(typeof resolveDeleteState, "function");
+  assert.equal(typeof deleteContent, "function");
+
+  let resolveRoom!: (room: {
+    id: string;
+    active_xiaoce_run?: { status?: string } | null;
+  }) => void;
+  const roomRequest = new Promise<{
+    id: string;
+    active_xiaoce_run?: { status?: string } | null;
+  }>((resolve) => { resolveRoom = resolve; });
+  let settled = false;
+  const statePromise = resolveDeleteState!("task-inactive", async () => roomRequest)
+    .then((state) => {
+      settled = true;
+      return state;
+    });
+
+  await Promise.resolve();
+  assert.equal(settled, false);
+  resolveRoom({ id: "task-inactive", active_xiaoce_run: { status: "running" } });
+  const state = await statePromise;
+
+  assert.equal(state.running, true);
+  assert.equal(
+    deleteContent!(state.running),
+    "将永久删除该任务及全部聊天记录，正在处理的任务也会停止。",
+  );
+});
+
+test("delayed send success cannot regress a completed live run snapshot", () => {
+  const mergeSnapshots = (xiaoceChatHelpers as Record<string, unknown>)
+    .mergeXiaoceRunSnapshots as ((incoming: Record<string, unknown>, snapshots: Record<string, unknown>[]) => Record<string, unknown>) | undefined;
+  assert.equal(typeof mergeSnapshots, "function");
+  const delayedRunning = {
+    id: "run-a",
+    status: "running",
+    updated_at: "2026-07-20T10:00:02Z",
+  };
+  const liveCompleted = {
+    ...delayedRunning,
+    status: "completed",
+    updated_at: "2026-07-20T10:00:05Z",
+  };
+
+  const merged = mergeSnapshots!(delayedRunning, [liveCompleted]);
+
+  assert.equal(merged, liveCompleted);
+  assert.deepEqual(
+    ["rooms", "cache", "ref", "active"].map(() => merged.status),
+    ["completed", "completed", "completed", "completed"],
+  );
+});
+
+test("delayed 409 snapshot cannot regress a completed live run snapshot", () => {
+  const mergeSnapshots = (xiaoceChatHelpers as Record<string, unknown>)
+    .mergeXiaoceRunSnapshots as ((incoming: Record<string, unknown>, snapshots: Record<string, unknown>[]) => Record<string, unknown>) | undefined;
+  assert.equal(typeof mergeSnapshots, "function");
+  const delayedPending = {
+    id: "run-a",
+    status: "running",
+    updated_at: "2026-07-20T10:00:03Z",
+  };
+  const liveCompleted = {
+    ...delayedPending,
+    status: "completed",
+    updated_at: "2026-07-20T10:00:06Z",
+  };
+
+  const merged = mergeSnapshots!(delayedPending, [liveCompleted]);
+
+  assert.equal(merged, liveCompleted);
+  assert.deepEqual(
+    ["rooms", "cache", "ref", "active"].map(() => merged.status),
+    ["completed", "completed", "completed", "completed"],
+  );
+});
+
+test("older running snapshots cannot replace any terminal run state", () => {
+  const mergeSnapshots = (xiaoceChatHelpers as Record<string, unknown>)
+    .mergeXiaoceRunSnapshots as ((incoming: Record<string, unknown>, snapshots: Record<string, unknown>[]) => Record<string, unknown>) | undefined;
+  assert.equal(typeof mergeSnapshots, "function");
+  const delayedRunning = {
+    id: "run-terminal",
+    status: "running",
+    updated_at: "2026-07-20T10:00:02Z",
+  };
+
+  for (const status of ["completed", "cancelled", "failed"]) {
+    const terminal = {
+      ...delayedRunning,
+      status,
+      updated_at: "2026-07-20T10:00:05Z",
+    };
+    assert.equal(mergeSnapshots!(delayedRunning, [terminal]), terminal);
+  }
+});
+
 test("process component uses server snapshots and the required collapsed label", () => {
   const source = readFileSync(
     new URL("../src/components/XiaoceProcess.tsx", import.meta.url),
@@ -243,7 +352,7 @@ test("collaboration chat wires grouped Xiaoce task actions", () => {
   assert.ok(source.includes("createXiaoceTask()"));
   assert.ok(source.includes("roomComposerCacheRef.current.delete(id)"));
   assert.ok(source.includes("roomViewCacheRef.current.delete(id)"));
-  assert.ok(source.includes("正在处理的任务也会停止"));
+  assert.ok(source.includes("xiaoceDeleteContent(running)"));
   assert.ok(source.includes("修改任务名称"));
 });
 
@@ -271,6 +380,41 @@ test("collaboration chat wires room-scoped async send and selection guards", () 
   assert.match(source, /beginRoomSelection\(activeIdRef, roomLoadSeqRef, roomId\)/);
   assert.match(selectionSource, /setStatsLoading\(false\)/);
   assert.doesNotMatch(source, /const \[sending, setSending\] = useState\(false\)/);
+});
+
+test("collaboration chat refreshes Xiaoce state before opening delete confirmation", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const deleteSource = source.slice(
+    source.indexOf("const handleDeleteRoom"),
+    source.indexOf("const handleRefreshInsight"),
+  );
+  const xiaoceBranch = deleteSource.indexOf("if (xiaoceTask) {");
+  const authoritativeFetch = deleteSource.indexOf("resolveXiaoceDeleteState(id, getCollabRoom)");
+  const confirmation = deleteSource.indexOf("Modal.confirm");
+  assert.ok(xiaoceBranch >= 0);
+  assert.ok(authoritativeFetch > xiaoceBranch);
+  assert.ok(confirmation > authoritativeFetch);
+  assert.match(deleteSource, /无法确认任务状态，请重试/);
+  assert.match(
+    deleteSource.slice(deleteSource.indexOf("catch (error: any)"), confirmation),
+    /return;/,
+  );
+  assert.match(deleteSource, /xiaoceDeleteContent\(running\)/);
+});
+
+test("send success and pending failure publish one merged run snapshot to every store", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const sendSource = source.slice(
+    source.indexOf("const sendPlainMessage"),
+    source.indexOf("const handleSend"),
+  );
+  assert.match(sendSource, /mergeXiaoceRunSnapshots/);
+  assert.match(sendSource, /mergedRun/);
+  assert.match(sendSource, /mergedPendingRun/);
+  assert.match(sendSource, /activeXiaoceRunRef\.current = mergedRun/);
+  assert.match(sendSource, /activeXiaoceRunRef\.current = mergedPendingRun/);
+  assert.doesNotMatch(sendSource, /active_xiaoce_run: pendingRun/);
+  assert.doesNotMatch(sendSource, /\? res\.room\.active_xiaoce_run/);
 });
 
 test("collaboration live hook gates every room effect by local generation", () => {

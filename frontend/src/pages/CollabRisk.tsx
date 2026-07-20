@@ -60,8 +60,11 @@ import {
   isXiaoceTaskRunning,
   isXiaoceRoom,
   mergeXiaoceRunSnapshot,
+  mergeXiaoceRunSnapshots,
   partitionXiaoceRooms,
+  resolveXiaoceDeleteState,
   setRoomPending,
+  xiaoceDeleteContent,
 } from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
 
@@ -1802,13 +1805,27 @@ export default function CollabRisk({
         return next;
       };
       const cached = roomViewCacheRef.current.get(targetRoomId);
-      const baseRun = cached?.xiaoceRun
-        || (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)
+      const currentRunSnapshots = [
+        cached?.xiaoceRun,
+        cached?.room.active_xiaoce_run,
+        roomsRef.current.find((room) => room.id === targetRoomId)?.active_xiaoce_run,
+        isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)
           ? activeXiaoceRunRef.current
-          : null);
-      const nextRun = res.xiaoce_run
-        ? mergeXiaoceRunSnapshot(baseRun, res.xiaoce_run)
-        : ("active_xiaoce_run" in res.room ? res.room.active_xiaoce_run || null : baseRun);
+          : null,
+        activeRoomRef.current?.id === targetRoomId
+          ? activeRoomRef.current.active_xiaoce_run
+          : null,
+      ];
+      let responseRun = res.xiaoce_run;
+      if (!responseRun && "active_xiaoce_run" in res.room) {
+        responseRun = res.room.active_xiaoce_run || undefined;
+      }
+      const runSeed = responseRun
+        || currentRunSnapshots.find((snapshot) => snapshot?.id === runId)
+        || null;
+      const mergedRun = runSeed
+        ? mergeXiaoceRunSnapshots(runSeed, currentRunSnapshots)
+        : null;
       if (cached) {
         roomViewCacheRef.current.set(targetRoomId, {
           ...cached,
@@ -1816,30 +1833,28 @@ export default function CollabRisk({
           room: {
             ...cached.room,
             ...res.room,
-            active_xiaoce_run: nextRun,
+            active_xiaoce_run: mergedRun,
           },
-          xiaoceRun: nextRun,
+          xiaoceRun: mergedRun,
         });
       }
       setRooms((current) => current.map((room) => (
         room.id === targetRoomId ? {
           ...room,
           ...res.room,
-          active_xiaoce_run: "active_xiaoce_run" in res.room
-            ? res.room.active_xiaoce_run
-            : (nextRun || room.active_xiaoce_run),
+          active_xiaoce_run: mergedRun,
           updated_at: res.room.updated_at || room.updated_at,
         } : room
       )));
       if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
         setMessages(mergeResponseMessages);
         scrollMessagesToBottom("auto");
-        activeXiaoceRunRef.current = nextRun;
-        setActiveXiaoceRun(nextRun);
+        activeXiaoceRunRef.current = mergedRun;
+        setActiveXiaoceRun(mergedRun);
         setActiveRoom((current) => current?.id === targetRoomId ? {
           ...current,
           ...res.room,
-          active_xiaoce_run: nextRun,
+          active_xiaoce_run: mergedRun,
         } : current);
         setMention(null);
       }
@@ -1862,22 +1877,33 @@ export default function CollabRisk({
       }
       const pendingRun = e?.response?.data?.xiaoce_run as XiaoceRun | undefined;
       if (pendingRun) {
-        setRooms((current) => current.map((room) => (
-          room.id === targetRoomId ? { ...room, active_xiaoce_run: pendingRun } : room
-        )));
         const failedCache = roomViewCacheRef.current.get(targetRoomId);
+        const mergedPendingRun = mergeXiaoceRunSnapshots(pendingRun, [
+          failedCache?.xiaoceRun,
+          failedCache?.room.active_xiaoce_run,
+          roomsRef.current.find((room) => room.id === targetRoomId)?.active_xiaoce_run,
+          isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)
+            ? activeXiaoceRunRef.current
+            : null,
+          activeRoomRef.current?.id === targetRoomId
+            ? activeRoomRef.current.active_xiaoce_run
+            : null,
+        ]);
+        setRooms((current) => current.map((room) => (
+          room.id === targetRoomId ? { ...room, active_xiaoce_run: mergedPendingRun } : room
+        )));
         if (failedCache) {
           roomViewCacheRef.current.set(targetRoomId, {
             ...failedCache,
-            room: { ...failedCache.room, active_xiaoce_run: pendingRun },
-            xiaoceRun: pendingRun,
+            room: { ...failedCache.room, active_xiaoce_run: mergedPendingRun },
+            xiaoceRun: mergedPendingRun,
           });
         }
         if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-          activeXiaoceRunRef.current = pendingRun;
-          setActiveXiaoceRun((current) => mergeXiaoceRunSnapshot(current, pendingRun));
+          activeXiaoceRunRef.current = mergedPendingRun;
+          setActiveXiaoceRun(mergedPendingRun);
           setActiveRoom((current) => current?.id === targetRoomId
-            ? { ...current, active_xiaoce_run: pendingRun }
+            ? { ...current, active_xiaoce_run: mergedPendingRun }
             : current);
         }
       }
@@ -2208,22 +2234,24 @@ export default function CollabRisk({
     });
   };
 
-  const handleDeleteRoom = (roomId?: string) => {
+  const handleDeleteRoom = async (roomId?: string) => {
     const id = roomId || activeIdRef.current;
     const listedTarget = rooms.find((room) => room.id === id) || null;
     const target = activeRoom?.id === id ? activeRoom : listedTarget;
     if (!id || !target) return;
     const xiaoceTask = isXiaoceRoom(target);
-    const running = xiaoceTask && isXiaoceTaskRunning(
-      listedTarget || target,
-      activeRoomRef.current,
-      activeXiaoceRunRef.current,
-    );
+    let running = false;
+    if (xiaoceTask) {
+      try {
+        ({ running } = await resolveXiaoceDeleteState(id, getCollabRoom));
+      } catch (error: any) {
+        message.error(error?.response?.data?.error || "无法确认任务状态，请重试");
+        return;
+      }
+    }
     const title = xiaoceTask ? "删除这个小策任务？" : "删除此会话？";
     const content = xiaoceTask
-      ? running
-        ? "将永久删除该任务及全部聊天记录，正在处理的任务也会停止。"
-        : "将永久删除该任务及全部聊天记录。"
+      ? xiaoceDeleteContent(running)
       : "将彻底删除该会话及全部聊天记录，所有成员都不可再访问。";
     Modal.confirm({
       title,
