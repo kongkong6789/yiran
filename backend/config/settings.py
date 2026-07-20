@@ -251,7 +251,7 @@ EMBEDDING_QUERY_INSTRUCTION = os.getenv(
     "EMBEDDING_QUERY_INSTRUCTION",
     "Represent this query for retrieving relevant enterprise knowledge passages: ",
 )
-KNOWLEDGE_TABLE_ROW_CHUNKING = os.getenv("KNOWLEDGE_TABLE_ROW_CHUNKING", "true").lower() == "true"
+KNOWLEDGE_TABLE_ROW_CHUNKING = os.getenv("KNOWLEDGE_TABLE_ROW_CHUNKING", "false").lower() == "true"
 
 # 图片 API(文生图/图生图),与对话 Key 可分离
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")

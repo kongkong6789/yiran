@@ -94,8 +94,8 @@ def extract_chunk_keywords(text: str, *, limit: int = 12) -> list[str]:
         scores[normalized] = scores.get(normalized, 0) + 1 + length_bonus - digit_penalty
     ordered = sorted(scores, key=lambda item: (-scores[item], first_seen[item], item))
     return ordered[:limit]
-DEFAULT_CHUNK_SIZE = 1200
-DEFAULT_CHUNK_OVERLAP = 160
+DEFAULT_CHUNK_SIZE = 1024
+DEFAULT_CHUNK_OVERLAP = 50
 MAX_TABLE_ROWS = 5000
 
 
@@ -233,10 +233,8 @@ class _TextHTMLParser(HTMLParser):
     def text(self) -> str:
         return unescape(" ".join(self._parts))
 
-
 def normalize_text(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
-
 
 def segments_from_text(text: str, *, parser: str) -> ParsedDocument:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -742,13 +740,12 @@ def table_rows_to_segments(sheet_name: str, raw_rows: list[list[object]], metada
             "sheet_name": sheet_name,
             "row_index": row_index,
             "values": present,
+            "columns": headers,
         }
         for key in ("source_parser", "table_source_type", "table_extraction_method", "source_file", "source_type"):
             if metadata.get(key) is not None:
                 segment_metadata[key] = metadata[key]
         segments.append(ParsedSegment(text, segment_metadata))
-    if len(segments) > MAX_TABLE_ROWS:
-        raise TraditionalRagError(f"Table row count exceeds {MAX_TABLE_ROWS}.", "table_error")
     return segments, [{"sheet_name": sheet_name, "columns": headers, "row_count": len(segments), **metadata}]
 
 
@@ -911,11 +908,108 @@ def reference_kinds(references: list[dict]) -> list[str]:
     return kinds
 
 
+def table_segment_headers(segment: ParsedSegment) -> list[str]:
+    columns = segment.metadata.get("columns")
+    if isinstance(columns, list):
+        return [str(column) for column in columns if str(column)]
+    values = segment.metadata.get("values")
+    if isinstance(values, dict):
+        return [str(key) for key in values.keys()]
+    return []
+
+
+def compact_table_segment_text(segment: ParsedSegment, headers: list[str]) -> str:
+    values = segment.metadata.get("values")
+    if not isinstance(values, dict) or not headers:
+        return segment.text.strip()
+    row_values = [str(values.get(header, "")) for header in headers]
+    while row_values and row_values[-1] == "":
+        row_values.pop()
+    return " | ".join(row_values).strip()
+
+
+def split_table_into_compact_chunks(parsed: ParsedDocument, *, max_chars: int) -> list[tuple[str, dict]]:
+    chunks: list[tuple[str, dict]] = []
+    current_parts: list[str] = []
+    current_references: list[dict] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_chars = 0
+    current_headers: list[str] = []
+    current_sheet_name: str | None = None
+
+    def header_text(headers: list[str]) -> str:
+        return "字段: " + " | ".join(headers) if headers else ""
+
+    def flush() -> None:
+        nonlocal current_parts, current_references, current_start, current_end, current_chars, current_headers, current_sheet_name
+        if not current_parts:
+            return
+        prefix = header_text(current_headers)
+        text = "\n".join(([prefix] if prefix else []) + current_parts).strip()
+        if text:
+            chunks.append(
+                (
+                    text,
+                    {
+                        "segment_start": current_start,
+                        "segment_end": current_end,
+                        "segments": current_references,
+                        "reference_kinds": reference_kinds(current_references),
+                        "char_count": len(text),
+                        "chunking_strategy": "table_compact_chars",
+                        "columns": current_headers,
+                        "sheet_name": current_sheet_name,
+                    },
+                )
+            )
+        current_parts = []
+        current_references = []
+        current_start = None
+        current_end = None
+        current_chars = 0
+        current_headers = []
+        current_sheet_name = None
+
+    for segment_index, segment in enumerate(parsed.segments):
+        if segment.metadata.get("kind") != "table_row":
+            flush()
+            text = segment.text.strip()
+            if text:
+                references = [segment_reference(segment_index, segment.metadata)]
+                chunks.append((text[:max_chars], {"segment_start": segment_index, "segment_end": segment_index, "segments": references, "reference_kinds": reference_kinds(references), "char_count": min(len(text), max_chars)}))
+            continue
+        headers = table_segment_headers(segment)
+        sheet_name = str(segment.metadata.get("sheet_name") or "") or None
+        row_text = compact_table_segment_text(segment, headers)
+        if not row_text:
+            continue
+        prefix_len = len(header_text(headers)) + 1 if headers else 0
+        projected = current_chars + len(row_text) + (1 if current_parts else prefix_len)
+        if current_parts and (headers != current_headers or sheet_name != current_sheet_name or projected > max_chars):
+            flush()
+        if current_start is None:
+            current_start = segment_index
+            current_headers = headers
+            current_sheet_name = sheet_name
+            current_chars = prefix_len
+        current_end = segment_index
+        current_parts.append(row_text)
+        current_references.append(segment_reference(segment_index, segment.metadata))
+        current_chars += len(row_text) + (1 if len(current_parts) > 1 else 0)
+    flush()
+    if not chunks:
+        raise TraditionalRagError("No chunks generated from file.", "empty_chunks")
+    return chunks
+
+
 def split_into_chunks(parsed: ParsedDocument, *, max_chars: int = DEFAULT_CHUNK_SIZE, overlap_chars: int = DEFAULT_CHUNK_OVERLAP) -> list[tuple[str, dict]]:
     max_chars = max(1, max_chars)
     overlap_chars = max(0, min(overlap_chars, max_chars - 1))
     chunks: list[tuple[str, dict]] = []
     parser = parsed.metadata.get("parser")
+    if parser in TABLE_FILE_TYPES and not bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)):
+        return split_table_into_compact_chunks(parsed, max_chars=max_chars)
     if parser in TABLE_FILE_TYPES and bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)):
         for segment_index, segment in enumerate(parsed.segments):
             text = segment.text.strip()

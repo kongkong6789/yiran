@@ -10,6 +10,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   List,
   Modal,
   Popconfirm,
@@ -56,6 +57,7 @@ import {
   type KnowledgeBaseItem,
   type KnowledgeChunkItem,
   type KnowledgeFileItem,
+  type KnowledgeIngestJobItem,
 } from "../api/client";
 
 const { Title, Text, Paragraph } = Typography;
@@ -74,6 +76,17 @@ type CreateUploadProgress = {
   detail: string;
   status?: "normal" | "active" | "success" | "exception";
 };
+
+type IngestProgressItem = {
+  jobId: number;
+  fileName: string;
+  percent: number;
+  stage: string;
+  status: KnowledgeIngestJobItem["status"];
+  detail: string;
+};
+
+type IngestJobRef = { id: number; fileName?: string };
 
 const keywordStopwords = new Set([
   "and", "or", "the", "for", "with", "from", "this", "that", "http", "https", "www", "com", "cn",
@@ -103,6 +116,35 @@ function chunkKeywords(chunk: KnowledgeChunkItem, text: string) {
 function apiErrorMessage(error: unknown, fallback: string) {
   const responseData = (error as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
   return responseData?.message || responseData?.error || fallback;
+}
+
+function ingestStageLabel(stage?: string, status?: KnowledgeIngestJobItem["status"]) {
+  const key = (stage || status || "pending").toLowerCase();
+  if (key === "pending") return "等待入库";
+  if (key === "parsing") return "解析文件";
+  if (key === "chunking") return "切片分段";
+  if (key === "embedding") return "向量入库";
+  if (key === "graphing") return "图谱抽取";
+  if (key === "ready") return "入库完成";
+  if (key === "failed") return "入库失败";
+  return stage || status || "处理中";
+}
+
+function ingestProgressStatus(status: KnowledgeIngestJobItem["status"]): "normal" | "active" | "success" | "exception" {
+  if (status === "ready") return "success";
+  if (status === "failed") return "exception";
+  if (status === "pending") return "normal";
+  return "active";
+}
+
+function ingestProgressDetail(job: KnowledgeIngestJobItem) {
+  const label = ingestStageLabel(job.stage, job.status);
+  if (job.status === "failed") {
+    const message = typeof job.error?.message === "string" ? job.error.message : "文件入库失败";
+    return `${label}：${message}`;
+  }
+  if (job.status === "ready") return "解析、切片和向量化已完成";
+  return `${label}中，后端正在处理文件内容`;
 }
 type KnowledgeTemplate = {
   id: string;
@@ -423,7 +465,8 @@ export default function Knowledge() {
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
   const [requireCitation, setRequireCitation] = useState(true);
   const [extractGraph, setExtractGraph] = useState(true);
-  const [chunkSize] = useState(900);
+  const [chunkSize, setChunkSize] = useState(1024);
+  const [chunkOverlap, setChunkOverlap] = useState(50);
   const [topK] = useState(8);
   const [selectedSources] = useState<string[]>(["policy", "graph", "crm"]);
   const [projectName] = useState("UNOVE 经营知识中台");
@@ -449,6 +492,7 @@ export default function Knowledge() {
   const [fileLoading, setFileLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [createUploadProgress, setCreateUploadProgress] = useState<CreateUploadProgress | null>(null);
+  const [ingestProgressItems, setIngestProgressItems] = useState<IngestProgressItem[]>([]);
   const [processedChunks, setProcessedChunks] = useState<KnowledgeChunkItem[]>([]);
   const [chunkCurrentPage, setChunkCurrentPage] = useState(1);
   const [chunkPageSize, setChunkPageSize] = useState(10);
@@ -541,33 +585,90 @@ export default function Knowledge() {
     }
   }
 
-  async function pollIngestJobs(baseId: string, jobIds: number[]) {
-    const pending = new Set(jobIds.filter((id) => Number.isFinite(id)));
+  function upsertIngestProgress(items: IngestProgressItem[]) {
+    if (!items.length) return;
+    setIngestProgressItems((prev) => {
+      const byId = new Map(prev.map((item) => [item.jobId, item]));
+      items.forEach((item) => byId.set(item.jobId, { ...(byId.get(item.jobId) || {}), ...item }));
+      return Array.from(byId.values()).sort((a, b) => a.jobId - b.jobId);
+    });
+  }
+
+  function renderIngestProgressPanel() {
+    if (!ingestProgressItems.length) return null;
+    return (
+      <div className="ingest-progress-panel">
+        <div className="ingest-progress-title">
+          <b>切片入库进度</b>
+          <span>{ingestProgressItems.filter((item) => item.status === "ready").length}/{ingestProgressItems.length}</span>
+        </div>
+        <List
+          size="small"
+          dataSource={ingestProgressItems}
+          renderItem={(item) => (
+            <List.Item>
+              <div className="ingest-progress-item">
+                <div className="ingest-progress-row">
+                  <Text ellipsis title={item.fileName}>{item.fileName}</Text>
+                  <span>{Math.max(0, Math.min(100, item.percent || 0))}%</span>
+                </div>
+                <Progress percent={Math.max(0, Math.min(100, item.percent || 0))} status={ingestProgressStatus(item.status)} showInfo={false} />
+                <p>{item.detail}</p>
+              </div>
+            </List.Item>
+          )}
+        />
+      </div>
+    );
+  }
+
+  async function pollIngestJobs(baseId: string, jobRefs: IngestJobRef[]) {
+    const refs = jobRefs.filter((item) => Number.isFinite(item.id));
+    const pending = new Set(refs.map((item) => item.id));
+    const nameById = new Map(refs.map((item) => [item.id, item.fileName || `Job #${item.id}`]));
     if (!pending.size) return;
-    for (let attempt = 0; attempt < 80 && pending.size; attempt += 1) {
+    upsertIngestProgress(refs.map((item) => ({
+      jobId: item.id,
+      fileName: item.fileName || `Job #${item.id}`,
+      percent: 5,
+      stage: "pending",
+      status: "pending",
+      detail: "等待后端开始解析、切片和向量化",
+    })));
+    for (let attempt = 0; attempt < 160 && pending.size; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 600 : 1500));
       const jobs = await Promise.allSettled(Array.from(pending).map((id) => getKnowledgeJob(id)));
+      const progressItems: IngestProgressItem[] = [];
       jobs.forEach((result) => {
         if (result.status !== "fulfilled") return;
         const job = result.value;
+        progressItems.push({
+          jobId: job.id,
+          fileName: nameById.get(job.id) || `Job #${job.id}`,
+          percent: Math.max(0, Math.min(100, Math.round(job.progress || 0))),
+          stage: job.stage || job.status,
+          status: job.status,
+          detail: ingestProgressDetail(job),
+        });
         if (job.status === "ready") {
           pending.delete(job.id);
         } else if (job.status === "failed") {
           pending.delete(job.id);
-          const detail = typeof job.error?.message === "string" ? job.error.message : "\u6587\u4ef6\u5165\u5e93\u5931\u8d25";
+          const detail = typeof job.error?.message === "string" ? job.error.message : "文件入库失败";
           message.error(detail);
         }
       });
+      upsertIngestProgress(progressItems);
       await refreshKnowledgeFiles(baseId);
     }
     if (pending.size) {
-      message.info("\u6587\u4ef6\u4ecd\u5728\u540e\u53f0\u5904\u7406\u4e2d\uff0c\u53ef\u4ee5\u7a0d\u540e\u5237\u65b0\u67e5\u770b");
+      message.info("文件仍在后台处理中，可以稍后刷新查看");
     } else {
       await refreshKnowledgeBases();
-      message.success("\u540e\u53f0\u5165\u5e93\u5b8c\u6210");
+      await refreshKnowledgeFiles(baseId);
+      message.success("后台入库完成");
     }
   }
-
   function handleCreateKnowledgeBase() {
     setUploadFiles([]);
     setCreateUploadProgress(null);
@@ -595,7 +696,7 @@ export default function Knowledge() {
       retrieval_mode: engine,
       review_policy: reviewPolicy,
       status: "draft",
-      config: { kind: "custom", chunk_size: chunkSize, top_k: topK, source: createSource },
+      config: { kind: "custom", chunk_size: chunkSize, chunk_overlap: chunkOverlap, top_k: topK, source: createSource },
     });
   }
 
@@ -629,6 +730,7 @@ export default function Knowledge() {
       return;
     }
     setUploading(true);
+    setIngestProgressItems([]);
     setCreateUploadProgress({ percent: 3, title: "创建知识库", detail: "正在生成知识库记录...", status: "active" });
     const totalBytes = rawFiles.reduce((sum, file) => sum + Math.max(file.size || 0, 1), 0);
     const uploadedBytesByIndex = new Map<number, number>();
@@ -647,28 +749,39 @@ export default function Knowledge() {
     try {
       const created = await createKnowledgeBaseRecord();
       setCreateUploadProgress({ percent: 10, title: "上传文件", detail: "知识库已创建，开始上传文件...", status: "active" });
-      const jobIds: number[] = [];
+      const jobRefs: IngestJobRef[] = [];
       for (const [index, file] of rawFiles.entries()) {
         updateFileProgress(index, 0, Math.max(file.size || 0, 1));
         const result = await uploadKnowledgeFile(created.id, file, {
           segment_mode: "general",
           chunk_size: chunkSize,
-          chunk_overlap: 160,
+          chunk_overlap: chunkOverlap,
           onUploadProgress: (event) => updateFileProgress(index, event.loaded, event.total || Math.max(file.size || 0, 1)),
         });
         uploadedBytesByIndex.set(index, Math.max(file.size || 0, 1));
-        if (result.job_id) jobIds.push(result.job_id);
+        if (result.job_id) {
+          jobRefs.push({ id: result.job_id, fileName: file.name });
+          upsertIngestProgress([{
+            jobId: result.job_id,
+            fileName: file.name,
+            percent: result.job?.progress ?? 5,
+            stage: result.job?.stage || "pending",
+            status: result.job?.status || "pending",
+            detail: "文件已上传，等待后端切片入库",
+          }]);
+        }
       }
-      setCreateUploadProgress({ percent: 92, title: "刷新列表", detail: "文件已上传，正在刷新知识库状态...", status: "active" });
+      setCreateUploadProgress({ percent: 92, title: "切片入库", detail: "文件已上传，正在等待后端解析、切片和向量化...", status: "active" });
       setUploadFiles([]);
       await refreshKnowledgeBases();
       await refreshKnowledgeFiles(String(created.id));
       setTemplateId(String(created.id));
       setDetailTemplateId(String(created.id));
-      setCreateUploadProgress({ percent: 100, title: "上传完成", detail: "入库任务已提交，后台正在解析和向量化。", status: "success" });
+      await pollIngestJobs(String(created.id), jobRefs);
+      setCreateUploadProgress({ percent: 100, title: "入库完成", detail: "文件已完成解析、切片和向量化。", status: "success" });
       setCreateMode(false);
-      message.success(`\u5df2\u4e0a\u4f20 ${rawFiles.length} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u6b63\u5728\u5165\u5e93`);
-      void pollIngestJobs(String(created.id), jobIds);
+      setIngestProgressItems([]);
+      message.success(`已上传 ${rawFiles.length} 个文件，切片入库完成`);
     } catch (error) {
       console.error(error);
       const detail = apiErrorMessage(error, "Create or upload failed");
@@ -678,7 +791,6 @@ export default function Knowledge() {
       setUploading(false);
     }
   }
-
   function openEditKnowledgeBase(template: KnowledgeTemplate) {
     const id = Number(template.id);
     if (!Number.isFinite(id)) {
@@ -755,19 +867,31 @@ export default function Knowledge() {
       return;
     }
     setUploading(true);
+    setIngestProgressItems([]);
     try {
-      const jobIds: number[] = [];
+      const jobRefs: IngestJobRef[] = [];
       for (const file of rawFiles) {
-        const result = await uploadKnowledgeFile(targetId, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: 160 });
-        if (result.job_id) jobIds.push(result.job_id);
+        const result = await uploadKnowledgeFile(targetId, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: chunkOverlap });
+        if (result.job_id) {
+          jobRefs.push({ id: result.job_id, fileName: file.name });
+          upsertIngestProgress([{
+            jobId: result.job_id,
+            fileName: file.name,
+            percent: result.job?.progress ?? 5,
+            stage: result.job?.stage || "pending",
+            status: result.job?.status || "pending",
+            detail: "文件已上传，等待后端切片入库",
+          }]);
+        }
       }
       setUploadFiles([]);
-      setUploadOpen(false);
       await refreshKnowledgeBases();
       await refreshKnowledgeFiles(String(targetId));
       setDetailTemplateId(String(targetId));
-      message.success(`\u5df2\u4e0a\u4f20 ${rawFiles.length} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u6b63\u5728\u5165\u5e93`);
-      void pollIngestJobs(String(targetId), jobIds);
+      await pollIngestJobs(String(targetId), jobRefs);
+      setUploadOpen(false);
+      setIngestProgressItems([]);
+      message.success(`已上传 ${rawFiles.length} 个文件，切片入库完成`);
     } catch (error) {
       console.error(error);
       message.error(apiErrorMessage(error, "Upload or ingest failed"));
@@ -775,7 +899,6 @@ export default function Knowledge() {
       setUploading(false);
     }
   }
-
   async function downloadOriginalFile(file: KnowledgeTemplateFile) {
     if (!file.id) {
       message.info("Template sample files are not stored in the backend yet");
@@ -876,6 +999,9 @@ export default function Knowledge() {
     const maxPage = Math.max(1, Math.ceil(chunkTotalCount / chunkPageSize));
     if (chunkCurrentPage > maxPage) setChunkCurrentPage(maxPage);
   }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
+  useEffect(() => {
+    if (chunkOverlap >= chunkSize) setChunkOverlap(Math.max(0, chunkSize - 1));
+  }, [chunkOverlap, chunkSize]);
   const configDraft = useMemo(() => ({
     project_name: projectName,
     objective,
@@ -886,6 +1012,7 @@ export default function Knowledge() {
       engine,
       top_k: topK,
       chunk_size: chunkSize,
+      chunk_overlap: chunkOverlap,
       require_citation: requireCitation,
       graph_extraction: extractGraph,
       rerank: true,
@@ -913,13 +1040,14 @@ export default function Knowledge() {
       ingest_plan: {
         parse: true,
         chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap,
         vectorize: true,
         extract_graph: extractGraph,
       },
     })),
     outputs: selectedTemplate.outputs,
     sample_question: selectedTemplate.sampleQuestion,
-  }), [chunkSize, deletedTemplateFiles, engine, extractGraph, objective, projectName, requireCitation, reviewPolicy, selectedSourceObjects, selectedTemplate, topK, uploadFiles, uploadPurpose, visibility]);
+  }), [chunkOverlap, chunkSize, deletedTemplateFiles, engine, extractGraph, objective, projectName, requireCitation, reviewPolicy, selectedSourceObjects, selectedTemplate, topK, uploadFiles, uploadPurpose, visibility]);
 
   function applyTemplate(nextId: string) {
     const next = baseTemplates.find((item) => item.id === nextId) ?? templates.find((item) => item.id === nextId) ?? baseTemplates[0] ?? templates[0];
@@ -1038,6 +1166,16 @@ export default function Knowledge() {
                         <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
                         <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
                       </Dragger>
+                      <div className="chunk-settings-grid">
+                        <label>
+                          <span>分段最大长度</span>
+                          <InputNumber min={200} max={8192} step={64} value={chunkSize} onChange={(value) => setChunkSize(Number(value) || 1024)} addonAfter="字符" />
+                        </label>
+                        <label>
+                          <span>分段重叠长度</span>
+                          <InputNumber min={0} max={Math.max(0, chunkSize - 1)} step={10} value={chunkOverlap} onChange={(value) => setChunkOverlap(Math.min(Number(value) || 0, Math.max(0, chunkSize - 1)))} addonAfter="字符" />
+                        </label>
+                      </div>
                     </>
                   ) : createSource === "wecom" ? (
                     <div className="source-connect-card">
@@ -1074,6 +1212,7 @@ export default function Knowledge() {
                       <p>{createUploadProgress.detail}</p>
                     </div>
                   ) : null}
+                  {renderIngestProgressPanel()}
                 </section>
               </div>
             </div>
@@ -1538,7 +1677,7 @@ export default function Knowledge() {
                 items={[
                   { children: "原文件保存与格式识别" },
                   { children: processedFile.chunks ? `文本解析完成，生成 ${processedFile.chunks} 个 chunks` : "等待解析文本并生成 chunks" },
-                  { children: `按 ${chunkSize} 字符切块并写入向量索引` },
+                  { children: `按 ${chunkSize} 字符切块，重叠 ${chunkOverlap} 字符，并写入向量索引` },
                   { children: extractGraph ? "实体与关系抽取已纳入图谱处理计划" : "当前未开启图谱抽取" },
                   { children: requireCitation ? "回答时必须返回引用证据" : "回答可使用摘要模式" },
                 ]}
@@ -1599,7 +1738,14 @@ export default function Knowledge() {
             <Form.Item label="资料用途">
               <Input.TextArea rows={3} value={uploadPurpose} onChange={(event) => setUploadPurpose(event.target.value)} />
             </Form.Item>
-            <Form.Item label="继承权限">
+                        <div className="chunk-settings-grid drawer-chunk-settings">
+              <Form.Item label="分段最大长度">
+                <InputNumber min={200} max={8192} step={64} value={chunkSize} onChange={(value) => setChunkSize(Number(value) || 1024)} addonAfter="字符" style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="分段重叠长度">
+                <InputNumber min={0} max={Math.max(0, chunkSize - 1)} step={10} value={chunkOverlap} onChange={(value) => setChunkOverlap(Math.min(Number(value) || 0, Math.max(0, chunkSize - 1)))} addonAfter="字符" style={{ width: "100%" }} />
+              </Form.Item>
+            </div><Form.Item label="继承权限">
               <Segmented value={visibility} onChange={(value) => setVisibility(value as Visibility)} options={[{ label: "个人", value: "private" }, { label: "团队", value: "team" }, { label: "公司", value: "company" }]} />
             </Form.Item>
           </Form>
@@ -1614,6 +1760,7 @@ export default function Knowledge() {
             <p className="ant-upload-text">拖拽知识文件到这里，或点击选择文件</p>
             <p className="ant-upload-hint">支持 PDF、Word、Markdown、TXT、表格、JSON、HTML、PPT。选择后点击上传并入库，会提交到后端解析、切块和向量化。</p>
           </Dragger>
+          {renderIngestProgressPanel()}
           {uploadFiles.length ? (
             <List
               className="upload-file-list"
@@ -1754,6 +1901,27 @@ const styles = `
 .create-form-stack {
   display: grid;
   gap: 18px;
+}
+.chunk-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.chunk-settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+.chunk-settings-grid .ant-input-number-group-wrapper,
+.chunk-settings-grid .ant-input-number {
+  width: 100%;
+}
+.drawer-chunk-settings {
+  margin-top: 0;
 }
 .create-form-stack label {
   display: grid;
@@ -1945,6 +2113,48 @@ const styles = `
   color: #667085;
   font-size: 13px;
   line-height: 1.5;
+}
+.ingest-progress-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.ingest-progress-title,
+.ingest-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ingest-progress-title {
+  margin-bottom: 10px;
+  color: #1d2939;
+}
+.ingest-progress-title span,
+.ingest-progress-row span {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ingest-progress-panel .ant-list-item {
+  padding: 10px 0;
+}
+.ingest-progress-item {
+  width: 100%;
+}
+.ingest-progress-row .ant-typography {
+  max-width: calc(100% - 56px);
+  margin: 0;
+  color: #18223b;
+  font-weight: 700;
+}
+.ingest-progress-item p {
+  margin: 6px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
 }
 @media (max-width: 980px) {
   .create-grid {
