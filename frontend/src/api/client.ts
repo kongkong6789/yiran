@@ -734,6 +734,7 @@ export interface SkillAssetItem {
   package_file_count?: number;
   has_scripts?: boolean;
   storage: "cos" | "local";
+  uploader?: string;
   created_at: string;
   updated_at: string;
 }
@@ -1890,6 +1891,7 @@ export const listCollabRooms = (params?: { status?: string }) =>
 export const createCollabRoom = (body: {
   title?: string;
   peer_username?: string;
+  peer_bot_id?: string;
   peer_usernames?: string[];
   room_kind?: "dm" | "group";
 }) =>

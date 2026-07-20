@@ -34,6 +34,7 @@ from .mentions import (
     XIAOCE_BOT_USERNAME,
     collab_skill_hits,
     get_collab_ai_user,
+    get_collab_bot_user,
     get_xiaoce_bot_user,
     has_ai_mention,
     is_xiaoce_bot_user,
@@ -855,10 +856,16 @@ def room_list(request):
     if request.method == "POST":
         # 兼容：peer_username 单聊；peer_usernames 群聊；room_kind 可显式指定
         peer_username = str(request.data.get("peer_username") or "").strip()
+        peer_bot_id = str(request.data.get("peer_bot_id") or "").strip()
         raw_peers = request.data.get("peer_usernames") or []
         if isinstance(raw_peers, str):
             raw_peers = [x.strip() for x in raw_peers.split(",") if x.strip()]
         peer_usernames = [str(x).strip() for x in raw_peers if str(x).strip()]
+        if peer_bot_id:
+            try:
+                peer_username = get_collab_bot_user(peer_bot_id).username
+            except ValueError as exc:
+                return Response({"ok": False, "error": str(exc)}, status=404)
         if peer_username and peer_username not in peer_usernames:
             peer_usernames = [peer_username, *peer_usernames]
 

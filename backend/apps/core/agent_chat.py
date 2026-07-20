@@ -514,7 +514,7 @@ def run_chat(
         "llm_model": used_model or llm_result.get("model") or "",
         "session_key": session_key or "",
         "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
-"knowledge_hit": bool(
+        "knowledge_hit": bool(
             selected_knowledge
             or knowledge
             or mcp.get("content")

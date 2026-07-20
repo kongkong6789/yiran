@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
-import { Button, Empty, Input, Segmented, Skeleton, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Empty, Input, Segmented, Select, Skeleton, Tag, Tooltip, Typography, message } from "antd";
 import {
   AppstoreOutlined,
   ArrowLeftOutlined,
@@ -28,10 +28,18 @@ import { useNavigate } from "react-router-dom";
 import {
   getNasDirectory,
   getNasFilePreview,
+  listCollabUsers,
+  type CollabUserBrief,
   type NasDirectoryResult,
   type NasFileEntry,
   type NasFilePreview,
 } from "../api/client";
+import {
+  XIAOCE_HANDOFF_TARGET,
+  buildNasResourceHandoff,
+  handoffDestination,
+  type AgentHandoffTarget,
+} from "../features/agent-handoff/resourceHandoff";
 
 type Props = {
   configured: boolean;
@@ -114,6 +122,39 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
   const [previewLoading, setPreviewLoading] = useState(false);
   const [backStack, setBackStack] = useState<string[]>([]);
   const [forwardStack, setForwardStack] = useState<string[]>([]);
+  const [handoffTargets, setHandoffTargets] = useState<AgentHandoffTarget[]>([XIAOCE_HANDOFF_TARGET]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [handoffTargetKey, setHandoffTargetKey] = useState(XIAOCE_HANDOFF_TARGET.key);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAgentsLoading(true);
+    listCollabUsers()
+      .then((data) => {
+        if (!cancelled) {
+          const botTargets = data.results
+            .filter((user): user is CollabUserBrief & { bot_id: string } => user.kind === "bot" && Boolean(user.bot_id))
+            .map((bot) => ({
+              key: `bot:${bot.bot_id}`,
+              kind: "bot" as const,
+              id: bot.bot_id,
+              label: bot.display_name || bot.nickname || bot.username,
+              emoji: "🤖",
+              description: bot.bio || "可用智能体",
+            }));
+          setHandoffTargets(botTargets.length ? botTargets : [XIAOCE_HANDOFF_TARGET]);
+          const defaultTarget = botTargets.find((target) => target.id === "xiaoce") || botTargets[0];
+          if (defaultTarget) setHandoffTargetKey(defaultTarget.key);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setHandoffTargets([XIAOCE_HANDOFF_TARGET]);
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const fetchDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -246,15 +287,11 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
     event.dataTransfer.setData("text/plain", entry.native_path);
   };
 
-  const useWithXiaoceBot = (entry: NasFileEntry) => {
-    const prompt = entry.kind === "folder"
-      ? `请从 NAS 读取这个文件夹及其子目录，并结合其中的文件进行分析：\`${entry.native_path}\``
-      : `请从 NAS 读取这个文件并分析：\`${entry.native_path}\``;
-    navigateTo("/collab?bot=xiaoce", {
-      state: {
-        nasPrompt: prompt,
-      },
-    });
+  const handoffToAgent = (entry: NasFileEntry) => {
+    const target = handoffTargets.find((item) => item.key === handoffTargetKey)
+      || XIAOCE_HANDOFF_TARGET;
+    const resourceHandoff = buildNasResourceHandoff(entry, target);
+    navigateTo(handoffDestination(target), { state: { resourceHandoff } });
   };
 
   const visibleEntries = useMemo(() => {
@@ -407,7 +444,23 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
                 {selected.kind === "file" && <Button icon={<EyeOutlined />} disabled={!selected.previewable} onClick={() => void openEntry(selected)}>预览</Button>}
                 {selected.kind === "file" && <Button icon={<DownloadOutlined />} onClick={() => downloadEntry(selected)}>下载</Button>}
                 <Button icon={<CopyOutlined />} onClick={() => void copyPath(selected.native_path)}>复制路径</Button>
-                <Button icon={<RobotOutlined />} onClick={() => useWithXiaoceBot(selected)}>交给小策bot</Button>
+                <div className="nas-agent-handoff">
+                  <Select
+                    value={handoffTargetKey}
+                    loading={agentsLoading}
+                    aria-label="选择目标智能体"
+                    classNames={{ popup: { root: "nas-agent-handoff-dropdown" } }}
+                    onChange={setHandoffTargetKey}
+                    options={handoffTargets.map((target) => ({
+                      value: target.key,
+                      label: `${target.emoji || "🤖"} ${target.label}${target.id === "xiaoce" ? "（默认）" : ""}`,
+                      title: target.description,
+                    }))}
+                  />
+                  <Button type="primary" icon={<RobotOutlined />} onClick={() => handoffToAgent(selected)}>
+                    交给智能体
+                  </Button>
+                </div>
               </div>
             </>
           ) : (
