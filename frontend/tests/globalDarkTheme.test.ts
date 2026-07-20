@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -48,4 +49,24 @@ test("Ant component tokens use raised surfaces for overlays and inputs", () => {
   assert.equal(components.Select.selectorBg, dark.surfaceInput);
   assert.equal(components.Modal.contentBg, dark.surfaceRaised);
   assert.equal(components.Table.headerBg, dark.surfaceRaised);
+});
+
+test("the React root applies semantic variables and Ant tokens", () => {
+  const source = readFileSync(new URL("../src/main.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /getThemeCssVariables/);
+  assert.match(source, /getAntThemeTokens/);
+  assert.match(source, /getAntComponentTokens/);
+  assert.doesNotMatch(source, /const DARK_TOKENS/);
+  assert.doesNotMatch(source, /const LIGHT_TOKENS/);
+});
+
+test("the final CSS layer uses semantic raised and input surfaces", () => {
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+
+  assert.match(css, /--lc-surface-raised/);
+  assert.match(css, /--lc-surface-input/);
+  assert.match(css, /--lc-surface-overlay/);
+  assert.match(css, /:root\[data-theme="dark"\] \.ant-table-thead/);
+  assert.match(css, /:root\[data-theme="dark"\] \.ant-modal-content/);
 });

@@ -5,12 +5,33 @@
 :root {
   --lc-canvas: #fff;
   --lc-surface: #fff;
+  --lc-surface-raised: #f7f7f7;
+  --lc-surface-input: #fff;
+  --lc-surface-overlay: #fff;
   --lc-ink: #000;
+  --lc-text-secondary: rgba(0, 0, 0, 0.68);
   --lc-muted: rgba(0, 0, 0, 0.62);
   --lc-line: rgba(0, 0, 0, 0.16);
+  --lc-border-strong: rgba(0, 0, 0, 0.3);
   --lc-hover: rgba(0, 0, 0, 0.06);
+  --lc-selected: rgba(0, 0, 0, 0.1);
+  --lc-focus: #000;
   --lc-own-bg: #000;
   --lc-own-ink: #fff;
+  --lc-status-success: #237a45;
+  --lc-status-success-bg: #edf8f1;
+  --lc-status-warning: #946618;
+  --lc-status-warning-bg: #fff7e7;
+  --lc-status-error: #b53b3b;
+  --lc-status-error-bg: #fff1f0;
+  --lc-status-info: #356f9f;
+  --lc-status-info-bg: #eef6fc;
+  --lc-graph-canvas: #f4f7fb;
+  --lc-graph-grid: #dfe5ee;
+  --lc-graph-edge: #9aa7b8;
+  --lc-graph-tooltip-bg: #fff;
+  --lc-graph-tooltip-border: #d7e0ec;
+  --lc-graph-tooltip-text: #1a2740;
   --lc-navy: var(--lc-ink);
   --lc-navy-light: rgba(0, 0, 0, 0.76);
   --lc-gold: var(--lc-ink);
@@ -33,13 +54,34 @@
 /* 深色模式变量 */
 :root[data-theme="dark"] {
   --lc-canvas: #000;
-  --lc-surface: #000;
-  --lc-ink: #fff;
-  --lc-muted: rgba(255, 255, 255, 0.68);
-  --lc-line: rgba(255, 255, 255, 0.22);
-  --lc-hover: rgba(255, 255, 255, 0.1);
-  --lc-own-bg: #fff;
-  --lc-own-ink: #000;
+  --lc-surface: #080808;
+  --lc-surface-raised: #101010;
+  --lc-surface-input: #121212;
+  --lc-surface-overlay: #181818;
+  --lc-ink: #f5f5f5;
+  --lc-text-secondary: rgba(255, 255, 255, 0.72);
+  --lc-muted: rgba(255, 255, 255, 0.54);
+  --lc-line: rgba(255, 255, 255, 0.2);
+  --lc-border-strong: rgba(255, 255, 255, 0.34);
+  --lc-hover: rgba(255, 255, 255, 0.08);
+  --lc-selected: rgba(255, 255, 255, 0.12);
+  --lc-focus: #fff;
+  --lc-own-bg: #f2f2f2;
+  --lc-own-ink: #080808;
+  --lc-status-success: #73d89b;
+  --lc-status-success-bg: rgba(47, 145, 86, 0.18);
+  --lc-status-warning: #e5bb69;
+  --lc-status-warning-bg: rgba(174, 116, 26, 0.2);
+  --lc-status-error: #ef8585;
+  --lc-status-error-bg: rgba(190, 58, 58, 0.2);
+  --lc-status-info: #7eb7e8;
+  --lc-status-info-bg: rgba(54, 121, 177, 0.2);
+  --lc-graph-canvas: #050505;
+  --lc-graph-grid: #1c1c1c;
+  --lc-graph-edge: #555;
+  --lc-graph-tooltip-bg: #151515;
+  --lc-graph-tooltip-border: #383838;
+  --lc-graph-tooltip-text: #f5f5f5;
   --lc-navy: var(--lc-ink);
   --lc-navy-light: rgba(255, 255, 255, 0.78);
   --lc-gold: var(--lc-ink);
@@ -6383,7 +6425,7 @@ body {
   .work-todo-row:hover { transform: none; }
 }
 
-/* 全站黑白主题最终层：仅使用纯黑/纯白表面与前景透明度。 */
+/* 全站语义主题兼容层：保留纯黑画布，用近黑表面、输入层与浮层建立层级。 */
 :root[data-theme] body,
 :root[data-theme] .ant-layout,
 :root[data-theme] .app-shell-topnav,
@@ -6417,18 +6459,11 @@ body {
 :root[data-theme] .brand-sfd-canvas-wrap,
 :root[data-theme] .brand-sfd-legend > div,
 :root[data-theme] .brand-agency-catalog,
-:root[data-theme] .ant-card,
-:root[data-theme] .ant-modal-content,
-:root[data-theme] .ant-modal-header,
-:root[data-theme] .ant-drawer-content,
-:root[data-theme] .ant-drawer-header,
-:root[data-theme] .ant-dropdown-menu,
-:root[data-theme] .ant-popover-inner,
-:root[data-theme] .ant-select-dropdown {
+:root[data-theme] .ant-card {
   color: var(--lc-ink) !important;
   background: var(--lc-surface) !important;
   border-color: var(--lc-line) !important;
-  box-shadow: none !important;
+  box-shadow: var(--lc-shadow);
 }
 
 :root[data-theme] .app-topnav {
@@ -6458,9 +6493,90 @@ body {
 :root[data-theme] .agent-md-mermaid,
 :root[data-theme] .agent-md-img {
   color: var(--lc-ink) !important;
-  background: var(--lc-surface) !important;
+  background: var(--lc-surface-raised) !important;
   border-color: var(--lc-line) !important;
-  box-shadow: none !important;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .ant-table,
+:root[data-theme="dark"] .ant-tabs-content-holder {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .ant-table-thead > tr > th,
+:root[data-theme="dark"] .ant-table-cell-fix-left,
+:root[data-theme="dark"] .ant-table-cell-fix-right {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .ant-table-tbody > tr > td,
+:root[data-theme="dark"] .ant-table-wrapper .ant-table-tbody > tr.ant-table-row:hover > td {
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .ant-table-wrapper .ant-table-tbody > tr.ant-table-row:hover > td {
+  background: var(--lc-hover) !important;
+}
+
+:root[data-theme="dark"] .ant-input,
+:root[data-theme="dark"] .ant-input-affix-wrapper,
+:root[data-theme="dark"] .ant-input-number,
+:root[data-theme="dark"] .ant-input-number-input,
+:root[data-theme="dark"] .ant-select-selector,
+:root[data-theme="dark"] .ant-picker,
+:root[data-theme="dark"] .ant-segmented {
+  color: var(--lc-ink);
+  background: var(--lc-surface-input) !important;
+  border-color: var(--lc-line);
+}
+
+:root[data-theme="dark"] .ant-modal-content,
+:root[data-theme="dark"] .ant-modal-header,
+:root[data-theme="dark"] .ant-drawer-content,
+:root[data-theme="dark"] .ant-drawer-header,
+:root[data-theme="dark"] .ant-dropdown-menu,
+:root[data-theme="dark"] .ant-popover-inner,
+:root[data-theme="dark"] .ant-tooltip-inner,
+:root[data-theme="dark"] .ant-select-dropdown {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface-overlay) !important;
+  border-color: var(--lc-line) !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+}
+
+:root[data-theme="dark"] .ant-modal-title,
+:root[data-theme="dark"] .ant-drawer-title,
+:root[data-theme="dark"] .ant-popover-title,
+:root[data-theme="dark"] .ant-dropdown-menu-title-content {
+  color: var(--lc-ink) !important;
+}
+
+:root[data-theme="dark"] .ant-empty-description,
+:root[data-theme="dark"] .ant-form-item-label > label,
+:root[data-theme="dark"] .ant-pagination,
+:root[data-theme="dark"] .ant-tabs-tab {
+  color: var(--lc-text-secondary);
+}
+
+:root[data-theme="dark"] :where(
+  .ant-btn,
+  .ant-input,
+  .ant-input-affix-wrapper,
+  .ant-input-number,
+  .ant-select-selector,
+  .ant-picker,
+  .ant-segmented-item,
+  button,
+  [tabindex]
+):focus-visible {
+  outline: 2px solid var(--lc-focus);
+  outline-offset: 2px;
+  border-color: var(--lc-border-strong) !important;
 }
 
 :root[data-theme] .agent-chat-row.user .agent-chat-bubble {
