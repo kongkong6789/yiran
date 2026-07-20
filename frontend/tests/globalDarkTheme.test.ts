@@ -70,3 +70,30 @@ test("the final CSS layer uses semantic raised and input surfaces", () => {
   assert.match(css, /:root\[data-theme="dark"\] \.ant-table-thead/);
   assert.match(css, /:root\[data-theme="dark"\] \.ant-modal-content/);
 });
+
+test("conversation styles use the global pure-black semantic surfaces", () => {
+  const chatCss = readFileSync(new URL("../src/styles/agentChatApple.css", import.meta.url), "utf8");
+  const teamCss = readFileSync(new URL("../src/styles/teamCollaboration.css", import.meta.url), "utf8");
+  const xiaoceCss = readFileSync(new URL("../src/styles/xiaoceChatTheme.css", import.meta.url), "utf8");
+
+  assert.match(chatCss, /--chat-canvas:\s*var\(--lc-canvas\)/);
+  assert.match(chatCss, /--chat-rail:\s*var\(--lc-surface\)/);
+  assert.match(chatCss, /--chat-surface:\s*var\(--lc-surface-raised\)/);
+  assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace-bar[\s\S]*background:\s*var\(--lc-surface\)/);
+  assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace-tab-indicator[\s\S]*background:\s*var\(--lc-surface-raised\)/);
+  assert.match(xiaoceCss, /background:\s*var\(--lc-status-error-bg\)/);
+  assert.match(xiaoceCss, /background:\s*var\(--lc-status-warning-bg\)/);
+});
+
+test("collaboration visual components use theme-aware panel surfaces", () => {
+  const meeting = readFileSync(new URL("../src/components/MeetingInviteAlert.tsx", import.meta.url), "utf8");
+  const roundTable = readFileSync(new URL("../src/components/CollabRoundTable.tsx", import.meta.url), "utf8");
+  const collab = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+
+  assert.match(meeting, /color:\s*"var\(--lc-ink\)"/);
+  assert.doesNotMatch(roundTable, /background:\s*#fff(?:fff)?/i);
+  assert.doesNotMatch(roundTable, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9[56]\)/i);
+  assert.match(collab, /:root\[data-theme="dark"\] \.collab-insight/);
+  assert.match(collab, /var\(--lc-status-warning-bg\)/);
+  assert.match(collab, /var\(--lc-status-error-bg\)/);
+});

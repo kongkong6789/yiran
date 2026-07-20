@@ -363,24 +363,22 @@
 }
 
 :root[data-theme="dark"] .team-workspace {
-  background:
-    radial-gradient(700px 280px at 72% -80px, rgba(108, 155, 210, 0.12), transparent 68%),
-    var(--lc-bg-layout);
+  background: var(--lc-canvas);
 }
 
 :root[data-theme="dark"] .team-workspace-bar {
-  border-color: rgba(42, 54, 80, 0.85);
-  background: rgba(14, 20, 32, 0.76);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
 }
 
 :root[data-theme="dark"] .team-workspace-tabs {
-  border-color: rgba(42, 54, 80, 0.9);
-  background: rgba(8, 13, 22, 0.65);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-input);
 }
 
 :root[data-theme="dark"] .team-workspace-tab-indicator {
-  border-color: rgba(108, 155, 210, 0.18);
-  background: rgba(35, 46, 67, 0.94);
+  border-color: var(--lc-border);
+  background: var(--lc-surface-raised);
 }
 
 :root[data-theme="dark"] .team-workspace-action.is-secondary,
@@ -389,13 +387,13 @@
 :root[data-theme="dark"] .team-workspace .collab-main-head,
 :root[data-theme="dark"] .team-workspace .council-live-topbar,
 :root[data-theme="dark"] .team-workspace .council-live-controls {
-  background: rgba(21, 29, 44, 0.84);
+  background: var(--lc-surface-raised);
 }
 
 :root[data-theme="dark"] .team-workspace .collab-sider,
 :root[data-theme="dark"] .team-workspace .collab-ai {
-  border-color: var(--lc-border);
-  background: rgba(18, 25, 40, 0.88);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
 }
 
 @media (max-width: 980px) {

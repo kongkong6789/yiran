@@ -5560,6 +5560,59 @@ const css = `
   border-color: var(--lc-line);
 }
 
+:root[data-theme="dark"] .collab-sider,
+:root[data-theme="dark"] .collab-ai,
+:root[data-theme="dark"] .collab-sider-head,
+:root[data-theme="dark"] .collab-ai-head,
+:root[data-theme="dark"] .collab-main-head,
+:root[data-theme="dark"] .collab-contact-pane,
+:root[data-theme="dark"] .collab-room-list,
+:root[data-theme="dark"] .collab-insight-list {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .collab-agent-input,
+:root[data-theme="dark"] .collab-mention-menu,
+:root[data-theme="dark"] .collab-profile-card,
+:root[data-theme="dark"] .collab-insight,
+:root[data-theme="dark"] .collab-kpi,
+:root[data-theme="dark"] .collab-alert-row {
+  color: var(--lc-ink);
+  background: var(--lc-surface-raised);
+  border-color: var(--lc-border-light);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .collab-banner.risk-yellow,
+:root[data-theme="dark"] .collab-insight.risk-yellow {
+  color: var(--lc-status-warning);
+  background: var(--lc-status-warning-bg);
+  border-color: color-mix(in srgb, var(--lc-status-warning) 42%, transparent);
+}
+
+:root[data-theme="dark"] .collab-banner.risk-red,
+:root[data-theme="dark"] .collab-insight.risk-red {
+  color: var(--lc-status-error);
+  background: var(--lc-status-error-bg);
+  border-color: color-mix(in srgb, var(--lc-status-error) 42%, transparent);
+}
+
+:root[data-theme="dark"] .collab-insight header strong,
+:root[data-theme="dark"] .collab-insight section p,
+:root[data-theme="dark"] .collab-profile-card-main strong,
+:root[data-theme="dark"] .collab-agent-input textarea {
+  color: var(--lc-ink);
+}
+
+:root[data-theme="dark"] .collab-insight header em,
+:root[data-theme="dark"] .collab-insight section h5,
+:root[data-theme="dark"] .collab-evidence,
+:root[data-theme="dark"] .collab-agent-input textarea::placeholder {
+  color: var(--lc-muted);
+}
+
 @media (max-width: 1100px) {
   .collab-page {
     grid-template-columns: 200px minmax(0, 1fr) 260px;

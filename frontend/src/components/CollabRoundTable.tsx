@@ -197,8 +197,8 @@ export default function CollabRoundTable({ variant = "empty", className = "" }: 
         .crt-ai-note {
           font-size: 11px;
           font-weight: 650;
-          color: #0B2144;
-          background: rgba(255,255,255,0.95);
+          color: var(--lc-ink);
+          background: var(--lc-surface-raised);
           padding: 2px 9px;
           border-radius: 999px;
           border: 1px solid rgba(61,111,168,0.28);
@@ -233,8 +233,8 @@ export default function CollabRoundTable({ variant = "empty", className = "" }: 
           place-items: center;
           font-size: 15px;
           font-weight: 700;
-          color: var(--c, #1A2740);
-          background: #fff;
+          color: var(--lc-ink);
+          background: var(--lc-surface-raised);
           border: 2.5px solid var(--c, #5B7C99);
           box-shadow: 0 4px 12px rgba(11,33,68,0.16);
         }
@@ -245,8 +245,8 @@ export default function CollabRoundTable({ variant = "empty", className = "" }: 
         .crt-name {
           font-size: 12px;
           font-weight: 650;
-          color: #1A2740;
-          background: rgba(255,255,255,0.96);
+          color: var(--lc-ink);
+          background: var(--lc-surface-raised);
           padding: 1px 8px;
           border-radius: 999px;
           border: 1px solid #d7e0ec;
@@ -263,13 +263,13 @@ export default function CollabRoundTable({ variant = "empty", className = "" }: 
           max-width: 168px;
           padding: 7px 12px;
           border-radius: 12px 12px 12px 4px;
-          background: #fff;
+          background: var(--lc-surface-raised);
           border: 1.5px solid rgba(61,111,168,0.4);
           box-shadow: 0 8px 20px rgba(11,33,68,0.16);
           font-size: 12px;
           font-weight: 500;
           line-height: 1.35;
-          color: #1A2740;
+          color: var(--lc-ink);
           white-space: nowrap;
           word-break: keep-all;
           animation: crt-bubble 2.7s ease forwards;
@@ -280,7 +280,7 @@ export default function CollabRoundTable({ variant = "empty", className = "" }: 
           text-align: center;
           font-size: 13px;
           font-weight: 500;
-          color: #5C6B84;
+          color: var(--lc-text-secondary);
         }
 
         @keyframes crt-spin { to { transform: rotate(360deg); } }

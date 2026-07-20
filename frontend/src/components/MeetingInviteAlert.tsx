@@ -191,10 +191,10 @@ export default function MeetingInviteAlert({ enabled = true }: Props) {
           >
             <TeamOutlined />
           </div>
-          <Typography.Title level={3} style={{ margin: "0 0 8px", color: "#2a2118" }}>
+          <Typography.Title level={3} style={{ margin: "0 0 8px", color: "var(--lc-ink)" }}>
             有人在拉你开会
           </Typography.Title>
-          <Typography.Paragraph style={{ marginBottom: 4, fontSize: 16, color: "#5c4a3a" }}>
+          <Typography.Paragraph style={{ marginBottom: 4, fontSize: 16, color: "var(--lc-text-secondary)" }}>
             <strong>{current.inviter_name}</strong>
             {" "}邀请你加入
           </Typography.Paragraph>
