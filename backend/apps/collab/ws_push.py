@@ -38,6 +38,7 @@ def publish_sync(
     insights=None,
     room=None,
     xiaoce_runs=None,
+    read_receipts=None,
 ) -> None:
     """与前端 CollabSyncEvent / 旧 SSE sync 对齐。"""
     payload: dict = {}
@@ -53,6 +54,8 @@ def publish_sync(
         payload["room"] = room
     if xiaoce_runs:
         payload["xiaoce_runs"] = xiaoce_runs
+    if read_receipts:
+        payload["read_receipts"] = read_receipts
     if not payload:
         return
     publish_room(room_id, "sync", payload)

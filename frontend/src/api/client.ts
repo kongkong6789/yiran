@@ -2014,8 +2014,15 @@ export type CollabSyncEvent = {
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
   xiaoce_runs?: XiaoceRun[];
+  read_receipts?: CollabReadReceipt[];
   after_id?: number;
   after_insight_id?: number;
+};
+
+export type CollabReadReceipt = {
+  user_id: number;
+  last_read_message_id: number;
+  read_at: string;
 };
 
 /** ???? WebSocket??????? :8000? */

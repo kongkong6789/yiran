@@ -8,6 +8,7 @@ import {
   openCollabRoomSocket,
   type CollabInsight,
   type CollabMessage,
+  type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
   type CollabSyncEvent,
@@ -22,6 +23,7 @@ type Args = {
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
   onXiaoceRuns?: (runs: XiaoceRun[]) => void;
+  onReadReceipts?: (receipts: CollabReadReceipt[]) => void;
   setRoomStats: React.Dispatch<React.SetStateAction<CollabRoomStats | null>>;
   /** 兼容旧调用，当前未使用 */
   participantsEqual?: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
@@ -38,6 +40,7 @@ export function useCollabRoomLive({
   mergeInsights,
   patchRoomMeta,
   onXiaoceRuns,
+  onReadReceipts,
   setRoomStats,
 }: Args) {
   const aliveRef = useRef(true);
@@ -91,6 +94,9 @@ export function useCollabRoomLive({
         onXiaoceRuns?.(data.xiaoce_runs);
       } else if (data.room && "active_xiaoce_run" in data.room) {
         onXiaoceRuns?.(data.room.active_xiaoce_run ? [data.room.active_xiaoce_run] : []);
+      }
+      if (data.read_receipts?.length) {
+        onReadReceipts?.(data.read_receipts);
       }
       if (data.messages?.length || data.insights?.length) {
         getCollabRoomStats(roomId).then((st) => {
@@ -239,6 +245,7 @@ export function useCollabRoomLive({
     mergeInsights,
     patchRoomMeta,
     onXiaoceRuns,
+    onReadReceipts,
     setRoomStats,
   ]);
 }

@@ -36,6 +36,7 @@ import {
   type AuthUser,
   type CollabInsight,
   type CollabMessage,
+  type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
   type CollabDraftTip,
@@ -48,6 +49,7 @@ import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
+import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
@@ -343,10 +345,12 @@ function UserProfileCardContent({
   user,
   online,
   roleHint,
+  sentAt,
 }: {
   user: CollabUserBrief;
   online?: boolean;
   roleHint?: string;
+  sentAt?: string;
 }) {
   const label = memberLabel(user) || user.username;
   const src = authAvatarSrc(user.avatar_url);
@@ -371,6 +375,7 @@ function UserProfileCardContent({
         <span className={`collab-profile-online ${isOnline ? "on" : "off"}`}>
           {isOnline ? "在线" : "离线"}
         </span>
+        {sentAt ? <span className="collab-profile-sent-at">发送于 {formatChatTimeSep(sentAt)}</span> : null}
       </div>
     </div>
   );
@@ -379,9 +384,11 @@ function UserProfileCardContent({
 function AiProfileCardContent({
   interject = false,
   suggest = false,
+  sentAt,
 }: {
   interject?: boolean;
   suggest?: boolean;
+  sentAt?: string;
 }) {
   const tone = suggest ? "suggest" : interject ? "interject" : "reply";
   return (
@@ -405,6 +412,7 @@ function AiProfileCardContent({
               : "被 @AI 或 Skill 召唤后才会回复；不会对每条消息自动答题。"}
         </p>
         <span className="collab-profile-online on">在线</span>
+        {sentAt ? <span className="collab-profile-sent-at">发送于 {formatChatTimeSep(sentAt)}</span> : null}
       </div>
     </div>
   );
@@ -418,6 +426,7 @@ function ProfileAvatarPopover({
   ai,
   interject,
   suggest,
+  sentAt,
   placement = "rightTop",
   size = 32,
 }: {
@@ -428,13 +437,14 @@ function ProfileAvatarPopover({
   ai?: boolean;
   interject?: boolean;
   suggest?: boolean;
+  sentAt?: string;
   placement?: TooltipPlacement;
   size?: number;
 }) {
   const content = ai
-    ? <AiProfileCardContent interject={interject} suggest={suggest} />
+    ? <AiProfileCardContent interject={interject} suggest={suggest} sentAt={sentAt} />
     : (user ? (
-      <UserProfileCardContent user={user} online={online} roleHint={roleHint} />
+      <UserProfileCardContent user={user} online={online} roleHint={roleHint} sentAt={sentAt} />
     ) : null);
 
   const label = user
@@ -451,7 +461,7 @@ function ProfileAvatarPopover({
     return (
       <Popover
         content={content}
-        trigger="click"
+        trigger={["hover", "click"]}
         placement={placement}
         arrow
         destroyOnHidden
@@ -473,7 +483,7 @@ function ProfileAvatarPopover({
   return (
     <Popover
       content={content}
-      trigger="click"
+      trigger={["hover", "click"]}
       placement={placement}
       arrow
       destroyOnHidden
@@ -520,6 +530,7 @@ function participantsPresenceEqual(
       || (a[i].display_name || "") !== (b[i].display_name || "")
       || (a[i].nickname || "") !== (b[i].nickname || "")
       || (a[i].avatar_url || "") !== (b[i].avatar_url || "")
+      || (a[i].last_read_message_id || 0) !== (b[i].last_read_message_id || 0)
     ) {
       return false;
     }
@@ -751,8 +762,10 @@ export default function CollabRisk({
   }, [me, activeRoom, isParticipant]);
 
   const bannerInsight = useMemo(() => {
-    const hot = insights.find((i) => i.risk_level === "red" || i.risk_level === "yellow");
-    return hot || null;
+    const latest = insights[insights.length - 1];
+    return latest && (latest.risk_level === "red" || latest.risk_level === "yellow")
+      ? latest
+      : null;
   }, [insights]);
 
   const chatAlertByMsgId = useMemo(
@@ -1254,6 +1267,26 @@ export default function CollabRisk({
     setActiveXiaoceRun((current) => mergeXiaoceRunSnapshot(current, newest));
   }, []);
 
+  const mergeLiveReadReceipts = useCallback((receipts: CollabReadReceipt[]) => {
+    if (!receipts.length) return;
+    const byUser = new Map(
+      receipts.map((receipt) => [receipt.user_id, receipt.last_read_message_id]),
+    );
+    setActiveRoom((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const participants = prev.participants.map((participant) => {
+        const cursor = byUser.get(participant.id);
+        if (cursor === undefined || cursor <= (participant.last_read_message_id || 0)) {
+          return participant;
+        }
+        changed = true;
+        return { ...participant, last_read_message_id: cursor };
+      });
+      return changed ? { ...prev, participants } : prev;
+    });
+  }, []);
+
   const patchRoomMeta = useCallback((meta: Partial<CollabRoom>) => {
     setActiveRoom((prev) => {
       if (!prev) return prev;
@@ -1323,6 +1356,7 @@ export default function CollabRisk({
     mergeInsights: mergeLiveInsights,
     patchRoomMeta,
     onXiaoceRuns: mergeLiveXiaoceRuns,
+    onReadReceipts: mergeLiveReadReceipts,
     setRoomStats,
     participantsEqual: participantsPresenceEqual,
   });
@@ -2526,9 +2560,16 @@ export default function CollabRisk({
         className={`collab-main${isXiaoce ? " xiaoce-chat-shell" : ""}`}
       >
         {!activeRoom ? (
-          <div className="collab-empty soft">
-            {activeId ? "正在打开会话…" : "从左侧选择会话，或打开通讯录发起聊天"}
-          </div>
+          activeId ? (
+            <div className="collab-empty soft">正在打开会话…</div>
+          ) : (
+            <div className="collab-welcome-stage">
+              <CollabWelcome
+                onOpenContacts={() => setSiderTab("contacts")}
+                onCreateGroup={() => setGroupOpen(true)}
+              />
+            </div>
+          )
         ) : (
           <>
             <header className="collab-main-head">
@@ -2781,9 +2822,9 @@ export default function CollabRisk({
                   : "";
                 const isSystem = m.msg_type === "system" || m.status === "recalled";
                 const mine = !isAi && !isSystem && me && m.sender.id === me.id;
-                const receiptMembers = activeRoom.room_kind === "group"
-                  ? activeRoom.participants.filter((participant) => participant.id !== m.sender.id)
-                  : [];
+                const receiptMembers = activeRoom.participants.filter(
+                  (participant) => participant.id !== m.sender.id,
+                );
                 const receiptRead = receiptMembers.filter(
                   (participant) => (participant.last_read_message_id || 0) >= m.id,
                 );
@@ -2793,6 +2834,9 @@ export default function CollabRisk({
                 const readNames = receiptRead.map((participant) => memberLabel(participant));
                 const unreadNames = receiptUnread.map((participant) => memberLabel(participant));
                 const unreadReceiptCount = receiptUnread.length;
+                const readStateLabel = activeRoom.room_kind === "group"
+                  ? (unreadReceiptCount === 0 ? "全部已读" : `${unreadReceiptCount} 人未读`)
+                  : (unreadReceiptCount === 0 ? "已读" : "未读");
                 // 消息自带旗标，或洞察/告警挂到证据消息上 → 显示红/黄连线
                 const chatAlert = !isSystem ? chatAlertByMsgId.get(m.id) : undefined;
                 const flagLevel = (
@@ -2831,15 +2875,18 @@ export default function CollabRisk({
                       className={`collab-msg ${mine ? "mine" : "peer"} ${isAi ? "ai" : ""} ${isInterject ? "interject" : ""} ${isCollabSuggest ? "suggest" : ""} ${flagged ? "flagged" : ""} ${highlightId === m.id ? "highlight" : ""}`}
                     >
                       <div className="collab-msg-aside">
-                        <span className="collab-msg-name">
-                          {isAi ? aiLabel : memberLabel(m.sender)}
-                          {isCollabSuggest ? <em className="collab-suggest-tag">建议</em> : null}
-                          {isInterject ? <em className="collab-interject-tag">警告</em> : null}
-                        </span>
+                        <Tooltip title={`发送于 ${formatChatTimeSep(m.created_at)}`}>
+                          <span className="collab-msg-name">
+                            {isAi ? aiLabel : memberLabel(m.sender)}
+                            {isCollabSuggest ? <em className="collab-suggest-tag">建议</em> : null}
+                            {isInterject ? <em className="collab-interject-tag">警告</em> : null}
+                          </span>
+                        </Tooltip>
                         <ProfileAvatarPopover
                           ai={isAi}
                           interject={isInterject}
                           suggest={isCollabSuggest}
+                          sentAt={m.created_at}
                           placement={mine ? "leftTop" : "rightTop"}
                           online={!isAi
                             ? activeRoom?.participants.find((p) => p.id === m.sender.id)?.online
@@ -2944,15 +2991,16 @@ export default function CollabRisk({
                           </div>
                         ) : null}
                       </div>
-                      {mine && activeRoom.room_kind === "group" && m.id > 0 ? (
+                      {mine && receiptMembers.length > 0 && m.id > 0 ? (
                         <Popover
                           trigger="click"
                           placement="bottomRight"
                           content={(
                             <div className="collab-read-popover">
-                              <strong>消息回执</strong>
-                              <span>已读：{readNames.length ? readNames.join("、") : "暂无"}</span>
-                              <span>未读：{unreadNames.length ? unreadNames.join("、") : "全部已读"}</span>
+                            <strong>{activeRoom.room_kind === "group" ? "群消息回执" : "消息状态"}</strong>
+                            <span>已读：{readNames.length ? readNames.join("、") : "暂无"}</span>
+                            <span>未读：{unreadNames.length ? unreadNames.join("、") : "全部已读"}</span>
+                            <span>发送时间：{formatChatTimeSep(m.created_at)}</span>
                             </div>
                           )}
                         >
@@ -2960,7 +3008,7 @@ export default function CollabRisk({
                             type="button"
                             className={`collab-read-state${unreadReceiptCount === 0 ? " is-all-read" : ""}`}
                           >
-                            {unreadReceiptCount === 0 ? "全部已读" : `${unreadReceiptCount} 人未读`}
+                            {readStateLabel}
                           </button>
                         </Popover>
                       ) : null}
@@ -3501,7 +3549,7 @@ const css = `
 .collab-ai {
   border-left: 1px solid #e8edf5;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 .collab-sider-head, .collab-ai-head, .collab-main-head {
   display: flex;
@@ -3829,6 +3877,14 @@ const css = `
 }
 .collab-profile-online.on { color: #2f9e6c; }
 .collab-profile-online.off { color: #93a0b4; }
+.collab-profile-sent-at {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #edf0f5;
+  color: #7d899c;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .collab-online-dot {
   position: absolute;
   right: 1px;
@@ -4672,9 +4728,11 @@ const css = `
 .collab-monitor {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px;
+  padding: 12px 12px 24px;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -5099,9 +5157,8 @@ const css = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: min(36vh, 280px);
-  overflow: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
   padding-right: 2px;
 }
 .collab-mini-bars {
