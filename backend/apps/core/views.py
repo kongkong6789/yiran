@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import mimetypes
 import json
 import io
@@ -12,7 +12,8 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import transaction
-from django.db.models import Min, Q
+from django.db.models import Count, Min, Q
+from django.db.models.functions import TruncDate
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -154,6 +155,283 @@ def audit_logs(request):
     return Response({"count": len(data), "results": data})
 
 
+# ================= 超级管理员日志中心 =================
+
+# 操作动作 -> 操作类型（用于图表分组与表格标签）
+_OP_TYPE_RULES = [
+    ("skill", "技能调用", ("skill", "agent", "council", "chat")),
+    ("knowledge", "知识库管理", ("knowledge", "doc", "ontology", "table", "datalake", "memory")),
+    ("app", "应用管理", ("wecom", "connector", "mcp", "app", "automation", "webhook")),
+    ("user", "用户管理", ("user", "auth", "account", "login", "logout", "register", "password", "avatar")),
+    ("role", "角色与权限", ("org", "organization", "team", "role", "perm", "member")),
+    ("system", "系统设置", ("system", "config", "setting")),
+]
+
+_DECISION_STATUS = {
+    "allow": ("success", "成功"),
+    "block": ("failed", "失败"),
+    "need_approval": ("pending", "待审批"),
+    "dry_run": ("dryrun", "演练"),
+}
+
+# 顶部页签 -> 过滤条件
+_LOG_CATEGORIES = {"operation", "login", "system", "security", "data_change"}
+
+
+def _classify_op_type(action: str, intent: str = "") -> tuple[str, str]:
+    text = f"{action or ''} {intent or ''}".lower()
+    for key, label, needles in _OP_TYPE_RULES:
+        if any(needle in text for needle in needles):
+            return key, label
+    return "other", "其他操作"
+
+
+def _apply_log_category(qs, category: str):
+    if category == "login":
+        return qs.filter(Q(action__icontains="login") | Q(action__icontains="logout") | Q(action__icontains="auth"))
+    if category == "system":
+        return qs.filter(Q(action__icontains="system") | Q(action__icontains="config") | Q(action__icontains="setting"))
+    if category == "security":
+        # 安全相关：被拦截/待审批的动作，以及登录失败、成员移除、角色/权限调整等敏感操作
+        return qs.filter(
+            Q(decision__in=["block", "need_approval"])
+            | Q(action__icontains="login_failed")
+            | Q(action__icontains="remove_member")
+            | Q(action__icontains="assign_users")
+            | Q(action__icontains="role")
+            | Q(action__icontains="perm")
+            | Q(action__icontains="password")
+        )
+    if category == "data_change":
+        return qs.filter(
+            Q(action__icontains="create") | Q(action__icontains="update") | Q(action__icontains="delete")
+            | Q(action__icontains="add") | Q(action__icontains="remove") | Q(action__icontains="config")
+        )
+    return qs
+
+
+def _parse_day(value: str):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _kpi(value: int, previous: int) -> dict:
+    if previous > 0:
+        delta = round((value - previous) / previous * 100, 1)
+    else:
+        delta = 100.0 if value > 0 else 0.0
+    return {"value": value, "deltaPct": abs(delta), "trend": "up" if delta > 0 else "down" if delta < 0 else "flat"}
+
+
+def _resource_from_payload(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("name", "title", "resource_name", "organization_name", "team_name", "target"):
+        if payload.get(key):
+            return str(payload[key])[:80]
+    for key in ("organization_id", "team_id", "user_id", "id"):
+        if payload.get(key) not in (None, ""):
+            return f"#{payload[key]}"
+    return ""
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def audit_overview(request):
+    """超级管理员日志中心：概览指标 + 趋势 + 类型分布 + TOP 用户 + 明细分页。"""
+    if not request.user.is_superuser:
+        return Response({"ok": False, "detail": "仅超级管理员可查看日志。"}, status=403)
+
+    User = get_user_model()
+    params = request.query_params
+    category = params.get("category") or "operation"
+    if category not in _LOG_CATEGORIES:
+        category = "operation"
+
+    today = timezone.localdate()
+    end_day = _parse_day(params.get("end") or "") or today
+    start_day = _parse_day(params.get("start") or "") or (end_day - timedelta(days=29))
+    if start_day > end_day:
+        start_day, end_day = end_day, start_day
+    span_days = (end_day - start_day).days + 1
+
+    tz = timezone.get_current_timezone()
+    start_dt = timezone.make_aware(datetime.combine(start_day, datetime.min.time()), tz)
+    end_dt = timezone.make_aware(datetime.combine(end_day, datetime.max.time()), tz)
+    prev_start_dt = start_dt - timedelta(days=span_days)
+
+    # 概览/图表基线：页签 + 日期范围
+    base = _apply_log_category(AuditLog.objects.all(), category)
+    ranged = base.filter(created_at__gte=start_dt, created_at__lte=end_dt)
+    prev = base.filter(created_at__gte=prev_start_dt, created_at__lt=start_dt)
+
+    total_ops = ranged.count()
+    error_ops = ranged.filter(decision="block").count()
+    sensitive_ops = ranged.filter(decision="need_approval").count()
+    active_users = ranged.values("actor").distinct().count()
+
+    prev_total = prev.count()
+    prev_error = prev.filter(decision="block").count()
+    prev_sensitive = prev.filter(decision="need_approval").count()
+    prev_active = prev.values("actor").distinct().count()
+
+    total_users = User.objects.count()
+    new_users = User.objects.filter(date_joined__gte=start_dt, date_joined__lte=end_dt).count()
+    prev_new_users = User.objects.filter(date_joined__gte=prev_start_dt, date_joined__lt=start_dt).count()
+
+    kpis = {
+        "totalOps": _kpi(total_ops, prev_total),
+        "totalUsers": {"value": total_users, **{k: v for k, v in _kpi(new_users, prev_new_users).items() if k != "value"}},
+        "errorOps": _kpi(error_ops, prev_error),
+        "sensitiveOps": _kpi(sensitive_ops, prev_sensitive),
+        "activeUsers": _kpi(active_users, prev_active),
+    }
+
+    # 趋势：按天补零
+    trend_map = {
+        row["day"].isoformat(): row["c"]
+        for row in ranged.annotate(day=TruncDate("created_at")).values("day").annotate(c=Count("id"))
+        if row["day"]
+    }
+    trend = []
+    cursor = start_day
+    while cursor <= end_day:
+        iso = cursor.isoformat()
+        trend.append({"date": iso, "count": trend_map.get(iso, 0)})
+        cursor += timedelta(days=1)
+
+    # 类型分布
+    dist_counter: dict[str, dict] = {}
+    for item in ranged.values("action", "intent").annotate(c=Count("id")):
+        key, label = _classify_op_type(item["action"], item["intent"])
+        bucket = dist_counter.setdefault(key, {"key": key, "label": label, "count": 0})
+        bucket["count"] += item["c"]
+    distribution = sorted(dist_counter.values(), key=lambda x: x["count"], reverse=True)
+    for entry in distribution:
+        entry["pct"] = round(entry["count"] / total_ops * 100, 1) if total_ops else 0.0
+
+    # TOP 操作用户
+    top_rows = list(ranged.values("actor").annotate(c=Count("id")).order_by("-c")[:5])
+    actor_names = {r["actor"] for r in top_rows}
+
+    # 明细：叠加类型/状态/用户/关键字过滤 + 分页
+    rows_qs = ranged
+    op_type = params.get("type") or ""
+    if op_type and op_type != "all":
+        needles = next((r[2] for r in _OP_TYPE_RULES if r[0] == op_type), None)
+        if needles:
+            cond = Q()
+            for needle in needles:
+                cond |= Q(action__icontains=needle) | Q(intent__icontains=needle)
+            rows_qs = rows_qs.filter(cond)
+        elif op_type == "other":
+            known = [n for r in _OP_TYPE_RULES for n in r[2]]
+            cond = Q()
+            for needle in known:
+                cond |= Q(action__icontains=needle) | Q(intent__icontains=needle)
+            rows_qs = rows_qs.exclude(cond)
+    status_filter = params.get("status") or ""
+    decision_by_status = {v[0]: k for k, v in _DECISION_STATUS.items()}
+    if status_filter and status_filter != "all" and status_filter in decision_by_status:
+        rows_qs = rows_qs.filter(decision=decision_by_status[status_filter])
+    user_filter = params.get("user") or ""
+    if user_filter and user_filter != "all":
+        rows_qs = rows_qs.filter(actor=user_filter)
+    keyword = (params.get("q") or "").strip()
+    if keyword:
+        rows_qs = rows_qs.filter(
+            Q(actor__icontains=keyword) | Q(intent__icontains=keyword)
+            | Q(action__icontains=keyword) | Q(trace_id__icontains=keyword)
+        )
+
+    try:
+        page = max(1, int(params.get("page", 1)))
+    except ValueError:
+        page = 1
+    try:
+        page_size = min(100, max(5, int(params.get("pageSize", 10))))
+    except ValueError:
+        page_size = 10
+    total_rows = rows_qs.count()
+    offset = (page - 1) * page_size
+    page_rows = list(rows_qs.order_by("-created_at")[offset:offset + page_size])
+
+    # 用户展示信息（display_name / 角色 / 头像首字母）
+    needed_usernames = actor_names | {r.actor for r in page_rows}
+    users_by_name = {}
+    for u in User.objects.filter(username__in=needed_usernames).select_related("settings"):
+        display = (getattr(getattr(u, "settings", None), "display_name", "") or u.username).strip()
+        if u.is_superuser:
+            role_label = "超级管理员"
+        elif u.is_staff:
+            role_label = "管理员"
+        else:
+            role_label = "成员"
+        users_by_name[u.username] = {
+            "name": display,
+            "roleLabel": role_label,
+            "avatarUrl": getattr(getattr(u, "settings", None), "avatar_url", "") or "",
+        }
+
+    def _actor_info(actor: str) -> dict:
+        if actor in users_by_name:
+            return users_by_name[actor]
+        if actor in ("agent", "system", "cron", ""):
+            return {"name": actor or "系统", "roleLabel": "系统", "avatarUrl": ""}
+        return {"name": actor, "roleLabel": "成员", "avatarUrl": ""}
+
+    top_users = [
+        {**_actor_info(r["actor"]), "actor": r["actor"], "count": r["c"]}
+        for r in top_rows
+    ]
+
+    def _row_payload(log: AuditLog) -> dict:
+        type_key, type_label = _classify_op_type(log.action, log.intent)
+        status_key, status_label = _DECISION_STATUS.get(log.decision, ("dryrun", log.decision or "-"))
+        payload = log.payload if isinstance(log.payload, dict) else {}
+        return {
+            "id": log.id,
+            "time": timezone.localtime(log.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+            "user": _actor_info(log.actor),
+            "operationType": {"key": type_key, "label": type_label},
+            "content": log.intent or log.action or "-",
+            "detail": log.action or "",
+            "resourceType": type_label,
+            "resourceName": _resource_from_payload(payload) or "-",
+            "ip": str(payload.get("ip") or payload.get("ip_address") or "-"),
+            "status": {"key": status_key, "label": status_label},
+            "traceId": log.trace_id,
+        }
+
+    rows = [_row_payload(log) for log in page_rows]
+
+    # 过滤下拉的可选项
+    all_actors = list(base.values_list("actor", flat=True).distinct()[:200])
+    user_options = [
+        {"value": actor, "label": _actor_info(actor)["name"]}
+        for actor in sorted(set(all_actors))
+        if actor
+    ]
+
+    return Response({
+        "ok": True,
+        "range": {"start": start_day.isoformat(), "end": end_day.isoformat()},
+        "kpis": kpis,
+        "trend": trend,
+        "distribution": distribution,
+        "topUsers": top_users,
+        "rows": rows,
+        "pagination": {"page": page, "pageSize": page_size, "total": total_rows},
+        "filters": {
+            "operationTypes": [{"value": r[0], "label": r[1]} for r in _OP_TYPE_RULES] + [{"value": "other", "label": "其他操作"}],
+            "statuses": [{"value": v[0], "label": v[1]} for v in _DECISION_STATUS.values()],
+            "users": user_options,
+        },
+    })
+
+
 def _task_result_payload(row: TaskResultRecord) -> dict:
     return {
         "id": row.id, "traceId": row.trace_id, "sopId": row.sop_id, "status": row.status,
@@ -221,6 +499,15 @@ def task_attention_resolve(request, trace_id: str, item_id: str):
 
 
 def _work_task_payload(row: WorkTask) -> dict:
+    sender_settings = getattr(row.sender, "settings", None)
+    assignee_members = []
+    for user in row.assignees.all():
+        profile = getattr(user, "settings", None)
+        assignee_members.append({
+            "id": user.id,
+            "name": (getattr(profile, "display_name", "") or user.get_full_name() or user.username).strip(),
+            "avatarUrl": getattr(profile, "avatar_url", "") or "",
+        })
     return {
         "id": row.id,
         "traceId": row.trace_id,
@@ -228,8 +515,10 @@ def _work_task_payload(row: WorkTask) -> dict:
         "sopId": row.sop_id,
         "senderId": row.sender_id,
         "sender": row.sender.get_full_name() or row.sender.username,
+        "senderAvatar": getattr(sender_settings, "avatar_url", "") or "",
         "assigneeIds": list(row.assignees.values_list("id", flat=True)),
         "assignees": row.assignee_names,
+        "assigneeMembers": assignee_members,
         "assigneeWeComUserIds": row.assignee_wecom_userids,
         "agentName": row.agent_name,
         "deadline": row.deadline.isoformat() if row.deadline else None,
@@ -571,7 +860,7 @@ def work_automation_detail(request, automation_id: int):
 def work_tasks(request):
     if request.method == "GET":
         view = str(request.query_params.get("view") or "sent")
-        rows = WorkTask.objects.select_related("sender").prefetch_related("assignees", "artifacts")
+        rows = WorkTask.objects.select_related("sender", "sender__settings").prefetch_related("assignees__settings", "artifacts")
         rows = rows.filter(assignees=request.user) if view == "received" else rows.filter(sender=request.user)
         rows = rows.distinct()[:100]
         return Response({"ok": True, "count": len(rows), "results": [_work_task_payload(row) for row in rows]})
@@ -747,7 +1036,7 @@ def work_task_detail(request, trace_id: str):
 
 def _visible_work_task(request, trace_id: str):
     return get_object_or_404(
-        WorkTask.objects.prefetch_related("assignees", "artifacts").filter(
+        WorkTask.objects.select_related("sender", "sender__settings").prefetch_related("assignees__settings", "artifacts").filter(
             Q(sender=request.user) | Q(assignees=request.user),
         ).distinct(),
         trace_id=trace_id,

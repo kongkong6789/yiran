@@ -10,7 +10,10 @@ from django.http import HttpResponse
 from django.utils import timezone
 from xml.etree import ElementTree
 
-from .binding_service import create_sync_job, dispatch_sync_job, manual_bind, match_user, resolve_binding_config, run_sync_job
+from .binding_service import (
+    create_sync_job, dispatch_sync_job, manual_bind, match_user,
+    requeue_not_configured_bindings, resolve_binding_config, run_sync_job,
+)
 from .models import UserWeComBinding, WeComApiConfig, WeComBindingAuditLog, WeComBindingSyncJob, WeComContact
 from .serializers import (
     BindingAuditLogSerializer, BindingSyncJobSerializer, ManualBindingSerializer,
@@ -79,6 +82,9 @@ def api_config(request):
     )
     serializer.is_valid(raise_exception=True)
     saved = serializer.save()
+    retry_job = requeue_not_configured_bindings(config=saved, actor=request.user)
+    if retry_job:
+        dispatch_sync_job(retry_job.id)
     return Response({"ok": True, **WeComApiConfigSerializer(saved, context={"request": request}).data})
 
 

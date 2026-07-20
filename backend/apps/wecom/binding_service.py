@@ -278,6 +278,51 @@ def create_sync_job(*, config: WeComApiConfig, actor=None, source=UserWeComBindi
     return WeComBindingSyncJob.objects.create(config=config, actor=actor, source=source, batch_size=min(max(int(batch_size), 1), 500))
 
 
+def requeue_not_configured_bindings(*, config: WeComApiConfig, actor=None) -> WeComBindingSyncJob | None:
+    """Requeue stale failures after the organization's API becomes available."""
+    if not config.configured:
+        return None
+    organization_ids = (
+        organization_user_ids(config.organization)
+        if config.organization_id
+        else [config.user_id]
+    )
+    stale = list(UserWeComBinding.objects.filter(
+        platform_user_id__in=organization_ids,
+        status=UserWeComBinding.Status.PERMISSION_DENIED,
+        failure_code="WECOM_NOT_CONFIGURED",
+    ).filter(
+        Q(wecom_config__isnull=True) | Q(wecom_config__organization=config.organization)
+    ))
+    if not stale:
+        return None
+
+    with transaction.atomic():
+        for binding in stale:
+            binding.wecom_config = config
+            binding.status = UserWeComBinding.Status.PENDING
+            binding.source = UserWeComBinding.Source.MANUAL
+            binding.failure_code = ""
+            binding.failure_reason = ""
+            binding.next_retry_at = None
+            binding.save(update_fields=[
+                "wecom_config", "status", "source", "failure_code",
+                "failure_reason", "next_retry_at", "updated_at",
+            ])
+            _audit(
+                binding,
+                actor=actor,
+                action="config_available_retry",
+                message="企业微信 API 已配置，系统已重新安排成员匹配。",
+            )
+        return create_sync_job(
+            config=config,
+            actor=actor,
+            source=UserWeComBinding.Source.MANUAL,
+            batch_size=min(len(stale), 100),
+        )
+
+
 def dispatch_sync_job(job_id: int):
     # 任务已经持久化为 pending，由 process_wecom_queue 工作进程领取。
     return WeComBindingSyncJob.objects.get(id=job_id)

@@ -17,6 +17,7 @@ import {
 import {
   getWeComApiError, getWeComUsers, type WeComMember,
 } from "../features/task-console/mockWeCom";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 const errorText = (error: unknown) =>
   (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "操作失败，请稍后重试。";
@@ -53,7 +54,7 @@ const RecipientSummary = ({ item }: { item: WorkTodoItem }) => {
       <div className="work-todo-recipient-popover-title">全部负责人（{recipients.length}）</div>
       {recipients.map((recipient, index) => (
         <div className="work-todo-recipient-detail" key={`${recipient.type}-${recipient.name}-${index}`}>
-          <Avatar size={30} src={recipient.avatar || undefined} icon={!recipient.avatar ? <UserOutlined /> : undefined} />
+          <Avatar size={30} src={authenticatedAvatarUrl(recipient.avatar)} icon={!recipient.avatar ? <UserOutlined /> : undefined} />
           <span className="work-todo-recipient-detail-name">{recipient.name}</span>
           <Tag>{recipient.type === "wecom" ? "企微通讯录" : "平台成员"}</Tag>
         </div>
@@ -66,7 +67,7 @@ const RecipientSummary = ({ item }: { item: WorkTodoItem }) => {
       <span className="work-todo-recipient-label">负责人：</span>
       {visibleRecipients.map((recipient, index) => (
         <span className="work-todo-recipient-chip" key={`${recipient.type}-${recipient.name}-${index}`}>
-          <Avatar size={20} src={recipient.avatar || undefined} icon={!recipient.avatar ? <UserOutlined /> : undefined} />
+          <Avatar size={20} src={authenticatedAvatarUrl(recipient.avatar)} icon={!recipient.avatar ? <UserOutlined /> : undefined} />
           <span>{recipient.name}</span>
           {recipient.type === "wecom" && <em>企微</em>}
         </span>
@@ -540,7 +541,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                 if (!member) return option.label;
                 return (
                   <div className="work-todo-member-option">
-                    <Avatar size={34} src={member.avatar || undefined} icon={!member.avatar ? <UserOutlined /> : undefined} />
+                    <Avatar size={34} src={authenticatedAvatarUrl(member.avatar)} icon={!member.avatar ? <UserOutlined /> : undefined} />
                     <div className="work-todo-member-option-copy">
                       <strong>{member.name}</strong>
                       <span>{member.department || "当前企业成员"}</span>
@@ -553,7 +554,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                 const member = platformMemberById.get(Number(value));
                 return (
                   <Tag className="work-todo-member-tag" closable={closable} onClose={onClose}>
-                    <Avatar size={18} src={member?.avatar || undefined} icon={!member?.avatar ? <UserOutlined /> : undefined} />
+                    <Avatar size={18} src={authenticatedAvatarUrl(member?.avatar)} icon={!member?.avatar ? <UserOutlined /> : undefined} />
                     <span>{member?.name || "平台成员"}</span>
                   </Tag>
                 );

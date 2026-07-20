@@ -35,6 +35,7 @@ urlpatterns = [
         name="agent-chat-session-detail",
     ),
     path("audit-logs/", views.audit_logs, name="audit-logs"),
+    path("audit/overview/", views.audit_overview, name="audit-overview"),
     path("task-results/", views.task_results, name="task-results"),
     path("task-results/<str:trace_id>/", views.task_result_detail, name="task-result-detail"),
     path("task-results/<str:trace_id>/export/", views.task_result_export, name="task-result-export"),

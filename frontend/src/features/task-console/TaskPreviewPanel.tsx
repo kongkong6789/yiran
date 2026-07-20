@@ -8,6 +8,7 @@ import type { ExecutionField } from "./executionFields";
 import { executionFieldDisplayValue } from "./executionFields";
 import type { TaskAssignmentValue } from "./mockWeCom";
 import WeComConnectionStatus from "./WeComConnectionStatus";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const fieldValue = (fields: ExecutionField[], key: string, fallback: string) => {
   const field = fields.find((item) => item.key === key);
@@ -73,7 +74,10 @@ export default function TaskPreviewPanel({
         <span>负责人</span>
         <div>
           <Avatar.Group size={28}>
-            {assignment.assigneeIds.slice(0, 3).map((id) => <Avatar key={id} icon={<UserOutlined />} />)}
+            {(assignment.assignees || []).slice(0, 3).map((member) => (
+              <Avatar key={member.key} src={authenticatedAvatarUrl(member.avatar)} icon={!member.avatar ? <UserOutlined /> : undefined} />
+            ))}
+            {!assignment.assignees?.length && assignment.assigneeIds.slice(0, 3).map((id) => <Avatar key={id} icon={<UserOutlined />} />)}
           </Avatar.Group>
           <strong>{assignment.assigneeIds.length ? `${assignment.assigneeIds.length} 位负责人` : "尚未选择"}</strong>
         </div>

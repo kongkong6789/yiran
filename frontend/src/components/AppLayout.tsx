@@ -6,6 +6,7 @@ import {
   BookOutlined,
   BulbOutlined,
   DatabaseOutlined,
+  FileSearchOutlined,
   FlagOutlined,
   HomeOutlined,
   LeftOutlined,
@@ -74,6 +75,9 @@ const ADMIN_NAV: NavItem[] = [
   { key: "/agents", icon: <ApartmentOutlined />, label: "对象管理" },
 ];
 
+/** 仅超级管理员可见 */
+const LOGS_NAV: NavItem = { key: "/logs", icon: <FileSearchOutlined />, label: "日志" };
+
 const SECTIONS: NavSection[] = [
   {
     key: "work",
@@ -133,6 +137,7 @@ const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
   ["/commerce", "commerce"],
   ["/datalake", "capability"],
   ["/audit", "admin"],
+  ["/logs", "admin"],
 ];
 
 const FULL_BLEED = new Set([
@@ -185,10 +190,11 @@ export default function AppLayout() {
   const isFullBleed = FULL_BLEED.has(loc.pathname);
 
   const selectedKeys = useMemo(() => {
-    const ordered = [...ALL_VISIBLE_NAV].sort((a, b) => b.key.length - a.key.length);
+    const navItems = user?.is_superuser ? [...ALL_VISIBLE_NAV, LOGS_NAV] : ALL_VISIBLE_NAV;
+    const ordered = [...navItems].sort((a, b) => b.key.length - a.key.length);
     const hit = ordered.find((item) => routeMatches(loc.pathname, item.key));
     return hit ? [hit.key] : [];
-  }, [loc.pathname]);
+  }, [loc.pathname, user?.is_superuser]);
 
   const userMenu = {
     items: [
@@ -363,7 +369,11 @@ export default function AppLayout() {
             mode="inline"
             inlineCollapsed={compactSidebar}
             selectedKeys={selectedKeys}
-            items={activeSection.items.map((item) => ({
+            items={(
+              activeSection.key === "admin" && user?.is_superuser
+                ? [...activeSection.items, LOGS_NAV]
+                : activeSection.items
+            ).map((item) => ({
               key: item.key,
               icon: item.icon,
               label: item.label,

@@ -47,8 +47,11 @@ export default function RecipientSelector({ value, onChange, refreshKey = 0 }: P
       const current = valueRef.current;
       const validKeys = new Set(results.map((member) => member.key));
       const validAssignees = current.assigneeIds.filter((key) => validKeys.has(key));
-      if (validAssignees.length !== current.assigneeIds.length) {
-        onChange({ ...current, assigneeIds: validAssignees });
+      const selected = results
+        .filter((member) => validAssignees.includes(member.key))
+        .map((member) => ({ key: member.key, name: member.name, avatar: member.avatar }));
+      if (validAssignees.length !== current.assigneeIds.length || selected.length !== current.assignees?.length) {
+        onChange({ ...current, assigneeIds: validAssignees, assignees: selected });
       }
     } catch (loadError) {
       setMembers([]);
@@ -157,7 +160,13 @@ export default function RecipientSelector({ value, onChange, refreshKey = 0 }: P
             }
             notFoundContent={loading ? "正在加载…" : "暂无可选成员"}
             maxTagCount="responsive"
-            onChange={(ids) => onChange({ ...value, assigneeIds: ids })}
+            onChange={(ids) => onChange({
+              ...value,
+              assigneeIds: ids,
+              assignees: members
+                .filter((member) => ids.includes(member.key))
+                .map((member) => ({ key: member.key, name: member.name, avatar: member.avatar })),
+            })}
             optionLabelProp="label"
             options={members.map((member) => ({
               value: member.key,

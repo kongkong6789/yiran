@@ -7,6 +7,7 @@ import {
   LockOutlined,
   MinusCircleOutlined,
   MobileOutlined,
+  PayCircleOutlined,
   SafetyCertificateOutlined,
   UserOutlined,
 } from "@ant-design/icons";
@@ -26,6 +27,7 @@ import {
   type UserProfileSettings,
   type UserWeComBindingSummary,
 } from "../api/client";
+import BillingPanel from "./user-settings/BillingPanel";
 import { CurrentEnterpriseCard, UserProfileHeader } from "./user-settings/ProfileIdentity";
 
 const BINDING_STATUS_COLOR: Record<string, string> = {
@@ -40,12 +42,13 @@ const BINDING_STATUS_COLOR: Record<string, string> = {
   disabled: "default",
 };
 
-type SectionKey = "profile" | "password" | "llm";
+type SectionKey = "profile" | "password" | "llm" | "billing";
 
 const NAV_ITEMS: { key: SectionKey; label: string; icon: JSX.Element; subtitle: string }[] = [
   { key: "profile", label: "个人信息", icon: <UserOutlined />, subtitle: "维护昵称、头像与联系方式" },
   { key: "password", label: "登录密码", icon: <LockOutlined />, subtitle: "保障你的账号安全" },
   { key: "llm", label: "模型密钥", icon: <CodeOutlined />, subtitle: "配置个人 LLM 供应商" },
+  { key: "billing", label: "计费", icon: <PayCircleOutlined />, subtitle: "套餐、额度与账单概览" },
 ];
 
 const COMMON_PWD = new Set([
@@ -446,9 +449,20 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
             </Form>
           </div>
 
+          {/* 计费 */}
+          <div className="ups-section ups-section-billing" hidden={active !== "billing"}>
+            <BillingPanel
+              ownerName={displayName || username}
+              email={email}
+              organizationName={currentOrganization?.name || authUser?.organization?.name || ""}
+            />
+          </div>
+
           <div className="ups-footer">
-            <Button onClick={onClose}>取消</Button>
-            <Button type="primary" className="ups-primary" loading={saving} onClick={handleOk}>保存</Button>
+            <Button onClick={onClose}>{active === "billing" ? "关闭" : "取消"}</Button>
+            {active !== "billing" && (
+              <Button type="primary" className="ups-primary" loading={saving} onClick={handleOk}>保存</Button>
+            )}
           </div>
         </div>
       </div>

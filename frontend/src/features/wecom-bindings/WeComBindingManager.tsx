@@ -14,6 +14,7 @@ import {
   type AdminUserRow,
 } from "../../api/client";
 import { getManagedWeComUsers, type ManagedWeComMember } from "../task-console/mockWeCom";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const statusColors: Record<WeComBindingStatus, string> = {
   matched: "green",
@@ -182,7 +183,9 @@ export default function WeComBindingManager() {
             sorter: (left, right) => compareText(left.platformUser, right.platformUser),
             render: (_: unknown, row) => (
               <div className="account-member-cell">
-                <Avatar>{row.platformUser.slice(0, 1).toUpperCase()}</Avatar>
+                <Avatar src={authenticatedAvatarUrl(row.platformAvatar)}>
+                  {row.platformUser.slice(0, 1).toUpperCase()}
+                </Avatar>
                 <span>
                   <strong>{row.platformUser}</strong>
                   <small>良策工作台成员</small>

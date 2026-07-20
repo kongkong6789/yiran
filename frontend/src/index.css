@@ -976,6 +976,265 @@ body {
 }
 .ups-primary.ant-btn-primary:hover { background: linear-gradient(135deg, #9b6ff8, #7c3aed) !important; }
 
+/* ===== 计费 Tab ===== */
+.ups-section-billing { padding-bottom: 16px; }
+.ups-billing { display: flex; flex-direction: column; gap: 14px; }
+.ups-bill-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.ups-bill-kpi {
+  padding: 14px 14px 12px;
+  border: 1px solid #eef0f5;
+  border-radius: 12px;
+  background: #fff;
+}
+.ups-bill-kpi-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #6b7488;
+  font-size: 12px;
+}
+.ups-bill-kpi-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.ups-bill-kpi-icon.is-plan { color: #7c3aed; background: #f1ecfe; }
+.ups-bill-kpi-icon.is-spend { color: #2563eb; background: #e8f0fe; }
+.ups-bill-kpi-icon.is-balance { color: #0e9f6e; background: #e6f6ef; }
+.ups-bill-kpi-icon.is-usage { color: #d97706; background: #fdf1e3; }
+.ups-bill-kpi-value {
+  margin-top: 10px;
+  color: #171b26;
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: .2px;
+}
+.ups-bill-plan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+}
+.ups-bill-plan em {
+  font-style: normal;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1ecfe;
+  color: #7c3aed;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ups-bill-card {
+  padding: 14px 16px;
+  border: 1px solid #eef0f5;
+  border-radius: 12px;
+  background: #fff;
+}
+.ups-bill-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.ups-bill-card-head strong {
+  color: #1f2430;
+  font-size: 14px;
+}
+.ups-bill-card-actions { display: flex; gap: 8px; }
+.ups-bill-primary.ant-btn-primary {
+  border: 0;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  box-shadow: 0 6px 14px rgba(109, 40, 217, .24);
+}
+.ups-bill-primary.ant-btn-primary:hover {
+  background: linear-gradient(135deg, #9b6ff8, #7c3aed) !important;
+}
+
+.ups-bill-account-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.ups-bill-account-grid label {
+  display: block;
+  margin-bottom: 4px;
+  color: #9aa4b6;
+  font-size: 12px;
+}
+.ups-bill-account-grid > div > div {
+  color: #2a3345;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.ups-bill-pay-method {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #eef0f5;
+  background: #fafbfe;
+}
+.ups-bill-pay-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: #07c160;
+  background: #e8f8ef;
+  font-size: 18px;
+  flex: none;
+}
+.ups-bill-pay-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #1f2430;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.ups-bill-pay-method small {
+  display: block;
+  margin-top: 2px;
+  color: #9aa4b6;
+  font-size: 12px;
+}
+.ups-bill-default-tag.ant-tag {
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #f1ecfe;
+  color: #7c3aed;
+  font-size: 11px;
+  font-weight: 700;
+}
+.ups-bill-pay-deco {
+  margin-left: auto;
+  color: #d5dae4;
+  font-size: 20px;
+}
+
+.ups-bill-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ups-bill-table .ant-table-thead > tr > th {
+  background: #fafbfd;
+  color: #6b7488;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ups-bill-mono {
+  color: #4b5468;
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.ups-bill-amount { color: #1f2430; font-weight: 700; }
+.ups-bill-status.ant-tag { border-radius: 6px; border: 0; font-weight: 650; }
+.ups-bill-actions { display: inline-flex; align-items: center; gap: 6px; }
+.ups-bill-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #6d28d9;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ups-bill-link:hover { text-decoration: underline; }
+.ups-bill-more {
+  border: 0;
+  background: transparent;
+  color: #9aa4b6;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.ups-bill-composition {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.ups-bill-donut { width: 132px; height: 132px; flex: none; }
+.ups-bill-donut-label { fill: #9aa4b6; font-size: 10px; }
+.ups-bill-donut-value { fill: #171b26; font-size: 13px; font-weight: 750; }
+.ups-bill-comp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ups-bill-comp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.ups-bill-comp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  flex: none;
+}
+.ups-bill-comp-label { color: #4b5468; flex: 1; min-width: 0; }
+.ups-bill-comp-pct { color: #6b7488; font-weight: 650; min-width: 42px; text-align: right; }
+.ups-bill-comp-amt { color: #1f2430; font-weight: 700; min-width: 84px; text-align: right; }
+.ups-bill-comp-bar {
+  margin-top: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #f1f2f6;
+  overflow: hidden;
+}
+.ups-bill-comp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+.ups-bill-comp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f1f6;
+  color: #9aa4b6;
+  font-size: 12px;
+}
+.ups-bill-demo-hint {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f6f4fd;
+  color: #6b7488;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .ups-bill-kpis,
+  .ups-bill-account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ups-bill-composition { flex-direction: column; align-items: stretch; }
+}
+
 /* 下拉浮层：强制干净的浅色，避免深色主题下发灰发暗 */
 :root .team-select-dropdown.ant-select-dropdown,
 :root[data-theme] .team-select-dropdown.ant-select-dropdown {
@@ -11459,3 +11718,140 @@ body {
   .app-module-nav button { min-width: 42px; font-size: 12px; }
   .app-module-sidebar { display: none; }
   .app-topnav-actions .app-topnav-icon { display: none; }}
+
+/* ===================== 日志中心（超级管理员） ===================== */
+.logs-page {
+  --logs-accent: #7c6cf6;
+  --logs-accent-strong: #6d28d9;
+  min-width: 0;
+  color: #1f2430;
+}
+.logs-breadcrumb { font-size: 18px; font-weight: 700; color: #1f2430; margin-bottom: 14px; }
+.logs-breadcrumb span { margin: 0 6px; color: #c2c7d2; font-weight: 400; }
+
+/* 页签 */
+.logs-tabs { display: flex; gap: 26px; border-bottom: 1px solid #eceef3; margin-bottom: 20px; }
+.logs-tabs button {
+  position: relative; padding: 10px 2px 14px; border: 0; background: transparent; cursor: pointer;
+  color: #6b7488; font-size: 14px; font-weight: 600; transition: color .15s ease;
+}
+.logs-tabs button:hover { color: var(--logs-accent-strong); }
+.logs-tabs button.is-on { color: var(--logs-accent-strong); }
+.logs-tabs button.is-on::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2.5px; border-radius: 3px;
+  background: linear-gradient(90deg, #8b5cf6, #6d28d9);
+}
+
+/* KPI 卡片 */
+.logs-kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 18px; }
+.logs-kpi-card {
+  padding: 16px 18px; border-radius: 14px; border: 1px solid #eef0f5; background: #fff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+}
+.logs-kpi-head { display: flex; align-items: center; justify-content: space-between; }
+.logs-kpi-label { color: #6b7488; font-size: 13px; }
+.logs-kpi-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 10px; font-size: 16px;
+}
+.logs-kpi-card.tone-violet .logs-kpi-icon { color: #7c3aed; background: #f1ecfe; }
+.logs-kpi-card.tone-blue .logs-kpi-icon { color: #2563eb; background: #e8f0fe; }
+.logs-kpi-card.tone-red .logs-kpi-icon { color: #e5484d; background: #fdeaea; }
+.logs-kpi-card.tone-amber .logs-kpi-icon { color: #d97706; background: #fdf1e3; }
+.logs-kpi-card.tone-green .logs-kpi-icon { color: #0e9f6e; background: #e6f6ef; }
+.logs-kpi-value { font-size: 27px; font-weight: 750; letter-spacing: .5px; margin: 8px 0 6px; color: #171b26; }
+.logs-kpi-delta { font-size: 12px; color: #9aa4b6; display: flex; align-items: center; gap: 3px; }
+.logs-kpi-delta.is-up { color: #0e9f6e; }
+.logs-kpi-delta.is-down { color: #e5484d; }
+.logs-kpi-delta .anticon { font-size: 11px; }
+
+/* 过滤栏 */
+.logs-filter-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px; margin-bottom: 16px; border-radius: 12px; border: 1px solid #eef0f5; background: #fff;
+}
+.logs-filter-select { min-width: 140px; }
+.logs-filter-search { max-width: 240px; }
+.logs-export-btn.ant-btn-primary {
+  margin-left: auto; border: 0;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9); box-shadow: 0 6px 14px rgba(109, 40, 217, .26);
+}
+.logs-export-btn.ant-btn-primary:hover { background: linear-gradient(135deg, #9b6ff8, #7c3aed) !important; }
+
+/* 分析区 */
+.logs-analytics-row { display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+.logs-panel { padding: 16px 18px; border-radius: 14px; border: 1px solid #eef0f5; background: #fff; }
+.logs-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.logs-panel-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: #1f2430; }
+.logs-panel-badge {
+  font-size: 12px; color: #6b7488; padding: 2px 10px; border-radius: 999px; background: #f3f4f8;
+}
+.logs-trend-svg { width: 100%; height: auto; display: block; }
+.logs-axis-text { fill: #9aa4b6; font-size: 9px; }
+
+.logs-dist-body { display: flex; align-items: center; gap: 12px; }
+.logs-donut-svg { width: 150px; height: 150px; flex: none; }
+.logs-donut-total { fill: #171b26; font-size: 20px; font-weight: 750; }
+.logs-donut-sub { fill: #9aa4b6; font-size: 10px; }
+.logs-dist-legend { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.logs-dist-legend li { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.logs-legend-dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.logs-legend-label { color: #4b5468; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-legend-pct { color: #171b26; font-weight: 650; }
+.logs-legend-count { color: #a3abbc; font-size: 11px; }
+.logs-legend-empty, .logs-top-empty { color: #a3abbc; font-size: 12px; }
+
+.logs-top-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.logs-top-list li { display: flex; align-items: center; gap: 10px; }
+.logs-top-rank {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 7px; font-size: 12px; font-weight: 700; flex: none;
+  color: #8a93a6; background: #f1f2f6;
+}
+.logs-top-rank.rank-1 { color: #fff; background: linear-gradient(135deg, #fbbf24, #f59e0b); }
+.logs-top-rank.rank-2 { color: #fff; background: linear-gradient(135deg, #cbd5e1, #94a3b8); }
+.logs-top-rank.rank-3 { color: #fff; background: linear-gradient(135deg, #f0a879, #d97b4f); }
+.logs-top-meta { flex: 1; min-width: 0; }
+.logs-top-name { font-size: 13px; font-weight: 600; color: #1f2430; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-top-role { font-size: 11px; color: #9aa4b6; }
+.logs-top-count { font-size: 12.5px; font-weight: 650; color: #4b5468; }
+
+/* 表格 */
+.logs-table-wrap { padding: 4px 6px 12px; border-radius: 14px; border: 1px solid #eef0f5; background: #fff; }
+.logs-table-wrap .ant-table { background: transparent; }
+.logs-table-wrap .ant-table-thead > tr > th {
+  background: #fafbfd; color: #6b7488; font-weight: 600; font-size: 12.5px; border-bottom: 1px solid #eef0f5;
+}
+.logs-table-wrap .ant-table-tbody > tr > td { border-bottom: 1px solid #f4f5f8; }
+.logs-cell-time { color: #4b5468; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.logs-cell-user { display: flex; align-items: center; gap: 9px; }
+.logs-cell-user-name { font-size: 13px; font-weight: 600; color: #1f2430; line-height: 1.2; }
+.logs-cell-user-role { font-size: 11px; color: #9aa4b6; }
+.logs-type-tag, .logs-status-tag { border-radius: 6px; font-weight: 600; border: 0; }
+.logs-cell-content-main { font-size: 13px; color: #2a3345; }
+.logs-cell-content-sub { font-size: 11.5px; color: #a3abbc; margin-top: 2px; }
+.logs-cell-muted { color: #6b7488; }
+.logs-cell-mono { color: #6b7488; font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.logs-detail-link {
+  border: 0; background: transparent; cursor: pointer; padding: 0;
+  color: var(--logs-accent-strong); font-size: 13px; font-weight: 600;
+}
+.logs-detail-link:hover { text-decoration: underline; }
+.logs-table-foot { display: flex; align-items: center; justify-content: space-between; padding: 14px 10px 4px; }
+.logs-total-text { color: #8a93a6; font-size: 13px; }
+
+/* 该页内的分页选中态用主题紫 */
+.logs-page .ant-pagination .ant-pagination-item-active {
+  border-color: var(--logs-accent); background: #f3efff;
+}
+.logs-page .ant-pagination .ant-pagination-item-active a { color: var(--logs-accent-strong); }
+
+@media (max-width: 1180px) {
+  .logs-kpi-row { grid-template-columns: repeat(3, 1fr); }
+  .logs-analytics-row { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .logs-kpi-row { grid-template-columns: repeat(2, 1fr); }
+  .logs-filter-search { max-width: none; flex: 1; }
+  .logs-export-btn.ant-btn-primary { margin-left: 0; }
+}
