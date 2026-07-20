@@ -15,6 +15,7 @@ from .models import (
     CollabRoom,
     CollabSummary,
 )
+from .analyze import analyze_room_messages
 
 
 User = get_user_model()
@@ -101,6 +102,101 @@ class CollabConversationIntelligenceTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("未配置可用的 LLM", response.data["error"])
         self.assertFalse(CollabSummary.objects.filter(room=self.room).exists())
+
+    @patch("apps.collab.analyze.llm.chat")
+    @patch("apps.collab.analyze.llm.llm_available", return_value=True)
+    def test_normal_message_cannot_be_escalated_by_model_without_evidence(
+        self,
+        _mock_available,
+        mock_chat,
+    ):
+        mock_chat.return_value = json.dumps({
+            "risk_level": "red",
+            "title": "模型误判风险",
+            "analysis": "普通进度消息被误判。",
+            "advice": "不应触发提醒。",
+            "control": "",
+            "tags": ["监控介入"],
+            "draft_reply": "",
+            "should_speak": True,
+            "evidence_message_ids": [101],
+            "message_flags": [{"message_id": 101, "label": "风险", "level": "red"}],
+        }, ensure_ascii=False)
+
+        result = analyze_room_messages([
+            {
+                "id": 101,
+                "username": "owner",
+                "content": "今天进度正常，下午把方案文档发到群里。",
+                "msg_type": "user",
+            },
+        ], llm_user=self.owner)
+
+        self.assertEqual(result["risk_level"], "green")
+        self.assertFalse(result["should_speak"])
+        self.assertEqual(result["message_flags"], [])
+
+    @patch("apps.collab.analyze.llm.chat")
+    @patch("apps.collab.analyze.llm.llm_available", return_value=True)
+    def test_old_risk_does_not_repeat_after_a_normal_message(
+        self,
+        _mock_available,
+        mock_chat,
+    ):
+        mock_chat.return_value = json.dumps({
+            "risk_level": "red",
+            "title": "历史消息仍有风险",
+            "analysis": "前一条消息涉及绕过审批。",
+            "advice": "按流程处理。",
+            "control": "",
+            "tags": ["监控介入"],
+            "draft_reply": "",
+            "should_speak": True,
+            "evidence_message_ids": [201],
+            "message_flags": [{"message_id": 201, "label": "违规承诺", "level": "red"}],
+        }, ensure_ascii=False)
+
+        result = analyze_room_messages([
+            {
+                "id": 201,
+                "username": "owner",
+                "content": "先绕过审批直接处理。",
+                "msg_type": "user",
+            },
+            {
+                "id": 202,
+                "username": "owner",
+                "content": "下午三点开会同步项目进度。",
+                "msg_type": "user",
+            },
+        ], llm_user=self.owner)
+
+        self.assertEqual(result["risk_level"], "green")
+        self.assertFalse(result["should_speak"])
+
+    @patch("apps.collab.views.analyze_room_messages")
+    def test_current_room_risk_recovers_after_normal_analysis(self, mock_analyze):
+        self.room.risk_level = "red"
+        self.room.save(update_fields=["risk_level"])
+        mock_analyze.return_value = {
+            "risk_level": "green",
+            "title": "会话运行正常",
+            "analysis": "暂未发现明显异常。",
+            "advice": "",
+            "control": "",
+            "tags": ["正常"],
+            "draft_reply": "",
+            "evidence_message_ids": [],
+            "should_speak": False,
+            "message_flags": [],
+        }
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(f"/api/collab/rooms/{self.room.id}/insights/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.room.refresh_from_db()
+        self.assertEqual(self.room.risk_level, "green")
 
     @patch("apps.collab.summary.llm.chat_messages_result")
     def test_auto_summary_uses_configured_llm_and_records_model(self, mock_llm):

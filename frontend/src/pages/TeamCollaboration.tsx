@@ -17,16 +17,19 @@ const VIEW_META: Record<CollaborationView, {
   eyebrow: string;
   title: string;
   description: string;
+  status: string;
 }> = {
   chat: {
     eyebrow: "TEAM SPACE",
     title: "团队消息",
     description: "讨论、文件与 AI 旁路监控都在同一条上下文里。",
+    status: "AI 纪要已就绪",
   },
   roundtable: {
     eyebrow: "FOCUS SESSION",
     title: "圆桌协作",
     description: "把需要收敛的讨论升级为有议程、有成员、有产物的会议。",
+    status: "成员上下文可带入",
   },
 };
 
@@ -82,13 +85,21 @@ export function TeamCollaboration() {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const animation = pane.animate(
       [
-        { opacity: 0.72, transform: `translate3d(${view === "chat" ? "-8px" : "8px"}, 0, 0) scale(0.996)` },
-        { opacity: 1, transform: "translate3d(0, 0, 0) scale(1)" },
+        {
+          opacity: 0.64,
+          filter: "blur(7px)",
+          transform: `translate3d(${view === "chat" ? "-10px" : "10px"}, 0, 0) scale(0.994)`,
+        },
+        {
+          opacity: 1,
+          filter: "blur(0)",
+          transform: "translate3d(0, 0, 0) scale(1)",
+        },
       ],
       {
-        duration: 260,
+        duration: 300,
         easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        fill: "both",
+        fill: "none",
       },
     );
     paneAnimationRef.current = animation;
@@ -155,7 +166,7 @@ export function TeamCollaboration() {
         <div className="team-workspace-actions">
           <span className="team-workspace-status">
             <i aria-hidden="true" />
-            成员上下文可带入
+            {meta.status}
           </span>
           {view === "chat" ? (
             <button
@@ -187,9 +198,9 @@ export function TeamCollaboration() {
         aria-labelledby={`team-workspace-tab-${view}`}
       >
         {view === "chat" ? (
-          <CollabRisk embedded onStartRoundtable={startRoundtable} />
+          <CollabRisk key="team-chat" embedded onStartRoundtable={startRoundtable} />
         ) : (
-          <Council embedded initialDraft={roundtableSeed} />
+          <Council key="team-roundtable" embedded initialDraft={roundtableSeed} />
         )}
       </main>
     </div>
