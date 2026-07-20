@@ -59,10 +59,12 @@ def _wecom_bound_user_ids(user_ids) -> set[int]:
 
 
 def _team_member_payload(membership: TeamMembership, bound_ids: set[int] = frozenset()) -> dict:
+    settings = getattr(membership.user, "settings", None)
     return {
         "id": membership.user_id,
         "username": membership.user.username,
         "displayName": _display_name(membership.user),
+        "avatarUrl": getattr(settings, "avatar_url", "") or "",
         "role": membership.role,
         "roleLabel": membership.get_role_display(),
         "isActive": bool(membership.user.is_active),
@@ -352,6 +354,7 @@ def team_user_options(request):
             "id": user.id,
             "username": user.username,
             "displayName": _display_name(user),
+            "avatarUrl": getattr(getattr(user, "settings", None), "avatar_url", "") or "",
             "wecomBound": user.id in bound_ids,
         }
         for user in user_list

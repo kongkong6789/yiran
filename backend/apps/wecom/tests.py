@@ -3,7 +3,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 from unittest.mock import Mock, patch
 
-from .models import WeComApiConfig, WeComContact
+from .models import UserWeComBinding, WeComApiConfig, WeComBindingSyncJob, WeComContact
 from .services import WeComClient
 
 
@@ -81,6 +81,32 @@ class WeComApiConfigTests(APITestCase):
         after = WeComApiConfig.objects.get(user=self.user_a)
         self.assertEqual(after.secret_encrypted, before)
         self.assertEqual(after.agent_id, "100009")
+
+    def test_saving_config_requeues_stale_not_configured_binding(self):
+        self.authenticate(self.token_a)
+        binding = UserWeComBinding.objects.create(
+            platform_user=self.user_a,
+            status=UserWeComBinding.Status.PERMISSION_DENIED,
+            failure_code="WECOM_NOT_CONFIGURED",
+            failure_reason="请先配置企业微信 API。",
+        )
+
+        response = self.client.put("/api/wecom/config/", {
+            "corpId": "ww-user-a",
+            "agentId": "100001",
+            "secret": "secret-user-a",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        binding.refresh_from_db()
+        self.assertEqual(binding.status, UserWeComBinding.Status.PENDING)
+        self.assertEqual(binding.failure_code, "")
+        self.assertEqual(binding.failure_reason, "")
+        self.assertEqual(binding.wecom_config.corp_id, "ww-user-a")
+        self.assertTrue(WeComBindingSyncJob.objects.filter(
+            config=binding.wecom_config,
+            status=WeComBindingSyncJob.Status.PENDING,
+        ).exists())
 
     @patch("apps.wecom.views.WeComClient")
     def test_connection_test_uses_only_saved_credentials(self, client_class):

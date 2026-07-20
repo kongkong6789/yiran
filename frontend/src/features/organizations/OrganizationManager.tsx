@@ -16,6 +16,7 @@ import {
   type OrganizationMember,
   type OrganizationSummary,
 } from "../../api/client";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const ROLE_COLOR = { owner: "gold", admin: "blue", member: "default" } as const;
 const ROLE_ORDER = { owner: 3, admin: 2, member: 1 } as const;
@@ -318,7 +319,9 @@ export default function OrganizationManager({
             sorter: compareMemberName,
             render: (_: unknown, row) => (
               <div className="account-member-cell">
-                <Avatar>{(row.displayName || row.username).slice(0, 1).toUpperCase()}</Avatar>
+                <Avatar src={authenticatedAvatarUrl(row.avatarUrl)}>
+                  {(row.displayName || row.username).slice(0, 1).toUpperCase()}
+                </Avatar>
                 <span>
                   <strong>{row.displayName}</strong>
                   <small>@{row.username}</small>

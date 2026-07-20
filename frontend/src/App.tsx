@@ -8,6 +8,7 @@ import AgentChat from "./pages/AgentChat";
 import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
 import Audit from "./pages/Audit";
+import Logs from "./pages/Logs";
 import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
@@ -82,6 +83,7 @@ export default function App() {
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="audit" element={<Audit />} />
+          <Route path="logs" element={<Logs />} />
         </Route>
       </Route>
     </Routes>

@@ -20,6 +20,7 @@ import {
   SunOutlined,
   MessageOutlined,
   DatabaseOutlined,
+  FileSearchOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -74,7 +75,10 @@ const ADMIN_NAV: NavItem[] = [
   { key: "/audit", icon: <SafetyCertificateOutlined />, label: "审计" },
 ];
 
-const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
+// 仅超级管理员可见
+const LOGS_NAV: NavItem = { key: "/logs", icon: <FileSearchOutlined />, label: "日志" };
+
+const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV, LOGS_NAV];
 
 const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/work", "/ontology", "/connectors", "/tables", "/commerce/loops"]);
 
@@ -129,9 +133,12 @@ export default function AppLayout() {
     {
       key: "admin",
       label: "管理",
-      children: ADMIN_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
+      children: [
+        ...ADMIN_NAV,
+        ...(user?.is_superuser ? [LOGS_NAV] : []),
+      ].map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
     },
-  ], []);
+  ], [user?.is_superuser]);
 
   const userMenu = {
     items: [

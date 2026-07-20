@@ -135,6 +135,28 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
     }
 
 
+def _client_ip(request) -> str:
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR") or ""
+
+
+def _write_auth_audit(request, *, actor: str, action: str, intent: str, decision: str, result: dict | None = None) -> None:
+    try:
+        AuditLog.objects.create(
+            trace_id=f"{action}-{int(timezone.now().timestamp() * 1000)}",
+            actor=actor or "unknown",
+            intent=intent,
+            action=action,
+            payload={"ip": _client_ip(request)},
+            decision=decision,
+            result=result or {},
+        )
+    except Exception:  # noqa: BLE001 审计写入失败不应影响主流程
+        logging.getLogger(__name__).exception("write auth audit failed: %s", action)
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def register(request):
@@ -155,6 +177,7 @@ def register(request):
     UserSettings.objects.create(user=user, phone=phone)
     create_personal_organization(user, name=f"{username}的企业")
     token, _ = Token.objects.get_or_create(user=user)
+    _write_auth_audit(request, actor=user.username, action="auth.register", intent="用户注册", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True, "token": token.key, "user": _user_payload(user)}, status=201)
 
 
@@ -165,18 +188,25 @@ def login(request):
     password = str(request.data.get("password") or "")
     user = authenticate(request, username=username, password=password)
     if not user:
+        _write_auth_audit(
+            request, actor=username, action="auth.login_failed", intent="登录失败",
+            decision=AuditLog.Decision.BLOCK, result={"reason": "invalid_credentials"},
+        )
         return Response({"ok": False, "error": "用户名或密码错误"}, status=400)
     UserSettings.objects.get_or_create(user=user)
     if not primary_membership(user):
         create_personal_organization(user)
     token, _ = Token.objects.get_or_create(user=user)
+    _write_auth_audit(request, actor=user.username, action="auth.login", intent="用户登录", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True, "token": token.key, "user": _user_payload(user)})
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def logout(request):
+    actor = request.user.username
     Token.objects.filter(user=request.user).delete()
+    _write_auth_audit(request, actor=actor, action="auth.logout", intent="用户登出", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True})
 
 
@@ -703,6 +733,7 @@ def current_organization_view(request):
                     getattr(getattr(membership.user, "settings", None), "display_name", "")
                     or membership.user.username
                 ),
+                "avatarUrl": getattr(getattr(membership.user, "settings", None), "avatar_url", "") or "",
                 "role": membership.role,
                 "roleLabel": membership.get_role_display(),
                 "isActive": membership.user.is_active,

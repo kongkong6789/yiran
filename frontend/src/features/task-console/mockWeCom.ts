@@ -38,6 +38,7 @@ export interface WeComGroup {
 
 export interface TaskAssignmentValue {
   assigneeIds: string[];
+  assignees?: Array<{ key: string; name: string; avatar?: string }>;
   deadline: string;
   priority: TaskPriority;
   notificationMode: NotificationMode;

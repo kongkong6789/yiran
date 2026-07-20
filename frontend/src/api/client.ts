@@ -116,6 +116,7 @@ export interface OrganizationMember {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "owner" | "admin" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -194,6 +195,7 @@ export interface TeamMemberRow {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "lead" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -220,6 +222,7 @@ export interface TeamUserOption {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   wecomBound: boolean;
 }
 
@@ -330,6 +333,7 @@ export interface WeComBindingRow {
   id: number;
   platformUserId: number;
   platformUser: string;
+  platformAvatar: string;
   phoneMasked: string;
   weComUserId: string;
   weComMember: string;
@@ -873,6 +877,58 @@ export const getAnomalies = () =>
 
 export const getAuditLogs = () =>
   api.get("/audit-logs/").then((r) => r.data);
+
+export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
+export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
+export interface AuditTrendPoint { date: string; count: number }
+export interface AuditDistribution { key: string; label: string; count: number; pct: number }
+export interface AuditTopUser { name: string; roleLabel: string; avatarUrl?: string; actor: string; count: number }
+export interface AuditRow {
+  id: number;
+  time: string;
+  user: { name: string; roleLabel: string; avatarUrl?: string };
+  operationType: { key: string; label: string };
+  content: string;
+  detail: string;
+  resourceType: string;
+  resourceName: string;
+  ip: string;
+  status: { key: string; label: string };
+  traceId: string;
+}
+export interface AuditOverview {
+  ok: boolean;
+  range: { start: string; end: string };
+  kpis: {
+    totalOps: AuditKpi;
+    totalUsers: AuditKpi;
+    errorOps: AuditKpi;
+    sensitiveOps: AuditKpi;
+    activeUsers: AuditKpi;
+  };
+  trend: AuditTrendPoint[];
+  distribution: AuditDistribution[];
+  topUsers: AuditTopUser[];
+  rows: AuditRow[];
+  pagination: { page: number; pageSize: number; total: number };
+  filters: {
+    operationTypes: { value: string; label: string }[];
+    statuses: { value: string; label: string }[];
+    users: { value: string; label: string }[];
+  };
+}
+export const getAuditOverview = (params: {
+  category?: AuditLogCategory;
+  start?: string;
+  end?: string;
+  type?: string;
+  status?: string;
+  user?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) =>
+  api.get<AuditOverview>("/audit/overview/", { params }).then((r) => r.data);
 
 // ================= MCP ?????? =================
 export interface McpServer {
@@ -1640,8 +1696,13 @@ export interface LoopDetectDiagnostics {
   }[];
 }
 
-export const listLoops = (status?: string) =>
-  api.get<{ results: FeedbackLoop[] }>("/loops/", { params: status ? { status } : {} }).then((r) => r.data);
+export const listLoops = (params?: { status?: string; includeMembers?: boolean }) =>
+  api.get<{ results: FeedbackLoop[] }>("/loops/", {
+    params: {
+      ...(params?.status ? { status: params.status } : {}),
+      ...(params?.includeMembers ? { include_members: 1 } : {}),
+    },
+  }).then((r) => r.data);
 export const getLoop = (id: number) =>
   api.get<FeedbackLoop>(`/loops/${id}/`).then((r) => r.data);
 export const createLoop = (body: {

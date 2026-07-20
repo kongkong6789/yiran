@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Empty, Space, Spin, Tag, Typography } from "antd";
 import { EyeOutlined, ReloadOutlined } from "@ant-design/icons";
-import { getLoop, listLoops, type FeedbackLoop } from "../api/client";
+import { listLoops, type FeedbackLoop } from "../api/client";
 import LoopRingDiagram from "./LoopRingDiagram";
 
 const TYPE_COLOR: Record<string, string> = { R: "red", B: "blue", comp: "purple" };
@@ -18,7 +18,7 @@ export default function GraphDemoLoops({ onOpenDetail }: Props) {
   const load = async () => {
     setLoading(true);
     try {
-      const list = await listLoops();
+      const list = await listLoops({ includeMembers: true });
       const withMembers = list.results
         .filter((l) => (l.member_count || 0) > 0 && l.status !== "archived")
         .sort((a, b) => {
@@ -27,8 +27,7 @@ export default function GraphDemoLoops({ onOpenDetail }: Props) {
           if (ad !== bd) return ad - bd;
           return (b.updated_at || "").localeCompare(a.updated_at || "");
         });
-      const detailed = await Promise.all(withMembers.map((l) => getLoop(l.id)));
-      setLoops(detailed.filter((l) => (l.members || []).length > 0));
+      setLoops(withMembers.filter((l) => (l.members || []).length > 0));
       setActive(0);
     } catch {
       setLoops([]);
