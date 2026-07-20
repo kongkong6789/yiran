@@ -15,6 +15,7 @@ import {
   removeCollabRoomMembers,
   collabPresenceHeartbeat,
   createCollabRoom,
+  createXiaoceTask,
   deleteCollabRoom,
   getAuthToken,
   getCollabRoom,
@@ -47,11 +48,17 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
+import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
-import { createXiaoceRunId, isXiaoceRoom, mergeXiaoceRunSnapshot } from "./xiaoceChat";
+import {
+  createXiaoceRunId,
+  isXiaoceRoom,
+  mergeXiaoceRunSnapshot,
+  partitionXiaoceRooms,
+} from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
@@ -688,9 +695,11 @@ export default function CollabRisk({
   const [nickDrafts, setNickDrafts] = useState<Record<string, string>>({});
   const [nickSaving, setNickSaving] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTargetId, setRenameTargetId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [creatingXiaoce, setCreatingXiaoce] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [replyingTo, setReplyingTo] = useState<CollabMessage | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -711,6 +720,7 @@ export default function CollabRisk({
   const draftCoachTimer = useRef<number | null>(null);
   const messagesRef = useRef<CollabMessage[]>([]);
   const insightsRef = useRef<CollabInsight[]>([]);
+  const roomsRef = useRef<CollabRoom[]>([]);
   const contactKeywordRef = useRef("");
   const loadingOlderRef = useRef(false);
   const readSessionRef = useRef(
@@ -721,11 +731,22 @@ export default function CollabRisk({
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { insightsRef.current = insights; }, [insights]);
+  useEffect(() => { roomsRef.current = rooms; }, [rooms]);
   useEffect(() => { contactKeywordRef.current = contactKeyword; }, [contactKeyword]);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
   const xiaoceRoom = isXiaoceRoom(activeRoom);
   const xiaoceBusy = xiaoceRoom && activeXiaoceRun?.status === "running";
+  const { xiaoceTasks, otherRooms } = useMemo(
+    () => partitionXiaoceRooms(rooms),
+    [rooms],
+  );
+  const renameTarget = useMemo(
+    () => rooms.find((room) => room.id === renameTargetId)
+      || (activeRoom?.id === renameTargetId ? activeRoom : null),
+    [activeRoom, renameTargetId, rooms],
+  );
+  const renamingXiaoce = isXiaoceRoom(renameTarget);
 
   const isParticipant = useMemo(() => {
     if (!me || !activeRoom) return false;
@@ -1382,6 +1403,32 @@ export default function CollabRisk({
     }
   };
 
+  const handleCreateXiaoceTask = async () => {
+    if (creatingXiaoce) return;
+    setCreatingXiaoce(true);
+    try {
+      const room = await createXiaoceTask();
+      const roomMessages = room.messages || [];
+      roomViewCacheRef.current.set(room.id, {
+        room,
+        messages: roomMessages,
+        insights: room.insights || [],
+        hasMoreBefore: false,
+        firstItemIndex: VIRT_BASE_INDEX,
+        xiaoceRun: room.active_xiaoce_run || null,
+        stats: null,
+      });
+      setRooms((current) => [room, ...current.filter((item) => item.id !== room.id)]);
+      setSiderTab("chats");
+      selectRoom(room.id);
+      message.success("小策任务已创建");
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "创建小策任务失败");
+    } finally {
+      setCreatingXiaoce(false);
+    }
+  };
+
   const handleCreateGroup = async () => {
     if (groupMembers.length < 1) {
       message.warning("请至少选择一位群成员");
@@ -1458,41 +1505,60 @@ export default function CollabRisk({
     setNickOpen(true);
   };
 
-  const openRenameModal = () => {
-    if (!activeRoom) return;
-    setRenameTitle((activeRoom.title || "").trim());
+  const openRenameModal = (room: CollabRoom | null = activeRoom) => {
+    if (!room) return;
+    setRenameTargetId(room.id);
+    setRenameTitle((room.title || "").trim());
     setRenameOpen(true);
   };
 
-  const handleRenameGroup = async () => {
-    if (!activeId || !activeRoom) return;
+  const handleRenameRoom = async () => {
+    const roomId = renameTargetId;
+    const target = rooms.find((room) => room.id === roomId)
+      || (activeRoom?.id === roomId ? activeRoom : null);
+    if (!roomId || !target) return;
     const next = renameTitle.trim();
     if (!next) {
-      message.warning("群名不能为空");
+      message.warning(isXiaoceRoom(target) ? "任务名称不能为空" : "群名不能为空");
       return;
     }
-    if (next === (activeRoom.title || "").trim()) {
+    if (next === (target.title || "").trim()) {
       setRenameOpen(false);
       return;
     }
     setRenaming(true);
     try {
-      const room = await updateCollabRoom(activeId, { title: next });
-      setActiveRoom((prev) => (prev ? { ...prev, ...room, messages: undefined, insights: undefined } : room));
-      setRooms((prev) => prev.map((r) => (
-        r.id === activeId ? { ...r, ...room, messages: undefined, insights: undefined } : r
+      const room = await updateCollabRoom(roomId, { title: next });
+      setRooms((current) => current.map((item) => (
+        item.id === roomId ? { ...item, ...room, messages: undefined, insights: undefined } : item
       )));
-      if (room.messages?.length) {
-        setMessages((prev) => {
-          const last = room.messages![room.messages!.length - 1];
-          if (prev.some((m) => m.id === last.id)) return prev;
-          return [...prev, last];
+      if (activeIdRef.current === roomId) {
+        setActiveRoom((current) => current?.id === roomId
+          ? { ...current, ...room, messages: undefined, insights: undefined }
+          : current);
+        if (target.room_kind === "group" && room.messages?.length) {
+          const last = room.messages[room.messages.length - 1];
+          setMessages((current) => (
+            current.some((messageRow) => messageRow.id === last.id)
+              ? current
+              : [...current, last]
+          ));
+        }
+      }
+      const cached = roomViewCacheRef.current.get(roomId);
+      if (cached) {
+        roomViewCacheRef.current.set(roomId, {
+          ...cached,
+          room: { ...cached.room, ...room, messages: undefined, insights: undefined },
         });
       }
       setRenameOpen(false);
-      message.success("群名已更新");
-    } catch (e: any) {
-      message.error(e?.response?.data?.error || "修改群名失败");
+      message.success(isXiaoceRoom(target) ? "任务名称已更新" : "群名已更新");
+    } catch (error: any) {
+      message.error(
+        error?.response?.data?.error
+          || (isXiaoceRoom(target) ? "修改任务名称失败" : "修改群名失败"),
+      );
     } finally {
       setRenaming(false);
     }
@@ -2017,28 +2083,58 @@ export default function CollabRisk({
   };
 
   const handleDeleteRoom = (roomId?: string) => {
-    const id = roomId || activeId;
-    if (!id) return;
+    const id = roomId || activeIdRef.current;
+    const target = rooms.find((room) => room.id === id)
+      || (activeRoom?.id === id ? activeRoom : null);
+    if (!id || !target) return;
+    const xiaoceTask = isXiaoceRoom(target);
+    const running = target.active_xiaoce_run?.status === "running";
+    const title = xiaoceTask ? "删除这个小策任务？" : "删除此会话？";
+    const content = xiaoceTask
+      ? running
+        ? "将永久删除该任务及全部聊天记录，正在处理的任务也会停止。"
+        : "将永久删除该任务及全部聊天记录。"
+      : "将彻底删除该会话及全部聊天记录，所有成员都不可再访问。";
     Modal.confirm({
-      title: "删除此会话？",
-      content: "将彻底删除该会话及全部聊天记录，所有成员都不可再访问。",
-      okText: "删除会话",
+      title,
+      content,
+      okText: xiaoceTask ? "删除任务" : "删除会话",
       okButtonProps: { danger: true },
       cancelText: "取消",
       onOk: async () => {
         try {
           await deleteCollabRoom(id);
-          setRooms((prev) => prev.filter((r) => r.id !== id));
-          if (activeId === id) {
-            setActiveId(null);
-            setActiveRoom(null);
-            setMessages([]);
-            setInsights([]);
+          const remaining = roomsRef.current.filter((room) => room.id !== id);
+          roomsRef.current = remaining;
+          setRooms((current) => current.filter((room) => room.id !== id));
+          if (activeIdRef.current === id) {
+            const nextTask = xiaoceTask
+              ? remaining.find((room) => isXiaoceRoom(room)) || null
+              : null;
+            if (nextTask) {
+              selectRoom(nextTask.id);
+              activeIdRef.current = nextTask.id;
+              roomLoadSeqRef.current += 1;
+            } else {
+              roomLoadSeqRef.current += 1;
+              activeIdRef.current = null;
+              setActiveId(null);
+              setActiveRoom(null);
+              setMessages([]);
+              setInsights([]);
+              setActiveXiaoceRun(null);
+              setRoomStats(null);
+              setHasMoreBefore(false);
+              setFirstItemIndex(VIRT_BASE_INDEX);
+              setCancellingRunId(null);
+            }
           }
-          message.success("会话已删除");
-        } catch (e: any) {
-          message.error(e?.response?.data?.error || "删除失败");
-          throw e;
+          roomComposerCacheRef.current.delete(id);
+          roomViewCacheRef.current.delete(id);
+          message.success(xiaoceTask ? "任务已删除" : "会话已删除");
+        } catch (error: any) {
+          message.error(error?.response?.data?.error || "删除失败");
+          throw error;
         }
       },
     });
@@ -2346,9 +2442,28 @@ export default function CollabRisk({
 
         {siderTab === "chats" ? (
           <div className="collab-room-list">
-            {rooms.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loadingRooms ? "加载中…" : "暂无会话，去通讯录点人开聊"} />
-            ) : rooms.map((room) => {
+            <XiaoceTaskList
+              tasks={xiaoceTasks}
+              activeId={activeId}
+              creating={creatingXiaoce}
+              canRename={(task) => Boolean(
+                me && task.participants.some((participant) => participant.id === me.id),
+              )}
+              canDelete={(task) => Boolean(
+                me?.is_staff || task.participants.some((participant) => participant.id === me?.id),
+              )}
+              onCreate={() => void handleCreateXiaoceTask()}
+              onSelect={selectRoom}
+              onRename={openRenameModal}
+              onDelete={(task) => handleDeleteRoom(task.id)}
+            />
+            <div className="collab-contact-section-title">其他对话</div>
+            {otherRooms.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={loadingRooms ? "加载中…" : "暂无其他对话"}
+              />
+            ) : otherRooms.map((room) => {
               const title = roomTitle(room);
               const online = roomPeerOnline(room);
               const peer = room.room_kind === "dm" && me
@@ -2540,14 +2655,16 @@ export default function CollabRisk({
                       ({activeRoom.participants.length}人)
                     </Typography.Text>
                   ) : null}
-                  {activeRoom.room_kind === "group" && isParticipant && activeRoom.status === "open" ? (
+                  {isParticipant && (
+                    (activeRoom.room_kind === "group" && activeRoom.status === "open") || isXiaoce
+                  ) ? (
                     <Button
                       type="link"
                       size="small"
                       icon={<EditOutlined />}
                       style={{ marginLeft: 4, paddingInline: 4 }}
-                      onClick={openRenameModal}
-                      aria-label="修改群名"
+                      onClick={() => openRenameModal(activeRoom)}
+                      aria-label={isXiaoce ? "修改任务名称" : "修改群名"}
                     />
                   ) : null}
                 </Typography.Title>
@@ -2613,12 +2730,12 @@ export default function CollabRisk({
                     placement="bottomRight"
                     menu={{
                       items: [
-                        activeRoom.room_kind === "group" && isParticipant
+                        (activeRoom.room_kind === "group" || isXiaoce) && isParticipant
                           ? {
                               key: "rename",
                               icon: <EditOutlined />,
-                              label: "修改群名",
-                              onClick: openRenameModal,
+                              label: isXiaoce ? "修改任务名称" : "修改群名",
+                              onClick: () => openRenameModal(activeRoom),
                             }
                           : null,
                         activeRoom.room_kind === "group"
@@ -2684,9 +2801,11 @@ export default function CollabRisk({
                           ? {
                               key: "delete",
                               icon: <DeleteOutlined />,
-                              label: activeRoom.room_kind === "group" ? "删除群聊" : "删除会话",
+                              label: isXiaoce
+                                ? "删除任务"
+                                : activeRoom.room_kind === "group" ? "删除群聊" : "删除会话",
                               danger: true,
-                              onClick: () => handleDeleteRoom(),
+                              onClick: () => handleDeleteRoom(activeRoom.id),
                             }
                           : null,
                       ].filter(Boolean) as any[],
@@ -3401,10 +3520,13 @@ export default function CollabRisk({
       </Modal>
 
       <Modal
-        title="修改群名"
+        title={renamingXiaoce ? "修改任务名称" : "修改群名"}
         open={renameOpen}
-        onCancel={() => setRenameOpen(false)}
-        onOk={() => void handleRenameGroup()}
+        onCancel={() => {
+          setRenameOpen(false);
+          setRenameTargetId(null);
+        }}
+        onOk={() => void handleRenameRoom()}
         confirmLoading={renaming}
         okText="保存"
         destroyOnHidden
@@ -3413,8 +3535,8 @@ export default function CollabRisk({
           value={renameTitle}
           onChange={(e) => setRenameTitle(e.target.value)}
           maxLength={120}
-          placeholder="输入新的群名称"
-          onPressEnter={() => { if (!renaming) void handleRenameGroup(); }}
+          placeholder={renamingXiaoce ? "输入新的任务名称" : "输入新的群名称"}
+          onPressEnter={() => { if (!renaming) void handleRenameRoom(); }}
           autoFocus
         />
       </Modal>

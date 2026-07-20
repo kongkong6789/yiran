@@ -134,6 +134,45 @@ test("collaboration chat wires Xiaoce progress, pause, history, and skill refres
   assert.match(source, /aria-label="暂停小策处理"/);
 });
 
+test("collaboration chat wires grouped Xiaoce task actions", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.ok(source.includes("<XiaoceTaskList"));
+  assert.ok(source.includes("partitionXiaoceRooms(rooms)"));
+  assert.ok(source.includes("createXiaoceTask()"));
+  assert.ok(source.includes("roomComposerCacheRef.current.delete(id)"));
+  assert.ok(source.includes("roomViewCacheRef.current.delete(id)"));
+  assert.ok(source.includes("正在处理的任务也会停止"));
+  assert.ok(source.includes("修改任务名称"));
+});
+
+test("collaboration chat targets rename and delete by captured room id", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /const roomId = renameTargetId;/);
+  assert.match(source, /updateCollabRoom\(roomId, \{ title: next \}\)/);
+  assert.match(source, /activeIdRef\.current === roomId/);
+  assert.match(source, /const target = rooms\.find\(\(room\) => room\.id === id\)/);
+  assert.match(source, /activeIdRef\.current === id/);
+});
+
+test("Xiaoce deletion clears caches only after success and after selecting its successor", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const deleteHandler = source.slice(
+    source.indexOf("const handleDeleteRoom"),
+    source.indexOf("const handleRefreshInsight"),
+  );
+  const apiSuccess = deleteHandler.indexOf("await deleteCollabRoom(id)");
+  const selectSuccessor = deleteHandler.indexOf("selectRoom(nextTask.id)");
+  const activateSuccessor = deleteHandler.indexOf("activeIdRef.current = nextTask.id");
+  const composerDelete = deleteHandler.indexOf("roomComposerCacheRef.current.delete(id)");
+  const viewDelete = deleteHandler.indexOf("roomViewCacheRef.current.delete(id)");
+
+  assert.ok(apiSuccess >= 0);
+  assert.ok(selectSuccessor > apiSuccess);
+  assert.ok(activateSuccessor > selectSuccessor);
+  assert.ok(composerDelete > activateSuccessor);
+  assert.ok(viewDelete > composerDelete);
+});
+
 test("collaboration live hook forwards Xiaoce snapshots from websocket and fallback polling", () => {
   const source = readFileSync(
     new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
