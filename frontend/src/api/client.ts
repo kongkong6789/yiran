@@ -443,8 +443,8 @@ export const uploadKnowledgeFile = (
 
 export const getKnowledgeJob = (jobId: number) =>
   api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
-export const getKnowledgeFileChunks = (fileId: number) =>
-  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number; page_size?: number }) =>
+  api.get<{ file: KnowledgeFileItem; count: number; page: number; page_size: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`, { params })
     .then((r) => r.data);
 
 export const downloadKnowledgeFile = (fileId: number) =>

@@ -42,7 +42,9 @@ EXTENSION_TO_FILE_TYPE = {
 }
 
 TEXT_FILE_TYPES = {"docx", "html", "json", "markdown", "txt"}
-TABLE_FILE_TYPES = {"csv", "xlsx"}
+TABLE_FILE_TYPES = {"csv", "xlsx", "csv_markdown", "xlsx_markdown"}
+TABLE_SOURCE_FILE_SUFFIXES = {".csv", ".xls", ".xlsx"}
+TABLE_SOURCE_TYPES = {"csv", "xls", "xlsx"}
 
 KEYWORD_STOPWORDS = {
     "and",
@@ -258,6 +260,332 @@ def segments_from_text(text: str, *, parser: str) -> ParsedDocument:
 def parse_text_bytes(content: bytes, *, parser: str) -> ParsedDocument:
     return segments_from_text(content.decode("utf-8", errors="replace"), parser=parser)
 
+def parse_frontmatter_scalar(value: str) -> object:
+    stripped = value.strip()
+    if stripped.startswith(("'", '"')) and stripped.endswith(("'", '"')) and len(stripped) >= 2:
+        return stripped[1:-1]
+    lowered = stripped.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if re.fullmatch(r"[-+]?\d+", stripped):
+        try:
+            return int(stripped)
+        except ValueError:
+            return stripped
+    return stripped
+
+
+def split_markdown_frontmatter(text: str) -> tuple[dict, str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.startswith("---\n"):
+        return {}, normalized
+    end_match = re.search(r"\n---\s*(?:\n|$)", normalized[4:])
+    if not end_match:
+        return {}, normalized
+    frontmatter_text = normalized[4 : 4 + end_match.start()]
+    body = normalized[4 + end_match.end() :]
+    metadata: dict[str, object] = {}
+    current_list_key: str | None = None
+    for raw_line in frontmatter_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        list_match = re.match(r"^-\s*(.+)$", line)
+        if list_match and current_list_key:
+            metadata.setdefault(current_list_key, []).append(parse_frontmatter_scalar(list_match.group(1)))
+            continue
+        key_match = re.match(r"^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$", line)
+        if not key_match:
+            current_list_key = None
+            continue
+        key, value = key_match.group(1), key_match.group(2)
+        if value == "":
+            metadata[key] = []
+            current_list_key = key
+        else:
+            metadata[key] = parse_frontmatter_scalar(value)
+            current_list_key = None
+    return metadata, body
+
+
+def markdown_frontmatter_table_type(metadata: dict) -> str | None:
+    source_type = str(metadata.get("source_type") or "").strip().lower()
+    if source_type in TABLE_SOURCE_TYPES:
+        return "csv" if source_type == "csv" else "xlsx"
+    source_file = str(metadata.get("source_file") or "").strip()
+    suffix = PurePath(source_file).suffix.lower()
+    if suffix in TABLE_SOURCE_FILE_SUFFIXES:
+        return "csv" if suffix == ".csv" else "xlsx"
+    return None
+
+
+def parse_markdown_table_bytes(content: bytes) -> ParsedDocument:
+    text = content.decode("utf-8", errors="replace")
+    frontmatter, body = split_markdown_frontmatter(text)
+    table_type = markdown_frontmatter_table_type(frontmatter)
+    if not table_type:
+        return segments_from_text(text, parser="markdown")
+    rows, table_metadata = markdown_table_rows(body, frontmatter, table_type)
+    if not rows:
+        return segments_from_text(body, parser="markdown")
+    joined = "\n\n".join(segment.text for segment in rows)
+    parser = f"{table_type}_markdown"
+    return ParsedDocument(
+        text=joined,
+        segments=rows,
+        metadata={
+            "parser": parser,
+            "source_parser": "markdown",
+            "table_source_type": table_type,
+            "frontmatter": frontmatter,
+            "table_count": len(table_metadata),
+            "row_count": len(rows),
+            "char_count": len(joined),
+            "tables": table_metadata,
+        },
+    )
+
+
+def markdown_table_rows(body: str, frontmatter: dict, table_type: str) -> tuple[list[ParsedSegment], list[dict]]:
+    pipe_rows = markdown_pipe_table_rows(body)
+    if pipe_rows:
+        return markdown_raw_rows_to_segments(pipe_rows, frontmatter, table_type, "markdown_pipe_table")
+    vertical_rows, vertical_metadata = markdown_vertical_table_rows(body, frontmatter)
+    if vertical_rows:
+        return markdown_raw_rows_to_segments(vertical_rows, frontmatter, table_type, "markdown_vertical_table", vertical_metadata)
+    flattened_rows = markdown_flattened_table_rows(body, frontmatter)
+    if flattened_rows:
+        return markdown_raw_rows_to_segments(flattened_rows, frontmatter, table_type, "markdown_flattened_table")
+    block_rows = markdown_block_table_rows(body, frontmatter)
+    if block_rows:
+        return markdown_raw_rows_to_segments(block_rows, frontmatter, table_type, "markdown_block_table")
+    return [], []
+
+
+def markdown_raw_rows_to_segments(raw_rows: list[list[object]], frontmatter: dict, table_type: str, extraction_method: str, extra_metadata: dict | None = None) -> tuple[list[ParsedSegment], list[dict]]:
+    parser = f"{table_type}_markdown"
+    rows, metadata = table_rows_to_segments(
+        str(frontmatter.get("worksheets") or frontmatter.get("title") or "Markdown"),
+        raw_rows,
+        {
+            "parser": parser,
+            "source_parser": "markdown",
+            "table_source_type": table_type,
+            "table_extraction_method": extraction_method,
+            "source_file": frontmatter.get("source_file"),
+            "source_type": frontmatter.get("source_type"),
+            **(extra_metadata or {}),
+        },
+    )
+    return rows, metadata
+
+
+def markdown_pipe_table_rows(body: str) -> list[list[object]]:
+    rows: list[list[object]] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if "|" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        rows.append(cells)
+    return rows if len(rows) >= 2 else []
+
+
+
+def markdown_vertical_table_rows(body: str, frontmatter: dict) -> tuple[list[list[object]], dict]:
+    lines = markdown_data_lines(body, frontmatter, keep_empty=True)
+    first_data_index = next((index for index, line in enumerate(lines) if looks_like_date(line)), None)
+    diagnostics: dict[str, object] = {
+        "table_parser": "single_pass_state_machine",
+        "source_line_count": len(lines),
+        "anomaly_count": 0,
+        "anomalies": [],
+    }
+    if first_data_index is None or first_data_index < 1:
+        return [], diagnostics
+    headers = [line for line in lines[:first_data_index] if line]
+    headers = trim_table_title(headers, frontmatter)
+    diagnostics["expected_columns"] = len(headers)
+    diagnostics["headers"] = headers
+    if len(headers) < 2 or len(headers) > 80 or not looks_like_date_header(headers[0]):
+        add_table_anomaly(diagnostics, "invalid_header", 1, f"Unable to identify vertical table headers before first data row at line {first_data_index + 1}.")
+        return [], diagnostics
+
+    rows: list[list[object]] = [headers]
+    current_values: list[str] = []
+    current_start_line: int | None = None
+
+    def flush_current(end_line: int) -> None:
+        nonlocal current_values, current_start_line
+        if not current_values:
+            return
+        values = trim_trailing_empty_cells(current_values)
+        if not values:
+            current_values = []
+            current_start_line = None
+            return
+        if len(values) < len(headers):
+            add_table_anomaly(
+                diagnostics,
+                "missing_cells",
+                current_start_line or end_line,
+                f"Expected {len(headers)} cells, got {len(values)} cells; padded missing trailing cells.",
+                {"expected": len(headers), "actual": len(values)},
+            )
+            values.extend([""] * (len(headers) - len(values)))
+        elif len(values) > len(headers):
+            extra_values = values[len(headers) - 1 :]
+            add_table_anomaly(
+                diagnostics,
+                "extra_cells",
+                current_start_line or end_line,
+                f"Expected {len(headers)} cells, got {len(values)} cells; merged overflow into the last column.",
+                {"expected": len(headers), "actual": len(values), "overflow_count": len(values) - len(headers)},
+            )
+            values = values[: len(headers) - 1] + [" / ".join(value for value in extra_values if value)]
+        rows.append(values)
+        current_values = []
+        current_start_line = None
+
+    for index, line in enumerate(lines[first_data_index:], start=first_data_index):
+        line_number = index + 1
+        if looks_like_date(line):
+            flush_current(line_number - 1)
+            current_values = [line]
+            current_start_line = line_number
+            continue
+        if current_start_line is None:
+            if line:
+                add_table_anomaly(diagnostics, "stray_value", line_number, "Ignored non-empty value before the first data row.", {"value": line[:120]})
+            continue
+        current_values.append(line)
+    flush_current(len(lines))
+
+    diagnostics["parsed_rows"] = max(len(rows) - 1, 0)
+    return (rows if len(rows) >= 2 else []), diagnostics
+
+
+
+def add_table_anomaly(diagnostics: dict, kind: str, line: int, message: str, extra: dict | None = None) -> None:
+    diagnostics["anomaly_count"] = int(diagnostics.get("anomaly_count") or 0) + 1
+    anomalies = diagnostics.setdefault("anomalies", [])
+    if isinstance(anomalies, list) and len(anomalies) < 50:
+        item = {"kind": kind, "line": line, "message": message}
+        if extra:
+            item.update(extra)
+        anomalies.append(item)
+
+def trim_table_title(headers: list[str], frontmatter: dict) -> list[str]:
+    if not headers:
+        return headers
+    title = str(frontmatter.get("title") or "").strip()
+    source_file_stem = PurePath(str(frontmatter.get("source_file") or "")).stem
+    if len(headers) > 1 and headers[0] in {title, source_file_stem}:
+        return headers[1:]
+    if len(headers) > 1 and not looks_like_date_header(headers[0]) and looks_like_date_header(headers[1]):
+        return headers[1:]
+    return headers
+
+
+def trim_trailing_empty_cells(values: list[str]) -> list[str]:
+    result = list(values)
+    while result and result[-1] == "":
+        result.pop()
+    return result
+
+
+def looks_like_date_header(value: str) -> bool:
+    normalized = normalize_text(value).lower()
+    return normalized in {"日期", "date", "成交日期", "时间", "datetime"} or "日期" in normalized
+
+def markdown_flattened_table_rows(body: str, frontmatter: dict) -> list[list[object]]:
+    lines = markdown_data_lines(body, frontmatter)
+    if len(lines) < 4:
+        return []
+    data_start = infer_flattened_data_start(lines)
+    if data_start is None or data_start < 1:
+        return []
+    headers = lines[:data_start]
+    if len(headers) > 80:
+        return []
+    data_lines = lines[data_start:]
+    row_count = len(data_lines) // len(headers)
+    if row_count < 1:
+        return []
+    usable = row_count * len(headers)
+    if usable < len(data_lines) * 0.85:
+        return []
+    rows = [headers]
+    rows.extend(data_lines[index : index + len(headers)] for index in range(0, usable, len(headers)))
+    return rows
+
+
+def markdown_block_table_rows(body: str, frontmatter: dict) -> list[list[object]]:
+    blocks = [
+        normalize_text(block)
+        for block in re.split(r"\n\s*\n", body.replace("\r\n", "\n").replace("\r", "\n"))
+        if normalize_text(block)
+    ]
+    title = str(frontmatter.get("title") or "").strip()
+    if title and blocks and blocks[0] == title:
+        blocks = blocks[1:]
+    if len(blocks) < 2:
+        return []
+    return [["content"], *[[block] for block in blocks]]
+
+
+def markdown_data_lines(body: str, frontmatter: dict, *, keep_empty: bool = False) -> list[str]:
+    lines: list[str] = []
+    for raw_line in body.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        line = normalize_text(raw_line.strip().strip("|"))
+        if line.startswith("#"):
+            continue
+        if line and re.fullmatch(r":?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*", line):
+            continue
+        if line or keep_empty:
+            lines.append(line)
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def infer_flattened_data_start(lines: list[str]) -> int | None:
+    best_index: int | None = None
+    best_score = -1.0
+    for index in range(1, min(len(lines), 80)):
+        remaining = len(lines) - index
+        if remaining < index:
+            continue
+        first = lines[index]
+        second = lines[index + 1] if index + 1 < len(lines) else ""
+        row_count = remaining / index
+        remainder_ratio = (remaining % index) / index
+        score = 0.0
+        if looks_like_table_data_start(first):
+            score += 2.0
+        if looks_like_date(second):
+            score += 1.5
+        if row_count >= 2:
+            score += 1.0
+        score -= remainder_ratio
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index if best_score >= 2.0 else None
+
+
+def looks_like_table_data_start(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,12}", value) or looks_like_date(value))
+
+
+def looks_like_date(value: str) -> bool:
+    return bool(re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", value))
 
 def parse_html_bytes(content: bytes) -> ParsedDocument:
     parser = _TextHTMLParser()
@@ -408,18 +736,17 @@ def table_rows_to_segments(sheet_name: str, raw_rows: list[list[object]], metada
         if not present:
             continue
         text = " | ".join(f"{key}: {value}" for key, value in present.items())
-        segments.append(
-            ParsedSegment(
-                text,
-                {
-                    "parser": metadata.get("parser"),
-                    "kind": "table_row",
-                    "sheet_name": sheet_name,
-                    "row_index": row_index,
-                    "values": present,
-                },
-            )
-        )
+        segment_metadata = {
+            "parser": metadata.get("parser"),
+            "kind": "table_row",
+            "sheet_name": sheet_name,
+            "row_index": row_index,
+            "values": present,
+        }
+        for key in ("source_parser", "table_source_type", "table_extraction_method", "source_file", "source_type"):
+            if metadata.get(key) is not None:
+                segment_metadata[key] = metadata[key]
+        segments.append(ParsedSegment(text, segment_metadata))
     if len(segments) > MAX_TABLE_ROWS:
         raise TraditionalRagError(f"Table row count exceeds {MAX_TABLE_ROWS}.", "table_error")
     return segments, [{"sheet_name": sheet_name, "columns": headers, "row_count": len(segments), **metadata}]
@@ -559,7 +886,7 @@ def parse_document(content: bytes, file_type: str) -> ParsedDocument:
     if file_type == "json":
         return parse_json_bytes(content)
     if file_type == "markdown":
-        return parse_text_bytes(content, parser="markdown")
+        return parse_markdown_table_bytes(content)
     if file_type == "txt":
         return parse_text_bytes(content, parser="txt")
     if file_type in TABLE_FILE_TYPES:

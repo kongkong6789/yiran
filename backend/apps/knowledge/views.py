@@ -267,13 +267,26 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def chunks(self, request, pk=None):
         file = self.get_object()
-        rows = file.chunk_refs.all()
+        rows = file.chunk_refs.all().order_by("chunk_index", "id")
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size", "20"))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = min(max(page_size, 1), 100)
+        total = rows.count()
+        offset = (page - 1) * page_size
+        page_rows = rows[offset : offset + page_size]
         return Response({
             "file": KnowledgeFileSerializer(file).data,
-            "count": rows.count(),
-            "results": KnowledgeChunkRefSerializer(rows, many=True).data,
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "results": KnowledgeChunkRefSerializer(page_rows, many=True).data,
         })
-
     @action(detail=True, methods=["delete"], url_path=r"chunks/(?P<chunk_id>[^/.]+)")
     def delete_chunk(self, request, pk=None, chunk_id=None):
         file = self.get_object()

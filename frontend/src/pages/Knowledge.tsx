@@ -33,10 +33,12 @@ import {
   FileExcelOutlined,
   FileSearchOutlined,
   InboxOutlined,
+  LeftOutlined,
   NodeIndexOutlined,
   MoreOutlined,
   PlusOutlined,
   SearchOutlined,
+  RightOutlined,
   SettingOutlined,
   SortAscendingOutlined,
 } from "@ant-design/icons";
@@ -448,10 +450,32 @@ export default function Knowledge() {
   const [uploading, setUploading] = useState(false);
   const [createUploadProgress, setCreateUploadProgress] = useState<CreateUploadProgress | null>(null);
   const [processedChunks, setProcessedChunks] = useState<KnowledgeChunkItem[]>([]);
+  const [chunkCurrentPage, setChunkCurrentPage] = useState(1);
+  const [chunkPageSize, setChunkPageSize] = useState(10);
+  const [chunkTotalCount, setChunkTotalCount] = useState(0);
   const [chunkLoading, setChunkLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeTemplate | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
+  const chunkTotalPages = Math.max(1, Math.ceil((chunkTotalCount || 0) / chunkPageSize));
+  const chunkPageNumbers = useMemo(() => {
+    const total = Math.max(1, Math.ceil((chunkTotalCount || 0) / chunkPageSize));
+    const start = Math.max(1, Math.min(chunkCurrentPage - 1, total - 2));
+    return Array.from({ length: Math.min(3, total) }, (_, index) => start + index).filter((page) => page <= total);
+  }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
+
+  function changeChunkPage(page: number, pageSize = chunkPageSize) {
+    const nextPage = Math.min(Math.max(page, 1), Math.max(1, Math.ceil((chunkTotalCount || 0) / pageSize)));
+    setChunkCurrentPage(nextPage);
+    setChunkPageSize(pageSize);
+    if (chunkPageFile) void loadFileChunks(chunkPageFile, nextPage, pageSize);
+  }
+
+  function changeChunkPageSize(pageSize: number) {
+    setChunkPageSize(pageSize);
+    setChunkCurrentPage(1);
+    if (chunkPageFile) void loadFileChunks(chunkPageFile, 1, pageSize);
+  }
   const baseTemplates = useMemo(() => knowledgeBases.length ? knowledgeBases.map(mapKnowledgeBase) : templates, [knowledgeBases]);
   const categories = useMemo(() => ["全部", ...Array.from(new Set(baseTemplates.map((item) => item.category)))], [baseTemplates]);
   const visibleTemplates = useMemo(() => {
@@ -773,13 +797,19 @@ export default function Knowledge() {
     }
   }
 
-  async function loadFileChunks(file: KnowledgeTemplateFile) {
+  async function loadFileChunks(file: KnowledgeTemplateFile, page = 1, pageSize = chunkPageSize) {
     setProcessedChunks([]);
-    if (!file.id) return;
+    if (!file.id) {
+      setChunkTotalCount(0);
+      return;
+    }
     setChunkLoading(true);
     try {
-      const data = await getKnowledgeFileChunks(file.id);
+      const data = await getKnowledgeFileChunks(file.id, { page, page_size: pageSize });
       setProcessedChunks(data.results);
+      setChunkTotalCount(data.count);
+      setChunkCurrentPage(data.page || page);
+      setChunkPageSize(data.page_size || pageSize);
     } catch (error) {
       console.error(error);
       message.error("Failed to load chunks");
@@ -795,8 +825,9 @@ export default function Knowledge() {
 
   async function openChunkPage(file: KnowledgeTemplateFile) {
     setProcessedFile(null);
+    setChunkCurrentPage(1);
     setChunkPageFile(file);
-    await loadFileChunks(file);
+    await loadFileChunks(file, 1, chunkPageSize);
   }
 
   async function removeKnowledgeFile(file: KnowledgeTemplateFile) {
@@ -836,8 +867,15 @@ export default function Knowledge() {
   useEffect(() => {
     if (detailTemplateId) void refreshKnowledgeFiles(detailTemplateId);
     setChunkPageFile(null);
+    setChunkCurrentPage(1);
+    setChunkTotalCount(0);
   }, [detailTemplateId]);
 
+
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(chunkTotalCount / chunkPageSize));
+    if (chunkCurrentPage > maxPage) setChunkCurrentPage(maxPage);
+  }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
   const configDraft = useMemo(() => ({
     project_name: projectName,
     objective,
@@ -1066,14 +1104,15 @@ export default function Knowledge() {
           <div className="chunk-page-layout">
             <section className="chunk-list-panel">
               <div className="chunk-list-topbar">
-                <b>{chunkLoading ? "正在加载切片" : `${processedChunks.length || chunkPageFile.chunks || 0} 个切片`}</b>
+                <b>{chunkLoading ? "正在加载切片" : `${chunkTotalCount || chunkPageFile.chunks || processedChunks.length || 0} 个切片`}</b>
                 <span>一行成交明细对应一个 chunk</span>
               </div>
-              <List
-                loading={chunkLoading}
-                dataSource={processedChunks}
-                locale={{ emptyText: chunkPageFile.id ? "暂无切片，可能仍在后台入库" : "示例文件暂无后端切片" }}
-                renderItem={(chunk) => {
+              <div className="chunk-scroll-area">
+                <List
+                  loading={chunkLoading}
+                  dataSource={processedChunks}
+                  locale={{ emptyText: chunkPageFile.id ? "暂无切片，可能仍在后台入库" : "示例文件暂无后端切片" }}
+                  renderItem={(chunk) => {
                   const text = chunk.text_preview || chunk.chunk_ref;
                   const keywords = chunkKeywords(chunk, text);
                   return (
@@ -1093,7 +1132,55 @@ export default function Knowledge() {
                     </List.Item>
                   );
                 }}
-              />
+                />
+              </div>
+              {chunkTotalCount > 10 ? (
+                <div className="chunk-pagination-bar">
+                  <div className="chunk-pagination-stepper">
+                    <Button
+                      aria-label="Previous page"
+                      className="chunk-page-nav-button"
+                      icon={<LeftOutlined />}
+                      disabled={chunkCurrentPage <= 1 || chunkLoading}
+                      onClick={() => changeChunkPage(chunkCurrentPage - 1)}
+                    />
+                    <span>{chunkCurrentPage} / {chunkTotalPages}</span>
+                    <Button
+                      aria-label="Next page"
+                      className="chunk-page-nav-button"
+                      icon={<RightOutlined />}
+                      disabled={chunkCurrentPage >= chunkTotalPages || chunkLoading}
+                      onClick={() => changeChunkPage(chunkCurrentPage + 1)}
+                    />
+                  </div>
+                  <div className="chunk-pagination-pages">
+                    {chunkPageNumbers.map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === chunkCurrentPage ? "is-active" : ""}
+                        disabled={chunkLoading}
+                        onClick={() => changeChunkPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="chunk-page-size-switch">
+                    {[10, 25, 50].map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        className={size === chunkPageSize ? "is-active" : ""}
+                        disabled={chunkLoading}
+                        onClick={() => changeChunkPageSize(size)}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </section>
 
             <aside className="chunk-meta-panel">
@@ -1105,7 +1192,7 @@ export default function Knowledge() {
                     `文件类型：${chunkPageFile.kind || "file"}`,
                     `上传时间：${formatDateTime(chunkPageFile.uploadedAt)}`,
                     `字符数：${(chunkPageFile.charCount ?? 0).toLocaleString()}`,
-                    `切片数量：${chunkPageFile.chunks || processedChunks.length || 0}`,
+                    `切片数量：${chunkTotalCount || chunkPageFile.chunks || processedChunks.length || 0}`,
                     `召回次数：${chunkPageFile.recallCount ?? 0}`,
                   ]}
                   renderItem={(item) => <List.Item>{item}</List.Item>}
@@ -2458,6 +2545,113 @@ const styles = `
   color: #0f172a;
 }
 .chunk-list-topbar span { color: #64748b; font-size: 13px; }
+.chunk-scroll-area {
+  max-height: calc(100vh - 330px);
+  min-height: 420px;
+  overflow-y: auto;
+  padding-right: 14px;
+  scrollbar-gutter: stable;
+}
+.chunk-scroll-area::-webkit-scrollbar {
+  width: 12px;
+}
+.chunk-scroll-area::-webkit-scrollbar-track {
+  background: #f5f7fb;
+  border-radius: 999px;
+}
+.chunk-scroll-area::-webkit-scrollbar-thumb {
+  min-height: 76px;
+  border: 3px solid #f5f7fb;
+  border-radius: 999px;
+  background: #8b8f97;
+}
+.chunk-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: #6f747c;
+}
+.chunk-pagination-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 0 4px;
+}
+.chunk-pagination-stepper,
+.chunk-pagination-pages,
+.chunk-page-size-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chunk-pagination-stepper { justify-self: start; gap: 16px; }
+.chunk-pagination-pages { justify-self: center; }
+.chunk-page-size-switch { justify-self: end; }
+.chunk-page-nav-button.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-color: #d9dee8;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #0f2748;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+.chunk-page-nav-button.ant-btn:hover:not(:disabled) {
+  border-color: #b7c4d8;
+  color: #155eef;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+}
+.chunk-page-nav-button.ant-btn:disabled {
+  background: #f8fafc;
+  color: #9aa4b2;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+.chunk-page-nav-button .anticon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+.chunk-pagination-stepper span {
+  min-width: 54px;
+  text-align: center;
+  color: #0d2445;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 44px;
+}
+.chunk-pagination-pages button,
+.chunk-page-size-switch button {
+  min-width: 40px;
+  height: 38px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #1d3154;
+  font: inherit;
+  cursor: pointer;
+}
+.chunk-pagination-pages button.is-active,
+.chunk-page-size-switch button.is-active {
+  background: #f1f4f8;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+}
+.chunk-pagination-pages button:disabled,
+.chunk-page-size-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.chunk-page-size-switch {
+  padding: 0 6px;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
+}
 .chunk-row {
   align-items: flex-start !important;
   padding: 18px 0 !important;
