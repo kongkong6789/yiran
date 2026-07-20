@@ -117,10 +117,10 @@ export const updateWeComGroupWebhook = (id: number, body: { name?: string; webho
 export const testWeComGroupWebhook = (id: number) =>
   api.post(`/wecom/group-webhooks/${id}/test/`, {}).then((response) => response.data);
 
-export async function testWeComConfig(_config: WeComConfigValue) {
+export async function testWeComConfig() {
   return api.post<{ ok: boolean; appName: string; visibleMembers: number; permission: string }>(
     "/wecom/config/test/",
-    { corpId: _config.corpId, agentId: _config.agentId, secret: _config.secret },
+    {},
   ).then((response) => response.data);
 }
 
@@ -152,7 +152,7 @@ export async function sendTaskNotification(assignment: TaskAssignmentValue, cont
     .filter((member) => assignment.assigneeIds.includes(member.key))
     .map((member) => member.contactId);
   const group = weComGroupCache.find((item) => item.key === assignment.groupId);
-  return api.post<{ ok: boolean; notification: { id: number; status: "accepted" | "partial" | "failed"; statusLabel: string; wecom_msgid: string; invalid_users: string[]; error_reason: string; accepted_at: string | null } }>(
+  return api.post<{ ok: boolean; notification: { id: number; status: "pending" | "retry_waiting" | "accepted" | "partial" | "failed"; statusLabel: string; wecom_msgid: string; invalid_users: string[]; error_reason: string; accepted_at: string | null } }>(
     "/wecom/notifications/",
     {
       mode: assignment.notificationMode,

@@ -129,6 +129,12 @@ def cli_config_test(request):
         return Response({"ok": False, "detail": "仅企业管理员可以测试连接。"}, status=403)
     if not config:
         return Response({"ok": False, "detail": "请先保存机器人配置。"}, status=409)
+    if config.bot_secret_encrypted and not config.bot_secret:
+        return Response({
+            "ok": False,
+            "code": "credential_decrypt_failed",
+            "detail": "已保存的 Secret 无法解密，请重新输入 Secret 并点击保存。",
+        }, status=409)
     try:
         WeComCliClient(config).test_connection()
     except WeComCliError as exc:

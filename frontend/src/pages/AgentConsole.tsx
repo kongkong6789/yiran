@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert, App, Button, Card, Col, Row, Segmented,
+  Alert, App, Button, Card, Segmented,
   Space, Typography,
 } from "antd";
 import {
-  InboxOutlined, PlayCircleOutlined, UploadOutlined,
+  ArrowLeftOutlined, SaveOutlined,
 } from "@ant-design/icons";
 import {
   api, getCatalog, runSop, resumeSop,
@@ -17,13 +17,10 @@ import ExecutionTimeline, {
 import WeComConnectionStatus from "../features/task-console/WeComConnectionStatus";
 import TaskTrackingPanel from "../features/task-console/TaskTrackingPanel";
 import type { TaskView } from "../features/task-console/mockTasks";
-import AgentSelector from "../features/task-console/AgentSelector";
-import ExecutionInfoPanel from "../features/task-console/ExecutionInfoPanel";
 import TaskResultPanel from "../features/task-console/TaskResultPanel";
 import TaskCommandSection from "../features/task-console/TaskCommandSection";
-import TaskStepHeader from "../features/task-console/TaskStepHeader";
-import TaskSubmitActions from "../features/task-console/TaskSubmitActions";
-import ExecutionEmptyState from "../features/task-console/ExecutionEmptyState";
+import TaskConfigSection from "../features/task-console/TaskConfigSection";
+import TaskPreviewPanel from "../features/task-console/TaskPreviewPanel";
 import {
   buildExecutionFields,
   type ExecutionField,
@@ -88,7 +85,15 @@ const sopFailureDetail = (result: SopResult) => {
   return failedStep?.detail || "未能识别可执行的 SOP，请补充更明确的任务目标。";
 };
 
-export default function AgentConsole() {
+export default function AgentConsole({
+  view = "create",
+  onViewChange,
+  onDetailChange,
+}: {
+  view?: "create" | TaskView;
+  onViewChange?: (view: "create" | TaskView) => void;
+  onDetailChange?: (open: boolean) => void;
+}) {
   const { message } = App.useApp();
   const [text, setText] = useState("帮我生成昨天的日报");
   const [agentId, setAgentId] = useState<number>();
@@ -102,7 +107,6 @@ export default function AgentConsole() {
   const [assignment, setAssignment] = useState<TaskAssignmentValue>(DEFAULT_ASSIGNMENT);
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
-  const [pageView, setPageView] = useState<"create" | TaskView>("create");
   const [rightPanelTab, setRightPanelTab] = useState<"result" | "process">("process");
   const [businessResultContext, setBusinessResultContext] = useState<TaskBusinessResultContext>({});
 
@@ -366,9 +370,9 @@ export default function AgentConsole() {
         updateStep(activeIndex, "running", "正在通过良策任务助手发送消息。");
         await persistProgress(activeIndex, activeIndex, { [activeIndex]: "正在向企业微信提交任务通知。" });
         const notificationResponse = await sendTaskNotification(assignment, { task: text, agentName: selectedAgent!.name, targetLabel: notificationTarget, taskTraceId: sopResult.trace_id });
-        const notificationStatus = notificationResponse.notification.status;
-        const partial = notificationStatus === "partial";
-        notificationAccepted = notificationStatus === "accepted" || partial;
+        notificationStatus = notificationResponse.notification.status;
+        partial = notificationStatus === "partial";
+        notificationAccepted = notificationStatus === "accepted" || partial || notificationStatus === "retry_waiting";
         acceptedNotificationId = notificationResponse.notification.id;
         updateStep(activeIndex++, partial ? "failed" : "completed", partial
           ? `企业微信已受理，但无效成员：${notificationResponse.notification.invalid_users.join("、")}`
@@ -415,7 +419,7 @@ export default function AgentConsole() {
           recordId: acceptedNotificationId,
           channel: assignment.notificationMode === "person" ? "wecom_person" : "wecom_group",
           targetName: notificationTarget,
-          status: partial ? "partial" : "accepted",
+          status: partial ? "partial" : (notificationStatus === "retry_waiting" ? "retry_waiting" : "accepted"),
           sentAt: new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
         },
       });
@@ -487,104 +491,82 @@ export default function AgentConsole() {
     }
   };
 
+  const saveDraft = () => {
+    window.localStorage.setItem("liangce-task-draft", JSON.stringify({
+      text,
+      agentId,
+      executionFields,
+      assignment,
+      savedAt: new Date().toISOString(),
+    }));
+    message.success("草稿已保存在当前浏览器");
+  };
+
   return (
-    <div className={`task-console-page ${pageView === "create" ? "is-create" : ""}`}>
-      <div className="task-view-switcher">
-        <div>
-          <Typography.Title level={4}>{pageView === "create" ? "新建任务" : "任务中心"}</Typography.Title>
-          <Typography.Text type="secondary">
-            {pageView === "create" ? "告诉 AI 你想做什么，剩下的交给我们" : "高效协作，让 AI 帮你快速跟进多工作"}
-          </Typography.Text>
-        </div>
-        <Segmented
-          value={pageView}
-          onChange={(value) => setPageView(value as "create" | TaskView)}
-          options={[
-            { value: "create", label: "发起任务", icon: <PlayCircleOutlined /> },
-            { value: "sent", label: "我发出的", icon: <UploadOutlined /> },
-            { value: "received", label: "我收到的", icon: <InboxOutlined /> },
-          ]}
+    <div className={`task-console-page ${view === "create" ? "is-create" : ""}`}>
+      {view !== "create" ? (
+        <TaskTrackingPanel
+          view={view}
+          onCreate={() => onViewChange?.("create")}
+          onDetailChange={onDetailChange}
         />
-      </div>
+      ) : (
+      <>
+        <div className="task-create-page-heading">
+          <button type="button" onClick={() => onViewChange?.("all")}><ArrowLeftOutlined /> 返回任务中心</button>
+          <div className="task-create-page-title">
+            <div>
+              <Typography.Title level={3}>新建任务</Typography.Title>
+              <Typography.Text type="secondary">告诉 AI 你想做什么，剩下的交给我们</Typography.Text>
+            </div>
+            <Space>
+              <Button icon={<SaveOutlined />} onClick={saveDraft}>保存草稿</Button>
+              <Button type="primary" onClick={() => void submit()} loading={loading} disabled={submitBlockers.length > 0}>立即发起</Button>
+            </Space>
+          </div>
+        </div>
+        <div className="task-create-layout">
+          <main className="task-create-editor">
+            <TaskCommandSection value={text} onChange={setText} recognized={commandRecognized} />
+            <TaskConfigSection
+              agents={agents}
+              agentId={agentId}
+              loading={agentsLoading}
+              fields={executionFields}
+              onAgentChange={setAgentId}
+              onFieldsChange={setExecutionFields}
+            />
+            <TaskAssignmentPanel
+              task={text}
+              agentName={roleLabel}
+              value={assignment}
+              onChange={setAssignment}
+            />
+          </main>
 
-      {pageView !== "create" ? <TaskTrackingPanel view={pageView} onCreate={() => setPageView("create")} /> : (
-      <Row gutter={[20, 20]} align="top" className="task-create-layout">
-        <Col xs={24} xl={10} className="task-console-column task-launch-column">
-          <Card
-            className="task-console-card task-launch-card"
-            title={(
-              <div className="task-card-heading">
-                <div>
-                  <Typography.Title level={5}>任务编辑</Typography.Title>
-                  <Typography.Text type="secondary">描述目标，确认执行配置与协作成员</Typography.Text>
-                </div>
-              </div>
-            )}
-          >
-            <div className="task-create-steps">
-              <TaskCommandSection
-                value={text}
-                onChange={setText}
-                recognized={commandRecognized}
-              />
-
-              <div className="task-step-divider" />
-
-              <section className="task-step-section">
-                <TaskStepHeader
-                  step={2}
-                  title="选择执行智能体"
-                  tooltip="决定本次任务使用的知识、技能、数据权限和执行规则。执行智能体负责实际执行任务，任务负责人负责接收、跟进和验收。"
-                />
-                <div className="task-step-body">
-                  <AgentSelector agents={agents} value={agentId} loading={agentsLoading} onChange={setAgentId} />
-                </div>
-              </section>
-
-              {executionFields.length > 0 && (
-                <>
-                  <div className="task-step-divider" />
-                  <ExecutionInfoPanel fields={executionFields} onChange={setExecutionFields} />
-                </>
-              )}
-
-              <div className="task-step-divider" />
-
-              <TaskAssignmentPanel
-                task={text}
-                agentName={roleLabel}
-                value={assignment}
-                onChange={setAssignment}
-              />
-
-              <TaskSubmitActions
-                loading={loading}
+          <div className="task-create-side">
+            {executionSteps.length === 0 && !formattedBusinessResult && !loading ? (
+              <TaskPreviewPanel
+                text={text}
+                agent={selectedAgent}
+                fields={executionFields}
+                assignment={assignment}
                 blockers={submitBlockers}
+                loading={loading}
                 onSubmit={() => void submit()}
               />
-            </div>
-          </Card>
-        </Col>
-
-        <Col xs={24} xl={14} className="task-console-column task-trace-column">
-          <Card
-            className="task-console-card task-trace-card"
-            title={(
-              <div className="task-trace-title">
-                <div className="task-card-heading">
-                  <div>
-                    <Typography.Title level={5}>
-                      {formattedBusinessResult && !loading ? "任务结果" : executionSteps.length > 0 || loading ? "执行轨迹" : "任务预览"}
-                    </Typography.Title>
-                    <Typography.Text type="secondary">
-                      {formattedBusinessResult && !loading ? "查看交付内容与关键结论" : executionSteps.length > 0 || loading ? "实时查看任务执行进度" : "执行前核对任务流程与交付方式"}
-                    </Typography.Text>
-                  </div>
+            ) : (
+          <Card className="task-console-card task-trace-card" title={(
+            <div className="task-trace-title">
+              <div className="task-card-heading">
+                <div>
+                  <Typography.Title level={5}>{formattedBusinessResult && !loading ? "任务结果" : "执行进度"}</Typography.Title>
+                  <Typography.Text type="secondary">{formattedBusinessResult && !loading ? "查看交付内容与关键结论" : "实时查看任务执行进度"}</Typography.Text>
                 </div>
-                <WeComConnectionStatus />
               </div>
-            )}
-          >
+              <WeComConnectionStatus />
+            </div>
+          )}>
             {formattedBusinessResult && !loading && (
               <div className="task-right-tabs">
                 <Segmented
@@ -622,13 +604,14 @@ export default function AgentConsole() {
             ) : executionSteps.length > 0 || loading ? (
               <ExecutionTimeline steps={executionSteps} />
             ) : (
-              <ExecutionEmptyState />
+              null
             )}
           </Card>
-        </Col>
-      </Row>
+            )}
+          </div>
+        </div>
+      </>
       )}
-
     </div>
   );
 }

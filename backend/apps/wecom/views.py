@@ -92,17 +92,18 @@ def test_api_config(request):
         organization = create_personal_organization(request.user).organization
     if not is_organization_admin(request.user, organization) and not (existing and existing.can_manage(request.user)):
         return Response({"ok": False, "detail": "仅企业管理员可测试企业微信配置。"}, status=403)
-    corp_id = str(request.data.get("corpId") or "").strip()
-    agent_id = str(request.data.get("agentId") or "").strip()
-    secret = str(request.data.get("secret") or "")
-    if secret == "***":
-        secret = existing.secret if existing else ""
-    if not corp_id or not agent_id or not secret:
-        return Response({"ok": False, "detail": "请先填写 CorpID、AgentID 和 Secret。"}, status=400)
-    config = WeComApiConfig(user=request.user, organization=organization, corp_id=corp_id, agent_id=agent_id)
-    config.secret = secret
+    # 测试连接是只读操作：只使用服务端已经保存的凭据。表单里尚未保存的
+    # 内容（尤其是空 Secret）不能参与测试，更不能覆盖数据库中的密文。
+    if not existing or not existing.corp_id or not existing.agent_id or not existing.secret_encrypted:
+        return Response({"ok": False, "detail": "请先保存 CorpID、AgentID 和 Secret 后再测试连接。"}, status=409)
+    if not existing.secret:
+        return Response({
+            "ok": False,
+            "code": "credential_decrypt_failed",
+            "detail": "已保存的 Secret 无法解密，请重新输入 Secret 并点击保存。",
+        }, status=409)
     try:
-        client = WeComClient(config)
+        client = WeComClient(existing)
         app = client.test_wecom_connection()
         contacts = client.get_visible_contacts()
     except WeComApiError as exc:

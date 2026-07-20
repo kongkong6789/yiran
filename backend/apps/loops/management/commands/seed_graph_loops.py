@@ -124,11 +124,13 @@ class Command(BaseCommand):
         shop_tm = _pick_object("店铺", "天猫旗舰店")
         shop_dy = _pick_object("店铺", "抖音小店")
         sku_dress = _pick_object("商品", "连衣裙-经典款")
+        sku_new = _pick_object("商品", "连衣裙-新色")
         sku_sun = _pick_object("商品", "防晒霜 50ml")
         metric_gmv = _pick_object("指标定义", "GMV")
         metric_refund = _pick_object("指标定义", "退款率")
         metric_aov = _pick_object("指标定义", "客单价")
         alert = _pick_object("异常预警", "refund_rate")
+        alert_gmv = _pick_object("异常预警", "gmv")
 
         missing = [
             n
@@ -136,11 +138,13 @@ class Command(BaseCommand):
                 ("店铺:天猫旗舰店", shop_tm),
                 ("店铺:抖音小店", shop_dy),
                 ("商品:连衣裙-经典款", sku_dress),
+                ("商品:连衣裙-新色", sku_new),
                 ("商品:防晒霜 50ml", sku_sun),
                 ("指标定义:GMV", metric_gmv),
                 ("指标定义:退款率", metric_refund),
                 ("指标定义:客单价", metric_aov),
                 ("异常预警:refund_rate", alert),
+                ("异常预警:gmv", alert_gmv),
             ]
             if o is None
         ]
@@ -148,8 +152,8 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("缺少节点: " + ", ".join(missing)))
             return
 
-        assert shop_tm and shop_dy and sku_dress and sku_sun
-        assert metric_gmv and metric_refund and metric_aov and alert
+        assert shop_tm and shop_dy and sku_dress and sku_new and sku_sun
+        assert metric_gmv and metric_refund and metric_aov and alert and alert_gmv
 
         # —— 链条 1：增强 R · 天猫主推款销售飞轮 ——
         e1 = _ensure_edge(shop_tm, sku_dress, label="主推曝光", polarity="+", evidence_score=82)
@@ -216,8 +220,49 @@ class Command(BaseCommand):
             relation_ids=[e8.id, e9.id, e10.id, e11.id],
         )
 
-        self.stdout.write(self.style.SUCCESS("已生成 3 条图谱回路链条："))
-        for loop in (loop1, loop2, loop3):
+        # —— 链条 4：增强 R · 抖音新色种草飞轮 ——
+        e12 = _ensure_edge(shop_dy, sku_new, label="新品种草曝光", polarity="+", evidence_score=79)
+        e13 = _ensure_edge(sku_new, metric_gmv, label="拉动成交", polarity="+", evidence_score=81)
+        e14 = _ensure_edge(metric_gmv, metric_aov, label="连带客单抬升", polarity="+", evidence_score=70)
+        e15 = _ensure_edge(
+            metric_aov, shop_dy, label="利润反哺达播", polarity="+", evidence_score=67,
+        )
+        loop4 = _upsert_loop(
+            code=f"{PREFIX}-R2",
+            name="抖音新色飞轮（抖音→新色→GMV→客单→再种草）",
+            loop_type=FeedbackLoop.LoopType.R,
+            description=(
+                "抖音小店对「连衣裙-新色」加大达播种草 → 拉动 GMV → 连带客单抬升 → "
+                "利润反哺达播，形成新品增长飞轮（增强回路）。"
+            ),
+            confidence=80,
+            relation_ids=[e12.id, e13.id, e14.id, e15.id],
+        )
+
+        # —— 链条 5：调节 B · 大盘 GMV 预警刹车 ——
+        e16 = _ensure_edge(shop_tm, metric_gmv, label="放量投放", polarity="+", evidence_score=76)
+        e17 = _ensure_edge(
+            metric_gmv, alert_gmv, label="触发大盘预警", polarity="+",
+            delay_days=1, evidence_score=88,
+        )
+        e18 = _ensure_edge(
+            alert_gmv, shop_tm, label="收紧投放节奏", polarity="-",
+            delay_days=2, evidence_score=71,
+        )
+        loop5 = _upsert_loop(
+            code=f"{PREFIX}-B3",
+            name="大盘刹车环（天猫→GMV→大盘预警→收紧→天猫）",
+            loop_type=FeedbackLoop.LoopType.B,
+            description=(
+                "天猫放量投放推高 GMV → 触发 gmv 大盘异常预警 → 运营收紧投放节奏，"
+                "对整体放量形成调节约束（单负极性调节回路）。"
+            ),
+            confidence=82,
+            relation_ids=[e16.id, e17.id, e18.id],
+        )
+
+        self.stdout.write(self.style.SUCCESS("已生成 5 条图谱回路链条："))
+        for loop in (loop1, loop2, loop3, loop4, loop5):
             chain = " → ".join(
                 f"{m.relation.source.name}-[{m.relation.polarity or '?'}{m.relation.label}]→"
                 f"{m.relation.target.name}"

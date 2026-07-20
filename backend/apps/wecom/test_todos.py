@@ -73,6 +73,23 @@ class WeComTodoTests(APITestCase):
         response = self.client.patch("/api/wecom/cli-config/", {"botId": "other", "secret": "secret"})
         self.assertEqual(response.status_code, 403)
 
+    @patch("apps.wecom.todo_views.WeComCliClient")
+    def test_cli_connection_test_does_not_replace_an_unreadable_saved_secret(self, client_class):
+        config = WeComCliConfig.objects.get(organization=self.organization)
+        config.bot_secret_encrypted = "unreadable-ciphertext"
+        config.save(update_fields=["bot_secret_encrypted", "updated_at"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post("/api/wecom/cli-config/test/", {
+            "secret": "unsaved-secret",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["code"], "credential_decrypt_failed")
+        config.refresh_from_db()
+        self.assertEqual(config.bot_secret_encrypted, "unreadable-ciphertext")
+        client_class.assert_not_called()
+
     def test_selected_scope_is_enforced_by_todo_api(self):
         config = WeComCliConfig.objects.get(organization=self.organization)
         config.access_scope = WeComCliConfig.AccessScope.SELECTED

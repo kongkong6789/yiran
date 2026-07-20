@@ -82,7 +82,7 @@ const RecipientSummary = ({ item }: { item: WorkTodoItem }) => {
   );
 };
 
-export default function WorkTodos() {
+export default function WorkTodos({ embedded = false, createRequestId = 0 }: { embedded?: boolean; createRequestId?: number }) {
   const navigate = useNavigate();
   const [view, setView] = useState<"assigned" | "created">("assigned");
   const [status, setStatus] = useState<"pending" | "completed" | "all">("pending");
@@ -115,6 +115,10 @@ export default function WorkTodos() {
   const [deletingId, setDeletingId] = useState("");
   const [form] = Form.useForm();
   const syncToWeCom = Form.useWatch("syncToWeCom", form) ?? false;
+
+  useEffect(() => {
+    if (createRequestId > 0) setCreateOpen(true);
+  }, [createRequestId]);
 
   const loadConfig = useCallback(async () => {
     try { setConfig(await getWeComCliConfig()); } catch { setConfig(null); } finally { setConfigLoaded(true); }
@@ -249,7 +253,7 @@ export default function WorkTodos() {
 
   return (
     <div className="work-todos-page">
-      <div className="work-todos-head">
+      {!embedded && <div className="work-todos-head">
         <div>
           <Typography.Title level={3}>待办中心</Typography.Title>
           <Typography.Text type="secondary">聚焦今天要完成的事，统一跟进个人与企业协作待办。</Typography.Text>
@@ -268,45 +272,46 @@ export default function WorkTodos() {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建待办</Button>
           </Space>
         </div>
-      </div>
-
+      </div>}
       <Card className="work-todos-card">
         <div className="work-todos-toolbar">
-          <Segmented value={view} onChange={(value) => { setView(value as typeof view); setPage(1); }} options={[
-            { label: "我的待办", value: "assigned", icon: <CheckCircleOutlined /> },
-            { label: "我创建的", value: "created", icon: <TeamOutlined /> },
-          ]} />
-          <Space wrap>
-            <Input.Search
-              allowClear
-              value={searchText}
-              prefix={<SearchOutlined />}
-              placeholder="搜索待办标题或说明"
-              style={{ width: 220 }}
-              onChange={(event) => setSearchText(event.target.value)}
-              onSearch={(value) => { setKeyword(value.trim()); setPage(1); }}
-            />
-            <Select
-              allowClear
-              placeholder="全部优先级"
-              style={{ width: 130 }}
-              value={priorityFilter}
-              options={[
-                { label: "普通", value: "normal" },
-                { label: "高", value: "high" },
-                { label: "紧急", value: "urgent" },
-              ]}
-              onChange={(value) => { setPriorityFilter(value); setPage(1); }}
-            />
-            <DatePicker.RangePicker
-              value={dateRange}
-              placeholder={["截止日期起", "截止日期止"]}
-              allowClear
-              onChange={(value) => {
-                setDateRange(value ? [value[0], value[1]] : null);
-                setPage(1);
-              }}
-            />
+          <div className="work-todos-toolbar-main">
+            <Segmented className="work-todos-view-tabs" value={view} onChange={(value) => { setView(value as typeof view); setPage(1); }} options={[
+              { label: "我的待办", value: "assigned", icon: <CheckCircleOutlined /> },
+              { label: "我创建的", value: "created", icon: <TeamOutlined /> },
+            ]} />
+            <div className="work-todos-filter-fields">
+              <Input.Search
+                allowClear
+                value={searchText}
+                prefix={<SearchOutlined />}
+                placeholder="搜索待办标题或说明"
+                onChange={(event) => setSearchText(event.target.value)}
+                onSearch={(value) => { setKeyword(value.trim()); setPage(1); }}
+              />
+              <Select
+                allowClear
+                placeholder="全部优先级"
+                value={priorityFilter}
+                options={[
+                  { label: "普通", value: "normal" },
+                  { label: "高优先级", value: "high" },
+                  { label: "紧急", value: "urgent" },
+                ]}
+                onChange={(value) => { setPriorityFilter(value); setPage(1); }}
+              />
+              <DatePicker.RangePicker
+                value={dateRange}
+                placeholder={["截止日期起", "截止日期止"]}
+                allowClear
+                onChange={(value) => {
+                  setDateRange(value ? [value[0], value[1]] : null);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </div>
+          <div className="work-todos-toolbar-sub">
             <Segmented
               className="work-todos-status-tabs"
               value={status}
@@ -318,7 +323,7 @@ export default function WorkTodos() {
               ]}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load(true)}>刷新</Button>
-          </Space>
+          </div>
         </div>
         <Spin spinning={loading}>
           <List

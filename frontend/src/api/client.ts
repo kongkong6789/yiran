@@ -170,6 +170,75 @@ export const assignUsersToOrganization = (body: {
     assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
   }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
+export type TeamKind = "platform" | "enterprise";
+
+export interface TeamMemberRow {
+  id: number;
+  username: string;
+  displayName: string;
+  role: "lead" | "member";
+  roleLabel: string;
+  isActive: boolean;
+  wecomBound: boolean;
+}
+
+export interface TeamSummary {
+  id: number;
+  name: string;
+  kind: TeamKind;
+  kindLabel: string;
+  description: string;
+  organizationId: number | null;
+  organizationName: string;
+  isActive: boolean;
+  memberCount: number;
+  pendingWecomCount: number;
+  canManage: boolean;
+  createdAt: string | null;
+  members: TeamMemberRow[];
+}
+
+export interface TeamUserOption {
+  id: number;
+  username: string;
+  displayName: string;
+  wecomBound: boolean;
+}
+
+export const listTeams = (kind?: TeamKind) =>
+  api.get<{ ok: boolean; count: number; results: TeamSummary[] }>("/auth/teams/", {
+    params: kind ? { kind } : {},
+  }).then((r) => r.data);
+
+export const createTeam = (body: {
+  name: string;
+  kind: TeamKind;
+  description?: string;
+  organizationId?: number;
+  memberIds?: number[];
+}) =>
+  api.post<{ ok: boolean; team: TeamSummary; error?: string }>("/auth/teams/", body).then((r) => r.data);
+
+export const updateTeam = (
+  id: number,
+  body: { name?: string; description?: string; isActive?: boolean },
+) =>
+  api.patch<{ ok: boolean; team: TeamSummary; error?: string }>(`/auth/teams/${id}/`, body).then((r) => r.data);
+
+export const deleteTeam = (id: number) =>
+  api.delete<{ ok: boolean; deleted: string }>(`/auth/teams/${id}/`).then((r) => r.data);
+
+export const addTeamMembers = (id: number, body: { userIds: number[]; role?: "lead" | "member" }) =>
+  api.post<{ ok: boolean; addedCount: number; team: TeamSummary }>(`/auth/teams/${id}/members/`, body).then((r) => r.data);
+
+export const removeTeamMember = (id: number, userId: number) =>
+  api.delete<{ ok: boolean; removedUserId: number; team: TeamSummary }>(`/auth/teams/${id}/members/${userId}/`).then((r) => r.data);
+
+export const listTeamUserOptions = (params: { kind: TeamKind; organizationId?: number }) =>
+  api.get<{ ok: boolean; count: number; results: TeamUserOption[] }>("/auth/teams/user-options/", {
+    params: params.organizationId ? { kind: params.kind, organizationId: params.organizationId } : { kind: params.kind },
+  }).then((r) => r.data);
+
 export const listAdminUsers = (q?: string) =>
   api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
     params: q ? { q } : {},
@@ -213,11 +282,6 @@ export const deleteAdminUser = (id: number) =>
     ok: boolean;
     deletedUser: { id: number; username: string };
   }>(`/auth/admin/users/${id}/`).then((r) => r.data);
-
-export const deleteAdminUser = (id: number) =>
-  api
-    .delete<{ ok: boolean; deleted?: string; error?: string }>(`/auth/admin/users/${id}/`)
-    .then((r) => r.data);
 
 export type WeComBindingStatus = "pending" | "matched" | "not_found" | "invalid_phone" | "duplicate_phone" | "conflict" | "permission_denied" | "retry_waiting" | "disabled";
 
@@ -2074,3 +2138,39 @@ export const updateWeComTodo = (id: string, body: {
   title?: string; description?: string; dueAt?: string | null;
   priority?: "normal" | "high" | "urgent"; remindTypes?: number[];
 }) => api.patch<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>(`/wecom/todos/${id}/`, body).then((r) => r.data);
+
+export type WorkAutomationItem = {
+  id: number;
+  name: string;
+  triggerType: "schedule" | "data" | "manual";
+  triggerRule: string;
+  action: string;
+  channel: "none" | "in_app" | "wecom";
+  recipientContactIds: number[];
+  enabled: boolean;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
+  lastRunStatus?: string;
+  lastError?: string;
+  runCount: number;
+  lastTestedAt?: string | null;
+  lastTestStatus?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WorkAutomationInput = Omit<WorkAutomationItem, "id" | "nextRunAt" | "lastRunAt" | "lastRunStatus" | "lastError" | "runCount" | "lastTestedAt" | "lastTestStatus" | "createdAt" | "updatedAt">;
+
+export type WorkAutomationStats = {
+  saved: number;
+  enabled: number;
+  nextRunAt?: string | null;
+  todayRuns: number;
+};
+
+export const listWorkAutomations = () =>
+  api.get<{ ok: boolean; count: number; stats: WorkAutomationStats; results: WorkAutomationItem[] }>("/automations/").then((r) => r.data);
+export const createWorkAutomation = (body: WorkAutomationInput) =>
+  api.post<{ ok: boolean; automation: WorkAutomationItem }>("/automations/", body).then((r) => r.data);
+export const updateWorkAutomation = (id: number, body: Partial<WorkAutomationInput>) =>
+  api.patch<{ ok: boolean; automation: WorkAutomationItem }>(`/automations/${id}/`, body).then((r) => r.data);

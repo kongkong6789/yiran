@@ -1,6 +1,6 @@
 import { api } from "../../api/client";
 
-export type TaskView = "sent" | "received";
+export type TaskView = "all" | "sent" | "received";
 export type TaskProgressStatus = "pending" | "running" | "completed" | "partial" | "failed";
 
 export interface TaskArtifact {
@@ -19,7 +19,9 @@ export interface PublishedTask {
   title: string;
   sopId: string;
   sender: string;
+  senderId?: number;
   assignees: string[];
+  agentName?: string;
   deadline?: string | null;
   priority: "urgent" | "high" | "normal";
   priorityLabel: string;
@@ -28,18 +30,35 @@ export interface PublishedTask {
   progress: number;
   updatedAt: string;
   notificationTarget: string;
+  notificationMode?: "person" | "group" | "none" | string;
   notificationStatus: string;
   notificationRecordId?: number | null;
   artifacts: TaskArtifact[];
+  createdAt?: string;
   timeline: Array<{
     title: string;
     time?: string;
-    status: "waiting" | "running" | "completed" | "failed";
+    status: "waiting" | "running" | "completed" | "failed" | "skipped";
     detail: string;
   }>;
+  taskSource?: "sent" | "received";
 }
 
 export async function getPublishedTasks(view: TaskView) {
+  if (view === "all") {
+    const [sent, received] = await Promise.all([
+      getPublishedTasks("sent"),
+      getPublishedTasks("received"),
+    ]);
+    const unique = new Map<number, PublishedTask>();
+    sent.forEach((task) => unique.set(task.id, { ...task, taskSource: "sent" }));
+    received.forEach((task) => {
+      if (!unique.has(task.id)) unique.set(task.id, { ...task, taskSource: "received" });
+    });
+    return [...unique.values()].sort((a, b) => (
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    ));
+  }
   return api.get<{ ok: boolean; count: number; results: PublishedTask[] }>("/tasks/", { params: { view } })
-    .then((response) => response.data.results);
+    .then((response) => response.data.results.map((task) => ({ ...task, taskSource: view })));
 }

@@ -93,10 +93,9 @@ export default function WeComConfigModal({ open, onClose, onSaved, initialTab = 
   }, [form, initialTab, message, open]);
 
   const testConnection = async () => {
-    const values = await form.validateFields();
     setTesting(true);
     try {
-      const result = await testWeComConfig(values);
+      const result = await testWeComConfig();
       setTestResult(result);
       message.success("连接测试成功");
     } catch (error: any) {
