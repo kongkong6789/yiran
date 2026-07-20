@@ -30,7 +30,15 @@ def publish_room(room_id, event: str, data: dict | None = None) -> None:
         logger.exception("collab ws publish failed room=%s event=%s", room_id, event)
 
 
-def publish_sync(room_id, *, messages=None, changed=None, insights=None, room=None) -> None:
+def publish_sync(
+    room_id,
+    *,
+    messages=None,
+    changed=None,
+    insights=None,
+    room=None,
+    xiaoce_runs=None,
+) -> None:
     """与前端 CollabSyncEvent / 旧 SSE sync 对齐。"""
     payload: dict = {}
     if messages:
@@ -43,6 +51,8 @@ def publish_sync(room_id, *, messages=None, changed=None, insights=None, room=No
         payload["after_insight_id"] = insights[-1].get("id")
     if room:
         payload["room"] = room
+    if xiaoce_runs:
+        payload["xiaoce_runs"] = xiaoce_runs
     if not payload:
         return
     publish_room(room_id, "sync", payload)

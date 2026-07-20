@@ -91,7 +91,7 @@ class ConversationSkillTests(TestCase):
         self.assertEqual([row["content"] for row in rows], ["分析销售", "结论"])
 
     @patch("apps.core.conversation_skill.llm.chat_messages_result")
-    def test_prepares_a_validated_two_file_package_without_writing_assets(self, mocked_llm):
+    def test_prepares_validated_two_file_package_and_reports_real_stages(self, mocked_llm):
         first = self.add_message(self.user, "GMV 复盘 api_key=sk-THISSECRET123456789")
         self.add_message(self.bot, "复盘完成", msg_type="ai", ai_kind="xiaoce")
         command = self.add_message(self.user, "把这次对话打包成 Skill 并上传")
@@ -99,11 +99,13 @@ class ConversationSkillTests(TestCase):
             "content": json.dumps(VALID_GENERATION, ensure_ascii=False),
             "error": "",
         }
+        events = []
 
         prepared = prepare_conversation_skill(
             self.user,
             self.room,
             exclude_message_id=command.id,
+            progress_callback=lambda code, status, data: events.append((code, status, data)),
         )
 
         transcript = mocked_llm.call_args.args[1][0]["content"]
@@ -123,6 +125,19 @@ class ConversationSkillTests(TestCase):
         self.assertNotIn("把这次对话", stored)
         self.assertFalse(SkillAsset.objects.exists())
         self.assertFalse(UserSkill.objects.exists())
+        self.assertEqual(
+            events,
+            [
+                ("history_read", "running", {}),
+                ("history_read", "completed", {}),
+                ("redaction", "running", {}),
+                ("redaction", "completed", {}),
+                ("skill_summary", "running", {}),
+                ("skill_summary", "completed", {}),
+                ("package_validation", "running", {}),
+                ("package_validation", "completed", {}),
+            ],
+        )
 
     @patch("apps.core.conversation_skill.llm.chat_messages_result")
     def test_rejects_non_strict_generation_and_honors_cancellation(self, mocked_llm):

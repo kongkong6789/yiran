@@ -21,6 +21,9 @@ urlpatterns = [
     path("api/mcp/", include("apps.mcp.urls")),
     path("api/skills/", include("apps.skills.urls")),
     path("api/collab/", include("apps.collab.urls")),
+    path("api/knowledge/", include("apps.knowledge.urls")),
     path("api/commerce/", include("apps.commerce.urls")),
     path("api/wecom/", include("apps.wecom.urls")),
+    path("api/smarttable/", include("apps.smarttable.urls")),
+    path("api/agentctx/", include("apps.agentctx.urls")),
 ]

@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>良策 / 标品 — 项目概览与优化建议</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a222c;
+      --surface-2: #232d3a;
+      --border: #2f3b4a;
+      --text: #e8eef4;
+      --muted: #9aabbc;
+      --accent: #3d9a78;
+      --accent-2: #c4a35a;
+      --danger: #d4736a;
+      --info: #5b8fbf;
+      --radius: 12px;
+      --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "Cascadia Code", "Consolas", "Sarasa Mono SC", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, #1a3a32 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 90% 0%, #2a3040 0%, transparent 50%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    header.hero {
+      margin-bottom: 40px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      font-size: clamp(1.75rem, 4vw, 2.35rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 52em;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .chip strong { color: var(--text); font-weight: 600; }
+
+    nav.toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: 36px;
+    }
+
+    nav.toc h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    nav.toc ol {
+      list-style: none;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 6px 16px;
+      counter-reset: toc;
+    }
+
+    nav.toc a {
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    nav.toc a:hover { color: var(--accent); }
+
+    nav.toc a::before {
+      counter-increment: toc;
+      content: counter(toc) ". ";
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    section {
+      margin-bottom: 40px;
+    }
+
+    section > h2 {
+      font-size: 1.35rem;
+      margin-bottom: 14px;
+      padding-left: 12px;
+      border-left: 3px solid var(--accent);
+    }
+
+    section > h3 {
+      font-size: 1.05rem;
+      margin: 22px 0 10px;
+      color: var(--accent-2);
+    }
+
+    p { margin-bottom: 12px; color: var(--muted); }
+    p strong, li strong { color: var(--text); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+
+    .card h4 {
+      font-size: 15px;
+      margin-bottom: 8px;
+    }
+
+    .card p, .card li {
+      font-size: 13.5px;
+      color: var(--muted);
+    }
+
+    .card ul {
+      margin: 0;
+      padding-left: 1.15em;
+    }
+
+    .card li { margin-bottom: 4px; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      margin-top: 10px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-2);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    td { color: var(--muted); }
+    td:first-child { color: var(--text); white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+
+    code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      background: var(--surface-2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: #b8d4c8;
+    }
+
+    .prio {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.04em;
+    }
+
+    .p-high { background: #3a2220; color: var(--danger); }
+    .p-mid { background: #3a3420; color: var(--accent-2); }
+    .p-low { background: #1e2a38; color: var(--info); }
+    .p-done { background: #1a3228; color: var(--accent); }
+
+    .flow {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: #a8c4b8;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+
+    footer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .card, nav.toc, table, .flow { background: #f7f7f7; border-color: #ddd; }
+      p, td, .card p, .card li, .lead, .chip { color: #333; }
+      h1, h2, h4, td:first-child, .card h4 { color: #111; }
+      code { background: #eee; color: #063; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="brand">Liangce · Agent SaaS</div>
+      <h1>良策「标品」项目概览</h1>
+      <p class="lead">
+        面向电商 / 零售运营团队的 Agent 执行平台：把对话、知识、技能脚本与业务动作编排串起来，
+        经安全闸机校验后再触达真实业务系统。本文汇总<strong>产品用途</strong>、<strong>技术栈</strong>
+        与<strong>待增强 / 优化方向</strong>，便于评审与排期。
+      </p>
+      <div class="meta">
+        <span class="chip"><strong>形态</strong> 前后端分离 Web</span>
+        <span class="chip"><strong>领域</strong> 电商运营 · 知识 · 协作</span>
+        <span class="chip"><strong>文档日期</strong> 2026-07-20</span>
+        <span class="chip"><strong>仓库</strong> 标品 / Agent SaaS</span>
+        <span class="chip"><a href="./project-mindmap.html" style="color:inherit;text-decoration:none"><strong>思维导图</strong> 打开</a></span>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="目录">
+      <h2>目录</h2>
+      <ol>
+        <li><a href="#purpose">项目有什么用</a></li>
+        <li><a href="#stack">技术栈</a></li>
+        <li><a href="#modules">已有能力模块</a></li>
+        <li><a href="#arch">核心链路</a></li>
+        <li><a href="#gaps">待加功能</a></li>
+        <li><a href="#roadmap">可落地实施模块</a></li>
+        <li><a href="#optimize">优化建议</a></li>
+      </ol>
+    </nav>
+
+    <section id="purpose">
+      <h2>1. 项目有什么用</h2>
+      <p>
+        <strong>一句话：</strong>让运营同学用自然语言提问、协作开会、调用技能脚本，
+        系统自动检索知识 / 图谱 / 企微文档，必要时经闸机审批后执行业务动作。
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h4>对话与协作</h4>
+          <ul>
+            <li>对话 Agent：多轮问答、附件、Skill 调用</li>
+            <li>团队协作 / 小策 bot：房间会话、进度可视化</li>
+            <li>圆桌 / Council：多角色讨论与方案压缩</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>知识与经营</h4>
+          <ul>
+            <li>知识库检索、本体图谱、经营回路</li>
+            <li>Wiki / RAG / DuckDB 指标与异常</li>
+            <li>MCP：企微文档、NAS 文件注入上下文</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>执行与治理</h4>
+          <ul>
+            <li>SOP 编排 → 闸机校验 → Connector 执行</li>
+            <li>Skill 仓库：上传 zip、沙箱跑 scripts</li>
+            <li>审计、账号、对象（Agents）管理</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>近期新增（1C/2A）</h4>
+          <ul>
+            <li><code>agentctx</code>：跨会话记忆 + 上下文组装</li>
+            <li>Skill 沙箱：超时 / cwd / env / 命令白名单</li>
+            <li>管理页 <code>/agent-memory</code></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="stack">
+      <h2>2. 技术栈</h2>
+      <table>
+        <thead>
+          <tr><th>层级</th><th>技术</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>后端框架</td>
+            <td>Django 5 · DRF · drf-spectacular</td>
+            <td>REST API、鉴权 Token、Swagger/OpenAPI</td>
+          </tr>
+          <tr>
+            <td>实时通道</td>
+            <td>Django Channels · Daphne</td>
+            <td>协作房间、会议邀请、进度推送 WebSocket</td>
+          </tr>
+          <tr>
+            <td>数据存储</td>
+            <td>PostgreSQL（可切换）· SQLite · DuckDB</td>
+            <td>业务库 / 开发库 / 数仓指标快照</td>
+          </tr>
+          <tr>
+            <td>LLM / 检索</td>
+            <td>自研 LLM 封装 · LightRAG 骨架 · 图谱检索</td>
+            <td>对话生成、知识召回、会议压缩</td>
+          </tr>
+          <tr>
+            <td>前端</td>
+            <td>React 18 · Vite · TypeScript · Ant Design 5</td>
+            <td>管理端与协作 UI</td>
+          </tr>
+          <tr>
+            <td>可视化</td>
+            <td>react-force-graph · d3-force · Three.js · Mermaid</td>
+            <td>本体图、回路图、流程示意</td>
+          </tr>
+          <tr>
+            <td>集成</td>
+            <td>企微 / MCP · Skills zip · Connectors · Baserow/NocoDB（外围）</td>
+            <td>文档、表格、外部业务系统</td>
+          </tr>
+          <tr>
+            <td>安全执行</td>
+            <td>Harness 闸机 · Skill 进程沙箱</td>
+            <td>动作审批与脚本隔离（非 Docker）</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>七层架构（产品设计）</h3>
+      <table>
+        <thead>
+          <tr><th>层</th><th>模块</th><th>职责</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td><code>datalake</code></td><td>DuckDB 数据底座：指标、异常、Error Book</td></tr>
+          <tr><td>2</td><td><code>rag</code></td><td>图谱/制度/SOP 检索（LightRAG 接口对齐，可替换）</td></tr>
+          <tr><td>3</td><td><code>wiki</code></td><td>LLM Wiki 知识组织</td></tr>
+          <tr><td>4</td><td><code>orchestration</code></td><td>SOP 编排：意图 → 收集 → 路由 → 闸机 → 执行</td></tr>
+          <tr><td>5</td><td><code>ontology</code></td><td>业务对象、状态机、可执行动作契约</td></tr>
+          <tr><td>6</td><td><code>harness</code></td><td>Schema/权限/预算校验、Dry-run、审批、审计</td></tr>
+          <tr><td>7</td><td><code>connectors</code></td><td>金蝶 / 吉客云 / 企微表格 / 店铺后台等执行器</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top:12px">
+        此外还有横向能力：<code>collab</code>（协作）、<code>council</code>（圆桌）、
+        <code>skills</code>、<code>knowledge</code>、<code>commerce</code>、<code>mcp</code>、
+        <code>wecom</code>、<code>smarttable</code>、<code>agentctx</code>（Context+Memory）、
+        <code>core</code>（账号/对话/待办）。
+      </p>
+    </section>
+
+    <section id="modules">
+      <h2>3. 已有能力模块（前端入口）</h2>
+      <div class="grid">
+        <div class="card">
+          <h4>工作面</h4>
+          <ul>
+            <li>首页 · 团队协作 · 办流程 · 待办</li>
+            <li>对话 Agent · 小策 bot</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>知识沉淀</h4>
+          <ul>
+            <li>知识库 · 图谱 · 技能库</li>
+            <li>Agent 记忆管理页</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>经营与数据</h4>
+          <ul>
+            <li>经营首页 / 回路图谱 / 工作台</li>
+            <li>连接器 · 智能表格 · 数据湖</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h4>治理</h4>
+          <ul>
+            <li>账号 · 对象 Agents · 闸机审计</li>
+            <li>API 文档：<code>/api/docs/</code></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="arch">
+      <h2>4. 核心链路（当前实现）</h2>
+      <div class="flow">用户消息
+  → Context 组装（记忆 / 会话摘要 / RAG / 图谱 / MCP / NAS / Skill 输出 / 附件）
+  → LLM 生成回复
+  → Memory 轻量更新（偏好/事实启发式 + 滚动摘要）
+
+Skill 脚本
+  → 物化 workspace
+  → 白名单校验（仅 python + scripts/*.py）
+  → 裁剪 env + 强制 cwd + 超时
+  → stdout 回填进 Context
+
+业务动作
+  → Orchestration 编排
+  → Harness 闸机（允许 / 拒绝 / 需审批）
+  → Connectors 执行 + 审计</div>
+    </section>
+
+    <section id="gaps">
+      <h2>5. 还需要加什么功能</h2>
+      <p>按优先级排列（结合 README 占位说明与近期 Context/Memory/Sandbox 范围外事项）。</p>
+      <table>
+        <thead>
+          <tr><th>优先级</th><th>功能</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>真实 LightRAG / 向量召回替换</td>
+            <td>当前 <code>rag</code> 多为接口对齐骨架，检索质量直接影响回答可信度。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>LangGraph（或等价）完整 SOP 编排</td>
+            <td><code>orchestration</code> 需从轻量占位走向可观测、可恢复的状态机流程。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>Connector 生产级对接</td>
+            <td>金蝶/吉客云/店铺后台等：鉴权刷新、幂等、失败重试、回写状态。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>Memory 抽取升级</td>
+            <td>现为正则启发式；可加可选 LLM 抽取、冲突合并、过期策略与用户确认写入。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>团队 / 组织级记忆与权限</td>
+            <td>现仅用户私有记忆；需组织共享事实、敏感字段脱敏、审计。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>Skill 沙箱增强</td>
+            <td>网络隔离、资源限额、非 Docker 的更强隔离（或可选容器）；输出文件白名单。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>智能表格与外部表格同步</td>
+            <td>Baserow / NocoDB SSO 与双向同步稳定化、冲突解决。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>评测与回归集</td>
+            <td>固定问答集 + Skill 脚本金样例，防止改 Context/模型后静默退化。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>多租户与配额</td>
+            <td>按组织隔离数据、LLM token 预算、Skill 并发上限。</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-done">Done</span></td>
+            <td>Context + Memory + Skill 沙箱 MVP</td>
+            <td><code>agentctx</code> + runner 白名单/env/cwd；小策 <code>session_key</code> 已接入。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="roadmap">
+      <h2>6. 可落地实施模块</h2>
+      <p>
+        下列模块均可在现有仓库内独立开分支交付：写清<strong>优先级</strong>、<strong>技术栈</strong>（沿用现有栈、少造新轮子）、
+        <strong>达成效果</strong>与建议工期。按序做即可形成可见里程碑。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width:4.5em">优先级</th>
+            <th>模块</th>
+            <th>技术栈</th>
+            <th>达成效果</th>
+            <th style="width:5em">工期</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>
+              <strong>对话侧记忆可见与可删</strong><br />
+              <span style="font-size:12px;color:var(--muted)">打通 <code>/agent-memory</code> ↔ Agent / 小策</span>
+            </td>
+            <td>
+              现有 <code>apps.agentctx</code> API<br />
+              React + Ant Design（回复 meta / Tag）<br />
+              <code>run_chat</code> 返回 <code>memory_injected</code> 扩展 refs
+            </td>
+            <td>
+              用户能看到本轮用了哪些记忆；一键「忘记」写入删除 API；<br />
+              减少「黑盒记住隐私」顾虑，提升 Memory MVP 可用性
+            </td>
+            <td>2–3 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>
+              <strong>黄金问答回归集</strong><br />
+              <span style="font-size:12px;color:var(--muted)">防 Context / 模型改动静默退化</span>
+            </td>
+            <td>
+              Django <code>manage.py test</code> / pytest<br />
+              固定 JSON fixture + 可选 LLM judge<br />
+              CI（GitHub Actions 或本地脚本）
+            </td>
+            <td>
+              20+ 条覆盖：知识命中、无知识拒答、Skill 沙箱拒绝、记忆注入；<br />
+              每次改 <code>agent_chat</code> / 检索必跑，失败即阻断合并
+            </td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>
+              <strong>一条经营 SOP 端到端</strong><br />
+              <span style="font-size:12px;color:var(--muted)">编排 → 闸机 → 单一 Connector</span>
+            </td>
+            <td>
+              <code>apps.orchestration</code> + <code>apps.harness</code><br />
+              一个真实 Connector（优先企微表格或已有连接）<br />
+              前端「办流程」回放状态
+            </td>
+            <td>
+              运营从控制台发起意图后，可走完校验 / 审批 / 执行并落审计日志；<br />
+              证明七层架构「能干活」，而非仅演示 UI
+            </td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>
+              <strong>异步任务队列</strong><br />
+              <span style="font-size:12px;color:var(--muted)">小策回复 · Skill 长跑 · 记忆压缩</span>
+            </td>
+            <td>
+              Redis + Celery 或 Django-Q / RQ<br />
+              现有 Channels 推送进度不变<br />
+              <code>cancel_check</code> 与任务 revoke 对齐
+            </td>
+            <td>
+              runserver 线程不再堵死；可水平扩展 worker；<br />
+              取消任务真正停止子进程与 LLM 请求
+            </td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>
+              <strong>可选 LLM 记忆抽取</strong><br />
+              <span style="font-size:12px;color:var(--muted)">在启发式之上加确认写入</span>
+            </td>
+            <td>
+              <code>apps.council.llm</code> 快模型<br />
+              JSON schema 输出 fact/preference<br />
+              用户确认弹窗（前端）或自动写入+可撤回
+            </td>
+            <td>
+              「希望以后用表格」类偏好召回率明显提升；<br />
+              误记可撤回，不污染跨会话上下文
+            </td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>
+              <strong>Skill 沙箱加固二期</strong><br />
+              <span style="font-size:12px;color:var(--muted)">在 2A 进程沙箱上增强</span>
+            </td>
+            <td>
+              现有 <code>skills/runner.py</code><br />
+              Windows Job Object / Linux <code>resource</code> 限额<br />
+              可选禁网（空代理 / 防火墙规则文档）
+            </td>
+            <td>
+              CPU/内存失控脚本可杀；敏感主机网络默认不可达；<br />
+              仍不引入 Docker，运维成本可控
+            </td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>
+              <strong>run_chat 可观测性</strong><br />
+              <span style="font-size:12px;color:var(--muted)">召回 / 沙箱 / token / 记忆</span>
+            </td>
+            <td>
+              结构化 logging + 可选 OpenTelemetry<br />
+              或先写 <code>ChatMessage.meta</code> 耗时字段<br />
+              管理页简易耗时表
+            </td>
+            <td>
+              慢请求能定位是 RAG、MCP 还是 LLM；<br />
+              为成本与 SLA 提供数据，支撑模型分流
+            </td>
+            <td>3–4 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>
+              <strong>检索质量升级（轻量可替换）</strong><br />
+              <span style="font-size:12px;color:var(--muted)">对齐 LightRAG 接口后换真引擎</span>
+            </td>
+            <td>
+              保持 <code>apps.rag</code> 接口<br />
+              pgvector / 现有 embedding 表<br />
+              或接入成熟向量库（二选一）
+            </td>
+            <td>
+              Top-k 命中率可测；制度/SKU 问答减少幻觉；<br />
+              不改前端，仅换检索实现
+            </td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>
+              <strong>组织级共享记忆</strong>
+            </td>
+            <td>
+              <code>AgentMemoryItem</code> 扩 <code>organization</code><br />
+              现有组织/成员模型（core）<br />
+              权限：读共享 / 写需角色
+            </td>
+            <td>
+              同店运营共享「旺季备货规则」等事实；<br />
+              个人偏好仍私有，审计可追溯
+            </td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>
+              <strong>智能表格 ↔ Baserow 稳态同步</strong>
+            </td>
+            <td>
+              现有 <code>smarttable</code> + integrations/baserow<br />
+              定时任务 / Webhook<br />
+              冲突字段策略配置
+            </td>
+            <td>
+              运营在外部表格改数后平台可见；<br />
+              SSO 一次登录，减少双端拷贝
+            </td>
+            <td>1–2 周</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>推荐实施顺序（里程碑）</h3>
+      <div class="grid">
+        <div class="card">
+          <h4>M1 · 可信对话（约 1 周）</h4>
+          <ul>
+            <li>记忆可见可删</li>
+            <li>黄金问答 20 条 + CI</li>
+            <li>run_chat 耗时写入 meta</li>
+          </ul>
+          <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>Agent/小策「可解释、可回归」。</p>
+        </div>
+        <div class="card">
+          <h4>M2 · 能执行（约 2 周）</h4>
+          <ul>
+            <li>一条 SOP 端到端 + 审计</li>
+            <li>异步队列替换线程跑 LLM</li>
+            <li>Skill 沙箱二期（限额）</li>
+          </ul>
+          <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>从「会聊」到「能改业务数据」。</p>
+        </div>
+        <div class="card">
+          <h4>M3 · 提质扩面（约 2–3 周）</h4>
+          <ul>
+            <li>向量检索替换骨架</li>
+            <li>LLM 记忆抽取 + 确认</li>
+            <li>组织记忆 / 表格同步（选做）</li>
+          </ul>
+          <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>回答更准、协作更可规模化。</p>
+        </div>
+      </div>
+
+      <h3>模块卡片速览</h3>
+      <div class="grid">
+        <div class="card">
+          <h4><span class="prio p-high">P0</span> 记忆可见可删</h4>
+          <p><strong>栈：</strong>agentctx + React Tags</p>
+          <p><strong>效果：</strong>用户可控的跨会话记忆</p>
+        </div>
+        <div class="card">
+          <h4><span class="prio p-high">P0</span> 黄金回归集</h4>
+          <p><strong>栈：</strong>Django test + fixture + CI</p>
+          <p><strong>效果：</strong>改代码不静默掉点</p>
+        </div>
+        <div class="card">
+          <h4><span class="prio p-high">P0</span> SOP 端到端</h4>
+          <p><strong>栈：</strong>orchestration + harness + connector</p>
+          <p><strong>效果：</strong>证明闸机能落地执行</p>
+        </div>
+        <div class="card">
+          <h4><span class="prio p-mid">P1</span> 异步队列</h4>
+          <p><strong>栈：</strong>Redis + Celery/RQ + Channels</p>
+          <p><strong>效果：</strong>长任务可扩展、可取消</p>
+        </div>
+        <div class="card">
+          <h4><span class="prio p-mid">P1</span> 检索升级</h4>
+          <p><strong>栈：</strong>apps.rag 接口 + pgvector</p>
+          <p><strong>效果：</strong>少幻觉、可测命中率</p>
+        </div>
+        <div class="card">
+          <h4><span class="prio p-mid">P1</span> 沙箱二期</h4>
+          <p><strong>栈：</strong>runner + OS 资源限额</p>
+          <p><strong>效果：</strong>脚本更安全，仍免 Docker</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="optimize">
+      <h2>7. 怎么优化（工程与体验）</h2>
+
+      <h3>可靠性</h3>
+      <div class="grid">
+        <div class="card">
+          <h4>数据库与路由</h4>
+          <p>统一 PostgreSQL 多库别名（如 <code>knowledge</code>）配置，避免 USE_POSTGRESQL 切换后别名丢失；迁移与 keepdb 测试流水线固定。</p>
+        </div>
+        <div class="card">
+          <h4>异步任务</h4>
+          <p>小策回复、Skill 长任务、记忆压缩改为 Celery/RQ + 可取消，避免线程内跑 LLM 难观测。</p>
+        </div>
+        <div class="card">
+          <h4>可观测性</h4>
+          <p>为 <code>run_chat</code> 打 span：召回耗时、沙箱耗时、token、记忆是否注入；对接日志与告警。</p>
+        </div>
+      </div>
+
+      <h3>体验</h3>
+      <div class="grid">
+        <div class="card">
+          <h4>协作切换</h4>
+          <p>继续强化按房间缓存草稿/附件；大房间消息虚拟列表（已有 virtuoso 可复用）。</p>
+        </div>
+        <div class="card">
+          <h4>引用透明</h4>
+          <p>回复侧展示 refs（知识块、Skill、MCP、记忆条目），用户可一键「忘记这条记忆」。</p>
+        </div>
+        <div class="card">
+          <h4>模型策略</h4>
+          <p>按意图分流：检索问答用快模型，表格/长文用强模型；视觉模型候选已有，可配置化。</p>
+        </div>
+      </div>
+
+      <h3>安全</h3>
+      <ul style="margin:12px 0 0 1.2em;color:var(--muted)">
+        <li><strong>密钥</strong>：Skill 沙箱已裁剪 env；继续审计 MCP/Connector 日志是否落密钥。</li>
+        <li><strong>闸机</strong>：高风险写操作强制审批流，与 harness 审批单 UI 打通。</li>
+        <li><strong>提示注入</strong>：对上传附件 / Skill stdout 做不可信标签，限制其覆盖系统规则。</li>
+      </ul>
+
+      <h3>建议下一迭代（可执行清单）</h3>
+      <ol style="margin:12px 0 0 1.2em;color:var(--muted)">
+        <li>补齐记忆管理页与对话侧「已引用记忆」联通（前后端已有 API）。</li>
+        <li>为 Top 3 Skill 包写沙箱合规的 <code>scripts/</code> 示例与 CI 单测。</li>
+        <li>选一条真实经营 SOP：从编排 → 闸机 → 一个 Connector 端到端跑通并录屏。</li>
+        <li>建立 20 条黄金问答，每次改 <code>agent_chat</code> / 检索必跑。</li>
+      </ol>
+    </section>
+
+    <footer>
+      本文档由仓库现状整理生成，路径建议：<code>docs/project-overview.html</code>。
+      本地用浏览器直接打开即可；打印友好。不替代 <code>README.md</code> 启动说明。
+    </footer>
+  </div>
+</body>
+</html>

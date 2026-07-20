@@ -1,82 +1,153 @@
-"""对话 Agent:汇聚知识后单轮/多轮回复。"""
+"""Agent chat orchestration for Liangce AI."""
 from __future__ import annotations
 
 from django.conf import settings
+from django.db.models import Q
 
 from apps.council import llm
 from apps.council import images as image_svc
 from apps.council.knowledge import gather_knowledge
 from apps.council.graph_knowledge import search_graph
 from apps.mcp.client import find_document_url_in_thread, is_document_followup, read_wecom_document
+from apps.mcp.nas_files import read_nas_for_agent
 from apps.skills.service import build_skill_system_block, resolve_skills, skills_payload
 from apps.skills.runner import (
     diagnose_skill_execution,
     format_script_outputs,
     try_execute_skill_scripts,
 )
+from apps.agentctx.assembler import assemble_context
+from apps.agentctx.memory import maybe_update_memory
 from .attachments import format_attachment_context, vision_image_parts
 from .cancellation import raise_if_cancelled
+from .progress import emit_progress
 from pathlib import Path
 
 DOC_SYSTEM_APPEND = """
 
-当前对话围绕企业微信文档进行。务必遵守:
-1. 只使用【企业微信 MCP 文档】中的 records/字段回答,不要使用其他来源的业务指标。
-2. 用户追问「原始数据/表格展示/导出」时,将文档 records 格式化为 Markdown 表格,列名取字段标题。
-3. 若参考资料中已有文档数据,不要切换到 GMV/退款率等无关指标。"""
+Current conversation may include enterprise WeCom documents. Follow these rules:
+1. Prefer MCP document records and document content over general guesses.
+2. If the user asks about an uploaded or linked document, first use the provided document content and cite concrete details.
+3. For business metrics such as GMV, sales, inventory, cost, or profit, distinguish document evidence from graph, loop, or SQL-derived data.
+"""
 
 
-SYSTEM_PROMPT = """你是「良策 AI」对话助手,面向电商/零售运营团队。
+SYSTEM_PROMPT = """You are Liangce AI, an assistant for ecommerce and retail operations teams.
 
-你可以基于平台注入的参考资料(制度/SOP、业务指标、异常预警、本体图谱、企业微信文档)回答问题,
-并引导用户使用平台能力:
-- 圆桌会议:多 Agent 围绕复杂问题会诊
-- Agent 控制台:自然语言触发 SOP(采购/改价/日报/吉客云同步)
-- 本体图谱 / Loops:因果链路与回路分析
-- MCP 接入:企业微信、金蝶、吉客云、NAS 等
-- Skill:用户可上传 SKILL.md 完整 zip 包(含 scripts/),对话中用 @skill-id 调用;平台会自动执行 Skill 中的 python 脚本
-- 文生图/图生图:用户说「画一张…」走文生图;上传图片并说「改成…」走图生图
+You can use retrieved knowledge base snippets, business graph evidence, loop metrics, MCP documents, and skill outputs when they are provided in the prompt. Answer in the user language, prefer Chinese for Chinese questions, and ground factual answers in the supplied context.
 
-回答要求:简洁、可执行、中文;有数据或制度依据时引用;不确定时说明需补充的信息。
-不要编造未出现在参考资料中的具体数字。"""
+Rules:
+- Do not claim data is missing when relevant context is present.
+- If context is insufficient, say what is missing and suggest a precise next query or data source.
+- For product filing, ingredients, claims, sales, inventory, cost, and profit questions, prioritize exact product names, filing numbers, dates, and file evidence.
+- Keep answers concise, but include enough evidence for the user to verify the result.
+"""
+
 
 SKILL_EXEC_APPEND = """
 
-Skill 脚本执行规则(必须遵守):
-1. 若用户消息旁已注入【Skill 脚本执行结果】,表示平台已在后端执行过 python 脚本,禁止再让用户「自己去终端运行」相同命令。
-2. 执行成功时,直接根据 stdout / json 文件内容写分析报告(结论→原因→举例→建议)。
-3. 执行失败时,说明 stderr 中的错误(缺依赖、API Key、网络等)及修复方式,不要假装已拿到数据。
-4. 若仅有【Skill 执行状态】未执行成功,按其中原因引导用户(重传 zip、补品牌名等),不要重复 Skill 原文里的手工步骤清单。
+If skill execution results are provided, use them as tool evidence. If a skill failed, explain the failure briefly and continue with any available retrieved context.
 """
 
 
 def _fallback_reply(message: str, knowledge: str, *, llm_error: str = "", configured: bool = False) -> str:
-    preview = knowledge[:280] + ("…" if len(knowledge) > 280 else "")
+    preview = knowledge[:280] + ("..." if len(knowledge) > 280 else "")
+    preview_text = preview or "\u6682\u65e0"
+    error_text = llm_error or "unknown error"
     if not configured:
         return (
-            f"收到:「{message[:60]}」。\n\n"
-            "当前未配置个人 LLM API Key,处于演示模式。\n"
-            f"已检索到资料片段:\n{preview or '(暂无命中资料)'}\n\n"
-            "请到右上角「个人设置」填写 **LLM API Key + Base URL + Model** 后重试;"
-            "只填模型名不够,必须同时有可用的 API Key。"
+            f"\u6211\u5df2\u6536\u5230\u4f60\u7684\u95ee\u9898\uff1a{message[:60]}\n\n"
+            "\u5f53\u524d\u6ca1\u6709\u914d\u7f6e LLM API Key\uff0c\u65e0\u6cd5\u751f\u6210\u5b8c\u6574\u56de\u7b54\u3002\n\n"
+            f"\u5df2\u68c0\u7d22\u5230\u7684\u53c2\u8003\u7247\u6bb5\uff1a\n{preview_text}\n\n"
+            "\u8bf7\u5148\u5728\u4e2a\u4eba\u8bbe\u7f6e\u6216\u5168\u5c40 .env \u914d\u7f6e LLM API Key + Base URL + Model\u3002"
         )
     return (
-        f"收到:「{message[:60]}」。\n\n"
-        "已配置 API Key,但本次模型调用失败,未能生成正式回答。\n\n"
-        f"**错误信息:**\n```\n{llm_error or '未知错误'}\n```\n\n"
-        "常见原因:\n"
-        "1. Base URL / Model 不正确(需 OpenAI 兼容的 `/v1/chat/completions`)\n"
-        "2. 模型不支持看图,却上传了图片(请换 gpt-4o / qwen-vl 等视觉模型)\n"
-        "3. Key 无效、欠费或网络不通\n"
-        "4. HTTP 403 / error 1010:密钥与接口不匹配"
-        "(生图 Key 只能打 `/images/*`,识图请用模型 Key)\n\n"
-        f"已检索资料片段:\n{preview or '(暂无)'}"
+        f"\u6211\u5df2\u6536\u5230\u4f60\u7684\u95ee\u9898\uff1a{message[:60]}\n\n"
+        f"\u6a21\u578b\u8c03\u7528\u672a\u6210\u529f\uff1a{error_text}\n\n"
+        f"\u5df2\u68c0\u7d22\u5230\u7684\u53c2\u8003\u7247\u6bb5\uff1a\n{preview_text}"
     )
 
 
 def _mock_reply(message: str, knowledge: str) -> str:
     return _fallback_reply(message, knowledge, configured=False)
 
+
+def _selected_knowledge_context(
+    message: str,
+    knowledge_mode: str = "auto",
+    knowledge_base_ids: list[int] | None = None,
+    user=None,
+) -> tuple[str, list[dict]]:
+    mode = knowledge_mode if knowledge_mode in {"auto", "none", "selected"} else "auto"
+    if mode == "none":
+        return "", []
+    try:
+        from apps.knowledge.models import KnowledgeBase
+        from apps.knowledge.traditional_rag import keyword_search, semantic_search
+    except Exception:
+        return "", []
+    if not getattr(user, "is_authenticated", False):
+        return "", []
+    qs = KnowledgeBase.objects.filter(archived_at__isnull=True).filter(
+        Q(visibility__in=[KnowledgeBase.Visibility.TEAM, KnowledgeBase.Visibility.COMPANY])
+        | Q(visibility=KnowledgeBase.Visibility.PRIVATE, owner_user_id=user.id)
+    )
+    ids = [int(item) for item in (knowledge_base_ids or []) if str(item).strip().isdigit()]
+    if mode == "selected":
+        if not ids:
+            return "", []
+        qs = qs.filter(id__in=ids)
+    try:
+        bases = list(qs.order_by("-updated_at")[:8])
+    except Exception:
+        return "", []
+    if not bases:
+        return "", []
+    refs: list[dict] = []
+    blocks: list[str] = []
+    per_base_limit = 3 if mode == "auto" else 4
+    for base in bases:
+        chunks = []
+        keyword_chunks = []
+        semantic_chunks = []
+        try:
+            keyword_chunks = keyword_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
+        except Exception:
+            keyword_chunks = []
+        try:
+            semantic_chunks = semantic_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
+        except Exception:
+            semantic_chunks = []
+        seen_chunk_ids: set[int] = set()
+        for chunk in [*keyword_chunks, *semantic_chunks]:
+            if chunk.id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk.id)
+            chunks.append(chunk)
+        if not chunks:
+            continue
+        lines = []
+        for chunk in chunks[:per_base_limit]:
+            preview = (chunk.text_preview or "").strip()
+            if not preview:
+                continue
+            lines.append(f"- chunk_{chunk.chunk_index + 1:03d}: {preview[:700]}")
+            refs.append({
+                "knowledge_base_id": base.id,
+                "knowledge_base_name": base.name,
+                "file_id": chunk.file_id,
+                "file_name": chunk.file.original_filename if getattr(chunk, "file", None) else "",
+                "chunk_id": chunk.id,
+                "chunk_index": chunk.chunk_index,
+            })
+        if lines:
+            blocks.append(f"\u3010\u77e5\u8bc6\u5e93:{base.name}\u3011\n" + "\n".join(lines))
+        if mode == "auto" and len(refs) >= 6:
+            break
+    if not blocks and mode == "selected":
+        names = "\u3001".join(base.name for base in bases)
+        return f"\u3010\u77e5\u8bc6\u5e93\u3011\u5df2\u9009\u62e9: {names}, \u4f46\u6ca1\u6709\u68c0\u7d22\u5230\u76f4\u63a5\u76f8\u5173\u5207\u7247\u3002", refs
+    return "\n\n".join(blocks), refs
 
 def run_chat(
     message: str,
@@ -86,18 +157,26 @@ def run_chat(
     attachments: list[dict] | None = None,
     model: str | None = None,
     cancel_check=None,
+    knowledge_mode: str = "auto",
+    knowledge_base_ids: list[int] | None = None,
+    progress_callback=None,
+    session_key: str | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
     attachments = attachments or []
     model_override = (model or "").strip() or None
     if not message and not attachments:
-        return {"ok": False, "error": "消息不能为空"}
+        return {"ok": False, "error": "\u8bf7\u8f93\u5165\u6d88\u606f\u6216\u4e0a\u4f20\u9644\u4ef6\u3002"}
 
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "understanding", "running")
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
+    emit_progress(progress_callback, "understanding", "completed")
+    if active_skills:
+        emit_progress(progress_callback, "skill", "running")
     script_blocks = (
         try_execute_skill_scripts(
             active_skills,
@@ -108,17 +187,21 @@ def run_chat(
         )
         if active_skills else []
     )
+    if active_skills:
+        emit_progress(progress_callback, "skill", "completed")
     raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
     knowledge = ""
     graph: dict = {"refs": []}
+    emit_progress(progress_callback, "knowledge_search", "running")
     if not doc_mode:
         knowledge = gather_knowledge(message, top_k=4)
         raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
         raise_if_cancelled(cancel_check)
+    selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(message, knowledge_mode, knowledge_base_ids, user=user)
 
     mcp = (
         read_wecom_document(
@@ -131,14 +214,54 @@ def run_chat(
         else read_wecom_document(message, user=user, cancel_check=cancel_check)
     )
     raise_if_cancelled(cancel_check)
+    nas = read_nas_for_agent(user, message) if user is not None else {
+        "attempted": False, "content": "", "files": [], "error": "",
+    }
+    nas_files = nas.get("files") or []
+    context_attachments = [*attachments, *nas_files]
+    raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "knowledge_search", "completed")
+    tool_count = (
+        len(script_blocks)
+        + (1 if mcp.get("attempted") else 0)
+        + (1 if nas.get("attempted") else 0)
+    )
+    if tool_count:
+        emit_progress(
+            progress_callback,
+            "tools",
+            "completed",
+            tool_count=tool_count,
+        )
+    has_evidence = bool(
+        selected_knowledge
+        or knowledge
+        or graph.get("refs")
+        or mcp.get("content")
+        or nas.get("content")
+        or script_blocks
+    )
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "running")
     refs = {
         "rag": [],
+        "knowledge_bases": selected_knowledge_refs,
         "graph": graph.get("refs") or [],
         "mcp": (
-            [{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
-            if mcp.get("content")
-            else []
+            ([{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
+             if mcp.get("content") else [])
+            + [{"server": "nas", "tool": "read_path", "source": item.get("native_path")} for item in nas_files]
         ),
+        "nas": [
+            {
+                "name": item.get("name"),
+                "path": item.get("path"),
+                "native_path": item.get("native_path"),
+                "size": item.get("size"),
+                "download_url": item.get("download_url"),
+            }
+            for item in nas_files
+        ],
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
         "attachments": [
@@ -153,6 +276,8 @@ def run_chat(
             for a in attachments
         ],
     }
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "completed")
 
     reference_blocks: list[str] = []
     attach_ctx = format_attachment_context(attachments)
@@ -161,41 +286,48 @@ def run_chat(
     if script_output:
         reference_blocks.append(script_output)
     elif skill_diag:
-        reference_blocks.append(f"【Skill 执行状态】\n{skill_diag}")
+        reference_blocks.append(f"[Skill diagnostic]\n{skill_diag}")
+    if selected_knowledge:
+        reference_blocks.append(selected_knowledge)
     if knowledge:
         reference_blocks.append(knowledge)
     if mcp.get("content"):
-        reference_blocks.append(
-            f"【企业微信 MCP 文档】\n来源:{mcp.get('source')}\n{mcp['content']}"
-        )
+        reference_blocks.append(f"[MCP document: {mcp.get('source')}]\n{mcp['content']}")
     elif mcp.get("attempted") and mcp.get("error"):
         reference_blocks.append(
             f"【企业微信 MCP 状态】读取失败:{mcp['error']}。"
             "请明确告诉用户此错误及修复方向,不要假装已经读取文档。"
         )
+    if nas.get("content"):
+        reference_blocks.append(f"【NAS 文件库】\n{nas['content']}")
+    elif nas.get("attempted") and nas.get("error"):
+        reference_blocks.append(
+            f"【NAS 文件库状态】读取失败：{nas['error']}。"
+            "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
+        )
 
-    user_block = message or "(用户仅上传了附件,请结合附件内容回答)"
-    if reference_blocks:
-        reference_text = "\n\n".join(reference_blocks)
-        user_block = f"参考资料:\n{reference_text}\n\n用户问题:{user_block}"
+    ctx_pack = assemble_context(
+        message=message,
+        history=history,
+        user=user,
+        session_key=session_key,
+        reference_blocks=reference_blocks,
+        history_limit=30,
+    )
+    user_block = ctx_pack.user_block
+    clean_history = ctx_pack.clean_history
+    reference_blocks = ctx_pack.reference_blocks
 
-    clean_history = [
-        {"role": item["role"], "content": str(item["content"])}
-        for item in history[-30:]
-        if isinstance(item, dict)
-        and item.get("role") in {"user", "assistant"}
-        and item.get("content")
-    ]
-    image_parts = vision_image_parts(attachments)
+    image_parts = vision_image_parts(context_attachments)
     has_image = bool(image_parts)
     image_intent = image_svc.detect_image_intent(message, has_image)
-    # 下拉选了生图模型时,强制走 images API
+    # Force image API flow when an image-generation model is selected.
     if model_override and image_svc.is_image_gen_model(model_override):
         image_intent = "edit" if has_image else "generate"
     image_blocks: list[str] = []
     generated_images: list[dict] = []
 
-    # 文生图 / 图生图:走独立 images API + 生图密钥
+    # Image generation and editing use the dedicated images API.
     raise_if_cancelled(cancel_check)
     if image_intent == "generate" and image_svc.image_api_available() and user is not None:
         prompt = image_svc.extract_generation_prompt(message)
@@ -204,7 +336,7 @@ def run_chat(
             user_id=user.id,
             preferred=model_override if image_svc.is_image_gen_model(model_override) else None,
         )
-        image_blocks.append(image_svc.format_image_results("文生图", gen))
+        image_blocks.append(image_svc.format_image_results("Generated images", gen))
         if gen.get("ok"):
             generated_images.extend(gen.get("images") or [])
             if gen.get("model"):
@@ -212,7 +344,7 @@ def run_chat(
     elif image_intent == "edit" and image_svc.image_api_available() and user is not None:
         src = next((a for a in attachments if a.get("is_image")), None)
         if not src:
-            image_blocks.append("【图生图】请先上传要编辑的图片。")
+            image_blocks.append("Image editing needs an uploaded image.")
         else:
             raw = b""
             stored = Path(src.get("stored_path") or "")
@@ -222,7 +354,7 @@ def run_chat(
                 import base64
                 raw = base64.b64decode(src["image_base64"])
             if not raw:
-                image_blocks.append("【图生图】读取原图失败。")
+                image_blocks.append("Unable to read the uploaded image bytes.")
             else:
                 preferred = model_override if image_svc.is_image_gen_model(model_override) else None
                 edited = image_svc.edit_image_with_fallback(
@@ -232,7 +364,7 @@ def run_chat(
                     filename=src.get("name") or "image.png",
                     preferred=preferred,
                 )
-                title = "文生图(图生图回退)" if edited.get("fallback_from_edit") else "图生图"
+                title = "Image edit fallback results" if edited.get("fallback_from_edit") else "Image edit results"
                 image_blocks.append(image_svc.format_image_results(title, edited))
                 if edited.get("ok"):
                     generated_images.extend(edited.get("images") or [])
@@ -256,11 +388,8 @@ def run_chat(
         + build_skill_system_block(active_skills)
     )
     if image_parts and image_intent == "analyze":
-        system += (
-            "\n\n用户本轮消息包含图片,请直接观察图像作答;"
-            "不要声称无法查看图片。若信息不足,说明需要补充什么。"
-        )
-    wants_table = doc_mode and any(k in message for k in ("原始", "表格", "导出", "展示"))
+        system += "\n\nAnalyze the attached image carefully and answer only from visible image evidence unless reference material is provided."
+    wants_table = doc_mode and any(k in message for k in ("\u8868\u683c", "\u8868", "\u5bf9\u6bd4", "\u6e05\u5355", "table"))
     has_script_data = any(b.get("ok") and b.get("stdout") for b in script_blocks)
     max_tokens = 3500 if has_script_data else (2500 if wants_table and mcp.get("content") else 900)
     if image_parts:
@@ -274,8 +403,9 @@ def run_chat(
         "content": "", "error": "", "configured": True,
         "model": "", "vision_unsupported": False,
     }
+    emit_progress(progress_callback, "composing", "running")
     if not skip_llm:
-        # 识图/对话走 Chat；生图密钥只用于 /images/*
+        # Chat and vision analysis use chat completions; image generation uses images API.
         chat_kwargs: dict = {
             "max_tokens": max_tokens,
             "temperature": 0.4 if doc_mode else 0.6,
@@ -286,7 +416,7 @@ def run_chat(
             chat_kwargs["cancel_check"] = cancel_check
         tried_models: list[str] = []
         if image_parts:
-            # 个人设置若是 DeepSeek 等纯文本模型,识图改用全局 .env 的 Key/URL + 视觉模型
+            # If the personal model is text-only, use global vision-capable configuration for image input.
             personal_model = llm.personal_llm_model(user)
             effective_personal = model_override or personal_model
             if llm.looks_non_vision_model(effective_personal) and (settings.LLM_API_KEY or "").strip():
@@ -307,7 +437,7 @@ def run_chat(
                 llm_result = attempt
                 if attempt.get("content"):
                     break
-                # 仅在「不支持 image_url」或明显模型不可用时换下一个视觉模型
+                # Try another vision model only when image input is unsupported or the model is unavailable.
                 err = attempt.get("error") or ""
                 if not (
                     attempt.get("vision_unsupported")
@@ -338,22 +468,13 @@ def run_chat(
 
     if not reply and image_parts and llm_result.get("vision_unsupported"):
         personal_model = llm.personal_llm_model(user)
-        tried = "、".join(f"`{m}`" for m in tried_models) or f"`{used_model}`"
+        tried = ", ".join(f"`{m}`" for m in tried_models) or f"`{used_model}`"
+        model_hint = f" Current personal model `{personal_model}` appears not to support image input." if personal_model and llm.looks_non_vision_model(personal_model) else ""
         reply = (
-            "图片已上传,但调用的 Chat 通道不接受多模态 `image_url`(识图)。\n\n"
-            f"已尝试视觉模型: {tried}\n"
-            + (
-                f"你的个人设置模型是 `{personal_model}`(纯文本,不能看图),"
-                "识图时已忽略它并改用全局配置。\n"
-                if personal_model and llm.looks_non_vision_model(personal_model)
-                else ""
-            )
-            + "请任选其一:\n"
-            "1. 打开右上角「个人设置」,把 Model 改成网关支持的视觉型号"
-            "(如 `gpt-4o` / `qwen-vl-max`),不要用 DeepSeek Flash\n"
-            "2. 或确认 centos 网关是否提供 VL Chat 模型,把名称写入 `.env` 的"
-            " `IMAGE_VISION_MODEL` 后重启\n\n"
-            "文生图/图生图不受影响:直接说「画一张…」,或上传图后说「改成…」。"
+            "The current model does not support image input, so I could not analyze the uploaded image. "
+            f"Tried model(s): {tried}."
+            + model_hint
+            + " Please switch to a vision-capable chat model or remove the image and ask with text only."
         )
     elif not reply:
         reply = _fallback_reply(
@@ -363,14 +484,44 @@ def run_chat(
             configured=llm_configured,
         )
 
+    if nas_files:
+        file_links = [
+            f"- [{item['name']}]({item['download_url']}) · `{item['native_path']}`"
+            for item in nas_files
+            if item.get("download_url")
+        ]
+        if file_links:
+            reply = reply.rstrip() + "\n\n**NAS 文件**\n" + "\n".join(file_links)
+
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "composing", "completed")
+    try:
+        maybe_update_memory(
+            user,
+            session_key=session_key,
+            message=message,
+            reply=reply,
+            history=history,
+        )
+    except Exception:
+        # 记忆更新失败不影响主回复
+        pass
     return {
         "ok": True,
         "reply": reply,
         "llm": llm.llm_available(user),
         "llm_error": llm_error,
         "llm_model": used_model or llm_result.get("model") or "",
-        "knowledge_hit": bool(knowledge or mcp.get("content") or attachments or generated_images),
+        "session_key": session_key or "",
+        "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
+"knowledge_hit": bool(
+            selected_knowledge
+            or knowledge
+            or mcp.get("content")
+            or nas.get("content")
+            or attachments
+            or generated_images
+        ),
         "doc_context": bool(doc_mode),
         "image_intent": image_intent,
         "generated_images": generated_images,
@@ -384,6 +535,7 @@ def run_chat(
         "refs": refs,
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
+        "nas_files": refs["nas"],
         "attachments": [
             {
                 "id": a.get("id"),

@@ -658,14 +658,17 @@ def age_live_graph(request):
     sid = (request.query_params.get("source_id") or settings.LIGHTRAG_SOURCE_ID or "").strip()
     refresh = request.query_params.get("refresh") in ("1", "true", "yes")
     try:
-        node_limit = int(request.query_params.get("limit", "2000"))
-        edge_limit = int(request.query_params.get("edge_limit", "3000"))
+        node_limit = int(request.query_params.get("limit", "1000"))
+        edge_limit = int(request.query_params.get("edge_limit", "1500"))
+        focus_raw = request.query_params.get("focus_age_id") or ""
+        focus_age_id = int(focus_raw) if focus_raw else None
     except ValueError:
-        return Response({"error": "limit / edge_limit 须为整数"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "limit / edge_limit / focus_age_id must be integers"}, status=status.HTTP_400_BAD_REQUEST)
 
     # 缓存命中时无需探测 PG 连通性,页面秒开
     result = age_svc.fetch_graph_live(
         source_id=sid or None,
+        focus_age_id=focus_age_id,
         node_limit=node_limit,
         edge_limit=edge_limit,
         use_cache=not refresh,

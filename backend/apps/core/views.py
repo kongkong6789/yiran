@@ -28,6 +28,7 @@ from .attachments import (
 )
 from .models import AuditLog, ChatMessage, ChatSession, TaskFollowUp, TaskResultRecord, WorkAutomation, WorkAutomationRun, WorkTask, WorkTaskArtifact, WorkTodo
 from .organizations import current_organization, organization_user_ids
+from .automation_scheduler import configure_next_run
 
 User = get_user_model()
 
@@ -400,6 +401,171 @@ def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: 
     return result
 
 
+def _iso(dt) -> str | None:
+    return dt.isoformat() if dt else None
+
+
+def _work_automation_payload(row: WorkAutomation) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "triggerType": row.trigger_type,
+        "triggerRule": row.trigger_rule,
+        "action": row.action,
+        "channel": row.notification_channel,
+        "recipientContactIds": list(row.recipient_contact_ids or []),
+        "enabled": bool(row.enabled),
+        "nextRunAt": _iso(row.next_run_at),
+        "lastRunAt": _iso(row.last_run_at),
+        "lastRunStatus": row.last_run_status or "",
+        "lastError": row.last_error or "",
+        "runCount": row.run_count,
+        "lastTestedAt": _iso(row.last_tested_at),
+        "lastTestStatus": row.last_test_status or "",
+        "createdAt": _iso(row.created_at) or "",
+        "updatedAt": _iso(row.updated_at) or "",
+    }
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def work_automations(request):
+    organization = current_organization(request.user)
+    if organization is None:
+        return Response({"ok": False, "detail": "未加入组织，无法管理自动化。"}, status=400)
+
+    base_qs = WorkAutomation.objects.filter(organization=organization, creator=request.user)
+
+    if request.method == "GET":
+        rows = list(base_qs.order_by("-updated_at", "-id")[:200])
+        start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_runs = WorkAutomationRun.objects.filter(
+            organization=organization,
+            creator=request.user,
+            started_at__gte=start,
+        ).count()
+        enabled_rows = [r for r in rows if r.enabled]
+        next_candidates = sorted(
+            [r.next_run_at for r in enabled_rows if r.next_run_at],
+            key=lambda x: x,
+        )
+        stats = {
+            "saved": len(rows),
+            "enabled": len(enabled_rows),
+            "nextRunAt": _iso(next_candidates[0]) if next_candidates else None,
+            "todayRuns": today_runs,
+        }
+        return Response({
+            "ok": True,
+            "count": len(rows),
+            "stats": stats,
+            "results": [_work_automation_payload(row) for row in rows],
+        })
+
+    data = request.data or {}
+    name = str(data.get("name") or "").strip()[:128]
+    trigger_type = str(data.get("triggerType") or WorkAutomation.TriggerType.SCHEDULE).strip()
+    trigger_rule = str(data.get("triggerRule") or "").strip()[:255]
+    action = str(data.get("action") or "").strip()
+    channel = str(data.get("channel") or WorkAutomation.NotificationChannel.NONE).strip()
+    enabled = bool(data.get("enabled", False))
+    recipient_ids = data.get("recipientContactIds") or []
+    if not isinstance(recipient_ids, list):
+        recipient_ids = []
+    recipient_ids = [int(x) for x in recipient_ids if str(x).isdigit() or isinstance(x, int)]
+
+    if not name:
+        return Response({"ok": False, "detail": "name 必填。"}, status=400)
+    if not action:
+        return Response({"ok": False, "detail": "action 必填。"}, status=400)
+    if trigger_type not in WorkAutomation.TriggerType.values:
+        return Response({"ok": False, "detail": "triggerType 无效。"}, status=400)
+    if channel not in WorkAutomation.NotificationChannel.values:
+        return Response({"ok": False, "detail": "channel 无效。"}, status=400)
+    if not trigger_rule and trigger_type != WorkAutomation.TriggerType.MANUAL:
+        return Response({"ok": False, "detail": "triggerRule 必填。"}, status=400)
+
+    row = WorkAutomation(
+        organization=organization,
+        creator=request.user,
+        name=name,
+        trigger_type=trigger_type,
+        trigger_rule=trigger_rule or "手动",
+        action=action,
+        notification_channel=channel,
+        recipient_contact_ids=recipient_ids,
+        enabled=enabled,
+    )
+    try:
+        configure_next_run(row)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    row.save()
+    return Response({"ok": True, "automation": _work_automation_payload(row)}, status=201)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def work_automation_detail(request, automation_id: int):
+    organization = current_organization(request.user)
+    if organization is None:
+        return Response({"ok": False, "detail": "未加入组织，无法管理自动化。"}, status=400)
+
+    row = get_object_or_404(
+        WorkAutomation,
+        id=automation_id,
+        organization=organization,
+        creator=request.user,
+    )
+
+    if request.method == "GET":
+        return Response({"ok": True, "automation": _work_automation_payload(row)})
+
+    if request.method == "DELETE":
+        row.delete()
+        return Response({"ok": True})
+
+    data = request.data or {}
+    if "name" in data:
+        name = str(data.get("name") or "").strip()[:128]
+        if not name:
+            return Response({"ok": False, "detail": "name 不能为空。"}, status=400)
+        row.name = name
+    if "triggerType" in data:
+        trigger_type = str(data.get("triggerType") or "").strip()
+        if trigger_type not in WorkAutomation.TriggerType.values:
+            return Response({"ok": False, "detail": "triggerType 无效。"}, status=400)
+        row.trigger_type = trigger_type
+    if "triggerRule" in data:
+        row.trigger_rule = str(data.get("triggerRule") or "").strip()[:255]
+    if "action" in data:
+        action = str(data.get("action") or "").strip()
+        if not action:
+            return Response({"ok": False, "detail": "action 不能为空。"}, status=400)
+        row.action = action
+    if "channel" in data:
+        channel = str(data.get("channel") or "").strip()
+        if channel not in WorkAutomation.NotificationChannel.values:
+            return Response({"ok": False, "detail": "channel 无效。"}, status=400)
+        row.notification_channel = channel
+    if "recipientContactIds" in data:
+        recipient_ids = data.get("recipientContactIds") or []
+        if not isinstance(recipient_ids, list):
+            recipient_ids = []
+        row.recipient_contact_ids = [
+            int(x) for x in recipient_ids if str(x).isdigit() or isinstance(x, int)
+        ]
+    if "enabled" in data:
+        row.enabled = bool(data.get("enabled"))
+
+    try:
+        configure_next_run(row)
+    except ValueError as exc:
+        return Response({"ok": False, "detail": str(exc)}, status=400)
+    row.save()
+    return Response({"ok": True, "automation": _work_automation_payload(row)})
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def work_tasks(request):
@@ -687,6 +853,7 @@ def agent_chat(request):
             skill_ids=skill_ids,
             attachments=attachments,
             model=model,
+            session_key=str(session.id),
         )
     except Exception as exc:
         import logging
@@ -706,6 +873,7 @@ def agent_chat(request):
                 "refs": result.get("refs") or {},
                 "skills": result.get("skills") or [],
                 "attachments": result.get("attachments") or [],
+                "nas_files": result.get("nas_files") or [],
             },
         )
         if session.title == "新对话":
@@ -714,7 +882,7 @@ def agent_chat(request):
 
     result["conversation_id"] = str(session.id)
     result["conversation_title"] = session.title
-    result["attachments"] = _attachment_meta(attachments)
+    result.setdefault("attachments", _attachment_meta(attachments))
     code = 200 if result.get("ok") else 400
     return Response(result, status=code)
 

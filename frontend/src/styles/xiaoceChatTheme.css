@@ -4,6 +4,41 @@
   transition: color 180ms ease, background-color 180ms ease;
 }
 
+.xiaoce-chat-shell .collab-msg.ai {
+  max-width: min(520px, 86%);
+}
+
+.xiaoce-chat-shell .collab-msg.ai .collab-bubble {
+  max-width: min(460px, 100%);
+}
+
+.xiaoce-chat-shell .collab-msg.ai .collab-bubble > p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.xiaoce-process) > p {
+  margin-bottom: 2px;
+  font-weight: 600;
+}
+
+.xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.xiaoce-process.is-failed) > p {
+  color: #a8071a;
+}
+
+.xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.xiaoce-process.is-cancelled) > p {
+  color: #ad6800;
+}
+
+.xiaoce-chat-shell .collab-virt-item {
+  margin-bottom: 2px;
+}
+
+.xiaoce-chat-shell .collab-msg {
+  margin-bottom: 10px;
+}
+
 .xiaoce-chat-shell .collab-main-head,
 .xiaoce-chat-shell .collab-messages,
 .xiaoce-chat-shell .collab-virtuoso,
@@ -60,9 +95,26 @@
 
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.collab-md.blocks),
 .xiaoce-chat-shell .collab-msg.peer .collab-bubble:has(.collab-md.blocks) {
-  padding: 10px 12px;
+  padding: 12px 14px;
   background: var(--lc-surface) !important;
   border: 1px solid var(--lc-line) !important;
+  border-radius: 14px;
+}
+
+.xiaoce-chat-shell .collab-md.blocks.chat-md .agent-md-h3,
+.xiaoce-chat-shell .collab-md.blocks.chat-md .agent-md-h4 {
+  color: var(--lc-ink);
+  border-bottom-color: color-mix(in srgb, var(--lc-line) 80%, #3370ff);
+}
+
+.xiaoce-chat-shell .collab-md.blocks.chat-md .agent-md-code {
+  background: color-mix(in srgb, var(--lc-ink) 6%, transparent);
+  color: var(--lc-ink);
+  border: none;
+}
+
+.xiaoce-chat-shell .collab-md.blocks.chat-md .agent-md-strong {
+  color: var(--lc-ink);
 }
 
 .xiaoce-chat-shell .collab-msg.mine .collab-bubble p,
@@ -144,6 +196,41 @@
   color: var(--lc-ink);
   background: var(--lc-hover);
   border-color: var(--lc-line);
+}
+
+.xiaoce-chat-shell .xiaoce-process {
+  width: 100%;
+  max-width: 100%;
+}
+
+.xiaoce-chat-shell .xiaoce-process.is-failed,
+.xiaoce-chat-shell .xiaoce-process.is-cancelled {
+  margin-top: 8px;
+}
+
+.xiaoce-chat-shell .xiaoce-process-toggle {
+  color: var(--lc-muted);
+  font-weight: 500;
+}
+
+.xiaoce-chat-shell .xiaoce-process-toggle:hover {
+  color: var(--lc-ink);
+}
+
+:root[data-theme="dark"] .xiaoce-chat-shell .xiaoce-process.is-failed,
+:root[data-theme="dark"] .xiaoce-chat-shell .xiaoce-process.is-cancelled {
+  background: rgba(42, 18, 18, 0.55);
+  border-color: rgba(207, 19, 34, 0.28);
+}
+
+:root[data-theme="dark"] .xiaoce-chat-shell .xiaoce-process.is-cancelled {
+  background: rgba(48, 36, 12, 0.45);
+  border-color: rgba(212, 136, 6, 0.28);
+}
+
+:root[data-theme="dark"] .xiaoce-chat-shell .xiaoce-process-error {
+  background: rgba(66, 18, 18, 0.55);
+  color: #ffb4a8;
 }
 
 @media (prefers-reduced-motion: reduce) {

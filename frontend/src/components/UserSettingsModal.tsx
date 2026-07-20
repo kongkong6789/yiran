@@ -166,7 +166,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
       confirmLoading={saving}
       okText="保存"
       width={560}
-      destroyOnClose
+      destroyOnHidden
       className="user-profile-modal"
     >
       <div className="user-profile-hero">

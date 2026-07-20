@@ -1,3 +1,6 @@
+import type { XiaoceRun } from "../api/client";
+
+
 type XiaoceRoomLike = {
   room_kind?: string;
   participants?: Array<{ username?: string; bot_id?: string }>;
@@ -25,4 +28,16 @@ export function createXiaoceRunId(): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+
+export function mergeXiaoceRunSnapshot(
+  current: XiaoceRun | null,
+  incoming: XiaoceRun | null,
+): XiaoceRun | null {
+  if (incoming === null) return null;
+  if (current === null || current.id !== incoming.id) return incoming;
+  const currentTime = Date.parse(current.updated_at || "") || 0;
+  const incomingTime = Date.parse(incoming.updated_at || "") || 0;
+  return incomingTime >= currentTime ? incoming : current;
 }

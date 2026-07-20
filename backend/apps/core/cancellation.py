@@ -1,7 +1,7 @@
 class AgentRunCancelled(RuntimeError):
-    """当前 Agent 执行已由运行所有者取消。"""
+    """Raised when a cooperative agent execution has been cancelled."""
 
 
-def raise_if_cancelled(cancel_check) -> None:
-    if cancel_check and cancel_check():
-        raise AgentRunCancelled()
+def raise_if_cancelled(cancel_check=None) -> None:
+    if cancel_check is not None and cancel_check():
+        raise AgentRunCancelled("agent run cancelled")

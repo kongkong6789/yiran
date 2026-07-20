@@ -4,6 +4,7 @@ import { TeamOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import {
   ackCouncilInvite,
+  closeWebSocketQuietly,
   getAuthToken,
   listPendingCouncilInvites,
   openUserNotifySocket,
@@ -99,7 +100,7 @@ export default function MeetingInviteAlert({ enabled = true }: Props) {
 
     const connect = () => {
       if (stopped) return;
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
       ws = openUserNotifySocket({
         onInvite: (inv) => present(inv),
         onClose: (ev) => {
@@ -129,7 +130,8 @@ export default function MeetingInviteAlert({ enabled = true }: Props) {
       window.removeEventListener("focus", onFocus);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (pingTimer) window.clearInterval(pingTimer);
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
+      ws = null;
     };
   }, [enabled, present, refreshPending]);
 

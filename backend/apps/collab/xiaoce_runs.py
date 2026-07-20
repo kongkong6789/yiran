@@ -9,6 +9,7 @@ from apps.skills.repository import save_skill_asset_from_bytes
 
 from .mentions import get_xiaoce_bot_user
 from .models import CollabMessage, XiaoceRun
+from .xiaoce_progress import ERROR_MESSAGES, _upsert_step, xiaoce_run_payload
 
 PAUSED_REPLY = "已暂停本次生成。"
 
@@ -29,14 +30,26 @@ def is_xiaoce_run_cancelled(run_id) -> bool:
     ).exists()
 
 
-def xiaoce_run_payload(run: XiaoceRun | None) -> dict | None:
-    if run is None:
-        return None
+def _message_meta(run: XiaoceRun, process_status: str, **extra) -> dict:
     return {
-        "id": str(run.id),
-        "status": run.status,
-        "room_id": str(run.room_id),
+        "run_id": str(run.id),
+        "process_status": process_status,
+        "process_steps": run.progress_steps or [],
+        **extra,
     }
+
+
+def _create_bot_message(run: XiaoceRun, content: str, meta: dict) -> CollabMessage:
+    return CollabMessage.objects.create(
+        room=run.room,
+        sender=get_xiaoce_bot_user(),
+        content=(content or "")[:8000],
+        attachments=[],
+        mentions=[],
+        msg_type="ai",
+        ai_kind="xiaoce",
+        meta=meta,
+    )
 
 
 def _complete_locked_run(
@@ -44,19 +57,17 @@ def _complete_locked_run(
     reply: str,
     meta: dict | None = None,
 ) -> CollabMessage:
-    message = CollabMessage.objects.create(
-        room=locked.room,
-        sender=get_xiaoce_bot_user(),
-        content=(reply or "")[:8000],
-        attachments=[],
-        mentions=[],
-        msg_type="ai",
-        ai_kind="xiaoce",
-        meta={"run_id": str(locked.id), **(meta or {})},
+    message = _create_bot_message(
+        locked,
+        reply,
+        _message_meta(locked, "completed", **(meta or {})),
     )
     locked.status = XiaoceRun.Status.COMPLETED
     locked.finished_at = timezone.now()
-    locked.save(update_fields=["status", "finished_at", "updated_at"])
+    locked.result_message = message
+    locked.save(
+        update_fields=["status", "finished_at", "result_message", "updated_at"],
+    )
     locked.room.save(update_fields=["updated_at"])
     return message
 
@@ -76,22 +87,26 @@ def cancel_xiaoce_run(run: XiaoceRun) -> XiaoceRun:
         raise ValueError("本轮回答已经结束，无法暂停")
 
     now = timezone.now()
+    stage = locked.current_stage or "understanding"
+    locked.current_stage = stage
+    locked.progress_steps = _upsert_step(locked.progress_steps, stage, "cancelled")
     locked.status = XiaoceRun.Status.CANCELLED
+    locked.error_code = "cancelled"
+    locked.error = ERROR_MESSAGES["cancelled"]
     locked.cancelled_at = now
     locked.finished_at = now
-    locked.cancel_message = CollabMessage.objects.create(
-        room=locked.room,
-        sender=get_xiaoce_bot_user(),
-        content=PAUSED_REPLY,
-        attachments=[],
-        mentions=[],
-        msg_type="ai",
-        ai_kind="xiaoce",
-        meta={"run_id": str(locked.id), "cancelled": True},
+    locked.cancel_message = _create_bot_message(
+        locked,
+        PAUSED_REPLY,
+        _message_meta(locked, "cancelled", cancelled=True),
     )
     locked.save(
         update_fields=[
+            "current_stage",
+            "progress_steps",
             "status",
+            "error_code",
+            "error",
             "cancelled_at",
             "finished_at",
             "cancel_message",
@@ -137,6 +152,13 @@ def complete_xiaoce_run_with_skill(run_id, prepared) -> CollabMessage | None:
     )
     if personal is None:
         raise ConversationSkillError("Skill 已生成但未能自动启用")
+    locked.current_stage = "skill_upload"
+    locked.progress_steps = _upsert_step(
+        locked.progress_steps,
+        "skill_upload",
+        "completed",
+    )
+    locked.save(update_fields=["current_stage", "progress_steps", "updated_at"])
     created = {
         "asset_id": asset.id,
         "personal_id": personal.id,
@@ -156,12 +178,64 @@ def complete_xiaoce_run_with_skill(run_id, prepared) -> CollabMessage | None:
     return _complete_locked_run(locked, reply, {"created_skill": created})
 
 
-def fail_xiaoce_run(run_id, error) -> None:
-    XiaoceRun.objects.filter(
-        id=run_id,
-        status=XiaoceRun.Status.RUNNING,
-    ).update(
-        status=XiaoceRun.Status.FAILED,
-        error=str(error)[:2000],
-        finished_at=timezone.now(),
+@transaction.atomic
+def fail_xiaoce_run(
+    run_id,
+    error,
+    *,
+    error_code: str = "stage_failed",
+) -> CollabMessage | None:
+    locked = (
+        XiaoceRun.objects.select_for_update()
+        .select_related("room")
+        .get(id=run_id)
     )
+    if locked.status != XiaoceRun.Status.RUNNING:
+        return None
+    del error
+    if error_code not in ERROR_MESSAGES:
+        error_code = "stage_failed"
+    stage = locked.current_stage or "understanding"
+    locked.current_stage = stage
+    locked.progress_steps = _upsert_step(locked.progress_steps, stage, "failed")
+    locked.status = XiaoceRun.Status.FAILED
+    locked.error_code = error_code
+    locked.error = ERROR_MESSAGES[error_code]
+    locked.finished_at = timezone.now()
+    message = _create_bot_message(
+        locked,
+        f"执行失败：{locked.error}。",
+        _message_meta(
+            locked,
+            "failed",
+            error_code=locked.error_code,
+            error_message=locked.error,
+        ),
+    )
+    locked.result_message = message
+    locked.save(
+        update_fields=[
+            "current_stage",
+            "progress_steps",
+            "status",
+            "error_code",
+            "error",
+            "finished_at",
+            "result_message",
+            "updated_at",
+        ],
+    )
+    locked.room.save(update_fields=["updated_at"])
+    return message
+
+
+__all__ = [
+    "PAUSED_REPLY",
+    "cancel_xiaoce_run",
+    "complete_xiaoce_run",
+    "complete_xiaoce_run_with_skill",
+    "create_xiaoce_run",
+    "fail_xiaoce_run",
+    "is_xiaoce_run_cancelled",
+    "xiaoce_run_payload",
+]

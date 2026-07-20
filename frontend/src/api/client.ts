@@ -360,7 +360,7 @@ export const listWeComBindingJobs = () =>
 export const listWeComBindingLogs = (bindingId: number) =>
   api.get<{ ok: boolean; results: Array<{ id: number; action: string; status: string; message: string; actorName: string; created_at: string }> }>(`/wecom/bindings/${bindingId}/logs/`).then((r) => r.data);
 
-/** @deprecated 使用 UserProfileSettings */
+/** @deprecated ?? UserProfileSettings */
 export type UserLlmSettings = UserProfileSettings;
 
 export const getUserSettings = () =>
@@ -395,6 +395,134 @@ export const uploadUserAvatar = (file: File) => {
     )
     .then((r) => r.data);
 };
+
+// ================= Knowledge Center =================
+export type KnowledgeBaseStatus = "draft" | "processing" | "ready" | "review" | "archived";
+export type KnowledgeFileStatus = "uploaded" | "processing" | "ready" | "review" | "failed" | "archived";
+
+export interface KnowledgeBaseItem {
+  id: number;
+  template: number | null;
+  owner_username?: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  tags: string[];
+  visibility: "private" | "team" | "company";
+  retrieval_mode: "naive-rag" | "graph-rag" | "hybrid-rag";
+  review_policy: string;
+  status: KnowledgeBaseStatus;
+  config: Record<string, unknown>;
+  file_count: number;
+  app_count: number;
+  recall_count: number;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeFileItem {
+  id: number;
+  knowledge_base: number;
+  uploaded_by_username?: string;
+  original_filename: string;
+  file_type: string;
+  segment_mode: string;
+  char_count: number;
+  chunk_count: number;
+  recall_count: number;
+  status: KnowledgeFileStatus;
+  storage_path: string;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  uploaded_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeIngestJobItem {
+  id: number;
+  file: number;
+  status: "pending" | "parsing" | "chunking" | "embedding" | "graphing" | "ready" | "failed";
+  stage: string;
+  progress: number;
+  error: Record<string, unknown> | null;
+  metrics: Record<string, unknown>;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface KnowledgeChunkItem {
+  id: number;
+  file: number;
+  chunk_index: number;
+  chunk_ref: string;
+  text_preview: string;
+  embedding_ref: string;
+  graph_entity_ref: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export const listKnowledgeBases = (params?: { q?: string; category?: string; visibility?: string }) =>
+  api.get<KnowledgeBaseItem[] | { count?: number; results: KnowledgeBaseItem[] }>("/knowledge/bases/", { params })
+    .then((r) => Array.isArray(r.data) ? r.data : r.data.results);
+
+export const createKnowledgeBase = (body: Partial<KnowledgeBaseItem>) =>
+  api.post<KnowledgeBaseItem>("/knowledge/bases/", body).then((r) => r.data);
+
+export const updateKnowledgeBase = (id: number, body: Partial<KnowledgeBaseItem>) =>
+  api.patch<KnowledgeBaseItem>(`/knowledge/bases/${id}/`, body).then((r) => r.data);
+
+export const deleteKnowledgeBase = (id: number) =>
+  api.delete(`/knowledge/bases/${id}/`);
+
+export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: string; file_type?: string }) =>
+  api.get<{ knowledge_base: KnowledgeBaseItem; count: number; results: KnowledgeFileItem[] }>(
+    `/knowledge/bases/${knowledgeBaseId}/files/`,
+    { params },
+  ).then((r) => r.data);
+
+export const uploadKnowledgeFile = (
+  knowledgeBaseId: number,
+  file: File,
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (body?.segment_mode) form.append("segment_mode", body.segment_mode);
+  if (body?.chunk_size) form.append("chunk_size", String(body.chunk_size));
+  if (body?.chunk_overlap !== undefined) form.append("chunk_overlap", String(body.chunk_overlap));
+  return api.post<{
+    file: KnowledgeFileItem;
+    job: KnowledgeIngestJobItem;
+    chunk_count: number;
+    job_id: number;
+    chunks_preview: KnowledgeChunkItem[];
+  }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60_000,
+  }).then((r) => r.data);
+};
+
+export const getKnowledgeJob = (jobId: number) =>
+  api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
+export const getKnowledgeFileChunks = (fileId: number) =>
+  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+    .then((r) => r.data);
+
+export const deleteKnowledgeFile = (fileId: number) =>
+  api.delete(`/knowledge/files/${fileId}/`);
+
+export const deleteKnowledgeChunk = (fileId: number, chunkId: number) =>
+  api.delete<{ deleted: boolean; chunk_id: number }>(`/knowledge/files/${fileId}/chunks/${chunkId}/`)
+    .then((r) => r.data);
+
+export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic"; limit?: number }) =>
+  api.get<{ query: string; mode?: string; count: number; results: KnowledgeChunkItem[] }>("/knowledge/traditional-search/", { params })
+    .then((r) => r.data);
 
 // ================= Agent Skills =================
 export const getSkills = () =>
@@ -443,12 +571,70 @@ export const invokeSkill = (skillId: string, body: { message: string; history?: 
   api.post<AgentChatResult>(`/skills/${skillId}/invoke/`, body, { timeout: 120_000 })
     .then((r) => r.data);
 
-/** 行级 DB 导入 */
+// ================= Agent Context / Memory =================
+export interface AgentMemoryItem {
+  id: number;
+  scope: "user" | "session" | string;
+  session_id?: string | null;
+  kind: "fact" | "preference" | "summary" | string;
+  content: string;
+  source: string;
+  importance: number;
+  expires_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AgentSessionSummary {
+  id: number;
+  session_key: string;
+  summary: string;
+  message_count: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const getAgentMemories = (params?: { scope?: string; kind?: string }) =>
+  api.get<{ count: number; results: AgentMemoryItem[] }>("/agentctx/memories/", { params })
+    .then((r) => r.data);
+
+export const createAgentMemory = (body: Partial<AgentMemoryItem> & { content: string }) =>
+  api.post<{ ok: boolean; item: AgentMemoryItem }>("/agentctx/memories/", body)
+    .then((r) => r.data);
+
+export const updateAgentMemory = (id: number, body: Partial<AgentMemoryItem>) =>
+  api.patch<{ ok: boolean; item: AgentMemoryItem }>(`/agentctx/memories/${id}/`, body)
+    .then((r) => r.data);
+
+export const deleteAgentMemory = (id: number) =>
+  api.delete(`/agentctx/memories/${id}/`);
+
+export const getAgentSummaries = (params?: { session_key?: string }) =>
+  api.get<{ count: number; results: AgentSessionSummary[] }>("/agentctx/summaries/", { params })
+    .then((r) => r.data);
+
+export const deleteAgentSummary = (id: number) =>
+  api.delete(`/agentctx/summaries/${id}/`);
+
+export const deleteAgentSummaryByKey = (session_key: string) =>
+  api.delete(`/agentctx/summaries/by-key/`, { params: { session_key } });
+
+export const getAgentDebugPack = (params?: { q?: string; session_key?: string }) =>
+  api.get<{
+    query: string;
+    session_key: string;
+    memory_block: string;
+    summary_block: string;
+    items: AgentMemoryItem[];
+    summary: AgentSessionSummary | null;
+  }>("/agentctx/debug-pack/", { params }).then((r) => r.data);
+
+/** ?? DB ?? */
 const dbImportTimeout = { timeout: 300_000 };
-/** LightRAG / AGE 大批量导入 */
+/** LightRAG / AGE ????? */
 const ageImportTimeout = { timeout: 900_000 };
 
-// ---- 类型定义 ----
+// ---- ???? ----
 export interface AgentChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
@@ -507,6 +693,13 @@ export interface AgentChatResult {
     has_text?: boolean;
     is_image?: boolean;
     url?: string;
+  }[];
+  nas_files?: {
+    name: string;
+    path: string;
+    native_path: string;
+    size: number;
+    download_url: string;
   }[];
 }
 
@@ -576,7 +769,7 @@ export interface ActionContract {
   high_risk: boolean;
 }
 
-// ---- API 封装 ----
+// ---- API ?? ----
 export const agentChat = (body: {
   message: string;
   conversation_id?: string;
@@ -662,7 +855,7 @@ export const getAnomalies = () =>
 export const getAuditLogs = () =>
   api.get("/audit-logs/").then((r) => r.data);
 
-// ================= MCP 业务系统接入 =================
+// ================= MCP ?????? =================
 export interface McpServer {
   id: string;
   name: string;
@@ -719,7 +912,54 @@ export const probeMcpServer = (id: string) =>
     note?: string;
   }>(`/mcp/servers/${id}/probe/`).then((r) => r.data);
 
-// ================= 多 Agent 圆桌会议 =================
+export interface NasFileEntry {
+  name: string;
+  path: string;
+  kind: "folder" | "file";
+  size: number | null;
+  modified_at: string;
+  extension: string;
+  mime_type: string;
+  previewable: boolean;
+  preview_kind: "text" | "image" | "pdf" | "none";
+  native_path: string;
+  download_url: string;
+  preview_url: string;
+}
+
+export interface NasDirectoryResult {
+  root_name: string;
+  current_path: string;
+  current_native_path: string;
+  parent_path: string | null;
+  entries: NasFileEntry[];
+  count: number;
+  truncated: boolean;
+  read_only: boolean;
+}
+
+export interface NasFilePreview {
+  name: string;
+  path: string;
+  size: number;
+  modified_at: string;
+  mime_type: string;
+  previewable: boolean;
+  preview_kind: "text" | "image" | "pdf" | "none";
+  native_path: string;
+  download_url: string;
+  preview_url: string;
+  content: string;
+  truncated: boolean;
+}
+
+export const getNasDirectory = (path = "/") =>
+  api.get<NasDirectoryResult>("/mcp/servers/nas/files/", { params: { path } }).then((r) => r.data);
+
+export const getNasFilePreview = (path: string) =>
+  api.get<NasFilePreview>("/mcp/servers/nas/files/preview/", { params: { path } }).then((r) => r.data);
+
+// ================= ? Agent ???? =================
 export interface Agent {
   id: number;
   name: string;
@@ -791,7 +1031,7 @@ export interface Deliverable {
   created_at: string;
 }
 
-/** 会议引用的图谱实体(来自 AGE) */
+/** ?????????(?? AGE) */
 export interface GraphRef {
   id: number;
   name: string;
@@ -799,7 +1039,7 @@ export interface GraphRef {
   description?: string;
 }
 
-/** 会议结束时的图谱回写摘要 */
+/** ???????????? */
 export interface GraphWriteback {
   meeting_object_id?: number;
   plan_object_id?: number;
@@ -820,9 +1060,9 @@ export const listAgents = () =>
       const isActive = row.is_active !== false;
       return {
         id: Number(row.id),
-        name: String(row.name || "未命名智能体"),
-        emoji: String(row.emoji || "🤖"),
-        group: String(row.group || "未分类"),
+        name: String(row.name || "??????"),
+        emoji: String(row.emoji || "??"),
+        group: String(row.group || "???"),
         role: String(row.role || ""),
         expertise: String(row.expertise || ""),
         persona: String(row.persona || ""),
@@ -869,7 +1109,7 @@ export const pauseMeeting = (id: number) =>
     .post<{ meeting: Meeting; message: CouncilMessage | null }>(`/council/meetings/${id}/pause/`)
     .then((r) => r.data);
 
-/** 批量暂停进行中的会议；不传 ids 则暂停全部 active */
+/** ????????????? ids ????? active */
 export const pauseActiveMeetings = (meeting_ids?: number[]) =>
   api
     .post<{ ok: boolean; paused_count: number; results: Meeting[] }>(
@@ -909,7 +1149,35 @@ export const ackCouncilInvite = (inviteId: number, action: "seen" | "join" | "di
     .post<{ ok: boolean; invite: CouncilInvite }>(`/council/invites/${inviteId}/ack/`, { action })
     .then((r) => r.data);
 
-/** 用户级通知 WebSocket（会议邀请等） */
+/** ???? WebSocket??? CONNECTING ?? close ?????? */
+export function closeWebSocketQuietly(ws: WebSocket | null | undefined) {
+  if (!ws) return;
+  try {
+    ws.onopen = null;
+    ws.onclose = null;
+    ws.onerror = null;
+    ws.onmessage = null;
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.addEventListener(
+        "open",
+        () => {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+        },
+        { once: true },
+      );
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** ????? WebSocket??????? */
 export function openUserNotifySocket(opts: {
   onInvite?: (data: CouncilInvite) => void;
   onOpen?: () => void;
@@ -969,7 +1237,7 @@ export const pollMessages = (id: number, after: number) =>
     )
     .then((r) => r.data);
 
-/** 圆桌会议 WebSocket（对方消息 / 状态实时推送） */
+/** ???? WebSocket????? / ??????? */
 export function openCouncilMeetingSocket(
   meetingId: number,
   opts: {
@@ -982,7 +1250,7 @@ export function openCouncilMeetingSocket(
 ): WebSocket {
   const token = getAuthToken() || "";
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // 开发环境直连后端 :8000，避开 Vite 对 WebSocket 代理经常失败的问题（局域网同主机名）
+  // ???????? :8000??? Vite ? WebSocket ??????????????????
   const host = import.meta.env.DEV
     ? `${window.location.hostname}:8000`
     : window.location.host;
@@ -1033,7 +1301,7 @@ export const stopMeeting = (id: number) =>
     }>(`/council/meetings/${id}/stop/`, {}, { timeout: 300_000 })
     .then((r) => r.data);
 
-// ================= 本体 ER 图谱 =================
+// ================= ?? ER ?? =================
 export interface OntObject {
   id: number;
   category: "physical" | "virtual";
@@ -1081,13 +1349,13 @@ export interface OntGraph {
   source?: string;
 }
 
-export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; refresh?: 1 }) =>
+export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; focus_age_id?: number; refresh?: 1 }) =>
   api.get<OntGraph>("/ontology/graph/age-live/", { params }).then((r) => r.data);
 
 export const getGraph = (params?: { scope?: "age" | "all" }) =>
   api.get<OntGraph>("/ontology/graph/", { params: { scope: params?.scope ?? "age" } }).then((r) => r.data);
 
-/** 电商经营 Ontology 契约（知行一期迁入） */
+/** ???? Ontology ?????????? */
 export type CommerceSchema = {
   source: string;
   phase: number;
@@ -1136,7 +1404,7 @@ export type CommerceSchema = {
 export const getCommerceSchema = () =>
   api.get<CommerceSchema>("/ontology/commerce-schema/").then((r) => r.data);
 
-// ---- 经营融合工作台（知行二～五期）----
+// ---- ???????????????----
 export const getCommerceOverview = () =>
   api.get<{
     name: string;
@@ -1251,7 +1519,7 @@ export const extractGraph = (text: string) =>
     { text }
   ).then((r) => r.data);
 
-// ---- 数据底座打通 ----
+// ---- ?????? ----
 export interface ObjectDataBlock {
   title: string;
   rows: Record<string, unknown>[];
@@ -1302,7 +1570,7 @@ export const getAgeStats = (sourceId?: string) =>
 export const getObjectData = (id: number) =>
   api.get<ObjectData>(`/ontology/graph/objects/${id}/data/`).then((r) => r.data);
 
-// ================= Loops 动力学层 =================
+// ================= Loops ???? =================
 export interface LoopMember {
   id: number;
   sequence: number;
@@ -1390,7 +1658,7 @@ export const listCausalCandidates = () =>
     "/loops/causal-candidates/",
   ).then((r) => r.data);
 
-// ================= 协作风控 =================
+// ================= ???? =================
 export interface CollabUserBrief {
   id: number;
   username: string;
@@ -1424,6 +1692,28 @@ export interface CreatedSkillItem {
   storage?: "cos" | "local";
 }
 
+export interface XiaoceProgressStep {
+  code: string;
+  label: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  tool_count: number;
+  detail: string;
+  started_at: string;
+  finished_at: string;
+}
+
+export interface XiaoceRun {
+  id: string;
+  status: "running" | "cancelled" | "completed" | "failed";
+  room_id: string;
+  current_stage: string;
+  progress_steps: XiaoceProgressStep[];
+  error_code: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CollabRoom {
   id: string;
   title: string;
@@ -1453,7 +1743,7 @@ export interface CollabRoom {
   has_more_before?: boolean;
   unread_count?: number;
   last_read_message_id?: number;
-  active_xiaoce_run?: XiaoceRunSummary | null;
+  active_xiaoce_run?: XiaoceRun | null;
 }
 
 export interface CollabMessage {
@@ -1473,7 +1763,11 @@ export interface CollabMessage {
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   meta?: {
     run_id?: string;
+    process_steps?: XiaoceProgressStep[];
+    process_status?: XiaoceRun["status"];
     cancelled?: boolean;
+    error_code?: string;
+    error_message?: string;
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
     [key: string]: unknown;
@@ -1610,11 +1904,11 @@ export const updateCollabRoom = (
 ) =>
   api.patch<CollabRoom>(`/collab/rooms/${id}/`, body).then((r) => r.data);
 
-/** 删除整个协作会话 */
+/** ???????? */
 export const deleteCollabRoom = (id: string) =>
   api.delete<{ ok: boolean; deleted: string }>(`/collab/rooms/${id}/`).then((r) => r.data);
 
-/** 清空聊天记录（保留会话） */
+/** ???????????? */
 export const clearCollabMessages = (id: string) =>
   api
     .delete<{
@@ -1626,7 +1920,7 @@ export const clearCollabMessages = (id: string) =>
     }>(`/collab/rooms/${id}/messages/`)
     .then((r) => r.data);
 
-/** 群聊拉人 */
+/** ???? */
 export const addCollabRoomMembers = (id: string, usernames: string[]) =>
   api
     .post<{
@@ -1639,7 +1933,7 @@ export const addCollabRoomMembers = (id: string, usernames: string[]) =>
     }>(`/collab/rooms/${id}/members/`, { usernames })
     .then((r) => r.data);
 
-/** 群聊踢人 / 退群 */
+/** ???? / ?? */
 export const removeCollabRoomMembers = (id: string, usernames: string[]) =>
   api
     .delete<{
@@ -1653,7 +1947,7 @@ export const removeCollabRoomMembers = (id: string, usernames: string[]) =>
     }>(`/collab/rooms/${id}/members/`, { data: { usernames } })
     .then((r) => r.data);
 
-/** 修改群内名称 */
+/** ?????? */
 export const updateCollabMemberNickname = (
   id: string,
   body: { username: string; nickname: string },
@@ -1684,7 +1978,7 @@ export type CollabMessagePage = {
   room: Partial<CollabRoom>;
 };
 
-/** 兼容旧调用 listCollabMessages(id, afterId) */
+/** ????? listCollabMessages(id, afterId) */
 export const listCollabMessages = (id: string, opts: CollabMessageQuery | number = {}) => {
   const o: CollabMessageQuery = typeof opts === "number" ? { afterId: opts } : opts;
   const params: Record<string, string | number> = {};
@@ -1711,7 +2005,7 @@ export const getCollabRoomPresence = (id: string) =>
     participants: CollabUserBrief[];
     member_count?: number;
     display_title?: string;
-    active_xiaoce_run?: XiaoceRunSummary | null;
+    active_xiaoce_run?: XiaoceRun | null;
   }>(`/collab/rooms/${id}/presence/`).then((r) => r.data);
 
 export type CollabSyncEvent = {
@@ -1719,11 +2013,12 @@ export type CollabSyncEvent = {
   changed?: CollabMessage[];
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
+  xiaoce_runs?: XiaoceRun[];
   after_id?: number;
   after_insight_id?: number;
 };
 
-/** 协作会话 WebSocket（开发环境直连 :8000） */
+/** ???? WebSocket??????? :8000? */
 export function openCollabRoomSocket(
   roomId: string,
   opts: {
@@ -1754,7 +2049,7 @@ export function openCollabRoomSocket(
   return ws;
 }
 
-/** @deprecated 保留兼容；新逻辑走 WebSocket */
+/** @deprecated ????????? WebSocket */
 export function openCollabRoomEvents(
   roomId: string,
   opts: {
@@ -1829,7 +2124,7 @@ export function openCollabRoomEvents(
   void run();
 }
 
-/** 撤回自己的消息（2 分钟内） */
+/** ????????2 ???? */
 export const recallCollabMessage = (roomId: string, messageId: number) =>
   api
     .post<{ ok: boolean; action: string; message: CollabMessage; room: CollabRoom; error?: string }>(
@@ -1838,7 +2133,7 @@ export const recallCollabMessage = (roomId: string, messageId: number) =>
     )
     .then((r) => r.data);
 
-/** 删除消息（软删除，会话内同步） */
+/** ??????????????? */
 export const deleteCollabMessage = (roomId: string, messageId: number) =>
   api
     .delete<{ ok: boolean; action: string; message: CollabMessage; room: CollabRoom; error?: string }>(
@@ -1870,7 +2165,7 @@ export const sendCollabMessage = (
         insight?: CollabInsight;
         analyze_pending?: boolean;
         ai_pending?: boolean;
-        xiaoce_run?: XiaoceRunSummary;
+        xiaoce_run?: XiaoceRun;
       }>(`/collab/rooms/${id}/messages/`, form, { timeout: 120_000 })
       .then((r) => r.data);
   }
@@ -1883,7 +2178,7 @@ export const sendCollabMessage = (
       insight?: CollabInsight;
       analyze_pending?: boolean;
       ai_pending?: boolean;
-      xiaoce_run?: XiaoceRunSummary;
+      xiaoce_run?: XiaoceRun;
     }>(
       `/collab/rooms/${id}/messages/`,
       {
@@ -1900,7 +2195,7 @@ export const sendCollabMessage = (
 export const cancelXiaoceRun = (roomId: string, runId: string) =>
   api.post<{
     ok: boolean;
-    xiaoce_run: XiaoceRunSummary;
+    xiaoce_run: XiaoceRun;
     active_xiaoce_run: null;
     message: CollabMessage;
     room: Partial<CollabRoom>;
@@ -1956,7 +2251,7 @@ export type CollabDraftTip = {
   level: "info" | "yellow" | "red" | "green" | string;
   label: string;
   advice: string;
-  /** 可一键写入输入框的改写示例 */
+  /** ????????????? */
   example?: string;
 };
 
@@ -1981,7 +2276,7 @@ export const listCollabUsers = (q?: string) =>
     params: q ? { q } : {},
   }).then((r) => r.data);
 
-/** 维持当前用户在线 */
+/** ???????? */
 export const collabPresenceHeartbeat = () =>
   api
     .post<{ ok: boolean; online: boolean; last_seen: string; window_seconds: number }>(
@@ -1990,7 +2285,7 @@ export const collabPresenceHeartbeat = () =>
     )
     .then((r) => r.data);
 
-/** 查询一批用户在线状态（同时刷新自己心跳） */
+/** ???????????????????? */
 export const collabPresenceQuery = (userIds: number[]) =>
   api
     .get<{
@@ -2017,7 +2312,7 @@ export type CollabUnreadItem = {
   risk_level?: string;
 };
 
-/** 未读协作消息汇总（顶栏铃铛） */
+/** ?????????????? */
 export const getCollabUnread = () =>
   api
     .get<{
@@ -2028,7 +2323,7 @@ export const getCollabUnread = () =>
     }>("/collab/unread/")
     .then((r) => r.data);
 
-/** 标记会话已读 */
+/** ?????? */
 export const markCollabRoomRead = (
   id: string,
   upToId?: number,
@@ -2174,3 +2469,158 @@ export const createWorkAutomation = (body: WorkAutomationInput) =>
   api.post<{ ok: boolean; automation: WorkAutomationItem }>("/automations/", body).then((r) => r.data);
 export const updateWorkAutomation = (id: number, body: Partial<WorkAutomationInput>) =>
   api.patch<{ ok: boolean; automation: WorkAutomationItem }>(`/automations/${id}/`, body).then((r) => r.data);
+
+/* ---------- Smart Table ---------- */
+
+export type SmartFieldType =
+  | "text"
+  | "number"
+  | "select"
+  | "multi_select"
+  | "checkbox"
+  | "date"
+  | "person";
+
+export type SmartColumn = {
+  id: number;
+  key: string;
+  title: string;
+  field_type: SmartFieldType;
+  options: string[];
+  position: number;
+};
+
+export type SmartRow = {
+  id: number;
+  values: Record<string, unknown>;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmartSheetListItem = {
+  id: number;
+  name: string;
+  description: string;
+  column_count: number;
+  row_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmartSheetDetail = {
+  id: number;
+  name: string;
+  description: string;
+  columns: SmartColumn[];
+  rows: SmartRow[];
+  views: SmartView[];
+  automations: SmartAutomation[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmartViewType = "grid" | "kanban" | "form";
+
+export type SmartView = {
+  id: number;
+  name: string;
+  view_type: SmartViewType;
+  config: Record<string, unknown>;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SmartAutomation = {
+  id: number;
+  name: string;
+  enabled: boolean;
+  trigger: "row_created" | "row_updated";
+  action: "set_field";
+  config: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export const listSmartSheets = () =>
+  api.get<{ results: SmartSheetListItem[] }>("/smarttable/sheets/").then((r) => r.data);
+
+export const createSmartSheet = (body: { name?: string; description?: string }) =>
+  api.post<SmartSheetDetail>("/smarttable/sheets/", body).then((r) => r.data);
+
+export const getSmartSheet = (id: number) =>
+  api.get<SmartSheetDetail>(`/smarttable/sheets/${id}/`).then((r) => r.data);
+
+export const updateSmartSheet = (id: number, body: { name?: string; description?: string }) =>
+  api.patch<SmartSheetDetail>(`/smarttable/sheets/${id}/`, body).then((r) => r.data);
+
+export const deleteSmartSheet = (id: number) =>
+  api.delete<{ ok: boolean }>(`/smarttable/sheets/${id}/`).then((r) => r.data);
+
+export const createSmartColumn = (
+  sheetId: number,
+  body: { title?: string; field_type?: SmartFieldType; options?: string[] },
+) =>
+  api.post<SmartColumn>(`/smarttable/sheets/${sheetId}/columns/`, body).then((r) => r.data);
+
+export const updateSmartColumn = (
+  sheetId: number,
+  columnId: number,
+  body: Partial<Pick<SmartColumn, "title" | "field_type" | "options" | "position">>,
+) =>
+  api.patch<SmartColumn>(`/smarttable/sheets/${sheetId}/columns/${columnId}/`, body).then((r) => r.data);
+
+export const deleteSmartColumn = (sheetId: number, columnId: number) =>
+  api.delete<{ ok: boolean }>(`/smarttable/sheets/${sheetId}/columns/${columnId}/`).then((r) => r.data);
+
+export const createSmartRow = (sheetId: number, values?: Record<string, unknown>) =>
+  api.post<SmartRow>(`/smarttable/sheets/${sheetId}/rows/`, { values: values || {} }).then((r) => r.data);
+
+export const updateSmartRow = (
+  sheetId: number,
+  rowId: number,
+  body: { values?: Record<string, unknown>; position?: number },
+) =>
+  api.patch<SmartRow>(`/smarttable/sheets/${sheetId}/rows/${rowId}/`, body).then((r) => r.data);
+
+export const deleteSmartRow = (sheetId: number, rowId: number) =>
+  api.delete<{ ok: boolean }>(`/smarttable/sheets/${sheetId}/rows/${rowId}/`).then((r) => r.data);
+
+export const createSmartView = (
+  sheetId: number,
+  body: { name?: string; view_type?: SmartViewType; config?: Record<string, unknown> },
+) =>
+  api.post<SmartView>(`/smarttable/sheets/${sheetId}/views/`, body).then((r) => r.data);
+
+export const updateSmartView = (
+  sheetId: number,
+  viewId: number,
+  body: Partial<Pick<SmartView, "name" | "view_type" | "config" | "position">>,
+) =>
+  api.patch<SmartView>(`/smarttable/sheets/${sheetId}/views/${viewId}/`, body).then((r) => r.data);
+
+export const deleteSmartView = (sheetId: number, viewId: number) =>
+  api.delete<{ ok: boolean }>(`/smarttable/sheets/${sheetId}/views/${viewId}/`).then((r) => r.data);
+
+export const createSmartAutomation = (
+  sheetId: number,
+  body: Partial<Pick<SmartAutomation, "name" | "enabled" | "trigger" | "action" | "config">>,
+) =>
+  api.post<SmartAutomation>(`/smarttable/sheets/${sheetId}/automations/`, body).then((r) => r.data);
+
+export const updateSmartAutomation = (
+  sheetId: number,
+  automationId: number,
+  body: Partial<Pick<SmartAutomation, "name" | "enabled" | "trigger" | "action" | "config">>,
+) =>
+  api.patch<SmartAutomation>(`/smarttable/sheets/${sheetId}/automations/${automationId}/`, body).then((r) => r.data);
+
+export const deleteSmartAutomation = (sheetId: number, automationId: number) =>
+  api.delete<{ ok: boolean }>(`/smarttable/sheets/${sheetId}/automations/${automationId}/`).then((r) => r.data);
+
+export const exportSmartSheetCsv = (sheetId: number) =>
+  api.get<Blob>(`/smarttable/sheets/${sheetId}/export.csv`, { responseType: "blob" }).then((r) => r.data);
+
+export const importSmartSheetCsv = (sheetId: number, csvText: string) =>
+  api.post<{ ok: boolean; created: number }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
