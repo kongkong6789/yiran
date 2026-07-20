@@ -13,6 +13,7 @@ import {
   type CollabSyncEvent,
   type XiaoceRun,
 } from "../api/client";
+import { isLiveGenerationCurrent } from "../pages/xiaoceChat";
 
 type Args = {
   roomId: string | null;
@@ -22,6 +23,7 @@ type Args = {
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
   onXiaoceRuns?: (runs: XiaoceRun[]) => void;
+  isRoomCurrent: (roomId: string) => boolean;
   setRoomStats: React.Dispatch<React.SetStateAction<CollabRoomStats | null>>;
   /** 兼容旧调用，当前未使用 */
   participantsEqual?: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
@@ -38,22 +40,29 @@ export function useCollabRoomLive({
   mergeInsights,
   patchRoomMeta,
   onXiaoceRuns,
+  isRoomCurrent,
   setRoomStats,
 }: Args) {
-  const aliveRef = useRef(true);
+  const generationRef = useRef(0);
   const afterMsgRef = useRef(0);
   const afterInsightRef = useRef(0);
 
   useEffect(() => {
-    aliveRef.current = true;
-    if (!roomId) return;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    let stopped = false;
+    if (!roomId) return () => { stopped = true; };
+    const isCurrent = () => isLiveGenerationCurrent(
+      generationRef.current,
+      generation,
+      stopped,
+    ) && isRoomCurrent(roomId);
 
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let presenceTimer: number | null = null;
     let pollTimer: number | null = null;
     let pingTimer: number | null = null;
-    let stopped = false;
 
     afterMsgRef.current = messagesRef.current.reduce(
       (max, m) => (m.id > 0 && m.id > max ? m.id : max),
@@ -65,7 +74,7 @@ export function useCollabRoomLive({
     );
 
     const applySync = (data: CollabSyncEvent) => {
-      if (!aliveRef.current) return;
+      if (!isCurrent()) return;
       if (typeof data.after_id === "number" && data.after_id > afterMsgRef.current) {
         afterMsgRef.current = data.after_id;
       }
@@ -94,8 +103,9 @@ export function useCollabRoomLive({
       }
       if (data.messages?.length || data.insights?.length) {
         getCollabRoomStats(roomId).then((st) => {
-          if (!aliveRef.current) return;
+          if (!isCurrent()) return;
           setRoomStats((prev) => {
+            if (!isCurrent()) return prev;
             if (!prev) return st;
             if (
               prev.message_count === st.message_count
@@ -118,7 +128,7 @@ export function useCollabRoomLive({
     };
 
     const pollOnce = async () => {
-      if (!aliveRef.current || stopped) return;
+      if (!isCurrent()) return;
       const cursor = Math.max(
         afterMsgRef.current,
         messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
@@ -137,7 +147,7 @@ export function useCollabRoomLive({
           }),
           listCollabInsights(roomId, insightCursor > 0 ? insightCursor : 0),
         ]);
-        if (!aliveRef.current) return;
+        if (!isCurrent()) return;
         const incoming = page.results || [];
         const changed = page.changed || [];
         applySync({
@@ -159,7 +169,7 @@ export function useCollabRoomLive({
     };
 
     const connect = () => {
-      if (stopped) return;
+      if (!isCurrent()) return;
       closeWebSocketQuietly(ws);
       afterMsgRef.current = Math.max(
         afterMsgRef.current,
@@ -172,7 +182,7 @@ export function useCollabRoomLive({
       ws = openCollabRoomSocket(roomId, {
         onSync: applySync,
         onClose: (ev) => {
-          if (stopped) return;
+          if (!isCurrent()) return;
           if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) return;
           if (reconnectTimer) window.clearTimeout(reconnectTimer);
           reconnectTimer = window.setTimeout(connect, 1500);
@@ -180,6 +190,7 @@ export function useCollabRoomLive({
       });
       if (pingTimer) window.clearInterval(pingTimer);
       pingTimer = window.setInterval(() => {
+        if (!isCurrent()) return;
         if (ws?.readyState === WebSocket.OPEN) {
           try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
         }
@@ -189,7 +200,7 @@ export function useCollabRoomLive({
     const refreshPresence = async () => {
       try {
         const p = await getCollabRoomPresence(roomId);
-        if (!aliveRef.current) return;
+        if (!isCurrent()) return;
         patchRoomMeta({
           status: p.status as CollabRoom["status"],
           risk_level: p.risk_level as CollabRoom["risk_level"],
@@ -208,7 +219,7 @@ export function useCollabRoomLive({
     };
 
     const startTimer = window.setTimeout(() => {
-      if (stopped) return;
+      if (!isCurrent()) return;
       afterMsgRef.current = Math.max(
         afterMsgRef.current,
         messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
@@ -223,7 +234,7 @@ export function useCollabRoomLive({
 
     return () => {
       stopped = true;
-      aliveRef.current = false;
+      if (generationRef.current === generation) generationRef.current += 1;
       window.clearTimeout(startTimer);
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (presenceTimer) window.clearInterval(presenceTimer);
@@ -239,6 +250,7 @@ export function useCollabRoomLive({
     mergeInsights,
     patchRoomMeta,
     onXiaoceRuns,
+    isRoomCurrent,
     setRoomStats,
   ]);
 }

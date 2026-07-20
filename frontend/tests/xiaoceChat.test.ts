@@ -8,6 +8,7 @@ import {
   mergeXiaoceRunSnapshot,
   partitionXiaoceRooms,
 } from "../src/pages/xiaoceChat.ts";
+import * as xiaoceChatHelpers from "../src/pages/xiaoceChat.ts";
 
 
 test("recognizes only Xiaoce direct messages", () => {
@@ -105,6 +106,107 @@ test("keeps the newest Xiaoce run snapshot", () => {
   assert.equal(mergeXiaoceRunSnapshot(current, null), null);
 });
 
+test("room A async completion cannot mutate room B", async () => {
+  const isCurrent = (xiaoceChatHelpers as Record<string, unknown>)
+    .isRoomAsyncResultCurrent as ((activeId: string | null, targetId: string) => boolean) | undefined;
+  assert.equal(typeof isCurrent, "function");
+
+  let activeId: string | null = "room-a";
+  let visibleDraft = "A draft";
+  let resolveRequest!: (value: string) => void;
+  const request = new Promise<string>((resolve) => { resolveRequest = resolve; });
+  const completion = request.then((value) => {
+    if (isCurrent!(activeId, "room-a")) visibleDraft = value;
+  });
+
+  activeId = "room-b";
+  visibleDraft = "B draft";
+  resolveRequest("A restored");
+  await completion;
+
+  assert.equal(visibleDraft, "B draft");
+});
+
+test("pending sends are tracked independently by room", () => {
+  const setRoomPending = (xiaoceChatHelpers as Record<string, unknown>)
+    .setRoomPending as ((current: ReadonlySet<string>, roomId: string, pending: boolean) => Set<string>) | undefined;
+  assert.equal(typeof setRoomPending, "function");
+
+  const roomAStarted = setRoomPending!(new Set(), "room-a", true);
+  assert.equal(roomAStarted.has("room-a"), true);
+  assert.equal(roomAStarted.has("room-b"), false);
+  const roomBStarted = setRoomPending!(roomAStarted, "room-b", true);
+  const roomAFinished = setRoomPending!(roomBStarted, "room-a", false);
+  assert.deepEqual([...roomAFinished], ["room-b"]);
+});
+
+test("room selection synchronously invalidates an earlier load", async () => {
+  const beginSelection = (xiaoceChatHelpers as Record<string, unknown>)
+    .beginRoomSelection as ((
+      activeRef: { current: string | null },
+      generationRef: { current: number },
+      roomId: string,
+    ) => string | null) | undefined;
+  const isGenerationCurrent = (xiaoceChatHelpers as Record<string, unknown>)
+    .isLiveGenerationCurrent as ((current: number, expected: number, stopped: boolean) => boolean) | undefined;
+  assert.equal(typeof beginSelection, "function");
+  assert.equal(typeof isGenerationCurrent, "function");
+
+  const activeRef = { current: "room-a" as string | null };
+  const generationRef = { current: 4 };
+  const oldGeneration = generationRef.current;
+  const previous = beginSelection!(activeRef, generationRef, "room-new");
+
+  await Promise.resolve();
+  assert.equal(previous, "room-a");
+  assert.equal(activeRef.current, "room-new");
+  assert.equal(generationRef.current, 5);
+  assert.equal(isGenerationCurrent!(generationRef.current, oldGeneration, false), false);
+});
+
+test("stale live generations are rejected after a room switch", async () => {
+  const isGenerationCurrent = (xiaoceChatHelpers as Record<string, unknown>)
+    .isLiveGenerationCurrent as ((current: number, expected: number, stopped: boolean) => boolean) | undefined;
+  assert.equal(typeof isGenerationCurrent, "function");
+
+  let generation = 8;
+  let applied = "room-b";
+  let resolvePoll!: () => void;
+  const poll = new Promise<void>((resolve) => { resolvePoll = resolve; });
+  const oldCompletion = poll.then(() => {
+    if (isGenerationCurrent!(generation, 8, false)) applied = "room-a";
+  });
+  generation = 9;
+  resolvePoll();
+  await oldCompletion;
+
+  assert.equal(applied, "room-b");
+  assert.equal(isGenerationCurrent!(9, 9, true), false);
+});
+
+test("active Xiaoce running detection prefers live active state", () => {
+  const isRunning = (xiaoceChatHelpers as Record<string, unknown>)
+    .isXiaoceTaskRunning as ((
+      listed: { id: string; active_xiaoce_run?: { status?: string } | null },
+      activeRoom: { id: string; active_xiaoce_run?: { status?: string } | null } | null,
+      activeRun: { status?: string } | null,
+    ) => boolean) | undefined;
+  assert.equal(typeof isRunning, "function");
+
+  const listed = { id: "task-a", active_xiaoce_run: null };
+  const activeRoom = { id: "task-a", active_xiaoce_run: null };
+  assert.equal(isRunning!(listed, activeRoom, { status: "running" }), true);
+  assert.equal(isRunning!(listed, { id: "task-b" }, { status: "running" }), false);
+  assert.equal(
+    isRunning!(
+      listed,
+      { id: "task-a", active_xiaoce_run: { status: "running" } },
+      { status: "completed" },
+    ),
+    false,
+  );
+});
+
 test("process component uses server snapshots and the required collapsed label", () => {
   const source = readFileSync(
     new URL("../src/components/XiaoceProcess.tsx", import.meta.url),
@@ -150,8 +252,36 @@ test("collaboration chat targets rename and delete by captured room id", () => {
   assert.match(source, /const roomId = renameTargetId;/);
   assert.match(source, /updateCollabRoom\(roomId, \{ title: next \}\)/);
   assert.match(source, /activeIdRef\.current === roomId/);
-  assert.match(source, /const target = rooms\.find\(\(room\) => room\.id === id\)/);
+  assert.match(source, /const listedTarget = rooms\.find\(\(room\) => room\.id === id\)/);
+  assert.match(source, /const target = activeRoom\?\.id === id \? activeRoom : listedTarget;/);
+  assert.match(source, /isXiaoceTaskRunning\(/);
   assert.match(source, /activeIdRef\.current === id/);
+});
+
+test("collaboration chat wires room-scoped async send and selection guards", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const selectionSource = source.slice(
+    source.indexOf("const selectRoom"),
+    source.indexOf("const refreshStats"),
+  );
+  assert.match(source, /sendingRoomIds/);
+  assert.match(source, /targetRoomId/);
+  assert.match(source, /isRoomAsyncResultCurrent\(activeIdRef\.current, targetRoomId\)/);
+  assert.match(source, /roomsRef\.current\.some\(\(room\) => room\.id === targetRoomId\)/);
+  assert.match(source, /beginRoomSelection\(activeIdRef, roomLoadSeqRef, roomId\)/);
+  assert.match(selectionSource, /setStatsLoading\(false\)/);
+  assert.doesNotMatch(source, /const \[sending, setSending\] = useState\(false\)/);
+});
+
+test("collaboration live hook gates every room effect by local generation", () => {
+  const source = readFileSync(
+    new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /generationRef/);
+  assert.match(source, /isLiveGenerationCurrent/);
+  assert.match(source, /isRoomCurrent\(roomId\)/);
+  assert.doesNotMatch(source, /aliveRef/);
 });
 
 test("Xiaoce deletion clears caches only after success and after selecting its successor", () => {
@@ -162,14 +292,12 @@ test("Xiaoce deletion clears caches only after success and after selecting its s
   );
   const apiSuccess = deleteHandler.indexOf("await deleteCollabRoom(id)");
   const selectSuccessor = deleteHandler.indexOf("selectRoom(nextTask.id)");
-  const activateSuccessor = deleteHandler.indexOf("activeIdRef.current = nextTask.id");
   const composerDelete = deleteHandler.indexOf("roomComposerCacheRef.current.delete(id)");
   const viewDelete = deleteHandler.indexOf("roomViewCacheRef.current.delete(id)");
 
   assert.ok(apiSuccess >= 0);
   assert.ok(selectSuccessor > apiSuccess);
-  assert.ok(activateSuccessor > selectSuccessor);
-  assert.ok(composerDelete > activateSuccessor);
+  assert.ok(composerDelete > selectSuccessor);
   assert.ok(viewDelete > composerDelete);
 });
 

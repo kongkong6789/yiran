@@ -6,6 +6,15 @@ export type XiaoceRoomLike = {
   participants?: Array<{ username?: string; bot_id?: string }>;
 };
 
+type MutableValueRef<T> = { current: T };
+
+type XiaoceRunStateLike = { status?: string };
+
+type XiaoceTaskStateLike = {
+  id: string;
+  active_xiaoce_run?: XiaoceRunStateLike | null;
+};
+
 
 export function isXiaoceRoom(room: XiaoceRoomLike | null | undefined): boolean {
   return room?.room_kind === "dm" && Boolean(
@@ -28,6 +37,60 @@ export function partitionXiaoceRooms<T extends XiaoceRoomLike>(rooms: T[]): {
     (isXiaoceRoom(room) ? xiaoceTasks : otherRooms).push(room);
   }
   return { xiaoceTasks, otherRooms };
+}
+
+
+export function isRoomAsyncResultCurrent(
+  activeRoomId: string | null,
+  targetRoomId: string,
+): boolean {
+  return activeRoomId === targetRoomId;
+}
+
+
+export function setRoomPending(
+  current: ReadonlySet<string>,
+  roomId: string,
+  pending: boolean,
+): Set<string> {
+  const next = new Set(current);
+  if (pending) next.add(roomId);
+  else next.delete(roomId);
+  return next;
+}
+
+
+export function beginRoomSelection(
+  activeRoomRef: MutableValueRef<string | null>,
+  generationRef: MutableValueRef<number>,
+  roomId: string,
+): string | null {
+  const previousRoomId = activeRoomRef.current;
+  activeRoomRef.current = roomId;
+  generationRef.current += 1;
+  return previousRoomId;
+}
+
+
+export function isLiveGenerationCurrent(
+  currentGeneration: number,
+  effectGeneration: number,
+  stopped: boolean,
+): boolean {
+  return !stopped && currentGeneration === effectGeneration;
+}
+
+
+export function isXiaoceTaskRunning(
+  listedTask: XiaoceTaskStateLike,
+  activeRoom: XiaoceTaskStateLike | null,
+  activeRun: XiaoceRunStateLike | null,
+): boolean {
+  if (activeRoom?.id === listedTask.id) {
+    if (activeRun) return activeRun.status === "running";
+    return activeRoom.active_xiaoce_run?.status === "running";
+  }
+  return listedTask.active_xiaoce_run?.status === "running";
 }
 
 
