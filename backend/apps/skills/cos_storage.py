@@ -164,3 +164,37 @@ def fetch_skill_bytes(bucket: str, key: str) -> bytes:
     client = _client()
     resp = client.get_object(Bucket=bucket, Key=key)
     return resp["Body"].get_raw_stream().read()
+
+
+def upload_media_bytes(key: str, data: bytes, *, content_type: str | None = None) -> dict[str, Any]:
+    if not cos_enabled():
+        raise RuntimeError("Tencent COS is not enabled; configure USE_TENCENT_COS and credentials")
+
+    bucket = (getattr(settings, "TENCENT_COS_BUCKET", "") or "").strip()
+    if not bucket:
+        raise RuntimeError("TENCENT_COS_BUCKET is not configured")
+
+    normalized_key = "/".join(part for part in key.replace("\\", "/").split("/") if part)
+    prefix = _media_prefix()
+    if prefix and not normalized_key.startswith(f"{prefix}/"):
+        normalized_key = f"{prefix}/{normalized_key}"
+    resolved_content_type = content_type or mimetypes.guess_type(normalized_key)[0] or "application/octet-stream"
+    _client().put_object(
+        Bucket=bucket,
+        Key=normalized_key,
+        Body=data,
+        ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
+        ContentType=resolved_content_type,
+    )
+    return {
+        "bucket": bucket,
+        "cos_key": normalized_key,
+        "cos_url": public_url(bucket, normalized_key),
+        "storage": "cos",
+    }
+
+
+def fetch_object_bytes(bucket: str, key: str) -> bytes:
+    client = _client()
+    resp = client.get_object(Bucket=bucket, Key=key)
+    return resp["Body"].get_raw_stream().read()
