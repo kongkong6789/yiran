@@ -263,8 +263,13 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         )
         for p in participant_rows
     ]
+    xiaoce_dm = room.room_kind == "dm" and any(
+        member.get("bot_id") == "xiaoce"
+        or member.get("username") == XIAOCE_BOT_USERNAME
+        for member in members
+    )
     display_title = room.title
-    if room.room_kind == "dm" and viewer is not None:
+    if room.room_kind == "dm" and viewer is not None and not xiaoce_dm:
         others = [m["display_name"] for m in members if m["id"] != viewer.id]
         if others:
             display_title = others[0]
@@ -399,6 +404,26 @@ def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabR
     for peer in peers:
         CollabParticipant.objects.get_or_create(room=room, user=peer)
     return room
+
+
+XIAOCE_TASK_DEFAULT_TITLE = "小策bot（新任务）"
+XIAOCE_WELCOME = (
+    "你好，我是小策bot。\n"
+    "可以直接问我经营指标、知识库、图谱或业务问题；"
+    "我会结合平台知识与数据作答。"
+)
+
+
+def _create_xiaoce_welcome(room: CollabRoom, bot) -> CollabMessage:
+    return CollabMessage.objects.create(
+        room=room,
+        sender=bot,
+        content=XIAOCE_WELCOME,
+        attachments=[],
+        mentions=[],
+        msg_type="ai",
+        ai_kind="xiaoce",
+    )
 
 
 def _message_read_state_map(
@@ -848,6 +873,31 @@ def _run_ai_reply_async(
         _run_analysis_async(room_id, user_id, had_ai_reply=ai_ok)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def xiaoce_task_list(request):
+    touch_presence(request.user)
+    title = str(request.data.get("title") or "").strip()[:120]
+    if not title:
+        title = XIAOCE_TASK_DEFAULT_TITLE
+    bot = get_xiaoce_bot_user()
+    room = _create_room(
+        creator=request.user,
+        peers=[bot],
+        room_kind="dm",
+        title=title,
+    )
+    welcome = _create_xiaoce_welcome(room, bot)
+    transaction.on_commit(
+        lambda: ws_push.publish_sync(room.id, messages=[_message_payload(welcome)]),
+    )
+    return Response(
+        _room_payload(room, include_messages=True, viewer=request.user),
+        status=201,
+    )
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def room_list(request):
@@ -897,22 +947,10 @@ def room_list(request):
             peer = peers[0]
             title = str(request.data.get("title") or "").strip()
             if not title:
-                title = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(peer) else peer.username
+                title = XIAOCE_TASK_DEFAULT_TITLE if is_xiaoce_bot_user(peer) else peer.username
             room = _create_room(creator=request.user, peers=peers, room_kind="dm", title=title)
             if is_xiaoce_bot_user(peer):
-                welcome = CollabMessage.objects.create(
-                    room=room,
-                    sender=peer,
-                    content=(
-                        "你好，我是小策bot。\n"
-                        "可以直接问我经营指标、知识库、图谱或业务问题；"
-                        "我会结合平台知识与数据作答。"
-                    ),
-                    attachments=[],
-                    mentions=[],
-                    msg_type="ai",
-                    ai_kind="xiaoce",
-                )
+                welcome = _create_xiaoce_welcome(room, peer)
                 ws_push.publish_sync(room.id, messages=[_message_payload(welcome)])
             return Response(
                 _room_payload(room, include_messages=True, viewer=request.user),

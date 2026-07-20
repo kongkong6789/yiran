@@ -22,6 +22,7 @@ class XiaoceApiTests(APITestCase):
         self.addCleanup(realtime_patcher.stop)
         self.user = User.objects.create_user("api-owner", password="pw")
         self.other = User.objects.create_user("api-other", password="pw")
+        self.colleague = User.objects.create_user("api-colleague", password="pw")
         bot = get_xiaoce_bot_user()
         self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
         CollabParticipant.objects.create(room=self.room, user=self.user)
@@ -31,6 +32,67 @@ class XiaoceApiTests(APITestCase):
     @property
     def messages_url(self):
         return f"/api/collab/rooms/{self.room.id}/messages/"
+
+    @property
+    def tasks_url(self):
+        return "/api/collab/xiaoce-tasks/"
+
+    def test_create_xiaoce_task_always_creates_an_independent_room(self):
+        first = self.client.post(self.tasks_url, {}, format="json")
+        second = self.client.post(self.tasks_url, {}, format="json")
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.data["id"], second.data["id"])
+        self.assertEqual(first.data["title"], "小策bot（新任务）")
+        self.assertEqual(second.data["title"], "小策bot（新任务）")
+        for payload in (first.data, second.data):
+            self.assertEqual(payload["room_kind"], "dm")
+            self.assertEqual(payload["display_title"], "小策bot（新任务）")
+            self.assertEqual(len(payload["messages"]), 1)
+            self.assertEqual(payload["messages"][0]["ai_kind"], "xiaoce")
+
+    def test_create_xiaoce_task_trims_and_limits_custom_title(self):
+        response = self.client.post(
+            self.tasks_url,
+            {"title": f"  {'GMV' * 60}  "},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["title"]), 120)
+        self.assertTrue(response.data["title"].startswith("GMV"))
+
+    def test_room_list_uses_task_title_only_for_xiaoce_direct_messages(self):
+        task = self.client.post(
+            self.tasks_url,
+            {"title": "小策bot（GMV运算处理任务）"},
+            format="json",
+        ).data
+        normal = self.client.post(
+            "/api/collab/rooms/",
+            {"peer_username": self.colleague.username, "room_kind": "dm", "title": "内部标题"},
+            format="json",
+        ).data
+
+        listed = self.client.get("/api/collab/rooms/").data["results"]
+        by_id = {row["id"]: row for row in listed}
+        self.assertEqual(by_id[task["id"]]["display_title"], "小策bot（GMV运算处理任务）")
+        self.assertEqual(by_id[normal["id"]]["display_title"], self.colleague.username)
+
+    def test_existing_room_endpoint_reuses_the_latest_xiaoce_task(self):
+        first = self.client.post(self.tasks_url, {"title": "任务一"}, format="json").data
+        second = self.client.post(self.tasks_url, {"title": "任务二"}, format="json").data
+
+        opened = self.client.post(
+            "/api/collab/rooms/",
+            {"peer_username": "小策bot", "room_kind": "dm"},
+            format="json",
+        )
+
+        self.assertEqual(opened.status_code, 200)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(opened.data["id"], second["id"])
 
     @patch("apps.collab.views.threading.Thread")
     def test_send_returns_progress_run_and_room_detail_recovers_it(self, thread_cls):
