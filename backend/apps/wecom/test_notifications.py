@@ -1,10 +1,11 @@
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.core.models import Organization, OrganizationMembership
-from .models import WeComApiConfig, WeComGroupWebhook, WeComNotificationRecord
+from .models import WeComApiConfig, WeComContact, WeComGroupWebhook, WeComNotificationRecord
 from .services import WeComApiError, WeComClient, send_group_webhook_text
 
 
@@ -27,7 +28,29 @@ class WeComNotificationApiTests(APITestCase):
         )
         self.config.secret = "secret"
         self.config.save()
+        for user_id in ["xieyiping", "valid", "invalid"]:
+            WeComContact.objects.create(
+                config=self.config, wecom_userid=user_id, name=user_id,
+                available=True, synced_at=timezone.now(),
+            )
         self.client.force_authenticate(self.user)
+
+    def test_public_contacts_do_not_expose_wecom_userid(self):
+        self.config.contacts_synced_at = timezone.now()
+        self.config.save(update_fields=["contacts_synced_at", "updated_at"])
+        response = self.client.get("/api/wecom/contacts/")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("weComUserId", response.data["results"][0])
+        self.assertTrue(response.data["results"][0]["key"].startswith("contact:"))
+
+    @patch("apps.wecom.notification_service.WeComClient.send_app_text", return_value={"msgid": "contact-id", "invalidUsers": []})
+    def test_person_notification_resolves_internal_contact_ids(self, send):
+        contact = WeComContact.objects.get(config=self.config, wecom_userid="xieyiping")
+        response = self.client.post("/api/wecom/notifications/", {
+            "mode": "person", "recipientContactIds": [contact.id], "task": "生成日报",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(send.call_args.args[0], ["xieyiping"])
 
     def create_group(self, name="运营群"):
         response = self.client.post("/api/wecom/group-webhooks/", {"name": name, "webhookUrl": WEBHOOK_URL}, format="json")

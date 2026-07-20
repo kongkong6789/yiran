@@ -1,0 +1,9 @@
+{
+  "name": "Liangce SSO",
+  "version": "0.1.0",
+  "description": "Seamless SSO from Liangce platform into Baserow community edition",
+  "author": "Liangce",
+  "license": "MIT",
+  "url": "https://github.com/kongkong6789/yiran",
+  "baserow_plugin_api_version": "0.0.1-alpha"
+}

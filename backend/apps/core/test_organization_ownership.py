@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
-from .models import AuditLog, OrganizationMembership
+from .models import AuditLog, OrganizationMembership, UserSettings
 from .organizations import assign_user_to_organization, create_personal_organization
 
 
@@ -156,6 +156,54 @@ class OrganizationOwnershipApiTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.owner.refresh_from_db()
         self.assertTrue(self.owner.is_active)
+
+    def test_organization_admin_can_delete_member_account(self):
+        original_username = self.member.username
+        self.client.force_authenticate(self.admin)
+        response = self.client.delete(
+            f"/api/auth/admin/users/{self.member.id}/",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.member.refresh_from_db()
+        self.assertFalse(self.member.is_active)
+        self.assertFalse(self.member.has_usable_password())
+        self.assertNotEqual(self.member.username, original_username)
+        membership = OrganizationMembership.objects.get(
+            organization=self.organization,
+            user=self.member,
+        )
+        self.assertFalse(membership.is_active)
+        self.assertFalse(membership.is_primary)
+        settings = UserSettings.objects.get(user=self.member)
+        self.assertIsNotNone(settings.deleted_at)
+        self.assertEqual(settings.display_name, "已删除用户")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="account.delete",
+                actor=self.admin.username,
+                payload__username=original_username,
+            ).exists(),
+        )
+
+    def test_account_delete_rejects_self_owner_and_superuser(self):
+        self.client.force_authenticate(self.admin)
+        self_response = self.client.delete(
+            f"/api/auth/admin/users/{self.admin.id}/",
+        )
+        self.assertEqual(self_response.status_code, 400)
+
+        owner_response = self.client.delete(
+            f"/api/auth/admin/users/{self.owner.id}/",
+        )
+        self.assertEqual(owner_response.status_code, 400)
+        self.assertIn("所有权", owner_response.data["error"])
+
+        superuser = User.objects.create_superuser("root-delete-block", password="password123")
+        self.client.force_authenticate(superuser)
+        superuser_response = self.client.delete(
+            f"/api/auth/admin/users/{superuser.id}/",
+        )
+        self.assertEqual(superuser_response.status_code, 400)
 
     def test_superuser_created_organization_has_owner_membership(self):
         superuser = User.objects.create_superuser("root-create-org", password="password123")

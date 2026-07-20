@@ -5,7 +5,6 @@ import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import AgentChat from "./pages/AgentChat";
-import AgentConsole from "./pages/AgentConsole";
 import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
 import Audit from "./pages/Audit";
@@ -16,10 +15,12 @@ import Loops from "./pages/Loops";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
+import SmartTable from "./pages/SmartTable";
 import SkillsPage from "./pages/SkillsPage";
+import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
-import WorkTodos from "./pages/WorkTodos";
+import WorkHub from "./pages/WorkHub";
 
 function LegacyCouncilRedirect() {
   const location = useLocation();
@@ -41,14 +42,18 @@ export default function App() {
           <Route path="ontology" element={<OntologyGraph />} />
           <Route path="knowledge" element={<Knowledge />} />
           <Route path="skills" element={<SkillsPage />} />
+          <Route path="agent-memory" element={<AgentMemory />} />
           <Route path="council" element={<LegacyCouncilRedirect />} />
           <Route path="commerce" element={<CommerceHub />} />
           <Route path="commerce/bench" element={<CommerceFusion />} />
           <Route path="commerce/loops" element={<Loops />} />
           <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
-          <Route path="console" element={<AgentConsole />} />
-          <Route path="todos" element={<WorkTodos />} />
+          <Route path="work" element={<WorkHub />} />
+          <Route path="console" element={<Navigate to="/work" replace />} />
+          <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />
           <Route path="connectors" element={<Connectors />} />
+          <Route path="tables" element={<SmartTable />} />
+          <Route path="nocodb" element={<Navigate to="/tables" replace />} />
           <Route path="datalake" element={<DataLake />} />
           <Route path="my/knowledge" element={(
             <SectionHub

@@ -72,6 +72,76 @@ class OrganizationMembership(models.Model):
         return f"{self.organization_id}:{self.user_id}:{self.role}"
 
 
+class Team(models.Model):
+    """团队：平台团队(跨企业)或企业团队(企业内小组)，供知识库等场景界定可见范围。"""
+
+    class Kind(models.TextChoices):
+        PLATFORM = "platform", "平台团队"
+        ENTERPRISE = "enterprise", "企业团队"
+
+    name = models.CharField("团队名称", max_length=128)
+    kind = models.CharField("团队类型", max_length=16, choices=Kind.choices, default=Kind.ENTERPRISE, db_index=True)
+    organization = models.ForeignKey(
+        Organization,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="teams",
+        verbose_name="所属企业",
+        help_text="企业团队归属的企业；平台团队为空。",
+    )
+    description = models.CharField("团队说明", max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_teams",
+        verbose_name="创建人",
+    )
+    is_active = models.BooleanField("是否启用", default=True, db_index=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        ordering = ["kind", "name", "id"]
+        verbose_name = "团队"
+        verbose_name_plural = "团队"
+
+    def __str__(self):
+        return self.name
+
+
+class TeamMembership(models.Model):
+    class Role(models.TextChoices):
+        LEAD = "lead", "团队负责人"
+        MEMBER = "member", "团队成员"
+
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+        verbose_name="团队",
+    )
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="team_memberships",
+        verbose_name="用户",
+    )
+    role = models.CharField("团队角色", max_length=16, choices=Role.choices, default=Role.MEMBER, db_index=True)
+    created_at = models.DateTimeField("加入时间", auto_now_add=True)
+
+    class Meta:
+        ordering = ["team_id", "role", "user_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["team", "user"], name="uniq_team_user"),
+        ]
+
+    def __str__(self):
+        return f"{self.team_id}:{self.user_id}:{self.role}"
+
+
 class ChatSession(models.Model):
     """持久化的 Agent 对话。"""
 
@@ -138,6 +208,7 @@ class UserSettings(models.Model):
     llm_api_key = models.CharField("LLM API Key", max_length=255, blank=True, default="")
     llm_base_url = models.CharField("LLM Base URL", max_length=255, blank=True, default="")
     llm_model = models.CharField("LLM Model", max_length=128, blank=True, default="")
+    deleted_at = models.DateTimeField("账号删除时间", null=True, blank=True, db_index=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 
     class Meta:
@@ -305,9 +376,17 @@ class WorkTodo(models.Model):
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="work_todos")
-    creator = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="created_work_todos")
+    creator = models.ForeignKey("auth.User", on_delete=models.PROTECT, related_name="created_work_todos")
     assignee = models.ForeignKey(
-        "auth.User", null=True, blank=True, on_delete=models.CASCADE, related_name="assigned_work_todos"
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_work_todos"
+    )
+    linked_platform_user = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="linked_wecom_work_todos",
+        help_text="企业微信负责人通过绑定关系对应的平台用户；不等同于平台负责人字段。",
     )
     recipient_type = models.CharField(
         max_length=16, choices=RecipientType.choices, default=RecipientType.PLATFORM, db_index=True
@@ -337,6 +416,9 @@ class WorkTodo(models.Model):
     sync_error_reason = models.CharField(max_length=500, blank=True, default="")
     sync_retry_count = models.PositiveSmallIntegerField(default=0)
     sync_next_retry_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    operation_claim_token = models.UUIDField(null=True, blank=True, editable=False)
+    operation_claim_kind = models.CharField(max_length=16, blank=True, default="")
+    operation_claimed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_synced_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_sync_source = models.CharField(
         max_length=16, choices=SyncSource.choices, default=SyncSource.PLATFORM
@@ -350,6 +432,7 @@ class WorkTodo(models.Model):
         indexes = [
             models.Index(fields=["organization", "assignee", "status"], name="todo_org_assignee_status"),
             models.Index(fields=["organization", "creator", "status"], name="todo_org_creator_status"),
+            models.Index(fields=["organization", "linked_platform_user", "status"], name="todo_org_linked_status"),
         ]
 
     def __str__(self):
@@ -374,3 +457,82 @@ class WorkTodo(models.Model):
     def wecom_todo_userid(self, value: str) -> None:
         from apps.wecom.crypto import encrypt_secret
         self.wecom_todo_userid_encrypted = encrypt_secret(value)
+
+
+class WorkAutomation(models.Model):
+    """用户保存的自动化配置；实际触发由独立调度服务消费。"""
+
+    class TriggerType(models.TextChoices):
+        SCHEDULE = "schedule", "定时触发"
+        DATA = "data", "数据变化"
+        MANUAL = "manual", "手动触发"
+
+    class NotificationChannel(models.TextChoices):
+        NONE = "none", "不通知"
+        IN_APP = "in_app", "站内通知"
+        WECOM = "wecom", "企业微信"
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="work_automations")
+    creator = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="work_automations")
+    name = models.CharField(max_length=128)
+    trigger_type = models.CharField(max_length=16, choices=TriggerType.choices, default=TriggerType.SCHEDULE)
+    trigger_rule = models.CharField(max_length=255)
+    action = models.TextField()
+    notification_channel = models.CharField(
+        max_length=16, choices=NotificationChannel.choices, default=NotificationChannel.NONE
+    )
+    recipient_contact_ids = models.JSONField(default=list, blank=True)
+    enabled = models.BooleanField(default=False, db_index=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_run_status = models.CharField(max_length=24, blank=True, default="")
+    last_error = models.CharField(max_length=500, blank=True, default="")
+    run_count = models.PositiveIntegerField(default=0)
+    trigger_state = models.JSONField(default=dict, blank=True)
+    claim_token = models.UUIDField(null=True, blank=True, db_index=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    last_tested_at = models.DateTimeField(null=True, blank=True)
+    last_test_status = models.CharField(max_length=20, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "creator", "enabled"], name="automation_org_user_on"),
+            models.Index(fields=["enabled", "trigger_type", "next_run_at"], name="automation_due_idx"),
+        ]
+
+
+class WorkAutomationRun(models.Model):
+    class Status(models.TextChoices):
+        RUNNING = "running", "执行中"
+        SUCCESS = "success", "执行成功"
+        FAILED = "failed", "执行失败"
+        BLOCKED = "blocked", "规则阻止"
+        NEED_INPUT = "need_input", "需要补充信息"
+        NEED_APPROVAL = "need_approval", "等待审批"
+
+    automation = models.ForeignKey(WorkAutomation, on_delete=models.CASCADE, related_name="runs")
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="work_automation_runs")
+    creator = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="work_automation_runs")
+    trigger_source = models.CharField(max_length=24)
+    trace_id = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.RUNNING, db_index=True)
+    scheduled_for = models.DateTimeField(null=True, blank=True)
+    decision = models.CharField(max_length=32, blank=True, default="")
+    action_name = models.CharField(max_length=128, blank=True, default="")
+    result = models.JSONField(default=dict, blank=True)
+    steps = models.JSONField(default=list, blank=True)
+    error = models.CharField(max_length=1000, blank=True, default="")
+    notification_status = models.CharField(max_length=32, blank=True, default="")
+    notification_record_id = models.PositiveBigIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "creator", "started_at"], name="automation_run_user_idx"),
+            models.Index(fields=["automation", "status"], name="automation_run_status_idx"),
+        ]

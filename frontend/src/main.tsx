@@ -100,6 +100,12 @@ function Root() {
                 Tag: {
                   defaultBg: "rgba(255, 255, 255, 0.08)",
                 },
+                Select: {
+                  selectorBg: "#000000",
+                  optionActiveBg: "rgba(255, 255, 255, 0.10)",
+                  optionSelectedBg: "rgba(126, 135, 255, 0.24)",
+                  optionSelectedColor: "#ffffff",
+                },
               }
             : {
                 Layout: {
@@ -124,11 +130,17 @@ function Root() {
                 Tag: {
                   defaultBg: "rgba(0, 0, 0, 0.06)",
                 },
+                Select: {
+                  selectorBg: "#ffffff",
+                  optionActiveBg: "#f5f6fb",
+                  optionSelectedBg: "#eef0ff",
+                  optionSelectedColor: "#3438bd",
+                },
               },
         }}
       >
         <AntApp>
-          <BrowserRouter>
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
             <App />
           </BrowserRouter>
         </AntApp>

@@ -178,20 +178,69 @@ class WeComCliClient:
             raise WeComCliError("todo_user_ambiguous", "待办机器人匹配到多个同名成员，请使用唯一姓名或别名。", status_code=409)
         return str(candidates[0].get("userid") or "")
 
-    def list_todos(self, *, follower_id: str, todo_status: int | None = None) -> list[dict[str, Any]]:
-        args: dict[str, Any] = {"follower_id": follower_id, "limit": 20}
-        if todo_status is not None:
-            args["todo_status"] = todo_status
-        listed = self.call("get_todo_list", args)
-        rows = (
-            listed.get("data_list") or listed.get("todo_list") or listed.get("todo_id_list")
-            or (listed.get("data") or {}).get("data_list") or (listed.get("data") or {}).get("todo_id_list") or []
-        )
-        ids = [str(row.get("todo_id") or row) for row in rows if row]
-        if not ids:
-            return []
-        details = self.call("get_todo_detail", {"todo_id_list": ids[:20]})
-        return details.get("data_list") or (details.get("data") or {}).get("data_list") or []
+    def list_todos(
+        self, *, follower_id: str, todo_status: int | None = None, max_pages: int = 100
+    ) -> list[dict[str, Any]]:
+        """Read all available pages and hydrate details in API-sized batches."""
+        todo_ids: list[str] = []
+        cursor = ""
+        exhausted = False
+        for _page in range(max_pages):
+            args: dict[str, Any] = {"follower_id": follower_id, "limit": 20}
+            if todo_status is not None:
+                args["todo_status"] = todo_status
+            if cursor:
+                args["cursor"] = cursor
+            listed = self.call("get_todo_list", args)
+            nested = listed.get("data") or {}
+            rows = (
+                listed.get("data_list") or listed.get("todo_list") or listed.get("todo_id_list")
+                or nested.get("data_list") or nested.get("todo_list") or nested.get("todo_id_list") or []
+            )
+            todo_ids.extend(str(row.get("todo_id") or row) for row in rows if row)
+            next_cursor = str(listed.get("next_cursor") or nested.get("next_cursor") or "")
+            if not next_cursor or next_cursor == cursor:
+                exhausted = True
+                break
+            cursor = next_cursor
+        if not exhausted:
+            raise WeComCliError(
+                "todo_pagination_limit",
+                "企业微信待办数量超过单次同步安全上限，请缩小同步范围后重试。",
+                status_code=409,
+            )
+        unique_ids = list(dict.fromkeys(item for item in todo_ids if item))
+        details: list[dict[str, Any]] = []
+        for start in range(0, len(unique_ids), 20):
+            response = self.call("get_todo_detail", {"todo_id_list": unique_ids[start:start + 20]})
+            details.extend(response.get("data_list") or (response.get("data") or {}).get("data_list") or [])
+        return details
+
+    def update_todo(
+        self,
+        *,
+        todo_id: str,
+        content: str,
+        follower_ids: list[str],
+        todo_status: int,
+        end_time: str = "",
+        remind_types: list[int] | None = None,
+    ) -> None:
+        args: dict[str, Any] = {
+            "todo_id": todo_id,
+            "content": content,
+            "follower_list": {
+                "followers": [
+                    {"follower_id": follower_id, "follower_status": 1}
+                    for follower_id in list(dict.fromkeys(follower_ids))
+                ]
+            },
+            "todo_status": todo_status,
+            "remind_type_list": remind_types or [0],
+        }
+        if end_time:
+            args["end_time"] = end_time
+        self.call("update_todo", args)
 
     def change_user_status(self, *, todo_id: str, follower_id: str, user_status: int) -> None:
         self.call("change_todo_user_status", {"todo_id": todo_id, "follower_id": follower_id, "user_status": user_status})

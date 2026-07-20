@@ -16,8 +16,11 @@ from apps.skills.runner import (
     format_script_outputs,
     try_execute_skill_scripts,
 )
+from apps.agentctx.assembler import assemble_context
+from apps.agentctx.memory import maybe_update_memory
 from .attachments import format_attachment_context, vision_image_parts
 from .cancellation import raise_if_cancelled
+from .progress import emit_progress
 from pathlib import Path
 
 DOC_SYSTEM_APPEND = """
@@ -94,7 +97,10 @@ def _selected_knowledge_context(
         if not ids:
             return "", []
         qs = qs.filter(id__in=ids)
-    bases = list(qs.order_by("-updated_at")[:8])
+    try:
+        bases = list(qs.order_by("-updated_at")[:8])
+    except Exception:
+        return "", []
     if not bases:
         return "", []
     refs: list[dict] = []
@@ -153,6 +159,8 @@ def run_chat(
     cancel_check=None,
     knowledge_mode: str = "auto",
     knowledge_base_ids: list[int] | None = None,
+    progress_callback=None,
+    session_key: str | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -162,9 +170,13 @@ def run_chat(
         return {"ok": False, "error": "\u8bf7\u8f93\u5165\u6d88\u606f\u6216\u4e0a\u4f20\u9644\u4ef6\u3002"}
 
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "understanding", "running")
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
+    emit_progress(progress_callback, "understanding", "completed")
+    if active_skills:
+        emit_progress(progress_callback, "skill", "running")
     script_blocks = (
         try_execute_skill_scripts(
             active_skills,
@@ -175,12 +187,15 @@ def run_chat(
         )
         if active_skills else []
     )
+    if active_skills:
+        emit_progress(progress_callback, "skill", "completed")
     raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
     knowledge = ""
     graph: dict = {"refs": []}
+    emit_progress(progress_callback, "knowledge_search", "running")
     if not doc_mode:
         knowledge = gather_knowledge(message, top_k=4)
         raise_if_cancelled(cancel_check)
@@ -205,6 +220,29 @@ def run_chat(
     nas_files = nas.get("files") or []
     context_attachments = [*attachments, *nas_files]
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "knowledge_search", "completed")
+    tool_count = (
+        len(script_blocks)
+        + (1 if mcp.get("attempted") else 0)
+        + (1 if nas.get("attempted") else 0)
+    )
+    if tool_count:
+        emit_progress(
+            progress_callback,
+            "tools",
+            "completed",
+            tool_count=tool_count,
+        )
+    has_evidence = bool(
+        selected_knowledge
+        or knowledge
+        or graph.get("refs")
+        or mcp.get("content")
+        or nas.get("content")
+        or script_blocks
+    )
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "running")
     refs = {
         "rag": [],
         "knowledge_bases": selected_knowledge_refs,
@@ -238,6 +276,8 @@ def run_chat(
             for a in attachments
         ],
     }
+    if has_evidence:
+        emit_progress(progress_callback, "validation", "completed")
 
     reference_blocks: list[str] = []
     attach_ctx = format_attachment_context(attachments)
@@ -254,7 +294,10 @@ def run_chat(
     if mcp.get("content"):
         reference_blocks.append(f"[MCP document: {mcp.get('source')}]\n{mcp['content']}")
     elif mcp.get("attempted") and mcp.get("error"):
-        reference_blocks.append(f"[MCP document unavailable]\n{mcp['error']}")
+        reference_blocks.append(
+            f"【企业微信 MCP 状态】读取失败:{mcp['error']}。"
+            "请明确告诉用户此错误及修复方向,不要假装已经读取文档。"
+        )
     if nas.get("content"):
         reference_blocks.append(f"【NAS 文件库】\n{nas['content']}")
     elif nas.get("attempted") and nas.get("error"):
@@ -263,19 +306,18 @@ def run_chat(
             "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
         )
 
-    user_block = message or "(no text message)"
-    if reference_blocks:
-        reference_text = "\n\n".join(reference_blocks)
-        user_block = f"Reference material:\n{reference_text}\n\nUser question:\n{user_block}"
+    ctx_pack = assemble_context(
+        message=message,
+        history=history,
+        user=user,
+        session_key=session_key,
+        reference_blocks=reference_blocks,
+        history_limit=30,
+    )
+    user_block = ctx_pack.user_block
+    clean_history = ctx_pack.clean_history
+    reference_blocks = ctx_pack.reference_blocks
 
-
-    clean_history = [
-        {"role": item["role"], "content": str(item["content"])}
-        for item in history[-30:]
-        if isinstance(item, dict)
-        and item.get("role") in {"user", "assistant"}
-        and item.get("content")
-    ]
     image_parts = vision_image_parts(context_attachments)
     has_image = bool(image_parts)
     image_intent = image_svc.detect_image_intent(message, has_image)
@@ -361,6 +403,7 @@ def run_chat(
         "content": "", "error": "", "configured": True,
         "model": "", "vision_unsupported": False,
     }
+    emit_progress(progress_callback, "composing", "running")
     if not skip_llm:
         # Chat and vision analysis use chat completions; image generation uses images API.
         chat_kwargs: dict = {
@@ -451,12 +494,26 @@ def run_chat(
             reply = reply.rstrip() + "\n\n**NAS 文件**\n" + "\n".join(file_links)
 
     raise_if_cancelled(cancel_check)
+    emit_progress(progress_callback, "composing", "completed")
+    try:
+        maybe_update_memory(
+            user,
+            session_key=session_key,
+            message=message,
+            reply=reply,
+            history=history,
+        )
+    except Exception:
+        # 记忆更新失败不影响主回复
+        pass
     return {
         "ok": True,
         "reply": reply,
         "llm": llm.llm_available(user),
         "llm_error": llm_error,
         "llm_model": used_model or llm_result.get("model") or "",
+        "session_key": session_key or "",
+        "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
         "knowledge_hit": bool(
             selected_knowledge
             or knowledge

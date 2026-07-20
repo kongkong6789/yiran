@@ -11,6 +11,8 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.http import FileResponse, Http404
+from django.utils import timezone
 from django.http import FileResponse, Http404, HttpResponse
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -299,6 +301,7 @@ def admin_users(request):
                 organization_memberships__organization=organization,
                 organization_memberships__is_active=True,
             ).distinct().order_by("id")
+        qs = qs.filter(Q(settings__isnull=True) | Q(settings__deleted_at__isnull=True))
         q = str(request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(Q(username__icontains=q) | Q(email__icontains=q))
@@ -352,6 +355,7 @@ def admin_users(request):
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def admin_user_detail(request, user_id: int):
+    """管理员：改密 / 启停 / 角色 / 删除账号。"""
     """管理员：改密 / 启停 / 角色 / 删除。"""
     denied = _require_staff(request.user)
     if denied:
@@ -385,6 +389,78 @@ def admin_user_detail(request, user_id: int):
         target.delete()
         return Response({"ok": True, "deleted": username})
 
+    if request.method == "DELETE":
+        if target.id == request.user.id:
+            return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)
+        if target.is_superuser:
+            return Response({"ok": False, "error": "超级管理员账号不能删除"}, status=400)
+        if target.is_staff and not request.user.is_superuser:
+            return Response({"ok": False, "error": "仅超级管理员可以删除平台管理员"}, status=403)
+        owner_membership = OrganizationMembership.objects.filter(
+            user=target,
+            role=OrganizationMembership.Role.OWNER,
+            is_active=True,
+            organization__is_active=True,
+        ).first()
+        if owner_membership:
+            return Response({"ok": False, "error": "请先转移企业所有权，再删除该账号"}, status=400)
+        settings_row, _ = UserSettings.objects.get_or_create(user=target)
+        if settings_row.deleted_at:
+            return Response({"ok": False, "error": "账号已删除"}, status=404)
+
+        original_username = target.username
+        deleted_username = f"deleted-{target.id}-{uuid.uuid4().hex[:12]}"
+        with transaction.atomic():
+            OrganizationMembership.objects.filter(user=target, is_active=True).update(
+                is_active=False,
+                is_primary=False,
+            )
+            Token.objects.filter(user=target).delete()
+            UserSettings.objects.filter(user=target).update(
+                display_name="已删除用户",
+                bio="",
+                methodology="",
+                avatar="",
+                phone="",
+                phone_hash="",
+                phone_updated_at=None,
+                llm_api_key="",
+                llm_base_url="",
+                llm_model="",
+                deleted_at=timezone.now(),
+            )
+            target.username = deleted_username
+            target.email = ""
+            target.first_name = ""
+            target.last_name = ""
+            target.is_active = False
+            target.is_staff = False
+            target.set_unusable_password()
+            target.save(update_fields=[
+                "username",
+                "email",
+                "first_name",
+                "last_name",
+                "is_active",
+                "is_staff",
+                "password",
+            ])
+            AuditLog.objects.create(
+                trace_id=f"account-delete-{target.id}-{uuid.uuid4().hex[:8]}",
+                actor=request.user.username,
+                intent="删除平台账号",
+                action="account.delete",
+                payload={
+                    "user_id": target.id,
+                    "username": original_username,
+                },
+                decision=AuditLog.Decision.ALLOW,
+                result={"deleted": True},
+            )
+        return Response({
+            "ok": True,
+            "deletedUser": {"id": target.id, "username": original_username},
+        })
     target_membership = OrganizationMembership.objects.filter(
         user=target,
         role=OrganizationMembership.Role.OWNER,

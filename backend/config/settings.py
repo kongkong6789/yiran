@@ -58,6 +58,8 @@ INSTALLED_APPS = [
     "apps.knowledge",
     "apps.commerce",
     "apps.wecom",
+    "apps.smarttable",
+    "apps.agentctx",
 ]
 
 MIDDLEWARE = [
@@ -234,6 +236,8 @@ if USE_POSTGRESQL:
             },
         }
     }
+    # apps.knowledge 通过 KnowledgeDatabaseRouter 固定走 knowledge 别名
+    DATABASES["knowledge"] = DATABASES["default"]
 
 # LightRAG / AGE 图谱
 # AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...

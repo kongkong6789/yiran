@@ -26,6 +26,11 @@ def _skill_row_payload(row: UserSkill) -> dict:
     payload = {
         "id": row.id,
         "skill_id": row.skill_id,
+        "visibility": (
+            row.source_asset.visibility
+            if row.source_asset_id and row.source_asset
+            else SkillAsset.Visibility.PRIVATE
+        ),
         "name": row.name,
         "description": row.description,
         "enabled": row.enabled,
@@ -44,6 +49,7 @@ def _asset_row_payload(row: SkillAsset) -> dict:
     return {
         "id": row.id,
         "skill_id": row.skill_id,
+        "visibility": row.visibility,
         "name": row.name,
         "description": row.description,
         "original_filename": row.original_filename,

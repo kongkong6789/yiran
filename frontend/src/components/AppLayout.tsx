@@ -7,6 +7,7 @@ import {
   SyncOutlined,
   BookOutlined,
   ThunderboltOutlined,
+  BulbOutlined,
   ApiOutlined,
   BarChartOutlined,
   ClockCircleOutlined,
@@ -17,7 +18,8 @@ import {
   ShopOutlined,
   MoonOutlined,
   SunOutlined,
-  CheckSquareOutlined,
+  MessageOutlined,
+  DatabaseOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -36,10 +38,10 @@ type NavItem = { key: string; icon: ReactNode; label: string };
 
 /** 日常高频：先做事 */
 const WORK_NAV: NavItem[] = [
-  { key: "/home", icon: <HomeOutlined />, label: "首页" },
-  { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
-  { key: "/console", icon: <FlagOutlined />, label: "办流程" },
-  { key: "/todos", icon: <CheckSquareOutlined />, label: "待办" },
+  { key: "/home", icon: <HomeOutlined />, label: "总览" },
+  { key: "/agent", icon: <MessageOutlined />, label: "对话" },
+  { key: "/collab", icon: <TeamOutlined />, label: "协作" },
+  { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
 ];
 
 /** 沉淀与复用 */
@@ -47,6 +49,7 @@ const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
   { key: "/ontology", icon: <ShareAltOutlined />, label: "图谱" },
   { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
+  { key: "/agent-memory", icon: <BulbOutlined />, label: "记忆" },
   { key: "/my/recent", icon: <ClockCircleOutlined />, label: "最近" },
 ];
 
@@ -60,6 +63,7 @@ const COMMERCE_NAV: NavItem[] = [
 /** 业务能力与外部系统 */
 const CAPABILITY_NAV: NavItem[] = [
   { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
+  { key: "/tables", icon: <DatabaseOutlined />, label: "智能表格" },
   { key: "/datalake", icon: <BarChartOutlined />, label: "数据" },
 ];
 
@@ -72,7 +76,7 @@ const ADMIN_NAV: NavItem[] = [
 
 const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
 
-const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/ontology", "/connectors", "/commerce/loops"]);
+const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/work", "/ontology", "/connectors", "/tables", "/commerce/loops"]);
 
 export default function AppLayout() {
   const nav = useNavigate();
@@ -176,7 +180,6 @@ export default function AppLayout() {
           theme="light"
           mode="horizontal"
           selectedKeys={selectedKeys}
-          triggerSubMenuAction="click"
           items={menuItems}
           onClick={(e) => {
             if (String(e.key).startsWith("/")) nav(e.key);

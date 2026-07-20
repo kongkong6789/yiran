@@ -82,6 +82,34 @@ class WeComApiConfigTests(APITestCase):
         self.assertEqual(after.secret_encrypted, before)
         self.assertEqual(after.agent_id, "100009")
 
+    @patch("apps.wecom.views.WeComClient")
+    def test_connection_test_uses_only_saved_credentials(self, client_class):
+        config = WeComApiConfig.objects.create(
+            user=self.user_a,
+            corp_id="ww-saved",
+            agent_id="100001",
+        )
+        config.secret = "saved-secret"
+        config.save()
+        ciphertext_before = config.secret_encrypted
+        client_class.return_value.test_wecom_connection.return_value = {"appName": "Saved app"}
+        client_class.return_value.get_visible_contacts.return_value = []
+
+        self.authenticate(self.token_a)
+        response = self.client.post("/api/wecom/config/test/", {
+            "corpId": "ww-unsaved",
+            "agentId": "999999",
+            "secret": "unsaved-secret",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        tested_config = client_class.call_args.args[0]
+        self.assertEqual(tested_config.pk, config.pk)
+        self.assertEqual(tested_config.corp_id, "ww-saved")
+        config.refresh_from_db()
+        self.assertEqual(config.secret_encrypted, ciphertext_before)
+        self.assertEqual(config.secret, "saved-secret")
+
     def test_contacts_require_authentication(self):
         response = self.client.get("/api/wecom/contacts/")
         self.assertEqual(response.status_code, 401)
@@ -136,7 +164,8 @@ class WeComApiConfigTests(APITestCase):
 
         self.assertEqual(response_value.status_code, 200)
         self.assertEqual(response_value.data["count"], 1)
-        self.assertEqual(response_value.data["results"][0]["weComUserId"], "xieyiping")
+        self.assertNotIn("weComUserId", response_value.data["results"][0])
+        self.assertTrue(response_value.data["results"][0]["key"].startswith("contact:"))
         self.assertEqual(response_value.data["results"][0]["department"], "运营中心")
         self.assertEqual(response_value.data["results"][0]["avatar"], "https://example.com/avatar.png")
         self.assertEqual(response_value.data["dataSource"], "wecom_sync")

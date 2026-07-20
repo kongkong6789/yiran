@@ -1336,7 +1336,7 @@ export default function LoopForceGraph() {
         onCancel={() => setAddOpen(false)}
         onOk={() => void handleAddNode()}
         okText="加入"
-        destroyOnClose
+        destroyOnHidden
       >
         <Form
           form={addForm}

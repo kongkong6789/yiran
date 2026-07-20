@@ -1114,7 +1114,7 @@ export default function OntologyGraph() {
         okText="保存"
         confirmLoading={savingRel}
         maskClosable={!savingRel}
-        destroyOnClose
+        destroyOnHidden
       >
         {editingRel && (
           <Space direction="vertical" style={{ width: "100%" }} size={12}>
@@ -1170,7 +1170,7 @@ export default function OntologyGraph() {
         onCancel={() => setEditing(null)}
         okText="保存"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
       >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <div>

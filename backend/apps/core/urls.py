@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import auth_views, views
+from . import auth_views, team_views, views
 
 urlpatterns = [
     path("health/", views.health, name="health"),
@@ -17,6 +17,11 @@ urlpatterns = [
     path("auth/organization/transfer-ownership/", auth_views.transfer_organization_ownership_view, name="auth-transfer-organization-ownership"),
     path("auth/admin/organizations/", auth_views.admin_organizations, name="auth-admin-organizations"),
     path("auth/admin/organizations/assign-users/", auth_views.assign_organization_users, name="auth-assign-organization-users"),
+    path("auth/teams/", team_views.teams, name="auth-teams"),
+    path("auth/teams/user-options/", team_views.team_user_options, name="auth-team-user-options"),
+    path("auth/teams/<int:team_id>/", team_views.team_detail, name="auth-team-detail"),
+    path("auth/teams/<int:team_id>/members/", team_views.team_members, name="auth-team-members"),
+    path("auth/teams/<int:team_id>/members/<int:user_id>/", team_views.team_member_detail, name="auth-team-member-detail"),
     path("auth/avatar/", auth_views.upload_avatar, name="auth-avatar-upload"),
     path("auth/avatars/<str:stored_id>/", auth_views.serve_avatar, name="auth-avatar-serve"),
     path("agent/chat/", views.agent_chat, name="agent-chat"),
@@ -35,6 +40,8 @@ urlpatterns = [
     path("task-results/<str:trace_id>/follow-ups/", views.task_result_follow_up, name="task-result-follow-up"),
     path("task-results/<str:trace_id>/attention/<str:item_id>/resolve/", views.task_attention_resolve, name="task-attention-resolve"),
     path("tasks/", views.work_tasks, name="work-tasks"),
+    path("automations/", views.work_automations, name="work-automations"),
+    path("automations/<int:automation_id>/", views.work_automation_detail, name="work-automation-detail"),
     path("tasks/<str:trace_id>/", views.work_task_detail, name="work-task-detail"),
     path("tasks/<str:trace_id>/artifacts/<int:artifact_id>/preview/", views.work_task_artifact_preview, name="work-task-artifact-preview"),
     path("tasks/<str:trace_id>/artifacts/<int:artifact_id>/download/", views.work_task_artifact_download, name="work-task-artifact-download"),

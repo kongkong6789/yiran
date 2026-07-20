@@ -61,7 +61,23 @@ LAKE_TABLE_META: dict[str, dict] = {
 }
 
 # 导入时跳过的镜像/系统表
-SKIP_TABLES = {"ont_object", "ont_relation"}
+SKIP_TABLES = {
+    "ont_object",
+    "ont_relation",
+    "django_migrations",
+    "django_content_type",
+    "django_session",
+    "django_admin_log",
+}
+
+# 前缀匹配：Django auth、token、迁移等系统表不应进入经营图谱
+SKIP_TABLE_PREFIXES = ("auth_", "authtoken_", "django_")
+
+
+def _should_skip_table(_schema: str, table: str) -> bool:
+    if table in SKIP_TABLES:
+        return True
+    return any(table.startswith(prefix) for prefix in SKIP_TABLE_PREFIXES)
 
 # public 表 -> 对象类型
 PUBLIC_OTYPE: dict[str, str] = {
@@ -290,7 +306,7 @@ def _import_schema_tables(
 
     for t in tables:
         table = t["table_name"]
-        if table in SKIP_TABLES:
+        if _should_skip_table(schema, table):
             continue
 
         meta = (table_meta or {}).get(table, {})
@@ -318,7 +334,7 @@ def _import_schema_tables(
     for fk in _foreign_keys(schema, sess):
         child_table = fk["child_table"]
         parent_table = fk["parent_table"]
-        if child_table in SKIP_TABLES or parent_table in SKIP_TABLES:
+        if _should_skip_table(schema, child_table) or _should_skip_table(schema, parent_table):
             continue
         child_pk = (table_meta or {}).get(child_table, {}).get("pk") or _table_pks(schema, child_table, sess)
         parent_pk = (table_meta or {}).get(parent_table, {}).get("pk") or _table_pks(schema, parent_table, sess)

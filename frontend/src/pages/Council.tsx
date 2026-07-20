@@ -17,7 +17,7 @@ import { brand } from "../theme/brand";
 import {
   listAgents, listMeetings, createMeeting, getMeeting, interject, openCouncilMeetingSocket, pollMessages,
   stopMeeting, startMeeting, pauseMeeting, pauseActiveMeetings, downloadDeliverable,
-  listCollabUsers, getAuthToken, getMe,
+  listCollabUsers, getAuthToken, getMe, closeWebSocketQuietly,
   type Agent, type CouncilMessage, type Meeting, type Deliverable,
   type CollabUserBrief, type AuthUser,
 } from "../api/client";
@@ -258,7 +258,7 @@ export default function Council({
 
     const connect = () => {
       if (stopped || !meetingRef.current?.id) return;
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
       ws = openCouncilMeetingSocket(meetingRef.current.id, {
         onMessages: applyPayload,
         onStatus: applyPayload,
@@ -294,7 +294,8 @@ export default function Council({
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (pingTimer) window.clearInterval(pingTimer);
       if (pollTimer) window.clearInterval(pollTimer);
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
+      ws = null;
     };
   }, [phase, meeting?.id]);
 

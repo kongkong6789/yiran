@@ -22,6 +22,21 @@ BRAND_QUOTED_RE = re.compile(r"[「『""]([^」』""]+)[」』""]")
 BRAND_AFTER_RE = re.compile(r"(?:品牌|分析|查询|梳理)[：:\s]+([^\s,，。；;@]+)")
 DEFAULT_ANALYSIS_ARGS = "--limit 20 --room-author-limit 10 --raw-output brand_full.json"
 
+# Skill 沙箱：仅允许 python 执行 workspace/scripts 下脚本
+_ALLOWED_INTERPRETERS = {"python", "python3", "py"}
+_DENIED_TOKENS = (
+    "|", "&&", "||", ";", "`", "$(",
+    "rm ", "del ", "curl ", "wget ", "powershell", "cmd.exe",
+    ">/", ">\\", "2>",
+)
+_ENV_KEEP_EXACT = {
+    "PATH", "Path", "PATHEXT", "SystemRoot", "SYSTEMROOT", "ComSpec",
+    "LANG", "LC_ALL", "LC_CTYPE", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "TMP", "TEMP", "TMPDIR", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "OS", "windir", "WINDIR",
+}
+_ENV_KEEP_PREFIX = ("PYTHON",)
+
 
 def workspace_root(user_id: int, skill_id: str) -> Path:
     root = Path(getattr(settings, "SKILLS_WORKSPACE_ROOT", settings.BASE_DIR / "skill_workspaces"))
@@ -147,24 +162,114 @@ def build_default_command(brand: str) -> str:
 def pick_command(skill: UserSkill, workspace: Path, brand: str, message: str) -> str:
     commands = extract_bash_commands(skill.instructions or skill.raw_content)
     wants_brand = any(k in (message or "") for k in ("品牌", "伊蒂", "分析"))
-    picked = ""
+    candidates: list[str] = []
     if wants_brand:
         for cmd in commands:
             if "analysis.py" in cmd and " brand " in f" {cmd} ":
-                picked = cmd
+                candidates.append(cmd)
                 break
-    if not picked:
+    if not candidates:
         for cmd in commands:
             if "analysis.py" in cmd or "scripts/" in cmd:
-                picked = cmd
-                break
-    if not picked and commands:
-        picked = commands[0]
-    if not picked and (workspace / "scripts" / "analysis.py").is_file():
-        picked = build_default_command(brand)
-    if picked:
-        return substitute_command(picked, brand)
+                candidates.append(cmd)
+    if not candidates and commands:
+        candidates.append(commands[0])
+    if not candidates and (workspace / "scripts" / "analysis.py").is_file():
+        candidates.append(build_default_command(brand))
+
+    for raw in candidates:
+        picked = substitute_command(raw, brand) if raw else ""
+        if not picked:
+            continue
+        ok, _err = validate_skill_command(workspace, picked)
+        if ok:
+            return picked
     return ""
+
+
+def build_sandbox_env(workspace: Path) -> dict[str, str]:
+    """裁剪环境变量，避免把宿主密钥带进 Skill 脚本。"""
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _ENV_KEEP_EXACT or key.startswith(_ENV_KEEP_PREFIX):
+            env[key] = value
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["SKILL_WORKSPACE"] = str(workspace.resolve())
+    # 显式去掉常见密钥名（即使碰巧以 PYTHON 开头也不保留）
+    for secret_key in list(env):
+        upper = secret_key.upper()
+        if any(tok in upper for tok in ("SECRET", "API_KEY", "TOKEN", "PASSWORD", "CREDENTIAL")):
+            if not secret_key.startswith("PYTHON"):
+                env.pop(secret_key, None)
+    return env
+
+
+def _path_inside(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def validate_skill_command(workspace: Path, command: str) -> tuple[bool, str]:
+    """仅允许 python/py 执行 workspace/scripts 下脚本。"""
+    cmd = (command or "").strip()
+    if not cmd:
+        return False, "空命令"
+    lowered = cmd.lower()
+    for token in _DENIED_TOKENS:
+        if token in lowered or token in cmd:
+            return False, f"命令包含禁止片段: {token.strip() or token}"
+
+    # 解析解释器与脚本路径（支持引号）
+    parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', cmd)
+    if not parts:
+        return False, "无法解析命令"
+
+    interpreter = parts[0].strip("\"'")
+    interp_name = Path(interpreter).name.lower()
+    # Windows: python.exe / py.exe；也允许完整 sys.executable
+    allowed_names = {n + s for n in _ALLOWED_INTERPRETERS for s in ("", ".exe")}
+    is_sys_python = False
+    try:
+        is_sys_python = Path(interpreter).resolve() == Path(sys.executable).resolve()
+    except OSError:
+        is_sys_python = False
+    if interp_name not in allowed_names and not is_sys_python:
+        return False, "仅允许 python/python3/py 执行 scripts/ 下脚本"
+
+    script_arg = ""
+    for part in parts[1:]:
+        token = part.strip("\"'")
+        if not token or token.startswith("-"):
+            continue
+        if token.endswith(".py") or "/scripts/" in token.replace("\\", "/") or token.startswith("scripts"):
+            script_arg = token
+            break
+    if not script_arg:
+        return False, "未找到 scripts/ 下的 .py 脚本"
+
+    script_path = Path(script_arg)
+    if not script_path.is_absolute():
+        script_path = (workspace / script_path).resolve()
+    else:
+        script_path = script_path.resolve()
+
+    scripts_root = (workspace / "scripts").resolve()
+    if not _path_inside(script_path, workspace.resolve()):
+        return False, "脚本路径超出 Skill 工作区"
+    if not _path_inside(script_path, scripts_root) and "scripts" not in script_path.parts:
+        return False, "脚本必须位于 scripts/ 目录"
+    # 要求最终落在 scripts 目录内
+    try:
+        script_path.relative_to(scripts_root)
+    except ValueError:
+        return False, "脚本必须位于 scripts/ 目录"
+    if script_path.suffix.lower() != ".py":
+        return False, "仅允许执行 .py 脚本"
+    return True, ""
 
 
 def _stop_process(proc: subprocess.Popen) -> None:
@@ -193,9 +298,18 @@ def run_shell_command(
     poll_interval: float = 0.1,
 ) -> dict:
     timeout = timeout or int(getattr(settings, "SKILL_SCRIPT_TIMEOUT", 180))
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
+    workspace = Path(workspace).resolve()
+    ok, err = validate_skill_command(workspace, command)
+    if not ok:
+        return {
+            "ok": False,
+            "command": command,
+            "stdout": "",
+            "stderr": f"沙箱拒绝: {err}",
+            "returncode": -1,
+            "sandbox_rejected": True,
+        }
+    env = build_sandbox_env(workspace)
     proc: subprocess.Popen | None = None
     try:
         proc = subprocess.Popen(
@@ -211,9 +325,10 @@ def run_shell_command(
             start_new_session=True,
         )
         started_at = time.monotonic()
-        while proc.poll() is None:
+        while True:
             raise_if_cancelled(cancel_check)
-            if time.monotonic() - started_at >= timeout:
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0:
                 _stop_process(proc)
                 stdout, stderr = proc.communicate()
                 return {
@@ -223,9 +338,14 @@ def run_shell_command(
                     "stderr": (stderr or "")[:4000] or f"脚本超时(>{timeout}s)",
                     "returncode": -1,
                 }
-            time.sleep(max(poll_interval, 0.01))
+            try:
+                stdout, stderr = proc.communicate(
+                    timeout=min(max(poll_interval, 0.01), remaining),
+                )
+                break
+            except subprocess.TimeoutExpired:
+                continue
         raise_if_cancelled(cancel_check)
-        stdout, stderr = proc.communicate()
         # 若脚本把结果写入 json,尽量读入 stdout 供 LLM 使用
         extra = ""
         for pattern in (r'brand_[^"\s]+\.json', r'--clean-output\s+(\S+\.json)'):
@@ -343,11 +463,24 @@ def try_execute_skill_scripts(
 
         run_cmd = pick_command(skill, ws, brand, message)
         if not run_cmd:
+            # 区分：完全没有命令 vs 全部被沙箱拒绝
+            raw_cmds = extract_bash_commands(skill.instructions or skill.raw_content)
+            sandbox_err = ""
+            for raw in raw_cmds[:3]:
+                trial = substitute_command(raw, brand)
+                ok, err = validate_skill_command(ws, trial)
+                if not ok and err:
+                    sandbox_err = err
+                    break
             results.append({
                 "skill_id": skill.skill_id,
                 "skill_name": skill.name,
                 "ok": False,
-                "error": "未找到可执行命令,且消息中未识别品牌名",
+                "error": (
+                    f"沙箱拒绝: {sandbox_err}"
+                    if sandbox_err
+                    else "未找到可执行命令,且消息中未识别品牌名"
+                ),
             })
             continue
 

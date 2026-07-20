@@ -1,10 +1,11 @@
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .models import TaskFollowUp, TaskResultRecord
 from .models import WorkTask, WorkTaskArtifact
 from .organizations import assign_user_to_organization, create_personal_organization
-from apps.wecom.models import UserWeComBinding, WeComApiConfig
+from apps.wecom.models import UserWeComBinding, WeComApiConfig, WeComContact
 
 
 User = get_user_model()
@@ -47,13 +48,17 @@ class TaskResultApiTests(APITestCase):
             status=UserWeComBinding.Status.MATCHED,
             source=UserWeComBinding.Source.ADMIN_CONFIRMED,
         )
+        contact = WeComContact.objects.create(
+            config=self.wecom_config, wecom_userid="other-wecom", name="其他用户",
+            available=True, synced_at=timezone.now(),
+        )
         created = self.client.post("/api/tasks/", {
             "traceId": "task-trace-1",
             "title": "复核销售异常",
             "sopId": "sales.review",
             "priority": "urgent",
             "deadline": "2026-07-17T18:00:00+08:00",
-            "assigneeWeComUserIds": ["other-wecom"],
+            "assigneeWeComContactIds": [contact.id],
             "assigneeNames": ["其他用户"],
             "notificationTarget": "其他用户",
             "notificationMode": "none",

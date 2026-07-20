@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
-from .models import WeComApiConfig, WeComGroupWebhook, WeComNotificationRecord
+from .models import WeComApiConfig, WeComContact, WeComGroupWebhook, WeComNotificationRecord
 from .services import WeComApiError, WeComClient, send_group_webhook_markdown
 from .access import resolve_accessible_config, resolve_accessible_webhook
 
@@ -130,15 +130,38 @@ def send_task_notification(*, user, data: dict) -> WeComNotificationRecord:
             if existing:
                 return existing
         webhook = None
+        config = resolve_accessible_config(user)
+        target_ids: list[str] = []
         target_label = data.get("targetLabel", "")
-        if data["mode"] == WeComNotificationRecord.Channel.GROUP:
+        if data["mode"] == WeComNotificationRecord.Channel.PERSON:
+            if not config or not config.configured or not config.can_use(user):
+                raise WeComApiError("WECOM_NOT_AUTHORIZED", "当前企业未配置企业微信应用，或你没有使用权限。", status_code=403)
+            contact_ids = list(dict.fromkeys(data.get("recipientContactIds", [])))
+            if contact_ids:
+                contacts = list(WeComContact.objects.filter(
+                    id__in=contact_ids, config=config, available=True,
+                ).only("id", "wecom_userid"))
+                if len(contacts) != len(contact_ids):
+                    raise WeComApiError("WECOM_CONTACT_NOT_FOUND", "部分企业微信成员不存在、已停用或不属于当前企业。", status_code=400)
+                by_id = {item.id: item.wecom_userid for item in contacts}
+                target_ids = [by_id[item] for item in contact_ids]
+            else:
+                # 兼容旧客户端，但只允许发送到当前企业通讯录缓存中的成员。
+                requested = list(dict.fromkeys(data.get("recipientUserIds", [])))
+                allowed = set(WeComContact.objects.filter(
+                    config=config, available=True, wecom_userid__in=requested,
+                ).values_list("wecom_userid", flat=True))
+                if len(allowed) != len(requested):
+                    raise WeComApiError("WECOM_CONTACT_NOT_FOUND", "部分企业微信成员不存在、已停用或不属于当前企业。", status_code=400)
+                target_ids = requested
+        else:
             webhook = resolve_accessible_webhook(user, data["groupWebhookId"])
             if not webhook:
                 raise WeComApiError("WECOM_GROUP_WEBHOOK_NOT_FOUND", "群机器人不存在或你没有使用权限。", status_code=404)
             target_label = webhook.name
         record = WeComNotificationRecord.objects.create(
-            user=user, channel=data["mode"], config=resolve_accessible_config(user),
-            group_webhook=webhook, target_ids=data.get("recipientUserIds", []), target_label=target_label,
+            user=user, channel=data["mode"], config=config,
+            group_webhook=webhook, target_ids=target_ids, target_label=target_label,
             content=content, content_preview=content[:500], task_trace_id=data.get("taskTraceId", ""),
             idempotency_key=key, status=WeComNotificationRecord.Status.PENDING,
         )

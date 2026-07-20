@@ -4,8 +4,9 @@ from collections import defaultdict
 import uuid
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, F, Max, Min, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework.decorators import api_view, permission_classes
@@ -18,7 +19,7 @@ from apps.core.organizations import current_organization, is_organization_admin,
 from .cli_service import WeComCliClient, WeComCliError
 from .models import UserWeComBinding, WeComCliConfig, WeComContact
 from .access import resolve_accessible_config
-from .serializers import WorkTodoCreateSerializer, WorkTodoStatusSerializer
+from .serializers import WorkTodoCreateSerializer, WorkTodoStatusSerializer, WorkTodoUpdateSerializer
 from .todo_sync_service import (
     delete_work_todo_group,
     sync_work_todo_group,
@@ -28,6 +29,23 @@ from .todo_sync_service import (
 def _display_name(user) -> str:
     settings = getattr(user, "settings", None)
     return (getattr(settings, "display_name", "") or user.username).strip()
+
+
+def _recipient_name(row: WorkTodo) -> str:
+    if row.recipient_type == WorkTodo.RecipientType.WECOM:
+        return row.recipient_name or "企业微信成员"
+    return _display_name(row.assignee) if row.assignee_id else row.recipient_name or "平台成员"
+
+
+def _recipient_identity(row: WorkTodo) -> str:
+    """Use real binding identities; names are display-only and may collide."""
+    if row.recipient_type == WorkTodo.RecipientType.PLATFORM and row.assignee_id:
+        return f"platform:{row.assignee_id}"
+    if row.linked_platform_user_id:
+        return f"platform:{row.linked_platform_user_id}"
+    if row.wecom_contact_id:
+        return f"wecom:{row.wecom_contact_id}"
+    return f"row:{row.id}"
 
 
 def _config_for(request):
@@ -111,6 +129,12 @@ def cli_config_test(request):
         return Response({"ok": False, "detail": "仅企业管理员可以测试连接。"}, status=403)
     if not config:
         return Response({"ok": False, "detail": "请先保存机器人配置。"}, status=409)
+    if config.bot_secret_encrypted and not config.bot_secret:
+        return Response({
+            "ok": False,
+            "code": "credential_decrypt_failed",
+            "detail": "已保存的 Secret 无法解密，请重新输入 Secret 并点击保存。",
+        }, status=409)
     try:
         WeComCliClient(config).test_connection()
     except WeComCliError as exc:
@@ -176,8 +200,7 @@ def _sync_status(rows: list[WorkTodo]) -> str:
         return WorkTodo.SyncStatus.NOT_REQUESTED
     statuses_by_recipient: dict[str, set[str]] = defaultdict(set)
     for row in sync_rows:
-        name = (_display_name(row.assignee) if row.assignee_id else row.recipient_name or "企业微信成员")
-        statuses_by_recipient[name.strip().casefold()].add(row.sync_status)
+        statuses_by_recipient[_recipient_identity(row)].add(row.sync_status)
 
     effective_statuses: set[str] = set()
     for statuses in statuses_by_recipient.values():
@@ -214,8 +237,7 @@ def _recipient_avatar(item: WorkTodo) -> str:
 def _deduplicated_recipient_rows(rows: list[WorkTodo]) -> list[WorkTodo]:
     grouped: dict[str, list[WorkTodo]] = defaultdict(list)
     for row in rows:
-        name = (_display_name(row.assignee) if row.assignee_id else row.recipient_name or "企业微信成员")
-        grouped[name.strip().casefold()].append(row)
+        grouped[_recipient_identity(row)].append(row)
 
     status_rank = {
         WorkTodo.SyncStatus.NOT_REQUESTED: 0,
@@ -238,7 +260,11 @@ def _deduplicated_recipient_rows(rows: list[WorkTodo]) -> list[WorkTodo]:
 
 def _platform_payload(rows: list[WorkTodo], *, perspective_assignee_id: int | None = None) -> dict:
     perspective_row = next(
-        (item for item in rows if item.assignee_id == perspective_assignee_id),
+        (
+            item for item in rows
+            if item.assignee_id == perspective_assignee_id
+            or item.linked_platform_user_id == perspective_assignee_id
+        ),
         None,
     ) if perspective_assignee_id else None
     row = perspective_row or rows[0]
@@ -264,18 +290,15 @@ def _platform_payload(rows: list[WorkTodo], *, perspective_assignee_id: int | No
         "createdAt": row.created_at.isoformat(),
         "updatedAt": max(item.updated_at for item in rows).isoformat(),
         "creatorName": _display_name(row.creator),
-        "assigneeNames": [
-            _display_name(item.assignee) if item.assignee_id else item.recipient_name or "企业微信成员"
-            for item in visible_recipient_rows
-        ],
+        "assigneeNames": [_recipient_name(item) for item in visible_recipient_rows],
         "recipients": [{
-            "name": _display_name(item.assignee) if item.assignee_id else item.recipient_name or "企业微信成员",
+            "name": _recipient_name(item),
             "type": item.recipient_type,
             "avatar": _recipient_avatar(item),
             "syncStatus": item.sync_status,
         } for item in visible_recipient_rows],
         "remindTypes": row.remind_types,
-        "syncRequested": row.sync_requested,
+        "syncRequested": any(item.sync_requested for item in rows),
         "syncStatus": _sync_status(rows),
         "syncErrorReason": failure,
         "lastSyncedAt": last_synced.isoformat() if last_synced else None,
@@ -302,6 +325,12 @@ def _serialize_rows(rows, *, aggregate: bool, perspective_assignee_id: int | Non
         parameters=[
             OpenApiParameter("view", OpenApiTypes.STR, description="assigned 或 created"),
             OpenApiParameter("status", OpenApiTypes.STR, description="pending、completed；不传表示全部"),
+            OpenApiParameter("q", OpenApiTypes.STR, description="搜索标题和补充说明"),
+            OpenApiParameter("priority", OpenApiTypes.STR, description="normal、high、urgent"),
+            OpenApiParameter("dateFrom", OpenApiTypes.DATE, description="截止日期起始值"),
+            OpenApiParameter("dateTo", OpenApiTypes.DATE, description="截止日期结束值"),
+            OpenApiParameter("page", OpenApiTypes.INT),
+            OpenApiParameter("pageSize", OpenApiTypes.INT),
         ],
         responses=OpenApiTypes.OBJECT,
     ),
@@ -315,54 +344,93 @@ def todos(request):
         return Response({"ok": False, "detail": "当前账号尚未加入企业。"}, status=409)
     if request.method == "GET":
         view = request.query_params.get("view")
-        rows = WorkTodo.objects.select_related(
-            "creator", "creator__settings", "assignee", "assignee__settings", "wecom_contact"
-        ).filter(organization=organization)
-        if view == "created":
-            rows = rows.filter(creator=request.user)
-        else:
-            assigned_rows = rows.filter(assignee=request.user)
+        try:
+            page = max(int(request.query_params.get("page") or 1), 1)
+            page_size = min(max(int(request.query_params.get("pageSize") or 20), 1), 100)
+        except (TypeError, ValueError):
+            return Response({"ok": False, "detail": "页码或每页数量格式不正确。"}, status=400)
+
+        base_rows = WorkTodo.objects.filter(organization=organization)
+        keyword = str(request.query_params.get("q") or "").strip()
+        if keyword:
+            base_rows = base_rows.filter(Q(title__icontains=keyword) | Q(description__icontains=keyword))
+        requested_priority = request.query_params.get("priority")
+        if requested_priority in WorkTodo.Priority.values:
+            base_rows = base_rows.filter(priority=requested_priority)
+        date_from_raw = str(request.query_params.get("dateFrom") or "").strip()
+        date_to_raw = str(request.query_params.get("dateTo") or "").strip()
+        date_from = parse_date(date_from_raw) if date_from_raw else None
+        date_to = parse_date(date_to_raw) if date_to_raw else None
+        if (date_from_raw and not date_from) or (date_to_raw and not date_to) or (date_from and date_to and date_from > date_to):
+            return Response({"ok": False, "detail": "截止日期范围格式不正确。"}, status=400)
+        if date_from:
+            base_rows = base_rows.filter(due_at__date__gte=date_from)
+        if date_to:
+            base_rows = base_rows.filter(due_at__date__lte=date_to)
+
         requested_status = request.query_params.get("status")
-        if requested_status in WorkTodo.Status.values and view != "created":
-            assigned_rows = assigned_rows.filter(status=requested_status)
-        if view != "created":
-            if requested_status == WorkTodo.Status.COMPLETED:
-                assigned_rows = assigned_rows.order_by("-completed_at", "-updated_at")
-            elif requested_status == WorkTodo.Status.PENDING:
-                assigned_rows = assigned_rows.order_by("due_at", "-created_at")
-            else:
-                assigned_rows = assigned_rows.order_by("-updated_at")
-            ordered_group_ids = list(assigned_rows.values_list("sync_group_id", flat=True))
-            rows = rows.filter(sync_group_id__in=ordered_group_ids).order_by("sync_group_id", "id")
-        if requested_status == WorkTodo.Status.COMPLETED:
-            rows = rows.order_by("-completed_at", "-updated_at")
-        elif requested_status == WorkTodo.Status.PENDING:
-            rows = rows.order_by("due_at", "-created_at")
+        if view == "created":
+            perspective_rows = base_rows.filter(creator=request.user)
+            groups = perspective_rows.values("sync_group_id").annotate(
+                pending_count=Count("id", filter=Q(status=WorkTodo.Status.PENDING)),
+                completed_count=Count("id", filter=Q(status=WorkTodo.Status.COMPLETED)),
+                sort_updated=Max("updated_at"),
+                sort_completed=Max("completed_at"),
+                sort_due=Min("due_at"),
+                sort_created=Max("created_at"),
+            )
+            if requested_status == WorkTodo.Status.PENDING:
+                groups = groups.filter(pending_count__gt=0)
+            elif requested_status == WorkTodo.Status.COMPLETED:
+                groups = groups.filter(pending_count=0, completed_count__gt=0)
         else:
-            rows = rows.order_by("-updated_at")
+            perspective_rows = base_rows.filter(
+                Q(assignee=request.user) | Q(linked_platform_user=request.user)
+            ).distinct()
+            if requested_status in WorkTodo.Status.values:
+                perspective_rows = perspective_rows.filter(status=requested_status)
+            groups = perspective_rows.values("sync_group_id").annotate(
+                sort_updated=Max("updated_at"),
+                sort_completed=Max("completed_at"),
+                sort_due=Min("due_at"),
+                sort_created=Max("created_at"),
+            )
+
+        if requested_status == WorkTodo.Status.COMPLETED:
+            groups = groups.order_by(F("sort_completed").desc(nulls_last=True), F("sort_updated").desc())
+        elif requested_status == WorkTodo.Status.PENDING:
+            groups = groups.order_by(F("sort_due").asc(nulls_last=True), F("sort_created").desc())
+        else:
+            groups = groups.order_by(F("sort_updated").desc())
+        count = groups.count()
+        start = (page - 1) * page_size
+        ordered_group_ids = [item["sync_group_id"] for item in groups[start:start + page_size]]
+
+        rows = WorkTodo.objects.select_related(
+            "creator", "creator__settings", "assignee", "assignee__settings",
+            "linked_platform_user", "wecom_contact",
+        ).filter(organization=organization, sync_group_id__in=ordered_group_ids).order_by("sync_group_id", "id")
+        materialized_rows = list(rows)
         results = _serialize_rows(
-            rows,
+            materialized_rows,
             aggregate=True,
             perspective_assignee_id=request.user.id if view != "created" else None,
         )
-        if view != "created":
-            result_by_group = {
-                next(
-                    item.sync_group_id
-                    for item in rows
-                    if str(item.public_id) == result["id"]
-                ): result
-                for result in results
-            }
-            results = [result_by_group[group_id] for group_id in ordered_group_ids if group_id in result_by_group]
-        if view == "created" and requested_status in WorkTodo.Status.values:
-            results = [item for item in results if item["status"] == requested_status]
-        if view == "created":
-            results.sort(key=lambda item: item["updatedAt"], reverse=True)
+        result_by_group = {
+            group_id: _platform_payload(
+                [item for item in materialized_rows if item.sync_group_id == group_id],
+                perspective_assignee_id=request.user.id if view != "created" else None,
+            )
+            for group_id in ordered_group_ids
+        }
+        results = [result_by_group[group_id] for group_id in ordered_group_ids if group_id in result_by_group]
         return Response({
             "ok": True,
             "source": "database",
             "results": results,
+            "count": count,
+            "page": page,
+            "pageSize": page_size,
         })
 
     serializer = WorkTodoCreateSerializer(data=request.data)
@@ -389,6 +457,16 @@ def todos(request):
     )) if api_config else []
     if contact_ids and len(contacts) != len(contact_ids):
         return Response({"ok": False, "detail": "部分企业微信负责人不存在、已停用或不属于当前企业。"}, status=400)
+    linked_user_by_contact_id = {
+        contact.id: binding.platform_user_id
+        for contact in contacts
+        for binding in UserWeComBinding.objects.filter(
+            wecom_config=contact.config,
+            wecom_userid=contact.wecom_userid,
+            platform_user_id__in=assignee_ids,
+            status=UserWeComBinding.Status.MATCHED,
+        )[:1]
+    }
     sync_group_id = uuid.uuid4()
     created = []
     with transaction.atomic():
@@ -416,6 +494,7 @@ def todos(request):
                 organization=organization,
                 creator=request.user,
                 assignee=None,
+                linked_platform_user_id=linked_user_by_contact_id.get(contact.id),
                 recipient_type=WorkTodo.RecipientType.WECOM,
                 recipient_name=contact.name,
                 wecom_contact=contact,
@@ -467,14 +546,18 @@ def todo_status(request):
     serializer = WorkTodoStatusSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     row = WorkTodo.objects.filter(
+        Q(assignee=request.user) | Q(linked_platform_user=request.user),
         organization=organization,
-        assignee=request.user,
         public_id=serializer.validated_data["id"],
     ).first()
     if not row:
         return Response({"ok": False, "detail": "待办不存在或不属于当前账号。"}, status=404)
     completed = serializer.validated_data["status"] == WorkTodo.Status.COMPLETED
-    WorkTodo.objects.filter(id=row.id).update(
+    linked_rows = WorkTodo.objects.filter(sync_group_id=row.sync_group_id).filter(
+        Q(recipient_type=WorkTodo.RecipientType.PLATFORM, assignee=request.user)
+        | Q(recipient_type=WorkTodo.RecipientType.WECOM, linked_platform_user=request.user)
+    )
+    linked_rows.update(
         status=WorkTodo.Status.COMPLETED if completed else WorkTodo.Status.PENDING,
         completed_at=timezone.now() if completed else None,
         last_sync_source=WorkTodo.SyncSource.PLATFORM,
@@ -482,7 +565,7 @@ def todo_status(request):
     )
     result = (
         sync_work_todo_group(row.sync_group_id, force=True)
-        if row.sync_requested
+        if linked_rows.filter(sync_requested=True).exists()
         else {"ok": True, "syncStatus": WorkTodo.SyncStatus.NOT_REQUESTED, "detail": "平台待办状态已更新。"}
     )
     return Response({
@@ -499,13 +582,11 @@ def retry_todo_sync(request, todo_id):
     organization, _config = _config_for(request)
     if not organization:
         return Response({"ok": False, "detail": "当前账号尚未加入企业。"}, status=409)
-    row = WorkTodo.objects.filter(
-        Q(creator=request.user) | Q(assignee=request.user),
-        organization=organization,
-        public_id=todo_id,
-    ).first()
+    row = WorkTodo.objects.filter(organization=organization, public_id=todo_id).first()
     if not row:
-        return Response({"ok": False, "detail": "待办不存在或无权操作。"}, status=404)
+        return Response({"ok": False, "detail": "待办不存在。"}, status=404)
+    if row.creator_id != request.user.id and not is_organization_admin(request.user, organization):
+        return Response({"ok": False, "detail": "仅创建人或企业管理员可以重新同步整组待办。"}, status=403)
     if not WorkTodo.objects.filter(sync_group_id=row.sync_group_id, sync_requested=True).exists():
         return Response({"ok": False, "detail": "该待办未启用企业微信同步。"}, status=400)
     result = sync_work_todo_group(row.sync_group_id, force=True)
@@ -513,9 +594,9 @@ def retry_todo_sync(request, todo_id):
 
 
 @extend_schema(summary="删除我创建的待办", request=None, responses=OpenApiTypes.OBJECT)
-@api_view(["DELETE"])
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
-def delete_todo(request, todo_id):
+def todo_detail(request, todo_id):
     organization, _config = _config_for(request)
     if not organization:
         return Response({"ok": False, "detail": "当前账号尚未加入企业。"}, status=409)
@@ -526,6 +607,41 @@ def delete_todo(request, todo_id):
     ).first()
     if not row:
         return Response({"ok": False, "detail": "待办不存在，或只有创建人可以删除。"}, status=404)
+    if request.method == "PATCH":
+        serializer = WorkTodoUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if not data:
+            return Response({"ok": False, "detail": "请至少提交一个需要修改的字段。"}, status=400)
+        field_map = {
+            "title": "title",
+            "description": "description",
+            "dueAt": "due_at",
+            "priority": "priority",
+            "remindTypes": "remind_types",
+        }
+        updates = {field_map[key]: value for key, value in data.items()}
+        updates["updated_at"] = timezone.now()
+        WorkTodo.objects.filter(sync_group_id=row.sync_group_id).update(**updates)
+        result = (
+            sync_work_todo_group(row.sync_group_id, force=True)
+            if WorkTodo.objects.filter(sync_group_id=row.sync_group_id, sync_requested=True).exists()
+            else {"ok": True, "syncStatus": WorkTodo.SyncStatus.NOT_REQUESTED}
+        )
+        AuditLog.objects.create(
+            trace_id=f"work-todo-update-{row.public_id.hex[:12]}-{int(timezone.now().timestamp())}",
+            actor=request.user.username,
+            intent="修改工作待办",
+            action="work.todo.update",
+            payload={"organization_id": organization.id, "fields": sorted(data.keys())},
+            decision=AuditLog.Decision.ALLOW,
+            result={"updated": True, "wecom_synced": bool(result.get("ok"))},
+        )
+        return Response({
+            "ok": True,
+            "syncStatus": result.get("syncStatus", WorkTodo.SyncStatus.NOT_REQUESTED),
+            "detail": "待办已更新。" if result.get("ok") else "平台待办已更新，企业微信同步失败并已记录。",
+        })
     try:
         result = delete_work_todo_group(row.sync_group_id)
     except WeComCliError as exc:

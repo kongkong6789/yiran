@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from django.db import transaction
 from django.db.models import Q
@@ -20,6 +20,7 @@ RETRY_DELAYS = [
     timedelta(days=1),
 ]
 RETRYABLE_CODES = {"network_error", "mcp_error", "missing_todo_id"}
+CLAIM_TIMEOUT = timedelta(minutes=2)
 
 
 def _audit(*, row: WorkTodo, action: str, result: dict) -> None:
@@ -34,23 +35,33 @@ def _audit(*, row: WorkTodo, action: str, result: dict) -> None:
     )
 
 
-def _mark_failed(rows: list[WorkTodo], *, code: str, reason: str) -> dict:
+def _mark_failed(rows: list[WorkTodo], *, code: str, reason: str, claim_token=None) -> dict:
     if not rows:
         return {"ok": False, "syncStatus": WorkTodo.SyncStatus.FAILED, "detail": reason}
-    retry_count = max((row.sync_retry_count for row in rows), default=0) + 1
+    row_ids = [row.id for row in rows]
+    if claim_token is not None:
+        row_ids = list(WorkTodo.objects.filter(
+            id__in=row_ids, operation_claim_token=claim_token,
+        ).values_list("id", flat=True))
+        if not row_ids:
+            return {"ok": True, "syncStatus": WorkTodo.SyncStatus.PENDING, "detail": "同步结果已由另一进程接管。"}
+    retry_count = max((row.sync_retry_count for row in rows if row.id in row_ids), default=0) + 1
     retryable = code in RETRYABLE_CODES and retry_count <= len(RETRY_DELAYS)
     next_retry_at = (
         timezone.now() + RETRY_DELAYS[min(retry_count - 1, len(RETRY_DELAYS) - 1)]
         if retryable
         else None
     )
-    WorkTodo.objects.filter(id__in=[row.id for row in rows]).update(
+    WorkTodo.objects.filter(id__in=row_ids).update(
         sync_status=WorkTodo.SyncStatus.FAILED,
         sync_error_code=code[:64],
         sync_error_reason=reason[:500],
         sync_retry_count=retry_count,
         sync_next_retry_at=next_retry_at,
         last_sync_source=WorkTodo.SyncSource.PLATFORM,
+        operation_claim_token=None,
+        operation_claim_kind="",
+        operation_claimed_at=None,
         updated_at=timezone.now(),
     )
     _audit(row=rows[0], action="wecom.todo.sync_failed", result={"code": code, "retryable": retryable})
@@ -120,7 +131,8 @@ def _recipient_todo_userids(
 
 
 def sync_work_todo_group(sync_group_id: UUID | str, *, force: bool = False) -> dict:
-    """Create or update one WeCom todo for all syncable recipients in a platform todo group."""
+    """Create or update a native todo without holding a DB lock during network I/O."""
+    claim_token = uuid4()
     with transaction.atomic():
         rows = list(
             WorkTodo.objects.select_for_update(of=("self",))
@@ -135,28 +147,17 @@ def sync_work_todo_group(sync_group_id: UUID | str, *, force: bool = False) -> d
             return {"ok": True, "syncStatus": WorkTodo.SyncStatus.NOT_REQUESTED, "detail": "仅创建平台待办。"}
         if all(row.sync_status == WorkTodo.SyncStatus.SYNCED for row in sync_rows) and not force:
             return {"ok": True, "syncStatus": WorkTodo.SyncStatus.SYNCED, "detail": "企业微信待办已同步。"}
-
-        config = WeComCliConfig.objects.filter(organization_id=rows[0].organization_id).first()
-        if not config or not config.configured:
-            return _mark_failed(sync_rows, code="not_configured", reason="当前企业尚未配置企业微信待办机器人。")
-        if not config.can_use(rows[0].creator):
-            return _mark_failed(sync_rows, code="not_authorized", reason="当前账号没有企业微信待办使用权限。")
-
-        client = WeComCliClient(config)
-        recipient_userids, unresolved = _recipient_todo_userids(sync_rows, client)
-        if unresolved:
-            for row, code, reason in unresolved:
-                _mark_failed([row], code=code, reason=reason)
-        resolved_rows = [row for row in sync_rows if row.id in recipient_userids]
-        if not resolved_rows:
-            return {
-                "ok": False,
-                "syncStatus": WorkTodo.SyncStatus.FAILED,
-                "detail": "没有可同步的企业微信负责人，平台待办已保留。",
-            }
-
+        fresh_claim = any(
+            row.operation_claimed_at and row.operation_claimed_at > timezone.now() - CLAIM_TIMEOUT
+            for row in sync_rows
+        )
+        if fresh_claim:
+            return {"ok": True, "syncStatus": WorkTodo.SyncStatus.PENDING, "detail": "企业微信待办正在同步，请勿重复提交。"}
         now = timezone.now()
-        WorkTodo.objects.filter(id__in=[row.id for row in resolved_rows]).update(
+        WorkTodo.objects.filter(id__in=[row.id for row in sync_rows]).update(
+            operation_claim_token=claim_token,
+            operation_claim_kind="sync",
+            operation_claimed_at=now,
             sync_status=WorkTodo.SyncStatus.PENDING,
             sync_error_code="",
             sync_error_reason="",
@@ -164,34 +165,60 @@ def sync_work_todo_group(sync_group_id: UUID | str, *, force: bool = False) -> d
             last_sync_source=WorkTodo.SyncSource.PLATFORM,
             updated_at=now,
         )
-        native_id = next((row.wecom_todo_id for row in resolved_rows if row.wecom_todo_id_encrypted), "")
-        try:
-            if not native_id:
-                content = rows[0].title if not rows[0].description else f"{rows[0].title}\n{rows[0].description}"
-                native_id = client.create_todo(
-                    content=content[:2000],
-                    follower_ids=list(dict.fromkeys(recipient_userids.values())),
-                    end_time=(
-                        timezone.localtime(rows[0].due_at).strftime("%Y-%m-%d %H:%M:%S")
-                        if rows[0].due_at and rows[0].due_at > timezone.now()
-                        else ""
-                    ),
-                    remind_types=rows[0].remind_types,
-                )
-                for row in resolved_rows:
-                    row.wecom_todo_id = native_id
-                    row.save(update_fields=["wecom_todo_id_encrypted", "updated_at"])
-            for row in resolved_rows:
-                client.change_user_status(
-                    todo_id=row.wecom_todo_id or native_id,
-                    follower_id=recipient_userids[row.id],
-                    user_status=2 if row.status == WorkTodo.Status.COMPLETED else 1,
-                )
-        except WeComCliError as exc:
-            return _mark_failed(resolved_rows, code=exc.code, reason=exc.message)
 
+    config = WeComCliConfig.objects.filter(organization_id=rows[0].organization_id).first()
+    if not config or not config.configured:
+        return _mark_failed(sync_rows, code="not_configured", reason="当前企业尚未配置企业微信待办机器人。", claim_token=claim_token)
+    if not config.can_use(rows[0].creator):
+        return _mark_failed(sync_rows, code="not_authorized", reason="当前账号没有企业微信待办使用权限。", claim_token=claim_token)
+
+    client = WeComCliClient(config)
+    recipient_userids, unresolved = _recipient_todo_userids(sync_rows, client)
+    for row, code, reason in unresolved:
+        _mark_failed([row], code=code, reason=reason, claim_token=claim_token)
+    resolved_rows = [row for row in sync_rows if row.id in recipient_userids]
+    if not resolved_rows:
+        return {"ok": False, "syncStatus": WorkTodo.SyncStatus.FAILED, "detail": "没有可同步的企业微信负责人，平台待办已保留。"}
+
+    native_id = next((row.wecom_todo_id for row in resolved_rows if row.wecom_todo_id_encrypted), "")
+    try:
+        content = rows[0].title if not rows[0].description else f"{rows[0].title}\n{rows[0].description}"
+        follower_ids = list(dict.fromkeys(recipient_userids.values()))
+        end_time = (
+            timezone.localtime(rows[0].due_at).strftime("%Y-%m-%d %H:%M:%S")
+            if rows[0].due_at and rows[0].due_at > timezone.now() else ""
+        )
+        if not native_id:
+            native_id = client.create_todo(
+                content=content[:2000], follower_ids=follower_ids,
+                end_time=end_time, remind_types=rows[0].remind_types,
+            )
+            for row in resolved_rows:
+                row.wecom_todo_id = native_id
+                row.save(update_fields=["wecom_todo_id_encrypted", "updated_at"])
+        else:
+            client.update_todo(
+                todo_id=native_id, content=content[:2000], follower_ids=follower_ids,
+                todo_status=0 if all(row.status == WorkTodo.Status.COMPLETED for row in resolved_rows) else 1,
+                end_time=end_time, remind_types=rows[0].remind_types,
+            )
+        for row in resolved_rows:
+            client.change_user_status(
+                todo_id=native_id,
+                follower_id=recipient_userids[row.id],
+                user_status=2 if row.status == WorkTodo.Status.COMPLETED else 1,
+            )
+    except WeComCliError as exc:
+        return _mark_failed(resolved_rows, code=exc.code, reason=exc.message, claim_token=claim_token)
+
+    with transaction.atomic():
+        claimed_ids = list(WorkTodo.objects.select_for_update().filter(
+            id__in=[row.id for row in resolved_rows], operation_claim_token=claim_token,
+        ).values_list("id", flat=True))
+        if len(claimed_ids) != len(resolved_rows):
+            return {"ok": True, "syncStatus": WorkTodo.SyncStatus.PENDING, "detail": "同步结果已由另一进程接管。"}
         now = timezone.now()
-        WorkTodo.objects.filter(id__in=[row.id for row in resolved_rows]).update(
+        WorkTodo.objects.filter(id__in=claimed_ids).update(
             sync_status=WorkTodo.SyncStatus.SYNCED,
             sync_error_code="",
             sync_error_reason="",
@@ -199,23 +226,23 @@ def sync_work_todo_group(sync_group_id: UUID | str, *, force: bool = False) -> d
             sync_next_retry_at=None,
             last_synced_at=now,
             last_sync_source=WorkTodo.SyncSource.PLATFORM,
+            operation_claim_token=None,
+            operation_claim_kind="",
+            operation_claimed_at=None,
             updated_at=now,
         )
-        partial = bool(unresolved) or len(resolved_rows) != len(rows)
-        _audit(
-            row=resolved_rows[0],
-            action="wecom.todo.synced",
-            result={"synced": True, "recipient_count": len(resolved_rows), "partial": partial},
-        )
-        return {
-            "ok": True,
-            "syncStatus": "partial" if partial else WorkTodo.SyncStatus.SYNCED,
-            "detail": "可用负责人已同步到企业微信。" if partial else "平台待办已同步到企业微信。",
-        }
+    partial = bool(unresolved) or len(resolved_rows) != len(sync_rows)
+    _audit(row=resolved_rows[0], action="wecom.todo.synced", result={"synced": True, "recipient_count": len(resolved_rows), "partial": partial})
+    return {
+        "ok": True,
+        "syncStatus": "partial" if partial else WorkTodo.SyncStatus.SYNCED,
+        "detail": "可用负责人已同步到企业微信。" if partial else "平台待办已同步到企业微信。",
+    }
 
 
 def delete_work_todo_group(sync_group_id: UUID | str) -> dict:
     """Delete the native WeCom todo first, then remove its platform mirror group."""
+    claim_token = uuid4()
     with transaction.atomic():
         rows = list(
             WorkTodo.objects.select_for_update(of=("self",))
@@ -225,30 +252,44 @@ def delete_work_todo_group(sync_group_id: UUID | str) -> dict:
         )
         if not rows:
             return {"ok": False, "code": "missing", "detail": "待办不存在。"}
-
+        fresh_claim = any(
+            row.operation_claimed_at and row.operation_claimed_at > timezone.now() - CLAIM_TIMEOUT
+            for row in rows
+        )
+        if fresh_claim:
+            raise WeComCliError("operation_in_progress", "待办正在同步或删除，请稍后重试。", status_code=409)
+        WorkTodo.objects.filter(id__in=[row.id for row in rows]).update(
+            operation_claim_token=claim_token,
+            operation_claim_kind="delete",
+            operation_claimed_at=timezone.now(),
+        )
         native_ids = list(dict.fromkeys(
             row.wecom_todo_id for row in rows if row.wecom_todo_id_encrypted and row.wecom_todo_id
         ))
+    try:
         if native_ids:
             config = WeComCliConfig.objects.filter(organization_id=rows[0].organization_id).first()
             if not config or not config.configured:
-                raise WeComCliError(
-                    "not_configured",
-                    "企业微信待办连接不可用，暂时无法删除已同步的企业微信待办。",
-                    status_code=409,
-                )
+                raise WeComCliError("not_configured", "企业微信待办连接不可用，暂时无法删除已同步的企业微信待办。", status_code=409)
             if not config.can_use(rows[0].creator):
-                raise WeComCliError(
-                    "not_authorized",
-                    "创建人当前没有企业微信待办使用权限，暂时无法删除已同步待办。",
-                    status_code=403,
-                )
+                raise WeComCliError("not_authorized", "创建人当前没有企业微信待办使用权限，暂时无法删除已同步待办。", status_code=403)
             client = WeComCliClient(config)
             for native_id in native_ids:
                 client.delete_todo(todo_id=native_id)
+    except WeComCliError:
+        WorkTodo.objects.filter(operation_claim_token=claim_token).update(
+            operation_claim_token=None, operation_claim_kind="", operation_claimed_at=None,
+        )
+        raise
 
-        first = rows[0]
-        deleted_count = len(rows)
+    first = rows[0]
+    deleted_count = len(rows)
+    with transaction.atomic():
+        locked_ids = list(WorkTodo.objects.select_for_update().filter(
+            sync_group_id=sync_group_id, operation_claim_token=claim_token,
+        ).values_list("id", flat=True))
+        if len(locked_ids) != deleted_count:
+            raise WeComCliError("operation_conflict", "待办状态已发生变化，请刷新后重试。", status_code=409)
         AuditLog.objects.create(
             trace_id=f"todo-delete-{first.public_id.hex[:12]}-{int(timezone.now().timestamp())}",
             actor=first.creator.username,
@@ -258,13 +299,13 @@ def delete_work_todo_group(sync_group_id: UUID | str) -> dict:
             decision=AuditLog.Decision.ALLOW,
             result={"platform_deleted": deleted_count, "wecom_deleted": len(native_ids)},
         )
-        WorkTodo.objects.filter(id__in=[row.id for row in rows]).delete()
-        return {
-            "ok": True,
-            "detail": "待办已从平台和企业微信删除。" if native_ids else "平台待办已删除。",
-            "deletedCount": deleted_count,
-            "weComDeleted": bool(native_ids),
-        }
+        WorkTodo.objects.filter(id__in=locked_ids).delete()
+    return {
+        "ok": True,
+        "detail": "待办已从平台和企业微信删除。" if native_ids else "平台待办已删除。",
+        "deletedCount": deleted_count,
+        "weComDeleted": bool(native_ids),
+    }
 
 
 def _refresh_rows(*, config: WeComCliConfig, rows: list[WorkTodo]) -> int:
@@ -313,6 +354,17 @@ def _refresh_rows(*, config: WeComCliConfig, rows: list[WorkTodo]) -> int:
                 last_sync_source=WorkTodo.SyncSource.WECOM,
                 updated_at=now,
             )
+            if row.linked_platform_user_id:
+                WorkTodo.objects.filter(
+                    sync_group_id=row.sync_group_id,
+                    recipient_type=WorkTodo.RecipientType.PLATFORM,
+                    assignee_id=row.linked_platform_user_id,
+                ).update(
+                    status=WorkTodo.Status.COMPLETED if completed else WorkTodo.Status.PENDING,
+                    completed_at=now if completed else None,
+                    last_sync_source=WorkTodo.SyncSource.WECOM,
+                    updated_at=now,
+                )
             updated += 1
     WorkTodo.objects.filter(id__in=[row.id for row in rows]).update(last_synced_at=now)
     return updated

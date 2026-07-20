@@ -140,6 +140,8 @@ POST /api/wecom/todos/
 ```http
 GET /api/wecom/todos/?view=assigned&status=pending
 GET /api/wecom/todos/?view=created&status=completed
+GET /api/wecom/todos/?view=created&q=运营&priority=high&page=1&pageSize=20
+GET /api/wecom/todos/?view=created&dateFrom=2026-07-01&dateTo=2026-07-31&page=1&pageSize=20
 ```
 
 参数：
@@ -149,13 +151,40 @@ GET /api/wecom/todos/?view=created&status=completed
 - `status=pending`：进行中。
 - `status=completed`：历史已完成。
 - 不传 `status`：全部。
+- `q`：按标题或说明搜索。
+- `priority`：`normal`、`high` 或 `urgent`。
+- `dateFrom` / `dateTo`：按截止日期筛选，格式为 `YYYY-MM-DD`。
+- `page`：页码，默认 `1`。
+- `pageSize`：每页数量，范围 `1~100`，默认 `20`。
 
 ```bash
 curl "http://127.0.0.1:8000/api/wecom/todos/?view=created&status=pending" \
   -H "Authorization: Token <登录令牌>"
 ```
 
-响应中的 `recipients` 会区分 `platform` 与 `wecom`，用于展示所有负责人；`syncStatus` 只统计实际要求同步企业微信的记录，平台负责人不会导致“部分同步”。
+响应包含 `count`、`page`、`pageSize` 和当前页 `results`。`recipients` 会区分 `platform` 与 `wecom`，用于展示所有负责人；`syncStatus` 只统计实际要求同步企业微信的记录，平台负责人不会导致“部分同步”。
+
+分页在数据库中先按 `sync_group_id` 聚合、计数并截取当前页，再读取该页负责人明细，不会随历史数据增长而把全部待办加载到应用进程。
+
+## 联系人隐私与通知发送
+
+- `GET /api/wecom/contacts/` 仅返回平台内部 `contactId`、姓名、部门、职位、头像和可用状态，不返回企业微信 UserID。
+- 个人任务通知使用 `recipientContactIds`，服务端在当前企业及当前可用配置范围内解析企业微信 UserID。
+- `GET /api/wecom/contacts/manage/` 仅企业管理员可访问，用于账号绑定管理；普通成员访问返回 `403`。
+- 旧版 `recipientUserIds` 暂时保留兼容，但服务端会校验这些 UserID 必须存在于当前企业的可用通讯录缓存中。
+
+个人通知请求示例：
+
+```json
+{
+  "mode": "person",
+  "recipientContactIds": [7, 9],
+  "task": "完成本周运营复盘",
+  "priority": "high"
+}
+```
+
+同步与删除采用短事务领取操作令牌，企业微信网络请求在数据库事务之外执行。两分钟内重复触发同一组同步不会重复创建企业微信原生待办；超时领取可由后台补偿任务恢复。
 
 ## 6. 更新待办状态
 
@@ -170,9 +199,29 @@ POST /api/wecom/todos/status/
 }
 ```
 
-`status` 可为 `pending` 或 `completed`。当前用户只能修改分配给自己的平台待办。
+`status` 可为 `pending` 或 `completed`。当前用户只能修改分配给自己或与自己平台账号绑定的企微待办；从 `completed` 改为 `pending` 即重新打开。平台与对应企微负责人状态会一起更新。
 
-## 7. 重新同步企业微信
+## 7. 修改待办内容
+
+```http
+PATCH /api/wecom/todos/{todo_id}/
+```
+
+仅创建人可修改。所有字段均可选，但至少提交一个：
+
+```json
+{
+  "title": "更新后的标题",
+  "description": "补充交付说明",
+  "dueAt": "2026-07-19T18:00:00+08:00",
+  "priority": "urgent",
+  "remindTypes": [5]
+}
+```
+
+提醒类型：`0` 不提醒、`1` 截止时、`3` 提前 15 分钟、`5` 提前 1 小时、`6` 提前 2 小时、`7` 提前 1 天、`8` 提前 2 天、`9` 提前 1 周。已同步的企微原生待办会同时更新；失败会记录并可重试。
+
+## 8. 重新同步企业微信
 
 ```http
 POST /api/wecom/todos/{todo_id}/sync/
@@ -183,9 +232,9 @@ curl -X POST "http://127.0.0.1:8000/api/wecom/todos/d789a6dd-0000-0000-0000-0000
   -H "Authorization: Token <登录令牌>"
 ```
 
-创建人或负责人可触发；仅平台待办会返回未启用企微同步。
+仅创建人或企业管理员可触发整组重试，避免普通负责人重复发送或修改其他参与人。仅平台待办会返回未启用企微同步。
 
-## 8. 删除待办
+## 9. 删除待办
 
 ```http
 DELETE /api/wecom/todos/{todo_id}/
@@ -193,7 +242,7 @@ DELETE /api/wecom/todos/{todo_id}/
 
 仅创建人可删除。存在企微原生待办时，系统先删除企微待办，再删除本地整组记录；企微删除失败时保留平台记录，避免数据失联。
 
-## 9. 企业微信待办机器人配置
+## 10. 企业微信待办机器人配置
 
 ```http
 GET /api/wecom/cli-config/
@@ -203,7 +252,7 @@ POST /api/wecom/cli-config/test/
 
 该配置属于企业并受可用成员范围控制。密钥只在服务端加密保存，接口不会返回完整敏感明文。
 
-## 10. 常见错误
+## 11. 常见错误
 
 | HTTP | 场景 |
 | --- | --- |

@@ -169,7 +169,7 @@ export default function RecipientSelector({ value, onChange, refreshKey = 0 }: P
             optionFilterProp="searchText"
             optionRender={({ data }) => {
               const member = data.option as WeComMember;
-              const bound = Boolean(member.weComUserId && member.available);
+              const bound = member.available;
               return (
                 <div className="task-recipient-option">
                   <Avatar size={34} src={member.avatar || undefined} icon={<UserOutlined />} />

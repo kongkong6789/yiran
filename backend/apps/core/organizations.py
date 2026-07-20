@@ -44,6 +44,20 @@ def is_organization_admin(user, organization: Organization | None = None) -> boo
     return qs.exists()
 
 
+def admin_organization_ids(user) -> list[int]:
+    """当前用户以所有者/管理员身份所在的启用企业 id 列表。"""
+    if not user or not getattr(user, "is_authenticated", False):
+        return []
+    return list(
+        OrganizationMembership.objects.filter(
+            user=user,
+            is_active=True,
+            role__in=ADMIN_ROLES,
+            organization__is_active=True,
+        ).values_list("organization_id", flat=True)
+    )
+
+
 def organization_user_ids(organization: Organization | None) -> list[int]:
     if organization is None:
         return []

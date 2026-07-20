@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
-import { createXiaoceRunId, isXiaoceRoom } from "../src/pages/xiaoceChat.ts";
+import {
+  createXiaoceRunId,
+  isXiaoceRoom,
+  mergeXiaoceRunSnapshot,
+} from "../src/pages/xiaoceChat.ts";
 
 
 test("recognizes only Xiaoce direct messages", () => {
@@ -33,44 +37,80 @@ test("creates a UUID v4 for each Xiaoce run", () => {
   assert.notEqual(first, second);
 });
 
-test("global theme tokens drive Xiaoce without changing avatar colors", () => {
-  const xiaoceCss = readFileSync(
-    new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
-    "utf8",
-  );
-  const globalCss = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-  assert.match(globalCss, /:root\s*\{[^}]*--lc-canvas:\s*#fff/s);
-  assert.match(globalCss, /:root\[data-theme="dark"\]\s*\{[^}]*--lc-canvas:\s*#000/s);
-  assert.match(globalCss, /--lc-muted:\s*rgba\(/);
-  assert.doesNotMatch(xiaoceCss, /data-chat-theme/);
-  assert.doesNotMatch(xiaoceCss, /filter\s*:/);
-  assert.doesNotMatch(xiaoceCss, /avatar/i);
+test("keeps the newest Xiaoce run snapshot", () => {
+  const current = {
+    id: "run-1",
+    room_id: "room-1",
+    status: "running" as const,
+    current_stage: "understanding",
+    progress_steps: [],
+    error_code: "",
+    error_message: "",
+    created_at: "2026-07-17T10:00:00Z",
+    updated_at: "2026-07-17T10:00:02Z",
+  };
+  const stale = { ...current, updated_at: "2026-07-17T10:00:01Z" };
+  const completed = {
+    ...current,
+    status: "completed" as const,
+    updated_at: "2026-07-17T10:00:03Z",
+  };
+
+  assert.equal(mergeXiaoceRunSnapshot(current, stale), current);
+  assert.deepEqual(mergeXiaoceRunSnapshot(current, completed), completed);
+  assert.equal(mergeXiaoceRunSnapshot(current, null), null);
 });
 
-test("Collab monitor uses monochrome tokens outside semantic status markers", () => {
+test("process component uses server snapshots and the required collapsed label", () => {
   const source = readFileSync(
-    new URL("../src/pages/CollabRisk.tsx", import.meta.url),
+    new URL("../src/components/XiaoceProcess.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /\.collab-kpi\.risk-green,[\s\S]*?background:\s*var\(--lc-surface\)/);
-  assert.match(source, /\.collab-mini-bar-wrap i\s*\{[^}]*background:\s*var\(--lc-ink\)/s);
-  assert.match(source, /\.collab-speaker-list \.track i\s*\{[^}]*background:\s*var\(--lc-ink\)/s);
-  assert.match(source, /\.collab-hint\s*\{[^}]*background:\s*transparent/s);
-  assert.doesNotMatch(source, /\.collab-kpi\.risk-green span,[\s\S]*?color:\s*#000/);
+  assert.match(source, /查看处理过程（\{steps\.length\}步）/);
+  assert.match(source, /aria-expanded/);
+  assert.doesNotMatch(source, /setInterval|setTimeout/);
 });
 
-test("Collab composer includes pause, global theme, and Skill refresh wiring", () => {
-  const source = readFileSync(
-    new URL("../src/pages/CollabRisk.tsx", import.meta.url),
-    "utf8",
-  );
+test("API types include durable Xiaoce progress and realtime snapshots", () => {
+  const source = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
+  assert.match(source, /export interface XiaoceProgressStep/);
+  assert.match(source, /export interface XiaoceRun/);
+  assert.match(source, /xiaoce_runs\?: XiaoceRun\[\]/);
   assert.match(source, /cancelXiaoceRun/);
-  assert.match(source, /aria-label=\{cancellingRunId \? "正在暂停" : xiaoceBusy \? "暂停生成" : "发送"\}/);
-  assert.match(source, /useThemeMode/);
-  assert.match(source, /const \{ mode, setMode \} = useThemeMode\(\);/);
-  assert.match(source, /onClick=\{\(\) => setMode\("light"\)\}/);
-  assert.match(source, /onClick=\{\(\) => setMode\("dark"\)\}/);
-  assert.doesNotMatch(source, /data-chat-theme=/);
-  assert.doesNotMatch(source, /(?:read|persist)ChatTheme|setChatTheme/);
+});
+
+test("collaboration chat wires Xiaoce progress, pause, history, and skill refresh", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /activeXiaoceRun/);
+  assert.match(source, /cancelXiaoceRun/);
+  assert.match(source, /<XiaoceProcess/);
+  assert.match(source, /process_steps/);
+  assert.match(source, /created_skill/);
   assert.match(source, /refreshKey=\{skillRefreshKey\}/);
+  assert.match(source, /aria-label="暂停小策处理"/);
+});
+
+test("collaboration live hook forwards Xiaoce snapshots from websocket and fallback polling", () => {
+  const source = readFileSync(
+    new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /onXiaoceRuns/);
+  assert.match(source, /data\.xiaoce_runs/);
+  assert.match(source, /active_xiaoce_run/);
+});
+
+test("Xiaoce process presentation has dedicated responsive styles", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /\.xiaoce-process/);
+  assert.match(source, /\.xiaoce-live-process/);
+  assert.match(source, /\.xiaoce-created-skill/);
+  const processStyles = source.slice(
+    source.indexOf(".xiaoce-live-process {"),
+    source.indexOf(".collab-agent-composer {"),
+  );
+  assert.match(processStyles, /var\(--lc-bg-elevated/);
+  assert.match(processStyles, /var\(--lc-border-light/);
+  assert.match(processStyles, /var\(--lc-text-muted/);
+  assert.match(processStyles, /var\(--lc-accent-blue/);
 });

@@ -289,6 +289,9 @@ export default function OrganizationManager({
             render: (_: unknown, row) => organization?.canManage && row.role !== "owner"
               ? (
                 <Select
+                  className="organization-role-select"
+                  popupClassName="organization-role-dropdown"
+                  popupMatchSelectWidth={160}
                   value={row.role}
                   style={{ width: 140 }}
                   options={[
@@ -345,7 +348,7 @@ export default function OrganizationManager({
           setSettingsOpen(false);
           setName(organization?.name || "");
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         <div className="organization-settings-modal">
           <section>
@@ -395,7 +398,7 @@ export default function OrganizationManager({
           assignForm.resetFields();
         }}
         width={620}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={assignForm} layout="vertical" preserve={false}>
           <Alert
@@ -468,7 +471,7 @@ export default function OrganizationManager({
           setCreateOpen(false);
           createForm.resetFields();
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={createForm} layout="vertical" preserve={false}>
           <Form.Item

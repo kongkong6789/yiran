@@ -1,18 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert, Avatar, Button, Card, DatePicker, Empty, Form, Input, List, message, Modal, Popconfirm, Popover, Select, Segmented,
-  Radio, Space, Spin, Switch, Tag, Tooltip, Typography,
+  Pagination, Radio, Space, Spin, Switch, Tag, Tooltip, Typography,
 } from "antd";
 import {
-  CheckCircleOutlined, CheckSquareOutlined, ClockCircleOutlined, DeleteOutlined, DownOutlined, FileTextOutlined,
-  PlusOutlined, ReloadOutlined, SettingOutlined, SyncOutlined, TeamOutlined, UserOutlined, WechatOutlined,
+  CheckCircleOutlined, CheckSquareOutlined, ClockCircleOutlined, DeleteOutlined, DownOutlined, EditOutlined, FileTextOutlined,
+  PlusOutlined, ReloadOutlined, SearchOutlined, SettingOutlined, SyncOutlined, TeamOutlined, UserOutlined, WechatOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useNavigate } from "react-router-dom";
 
 import {
   createWeComTodo, deleteWeComTodo, getWeComCliConfig, getWeComTodoMembers, listWeComTodos,
-  retryWeComTodoSync, setWeComTodoStatus, type WeComCliConfig, type WeComTodoMember, type WorkTodoItem,
+  retryWeComTodoSync, setWeComTodoStatus, updateWeComTodo, type WeComCliConfig, type WeComTodoMember, type WorkTodoItem,
 } from "../api/client";
 import {
   getWeComApiError, getWeComUsers, type WeComMember,
@@ -28,6 +28,15 @@ const syncTag = (item: WorkTodoItem) => {
   if (item.syncStatus === "partial") return <Tag color="warning">部分同步企微</Tag>;
   return <Tag>仅平台</Tag>;
 };
+
+const priorityTag = (priority: WorkTodoItem["priority"]) => {
+  if (priority === "urgent") return <Tag color="error">紧急</Tag>;
+  if (priority === "high") return <Tag color="warning">高优先级</Tag>;
+  return <Tag color="default">普通</Tag>;
+};
+
+const isOverdue = (item: WorkTodoItem) =>
+  item.status === "pending" && Boolean(item.dueAt) && dayjs(item.dueAt).isBefore(dayjs());
 
 const RecipientSummary = ({ item }: { item: WorkTodoItem }) => {
   const recipients: NonNullable<WorkTodoItem["recipients"]> = item.recipients?.length
@@ -73,11 +82,24 @@ const RecipientSummary = ({ item }: { item: WorkTodoItem }) => {
   );
 };
 
-export default function WorkTodos() {
+export default function WorkTodos({ embedded = false, createRequestId = 0 }: { embedded?: boolean; createRequestId?: number }) {
   const navigate = useNavigate();
   const [view, setView] = useState<"assigned" | "created">("assigned");
   const [status, setStatus] = useState<"pending" | "completed" | "all">("pending");
   const [items, setItems] = useState<WorkTodoItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [keyword, setKeyword] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState<"normal" | "high" | "urgent" | undefined>();
+  const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+  const [selectedTodo, setSelectedTodo] = useState<WorkTodoItem | null>(null);
+  const [editingTodo, setEditingTodo] = useState<WorkTodoItem | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editForm] = Form.useForm();
+  const requestSequence = useRef(0);
+  const pollAttempts = useRef(0);
   const [members, setMembers] = useState<WeComTodoMember[]>([]);
   const [weComContacts, setWeComContacts] = useState<WeComMember[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
@@ -94,23 +116,39 @@ export default function WorkTodos() {
   const [form] = Form.useForm();
   const syncToWeCom = Form.useWatch("syncToWeCom", form) ?? false;
 
+  useEffect(() => {
+    if (createRequestId > 0) setCreateOpen(true);
+  }, [createRequestId]);
+
   const loadConfig = useCallback(async () => {
     try { setConfig(await getWeComCliConfig()); } catch { setConfig(null); } finally { setConfigLoaded(true); }
   }, []);
   const load = useCallback(async (showLoading = true) => {
+    const sequence = ++requestSequence.current;
     if (showLoading) setLoading(true);
     try {
-      const result = await listWeComTodos(view, status === "all" ? undefined : status);
+      const result = await listWeComTodos({
+        view,
+        status: status === "all" ? undefined : status,
+        q: keyword || undefined,
+        priority: priorityFilter,
+        dateFrom: dateRange?.[0]?.format("YYYY-MM-DD"),
+        dateTo: dateRange?.[1]?.format("YYYY-MM-DD"),
+        page,
+        pageSize,
+      });
+      if (sequence !== requestSequence.current) return;
       setItems(result.results);
+      setTotal(result.count);
     } catch (error) {
       if (showLoading) {
         setItems([]);
         message.error(errorText(error));
       }
     } finally {
-      if (showLoading) setLoading(false);
+      if (showLoading && sequence === requestSequence.current) setLoading(false);
     }
-  }, [status, view]);
+  }, [dateRange, keyword, page, pageSize, priorityFilter, status, view]);
 
   useEffect(() => {
     void loadConfig();
@@ -125,10 +163,14 @@ export default function WorkTodos() {
       .catch((error) => setContactsError(getWeComApiError(error)))
       .finally(() => { setContactsLoading(false); setContactsLoaded(true); });
   }, [contactsLoaded, contactsLoading, createOpen, syncToWeCom]);
-  useEffect(() => { void load(true); }, [load]);
+  useEffect(() => { pollAttempts.current = 0; void load(true); }, [load]);
   useEffect(() => {
-    if (!items.some((item) => item.syncStatus === "pending")) return undefined;
-    const timer = window.setTimeout(() => void load(false), 5000);
+    if (!items.some((item) => item.syncStatus === "pending") || document.hidden || pollAttempts.current >= 8) return undefined;
+    const delay = Math.min(5000 * (pollAttempts.current + 1), 30000);
+    const timer = window.setTimeout(() => {
+      pollAttempts.current += 1;
+      void load(false);
+    }, delay);
     return () => window.clearTimeout(timer);
   }, [items, load]);
 
@@ -196,22 +238,25 @@ export default function WorkTodos() {
       const response = await createWeComTodo({
         title: values.title, description: values.description, platformAssigneeIds, wecomContactIds,
         dueAt: values.dueAt?.toISOString(), priority: values.priority,
+        remindTypes: values.remindTypes?.some((value: number) => value !== 0)
+          ? values.remindTypes.filter((value: number) => value !== 0)
+          : [0],
         syncToWeCom: Boolean(values.syncToWeCom),
       });
       if (response.syncStatus === "failed") message.warning("平台待办已创建，企业微信同步失败，可在列表中重新同步");
       else if (response.syncStatus === "synced") message.success("平台待办已创建并同步到企业微信");
       else if (response.syncStatus === "pending") message.success("平台待办已创建，正在同步企业微信");
       else message.success("平台待办已创建");
-      form.resetFields(); setDescriptionOpen(false); setCreateOpen(false); setView("created");
+      form.resetFields(); setDescriptionOpen(false); setCreateOpen(false); setStatus("pending"); setPage(1); setView("created");
     } catch (error) { message.error(errorText(error)); } finally { setSaving(false); }
   };
 
   return (
     <div className="work-todos-page">
-      <div className="work-todos-head">
+      {!embedded && <div className="work-todos-head">
         <div>
-          <Typography.Title level={3}>工作待办</Typography.Title>
-          <Typography.Text type="secondary">平台统一记录待办，可按需同步到企业微信并持续更新状态。</Typography.Text>
+          <Typography.Title level={3}>待办中心</Typography.Title>
+          <Typography.Text type="secondary">聚焦今天要完成的事，统一跟进个人与企业协作待办。</Typography.Text>
         </div>
         <div className="work-todos-head-actions">
           <Tooltip title={connectionHint}>
@@ -227,19 +272,50 @@ export default function WorkTodos() {
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建待办</Button>
           </Space>
         </div>
-      </div>
-
+      </div>}
       <Card className="work-todos-card">
         <div className="work-todos-toolbar">
-          <Segmented value={view} onChange={(value) => setView(value as typeof view)} options={[
-            { label: "我的待办", value: "assigned", icon: <CheckCircleOutlined /> },
-            { label: "我创建的", value: "created", icon: <TeamOutlined /> },
-          ]} />
-          <Space wrap>
+          <div className="work-todos-toolbar-main">
+            <Segmented className="work-todos-view-tabs" value={view} onChange={(value) => { setView(value as typeof view); setPage(1); }} options={[
+              { label: "我的待办", value: "assigned", icon: <CheckCircleOutlined /> },
+              { label: "我创建的", value: "created", icon: <TeamOutlined /> },
+            ]} />
+            <div className="work-todos-filter-fields">
+              <Input.Search
+                allowClear
+                value={searchText}
+                prefix={<SearchOutlined />}
+                placeholder="搜索待办标题或说明"
+                onChange={(event) => setSearchText(event.target.value)}
+                onSearch={(value) => { setKeyword(value.trim()); setPage(1); }}
+              />
+              <Select
+                allowClear
+                placeholder="全部优先级"
+                value={priorityFilter}
+                options={[
+                  { label: "普通", value: "normal" },
+                  { label: "高优先级", value: "high" },
+                  { label: "紧急", value: "urgent" },
+                ]}
+                onChange={(value) => { setPriorityFilter(value); setPage(1); }}
+              />
+              <DatePicker.RangePicker
+                value={dateRange}
+                placeholder={["截止日期起", "截止日期止"]}
+                allowClear
+                onChange={(value) => {
+                  setDateRange(value ? [value[0], value[1]] : null);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </div>
+          <div className="work-todos-toolbar-sub">
             <Segmented
               className="work-todos-status-tabs"
               value={status}
-              onChange={(value) => setStatus(value as typeof status)}
+              onChange={(value) => { setStatus(value as typeof status); setPage(1); }}
               options={[
                 { label: "进行中", value: "pending" },
                 { label: "历史待办", value: "completed" },
@@ -247,7 +323,7 @@ export default function WorkTodos() {
               ]}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load(true)}>刷新</Button>
-          </Space>
+          </div>
         </div>
         <Spin spinning={loading}>
           <List
@@ -255,6 +331,19 @@ export default function WorkTodos() {
             dataSource={items}
             renderItem={(item) => (
               <List.Item className="work-todo-row" actions={[
+                <Button key="detail" type="link" onClick={() => setSelectedTodo(item)}>详情</Button>,
+                ...(view === "created" ? [
+                  <Button key="edit" type="link" icon={<EditOutlined />} onClick={() => {
+                    setEditingTodo(item);
+                    editForm.setFieldsValue({
+                      title: item.title,
+                      description: item.description || "",
+                      dueAt: item.dueAt ? dayjs(item.dueAt) : null,
+                      priority: item.priority || "normal",
+                      remindTypes: item.remindTypes || [0],
+                    });
+                  }}>编辑</Button>,
+                ] : []),
                 ...(item.syncStatus === "failed" ? [
                   <Button key="retry" type="link" icon={<SyncOutlined />} loading={retryingId === item.id} onClick={async () => {
                     setRetryingId(item.id);
@@ -276,6 +365,15 @@ export default function WorkTodos() {
                       await load();
                     } catch (error) { message.error(errorText(error)); }
                   }}>完成</Button>,
+                ] : []),
+                ...(view === "assigned" && item.status === "completed" ? [
+                  <Button key="reopen" type="link" onClick={async () => {
+                    try {
+                      await setWeComTodoStatus(item.id, "pending");
+                      message.success("待办已重新打开");
+                      await load();
+                    } catch (error) { message.error(errorText(error)); }
+                  }}>重新打开</Button>,
                 ] : []),
                 ...(view === "created" ? [
                   <Popconfirm
@@ -304,14 +402,100 @@ export default function WorkTodos() {
               ]}>
                 <List.Item.Meta
                   avatar={<Avatar className={item.status === "completed" ? "done" : ""} icon={item.status === "completed" ? <CheckCircleOutlined /> : <ClockCircleOutlined />} />}
-                  title={<Space wrap><span>{item.title}</span><Tag color={item.status === "completed" ? "green" : "gold"}>{item.status === "completed" ? "已完成" : "进行中"}</Tag>{syncTag(item)}{item.priority === "urgent" && <Tag color="red">紧急</Tag>}</Space>}
+                  title={<Space wrap><span>{item.title}</span><Tag color={item.status === "completed" ? "green" : "gold"}>{item.status === "completed" ? "已完成" : "进行中"}</Tag>{syncTag(item)}{priorityTag(item.priority)}{isOverdue(item) && <Tag color="error">已逾期</Tag>}</Space>}
                   description={<div><Space size={18} wrap><span>创建人：{item.creatorName}</span><RecipientSummary item={item} />{item.dueAt && <span>截止：{dayjs(item.dueAt).format("YYYY-MM-DD HH:mm")}</span>}</Space>{item.syncErrorReason && <Typography.Text className="work-todo-sync-error" type="danger">{item.syncErrorReason}</Typography.Text>}</div>}
                 />
               </List.Item>
             )}
           />
+          {total > 0 && (
+            <Pagination
+              className="work-todos-pagination"
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger
+              showTotal={(value) => `共 ${value} 条待办`}
+              onChange={(nextPage, nextPageSize) => {
+                setPage(nextPageSize === pageSize ? nextPage : 1);
+                setPageSize(nextPageSize);
+              }}
+            />
+          )}
         </Spin>
       </Card>
+
+      <Modal
+        title="待办详情"
+        open={Boolean(selectedTodo)}
+        footer={<Button onClick={() => setSelectedTodo(null)}>关闭</Button>}
+        onCancel={() => setSelectedTodo(null)}
+      >
+        {selectedTodo && (
+          <div className="work-todo-detail">
+            <Typography.Title level={4}>{selectedTodo.title}</Typography.Title>
+            <Typography.Paragraph type="secondary">
+              {selectedTodo.description || "暂无补充说明"}
+            </Typography.Paragraph>
+            <div><strong>创建人：</strong>{selectedTodo.creatorName}</div>
+            <div><strong>负责人：</strong>{selectedTodo.assigneeNames.join("、") || "未指定"}</div>
+            <div><strong>优先级：</strong>{priorityTag(selectedTodo.priority)}</div>
+            <div><strong>截止时间：</strong>{selectedTodo.dueAt ? dayjs(selectedTodo.dueAt).format("YYYY-MM-DD HH:mm") : "未设置"}</div>
+            <div><strong>同步状态：</strong>{syncTag(selectedTodo)}</div>
+            {selectedTodo.syncErrorReason && <Alert type="error" showIcon message={selectedTodo.syncErrorReason} />}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title="编辑待办"
+        open={Boolean(editingTodo)}
+        confirmLoading={editing}
+        okText="保存修改"
+        cancelText="取消"
+        onCancel={() => { if (!editing) setEditingTodo(null); }}
+        onOk={async () => {
+          if (!editingTodo) return;
+          const values = await editForm.validateFields();
+          setEditing(true);
+          try {
+            const result = await updateWeComTodo(editingTodo.id, {
+              title: values.title,
+              description: values.description || "",
+              dueAt: values.dueAt?.toISOString() || null,
+              priority: values.priority,
+              remindTypes: values.remindTypes || [0],
+            });
+            result.syncStatus === "failed"
+              ? message.warning("平台待办已更新，企业微信同步失败，可稍后重试")
+              : message.success("待办已更新");
+            setEditingTodo(null);
+            await load();
+          } catch (error) { message.error(errorText(error)); }
+          finally { setEditing(false); }
+        }}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="title" label="待办内容" rules={[{ required: true, message: "请输入待办内容" }]}>
+            <Input maxLength={200} />
+          </Form.Item>
+          <Form.Item name="description" label="补充说明">
+            <Input.TextArea rows={3} maxLength={1000} showCount />
+          </Form.Item>
+          <Form.Item name="dueAt" label="截止时间"><DatePicker showTime style={{ width: "100%" }} /></Form.Item>
+          <Form.Item name="priority" label="优先级">
+            <Radio.Group optionType="button" buttonStyle="solid" options={[
+              { label: "普通", value: "normal" }, { label: "高", value: "high" }, { label: "紧急", value: "urgent" },
+            ]} />
+          </Form.Item>
+          <Form.Item name="remindTypes" label="提醒时间">
+            <Select mode="multiple" options={[
+              { label: "不提醒", value: 0 }, { label: "截止时", value: 1 }, { label: "提前 15 分钟", value: 3 },
+              { label: "提前 1 小时", value: 5 }, { label: "提前 1 天", value: 7 },
+            ]} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         className="work-todo-create-modal"
@@ -337,13 +521,13 @@ export default function WorkTodos() {
           form={form}
           layout="vertical"
           className="work-todo-create-form"
-          initialValues={{ priority: "normal", syncToWeCom: false, platformAssigneeIds: [], wecomContactIds: [] }}
+          initialValues={{ priority: "normal", remindTypes: [0], syncToWeCom: false, platformAssigneeIds: [], wecomContactIds: [] }}
         >
           <Form.Item name="title" label="待办内容" rules={[{ required: true, message: "请输入待办内容" }]}>
             <Input maxLength={200} placeholder="请输入待办内容" />
           </Form.Item>
 
-          <Form.Item name="platformAssigneeIds" label="平台负责人" required>
+          <Form.Item name="platformAssigneeIds" label="平台负责人（可选）">
             <Select
               mode="multiple"
               showSearch
@@ -390,6 +574,16 @@ export default function WorkTodos() {
               <Radio.Button className="is-high" value="high">重要</Radio.Button>
               <Radio.Button className="is-urgent" value="urgent">紧急</Radio.Button>
             </Radio.Group>
+          </Form.Item>
+
+          <Form.Item name="remindTypes" label="提醒时间">
+            <Select mode="multiple" options={[
+              { label: "不提醒", value: 0 },
+              { label: "截止时", value: 1 },
+              { label: "提前 15 分钟", value: 3 },
+              { label: "提前 1 小时", value: 5 },
+              { label: "提前 1 天", value: 7 },
+            ]} />
           </Form.Item>
 
           <button
