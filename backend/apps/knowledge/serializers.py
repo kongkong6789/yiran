@@ -1,4 +1,4 @@
-from rest_framework import serializers
+﻿from rest_framework import serializers
 
 from .models import (
     KnowledgeAuditLog,
@@ -19,7 +19,10 @@ class KnowledgeTemplateSerializer(serializers.ModelSerializer):
 
 
 class KnowledgeBaseSerializer(serializers.ModelSerializer):
-    owner_username = serializers.CharField(source="owner.username", read_only=True)
+    owner_username = serializers.SerializerMethodField()
+
+    def get_owner_username(self, obj):
+        return None
 
     class Meta:
         model = KnowledgeBase
@@ -28,7 +31,10 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 
 
 class KnowledgeFileSerializer(serializers.ModelSerializer):
-    uploaded_by_username = serializers.CharField(source="uploaded_by.username", read_only=True)
+    uploaded_by_username = serializers.SerializerMethodField()
+
+    def get_uploaded_by_username(self, obj):
+        return None
 
     class Meta:
         model = KnowledgeFile
@@ -62,7 +68,10 @@ class KnowledgePermissionSerializer(serializers.ModelSerializer):
 
 
 class KnowledgeAuditLogSerializer(serializers.ModelSerializer):
-    actor_username = serializers.CharField(source="actor.username", read_only=True)
+    actor_username = serializers.SerializerMethodField()
+
+    def get_actor_username(self, obj):
+        return None
 
     class Meta:
         model = KnowledgeAuditLog

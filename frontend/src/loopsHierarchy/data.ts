@@ -236,7 +236,7 @@ const sku: LevelModel = {
   viewW: 1040,
   viewH: 560,
   rollupHint: "上卷至链接：各 SKU 销售、退款、毛利汇总。",
-  drillHint: "已是最细层；点击节点可展开费用细项。",
+  drillHint: "点击下钻到基础数据层，查看支撑本层指标的事实表。",
   stocks: [
     { id: "k1", code: "K1", label: "价盘/件单价", sub: "定价", x: 40, y: 40, w: 120, h: 58, color: c.slate, soft: "#e2e8f0", details: ["挂牌价", "活动价", "折扣"] },
     { id: "k2", code: "K2", label: "销量", sub: "件数", x: 200, y: 40, w: 100, h: 58, color: c.blue, soft: "#dbe7ff" },
@@ -291,6 +291,38 @@ const sku: LevelModel = {
   ],
 };
 
+const fact: LevelModel = {
+  level: "fact",
+  title: "基础数据层 · 事实表",
+  subtitle: "采集入库的原始事实（F1–F8），向上支撑 SKU 及更高层指标。",
+  viewW: 1040,
+  viewH: 420,
+  rollupHint: "上卷至 SKU：订单→销量/销售额，退款→退款额，库存→周转等。",
+  drillHint: "已是最底层；对接吉客云 / 平台后台 / 金蝶 / 内部主数据。",
+  stocks: [
+    { id: "f1", code: "F1", label: "订单明细", sub: "吉客云/平台", x: 40, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["日期", "店铺", "链接", "SKU", "件数", "实付"] },
+    { id: "f2", code: "F2", label: "退款明细", sub: "售后单", x: 180, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["仅退款", "退货退款", "运费险"] },
+    { id: "f3", code: "F3", label: "推广花费", sub: "投放后台", x: 320, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["直通车", "万相台", "站外"] },
+    { id: "f4", code: "F4", label: "流量数据", sub: "生意参谋等", x: 460, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["曝光", "UV", "转化率"] },
+    { id: "f5", code: "F5", label: "库存快照", sub: "吉客云库存", x: 600, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["在库", "在途", "成本"] },
+    { id: "f6", code: "F6", label: "商品主数据", sub: "档案/价盘", x: 740, y: 80, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["采购成本", "挂牌价", "链接映射"] },
+    { id: "f7", code: "F7", label: "费用台账", sub: "金蝶/账单", x: 880, y: 200, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["佣金", "物流", "仓储", "工资"] },
+    { id: "f8", code: "F8", label: "组织主数据", sub: "映射/合同", x: 40, y: 220, w: 120, h: 64, color: "#475569", soft: "#e2e8f0", details: ["六层映射", "品牌合同"] },
+  ],
+  flows: [
+    { id: "fe1", from: "f1", to: "f6", polarity: "+", chains: ["M"], label: "对码SKU", bend: 0.1 },
+    { id: "fe2", from: "f8", to: "f1", polarity: "+", chains: ["M"], label: "归属映射", bend: -0.1 },
+    { id: "fe3", from: "f6", to: "f5", polarity: "+", chains: ["M"], label: "规格对齐", bend: 0 },
+  ],
+  chains: [
+    { id: "all", name: "全貌", color: "#64748b", desc: "八张基础事实表" },
+    { id: "M", name: "主数据对齐", color: "#475569", desc: "组织映射与商品档案对齐交易/库存" },
+  ],
+  loops: [
+    { code: "C-F1", kind: "C", name: "主数据对齐链", path: "F8→F1↔F6→F5", chains: ["M"], edgeIds: ["fe2", "fe1", "fe3"] },
+  ],
+};
+
 export const LEVEL_MODELS: Record<LoopLevel, LevelModel> = {
   company,
   brand,
@@ -298,6 +330,7 @@ export const LEVEL_MODELS: Record<LoopLevel, LevelModel> = {
   channel,
   link,
   sku,
+  fact,
 };
 
 export function getLevelModel(level: LoopLevel): LevelModel {

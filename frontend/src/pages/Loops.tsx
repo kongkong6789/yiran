@@ -11,7 +11,7 @@ export default function Loops() {
           <div>
             <Typography.Title level={4} style={{ margin: 0 }}>回路图谱</Typography.Title>
             <Typography.Paragraph type="secondary" style={{ margin: "6px 0 12px", maxWidth: 760 }}>
-              六层经营动力学图谱。其他融合能力见{" "}
+              七层自上而下：公司→…→SKU→基础数据。浅色为基础数据、深色为衍生数据；可加节点、连线并保存。其他能力见{" "}
               <a onClick={() => nav("/commerce")}>经营首页</a>
               {" "}或{" "}
               <a onClick={() => nav("/commerce/bench")}>经营工作台</a>。
@@ -33,9 +33,10 @@ export default function Loops() {
           flex-wrap: wrap;
           margin-bottom: 8px;
           padding: 10px 14px;
-          background: linear-gradient(180deg, #f8fafc, #f3f6fb);
-          border: 1px solid #e6ecf4;
-          border-radius: 12px;
+          background: rgba(255,255,255,0.86);
+          border: 1px solid var(--lc-border-light);
+          border-radius: 14px;
+          box-shadow: 0 4px 18px rgba(26,39,64,0.05);
         }
         .loop-kg-legend {
           display: flex;
@@ -43,7 +44,9 @@ export default function Loops() {
           gap: 12px;
           margin-bottom: 10px;
           font-size: 12px;
-          color: #5c6b84;
+          color: var(--lc-text-muted);
+          align-items: center;
+          padding: 0 4px;
         }
         .loop-kg-leg-item {
           display: inline-flex;
@@ -68,6 +71,40 @@ export default function Loops() {
           background: rgba(196, 146, 74, 0.12);
           border-color: rgba(184, 134, 59, 0.35);
         }
+        .loop-kg-legend-divider {
+          width: 1px;
+          height: 18px;
+          background: var(--lc-border);
+        }
+        .loop-kg-chain-chip {
+          min-height: 30px;
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          padding: 4px 10px;
+          border: 1px solid var(--lc-border-light);
+          border-radius: 999px;
+          background: var(--lc-bg-elevated);
+          color: var(--lc-text-muted);
+          font-size: 12px;
+          cursor: pointer;
+          transition: border-color .2s ease, background .2s ease, color .2s ease;
+        }
+        .loop-kg-chain-chip i {
+          width: 14px;
+          height: 3px;
+          border-radius: 999px;
+        }
+        .loop-kg-chain-chip:hover,
+        .loop-kg-chain-chip.is-active {
+          border-color: rgba(184,134,59,.55);
+          background: rgba(196,146,74,.1);
+          color: var(--lc-text);
+        }
+        .loop-kg-chain-chip:focus-visible {
+          outline: 2px solid var(--lc-accent-blue);
+          outline-offset: 2px;
+        }
         .loop-kg-body {
           display: grid;
           grid-template-columns: minmax(0, 1fr) 280px;
@@ -78,13 +115,11 @@ export default function Loops() {
           position: relative;
           height: calc(100vh - 240px);
           min-height: 480px;
-          border: 1px solid #e6ecf4;
-          border-radius: 14px;
-          background:
-            radial-gradient(ellipse at 30% 20%, rgba(196,146,74,0.08), transparent 50%),
-            radial-gradient(ellipse at 70% 80%, rgba(11,33,68,0.06), transparent 45%),
-            #f5f7fb;
+          border: 1px solid var(--lc-border-light);
+          border-radius: 16px;
+          background: var(--lc-bg);
           overflow: hidden;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
         }
         .loop-kg-vignette {
           pointer-events: none;
@@ -123,9 +158,9 @@ export default function Loops() {
           pointer-events: none;
         }
         .loop-kg-side {
-          border: 1px solid #e6ecf4;
-          border-radius: 14px;
-          background: #fff;
+          border: 1px solid var(--lc-border-light);
+          border-radius: 16px;
+          background: var(--lc-bg-elevated);
           padding: 12px 14px;
           max-height: calc(100vh - 240px);
           overflow: auto;
@@ -172,6 +207,56 @@ export default function Loops() {
           padding-left: 18px;
           font-size: 12px;
           color: #5c6b84;
+        }
+        .loop-kg-chain-detail {
+          margin-top: 14px;
+          padding: 12px;
+          border: 1px solid rgba(184,134,59,.32);
+          border-radius: 12px;
+          background: rgba(196,146,74,.07);
+        }
+        .loop-kg-chain-steps {
+          display: flex;
+          flex-direction: column;
+          gap: 0;
+        }
+        .loop-kg-chain-step {
+          min-height: 42px;
+          display: grid;
+          grid-template-columns: 34px minmax(0,1fr) 14px;
+          gap: 8px;
+          align-items: center;
+        }
+        .loop-kg-chain-step > span {
+          width: 32px;
+          height: 26px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid;
+          border-radius: 7px;
+          background: var(--lc-bg-elevated);
+          font-size: 11px;
+          font-weight: 700;
+        }
+        .loop-kg-chain-step > div {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .loop-kg-chain-step small {
+          color: var(--lc-text-muted);
+          font-size: 10px;
+        }
+        .loop-kg-chain-step b {
+          color: var(--lc-text);
+          font-size: 12px;
+          font-weight: 600;
+        }
+        .loop-kg-chain-step > i {
+          color: var(--lc-gold);
+          font-style: normal;
+          font-weight: 700;
         }
         .loop-kg-loops {
           display: flex;

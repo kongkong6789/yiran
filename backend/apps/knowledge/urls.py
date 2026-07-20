@@ -1,4 +1,4 @@
-from rest_framework.routers import DefaultRouter
+﻿from rest_framework.routers import DefaultRouter
 
 from .views import (
     KnowledgeAuditLogViewSet,
@@ -9,6 +9,7 @@ from .views import (
     KnowledgePermissionViewSet,
     KnowledgeSourceBindingViewSet,
     KnowledgeTemplateViewSet,
+    TraditionalRagSearchViewSet,
 )
 
 router = DefaultRouter()
@@ -20,5 +21,6 @@ router.register("chunks", KnowledgeChunkRefViewSet, basename="knowledge-chunk")
 router.register("bindings", KnowledgeSourceBindingViewSet, basename="knowledge-binding")
 router.register("permissions", KnowledgePermissionViewSet, basename="knowledge-permission")
 router.register("audit-logs", KnowledgeAuditLogViewSet, basename="knowledge-audit-log")
+router.register("traditional-search", TraditionalRagSearchViewSet, basename="knowledge-traditional-search")
 
 urlpatterns = router.urls

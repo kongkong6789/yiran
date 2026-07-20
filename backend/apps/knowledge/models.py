@@ -75,14 +75,7 @@ class KnowledgeBase(models.Model):
     icon = models.CharField("图标", max_length=64, blank=True, default="database")
     tags = models.JSONField("标签", default=list, blank=True)
     visibility = models.CharField("可见范围", max_length=16, choices=Visibility.choices, default=Visibility.TEAM)
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        related_name="knowledge_bases",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        verbose_name="负责人",
-    )
+    owner_user_id = models.PositiveIntegerField("负责人用户ID", null=True, blank=True, db_index=True)
     retrieval_mode = models.CharField("检索模式", max_length=24, choices=RetrievalMode.choices, default=RetrievalMode.HYBRID)
     review_policy = models.CharField("审核策略", max_length=24, blank=True, default="sample")
     status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT)
@@ -216,6 +209,29 @@ class KnowledgeChunkRef(models.Model):
         ]
         ordering = ["file_id", "chunk_index"]
 
+
+
+
+class KnowledgeEmbedding(models.Model):
+    """Traditional RAG chunk embedding stored for semantic retrieval."""
+
+    chunk = models.OneToOneField(KnowledgeChunkRef, related_name="embedding", on_delete=models.CASCADE, verbose_name="知识切片")
+    model = models.CharField("向量模型", max_length=128)
+    dimensions = models.PositiveIntegerField("向量维度")
+    vector = models.JSONField("向量", default=list)
+    provider = models.CharField("向量服务", max_length=64, blank=True, default="openai-compatible")
+    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        verbose_name = "知识切片向量"
+        verbose_name_plural = "知识切片向量"
+        indexes = [
+            models.Index(fields=["model", "dimensions"], name="knowledge_k_model_b0f9b9_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.chunk_id}:{self.model}"
 
 class KnowledgeSourceBinding(models.Model):
     """业务知识库与底层能力源的绑定:GraphRAG/Wiki/Traditional RAG/外部 API。"""

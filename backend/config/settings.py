@@ -20,10 +20,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure-key-change-me")
+WECOM_CONFIG_ENCRYPTION_KEY = os.getenv("WECOM_CONFIG_ENCRYPTION_KEY", "")
+WECOM_BINDING_CONFIG_USER_ID = int(os.getenv("WECOM_BINDING_CONFIG_USER_ID", "0") or 0)
+WECOM_BINDING_ASYNC_ENABLED = os.getenv("WECOM_BINDING_ASYNC_ENABLED", "true").lower() == "true"
+WECOM_CALLBACK_BASE_URL = os.getenv("WECOM_CALLBACK_BASE_URL", "").strip().rstrip("/")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
-ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",")
+ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -31,8 +36,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # 第三方
+    "channels",
     "rest_framework",
     "rest_framework.authtoken",
+    "drf_spectacular",
     "corsheaders",
     # 业务分层 App
     "apps.core",
@@ -49,6 +56,8 @@ INSTALLED_APPS = [
     "apps.skills",
     "apps.collab",
     "apps.knowledge",
+    "apps.commerce",
+    "apps.wecom",
 ]
 
 MIDDLEWARE = [
@@ -101,6 +110,33 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+# ??/?? WebSocket?????????????????? Redis?
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+
+# Django main database uses SQLite by default; the knowledge app uses PostgreSQL through a router.
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    }
+}
+if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
+    DATABASES["knowledge"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "HOST": os.getenv("POSTGRES_HOST"),
+        "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        "NAME": os.getenv("POSTGRES_DB"),
+        "USER": os.getenv("POSTGRES_USER", "postgres"),
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
+    }
+else:
+    DATABASES["knowledge"] = DATABASES["default"]
+
+DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 # DuckDB 数据底座文件路径
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(BASE_DIR / "data" / "datalake.duckdb"))
 
@@ -117,6 +153,7 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
         "rest_framework.renderers.BrowsableAPIRenderer",
@@ -129,19 +166,33 @@ REST_FRAMEWORK = {
     ],
 }
 
+SPECTACULAR_SETTINGS = {
+    "TITLE": "良策智能协作工作台 API",
+    "DESCRIPTION": "良策工作台后端接口文档。需要登录的接口使用 Token 认证。",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+}
+
 # 前后端分离跨域
-if DEBUG:
+if DEBUG and not os.getenv("CORS_ALLOWED_ORIGINS", "").strip():
     # 开发环境放开:允许局域网内任意来源直接访问后端
     CORS_ALLOW_ALL_ORIGINS = True
     CORS_ALLOW_CREDENTIALS = False
 else:
-    CORS_ALLOWED_ORIGINS = os.getenv(
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
         "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
+    ).split(",") if origin.strip()]
     CORS_ALLOW_CREDENTIALS = True
 
-# 数据底座 PostgreSQL(业务数据建模);未配置或连不上时自动降级 DuckDB
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "",
+).split(",") if origin.strip()]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = os.getenv("USE_X_FORWARDED_HOST", "true").lower() == "true"
+
+# PostgreSQL 连接参数同时供 Django ORM 主库与数据湖模块使用。
 # 支持 POSTGRES_* 与旧版 PG_* 两种环境变量名
 def _pg_env(*keys: str, default: str = "") -> str:
     for key in keys:
@@ -159,9 +210,37 @@ PG_USER = _pg_env("POSTGRES_USER", "PG_USER", default="postgres")
 PG_PASSWORD = _pg_env("POSTGRES_PASSWORD", "PG_PASSWORD")
 PG_SCHEMA = _pg_env("POSTGRES_SCHEMA", "PG_SCHEMA", default="lake")
 
+# PostgreSQL is the Django ORM primary database whenever it is configured.
+# SQLite remains available only as an explicit local fallback.
+DATABASE_ENGINE = os.getenv("DATABASE_ENGINE", "").strip().lower()
+USE_POSTGRESQL = DATABASE_ENGINE in {"postgres", "postgresql"} or (
+    DATABASE_ENGINE == "" and bool(PG_HOST and PG_DB)
+)
+if USE_POSTGRESQL:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": PG_DB,
+            "USER": PG_USER,
+            "PASSWORD": PG_PASSWORD,
+            "HOST": PG_HOST,
+            "PORT": PG_PORT,
+            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,
+            "OPTIONS": {
+                "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
+            },
+        }
+    }
+
 # LightRAG / AGE 图谱
+# AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...
+# 未配置时回退 POSTGRES_*
 LIGHTRAG_SOURCE_ID = os.getenv("LIGHTRAG_SOURCE_ID", "")
 LIGHTRAG_WORKSPACE = os.getenv("LIGHTRAG_WORKSPACE", "")
+AGE_PG_HOST = _pg_env("AGE_POSTGRES_HOST", "AGE_PG_HOST", default=PG_HOST)
+AGE_PG_PORT = int(_pg_env("AGE_POSTGRES_PORT", "AGE_PG_PORT", default=str(PG_PORT)))
+AGE_PG_DB = _pg_env("AGE_POSTGRES_DB", "AGE_PG_DB", default=PG_DB)
 
 # LLM 配置(意图识别/生成),无 key 时降级为规则引擎
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -169,6 +248,20 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 圆桌发言/上下文压缩用的"快模型";最终方案仍用 LLM_MODEL(更强)。
 LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", LLM_MODEL)
+# Traditional RAG embedding. Default format matches the local /v1/embeddings service:
+# {"inputs": [{"text": "..."}], "normalize": true, "pooling": "mean"}
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "local-embedding")
+EMBEDDING_API_FORMAT = os.getenv("EMBEDDING_API_FORMAT", "local-inputs")
+EMBEDDING_NORMALIZE = os.getenv("EMBEDDING_NORMALIZE", "true").lower() == "true"
+EMBEDDING_POOLING = os.getenv("EMBEDDING_POOLING", "mean")
+EMBEDDING_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30"))
+EMBEDDING_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_RETRY_ATTEMPTS", "5"))
+EMBEDDING_OPTIONAL_TIMEOUT_SECONDS = float(os.getenv("EMBEDDING_OPTIONAL_TIMEOUT_SECONDS", "90"))
+EMBEDDING_OPTIONAL_RETRY_ATTEMPTS = int(os.getenv("EMBEDDING_OPTIONAL_RETRY_ATTEMPTS", "1"))
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "4"))
+EMBEDDING_MAX_TEXT_CHARS = int(os.getenv("EMBEDDING_MAX_TEXT_CHARS", "300"))
 
 # 图片 API(文生图/图生图),与对话 Key 可分离
 IMAGE_API_KEY = os.getenv("IMAGE_API_KEY", "")
@@ -188,11 +281,8 @@ JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
 
 # MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
 MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")
-MCP_TENCENT_DOCS_URL = os.getenv("MCP_TENCENT_DOCS_URL", "")
-MCP_WEDRIVE_URL = os.getenv("MCP_WEDRIVE_URL", "")
 MCP_KINGDEE_URL = os.getenv("MCP_KINGDEE_URL", "")
 MCP_JACKYUN_URL = os.getenv("MCP_JACKYUN_URL", "")
-MCP_WORKBUDDY_URL = os.getenv("MCP_WORKBUDDY_URL", "")
 MCP_NAS_COMMAND = os.getenv("MCP_NAS_COMMAND", "")
 MCP_NAS_ARGS = os.getenv("MCP_NAS_ARGS", "")
 

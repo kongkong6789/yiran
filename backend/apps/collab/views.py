@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import threading
+import uuid
 
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db import IntegrityError, transaction
+from django.db.models import Avg, Q, Sum
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -23,17 +26,49 @@ from apps.core.attachments import (
     resolve_attachment_path_any,
 )
 
-from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk
+from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk, _HARD_RISK_RE
+from .draft_coach import analyze_draft
 from .interject import maybe_interject
 from .mentions import (
+    XIAOCE_BOT_DISPLAY,
+    XIAOCE_BOT_USERNAME,
     collab_skill_hits,
     get_collab_ai_user,
+    get_xiaoce_bot_user,
     has_ai_mention,
+    is_xiaoce_bot_user,
     parse_mentions,
     reply_ai_mention,
+    xiaoce_bot_brief,
 )
-from .models import CollabInsight, CollabMessage, CollabParticipant, CollabRoom
+from .models import (
+    CollabInsight,
+    CollabMessage,
+    CollabMessageRead,
+    CollabParticipant,
+    CollabReadSession,
+    CollabRoom,
+    XiaoceRun,
+)
 from .presence import presence_map, touch_presence
+from .summary import (
+    SummaryLLMConfigurationError,
+    SummaryLLMError,
+    create_summary,
+    summary_model_status,
+    summary_payload,
+    summary_suggestion,
+)
+from .xiaoce_runs import (
+    cancel_xiaoce_run,
+    complete_xiaoce_run,
+    complete_xiaoce_run_with_skill,
+    create_xiaoce_run,
+    fail_xiaoce_run,
+    is_xiaoce_run_cancelled,
+    xiaoce_run_payload,
+)
+from . import ws_push
 from collections import Counter
 from datetime import timedelta
 
@@ -74,6 +109,7 @@ def _user_brief(
     presence: dict | None = None,
     nickname: str | None = None,
     profile: dict | None = None,
+    last_read_message_id: int | None = None,
 ) -> dict:
     nick = (nickname or "").strip()
     profile = profile or {}
@@ -85,12 +121,22 @@ def _user_brief(
         "display_name": nick or profile_name or user.username,
         "avatar_url": profile.get("avatar_url") or "",
         "bio": profile.get("bio") or "",
-        "online": False,
-        "last_seen": None,
+        "kind": "bot" if is_xiaoce_bot_user(user) else "human",
     }
-    if presence and user.id in presence:
+    if last_read_message_id is not None:
+        info["last_read_message_id"] = int(last_read_message_id or 0)
+    if is_xiaoce_bot_user(user):
+        info["bot_id"] = "xiaoce"
+        info["display_name"] = nick or profile_name or XIAOCE_BOT_DISPLAY
+        info["online"] = True
+    else:
+        info["online"] = False
+        info["last_seen"] = None
+    if presence and user.id in presence and not is_xiaoce_bot_user(user):
         info["online"] = bool(presence[user.id].get("online"))
         info["last_seen"] = presence[user.id].get("last_seen")
+    elif "last_seen" not in info:
+        info["last_seen"] = None
     return info
 
 
@@ -98,6 +144,21 @@ def _can_access_room(user, room: CollabRoom) -> bool:
     if _is_admin(user):
         return True
     return CollabParticipant.objects.filter(room=room, user=user).exists()
+
+
+def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
+    if viewer is None or not getattr(viewer, "is_authenticated", False):
+        return None
+    run = (
+        XiaoceRun.objects.filter(
+            room=room,
+            user=viewer,
+            status=XiaoceRun.Status.RUNNING,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    return xiaoce_run_payload(run)
 
 
 def _nickname_map(room: CollabRoom) -> dict[int, str]:
@@ -120,16 +181,44 @@ def _unread_count_for(user, room: CollabRoom, *, last_read_id: int | None = None
 
 
 def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> int:
-    row = CollabParticipant.objects.filter(room=room, user=user).first()
-    if not row:
-        return 0
-    if up_to_id is None:
-        up_to_id = room.messages.order_by("-id").values_list("id", flat=True).first() or 0
-    up_to_id = int(up_to_id or 0)
-    if up_to_id > (row.last_read_message_id or 0):
+    with transaction.atomic():
+        row = (
+            CollabParticipant.objects.select_for_update()
+            .filter(room=room, user=user)
+            .first()
+        )
+        if not row:
+            return 0
+        if up_to_id is None:
+            up_to_id = room.messages.order_by("-id").values_list("id", flat=True).first() or 0
+        up_to_id = int(up_to_id or 0)
+        previous_id = int(row.last_read_message_id or 0)
+        if up_to_id <= previous_id:
+            return previous_id
+
+        now = timezone.now()
+        newly_read = list(
+            room.messages
+            .filter(id__gt=previous_id, id__lte=up_to_id)
+            .exclude(sender=user)
+            .exclude(status="deleted")
+            .only("id", "created_at")
+        )
+        CollabMessageRead.objects.bulk_create(
+            [
+                CollabMessageRead(
+                    room=room,
+                    message=msg,
+                    user=user,
+                    latency_ms=max(0, int((now - msg.created_at).total_seconds() * 1000)),
+                )
+                for msg in newly_read
+            ],
+            ignore_conflicts=True,
+        )
         row.last_read_message_id = up_to_id
         row.save(update_fields=["last_read_message_id"])
-    return row.last_read_message_id
+        return row.last_read_message_id
 
 
 def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
@@ -151,6 +240,7 @@ def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
         "online_count": online_count,
         "peer_online": peer_online,
         "unread_count": 0,
+        "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
     }
 
 
@@ -169,6 +259,7 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
             presence=pmap,
             nickname=p.nickname,
             profile=profiles.get(p.user_id),
+            last_read_message_id=p.last_read_message_id,
         )
         for p in participant_rows
     ]
@@ -215,6 +306,7 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         "message_count": room.messages.count(),
         "insight_count": room.insights.count(),
         "unread_count": 0,
+        "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
     }
     if viewer is not None:
         viewer_part = next((p for p in participant_rows if p.user_id == viewer.id), None)
@@ -251,15 +343,21 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
     if include_messages:
         # 仅最近窗口，完整历史走 messages/?before_id= 分页
         msg_rows = list(
-            room.messages.select_related("sender")
+            room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .exclude(status="deleted")
             .order_by("-id")[:50]
         )
         msg_rows.reverse()
         sender_ids = list({m.sender_id for m in msg_rows})
         msg_profiles = _profile_map(sender_ids)
+        read_states = _message_read_state_map(room, msg_rows, nickname_map=nick_by_id)
         payload["messages"] = [
-            _message_payload(m, nickname_map=nick_by_id, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_by_id,
+                profile_map=msg_profiles,
+                read_state=read_states.get(m.id),
+            )
             for m in msg_rows
         ]
         oldest_id = msg_rows[0].id if msg_rows else 0
@@ -303,11 +401,43 @@ def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabR
     return room
 
 
+def _message_read_state_map(
+    room: CollabRoom,
+    messages: list[CollabMessage],
+    *,
+    nickname_map: dict[int, str] | None = None,
+) -> dict[int, dict]:
+    """用参与者已读游标批量计算群消息的已读/未读状态。"""
+    if room.room_kind != "group" or not messages:
+        return {}
+    parts = list(room.participants.select_related("user").all())
+    names = nickname_map or {p.user_id: (p.nickname or "").strip() for p in parts}
+    out: dict[int, dict] = {}
+    for msg in messages:
+        eligible = [p for p in parts if p.user_id != msg.sender_id]
+        readers = [p for p in eligible if int(p.last_read_message_id or 0) >= msg.id]
+        unread = [p for p in eligible if int(p.last_read_message_id or 0) < msg.id]
+        out[msg.id] = {
+            "reader_count": len(readers),
+            "unread_count": len(unread),
+            "read_by": [
+                names.get(p.user_id) or p.user.username
+                for p in readers[:12]
+            ],
+            "unread_by": [
+                names.get(p.user_id) or p.user.username
+                for p in unread[:12]
+            ],
+        }
+    return out
+
+
 def _message_payload(
     msg: CollabMessage,
     *,
     nickname_map: dict[int, str] | None = None,
     profile_map: dict[int, dict] | None = None,
+    read_state: dict | None = None,
 ) -> dict:
     nick = ""
     if nickname_map is not None:
@@ -323,13 +453,16 @@ def _message_payload(
         profile = _profile_map([msg.sender_id]).get(msg.sender_id)
     sender_brief = _user_brief(msg.sender, nickname=nick, profile=profile)
     if msg.msg_type == "ai":
+        ai_name = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(msg.sender) else "良策AI"
         sender_brief = {
             **sender_brief,
-            "username": "良策AI",
+            "username": ai_name,
             "nickname": "",
-            "display_name": "良策AI",
-            "avatar_url": "",
+            "display_name": ai_name,
+            "avatar_url": sender_brief.get("avatar_url") or "",
             "online": True,
+            "kind": "bot",
+            "bot_id": "xiaoce" if is_xiaoce_bot_user(msg.sender) else "liangce-ai",
         }
     msg_status = getattr(msg, "status", None) or "normal"
     updated = getattr(msg, "updated_at", None) or msg.created_at
@@ -340,6 +473,7 @@ def _message_payload(
         "content": msg.content or "",
         "attachments": msg.attachments or [],
         "mentions": msg.mentions or [],
+        "meta": msg.meta or {},
         "msg_type": msg.msg_type or "user",
         "ai_kind": (msg.ai_kind or "") if msg.msg_type == "ai" else "",
         "status": msg_status,
@@ -348,16 +482,47 @@ def _message_payload(
         "created_at": msg.created_at.isoformat(),
         "updated_at": updated.isoformat(),
     }
+    quoted = getattr(msg, "reply_to", None)
+    if quoted is not None:
+        quoted_status = getattr(quoted, "status", None) or "normal"
+        quoted_name = (
+            (nickname_map or {}).get(quoted.sender_id)
+            or quoted.sender.username
+            or "成员"
+        )
+        quoted_content = (quoted.content or "").strip()
+        if quoted_status == "recalled":
+            quoted_content = "原消息已撤回"
+        elif quoted_status == "deleted":
+            quoted_content = "原消息已删除"
+        elif not quoted_content and quoted.attachments:
+            quoted_content = "[附件]"
+        base["reply_to"] = {
+            "id": quoted.id,
+            "sender": {
+                "id": quoted.sender_id,
+                "username": quoted.sender.username,
+                "display_name": quoted_name,
+            },
+            "content": quoted_content[:240],
+            "status": quoted_status,
+            "attachment_count": len(quoted.attachments or []),
+        }
+    else:
+        base["reply_to"] = None
+    if read_state is not None:
+        base["read_state"] = read_state
     if msg_status == "recalled":
         who = sender_brief.get("display_name") or sender_brief.get("username") or "有人"
         if msg.msg_type == "ai":
-            who = "良策AI"
+            who = sender_brief.get("display_name") or "良策AI"
         base.update({
             "content": f"{who} 撤回了一条消息",
             "attachments": [],
             "mentions": [],
             "msg_type": "system",
             "ai_kind": "",
+            "reply_to": None,
         })
     elif msg_status == "deleted":
         base.update({
@@ -437,7 +602,124 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
     if data.get("analysis"):
         room.summary = data["analysis"][:500]
     room.save(update_fields=["risk_level", "summary", "updated_at"])
+    ws_push.publish_sync(
+        room.id,
+        insights=[_insight_payload(insight)],
+        room={
+            "id": str(room.id),
+            "status": room.status,
+            "risk_level": room.risk_level,
+            "updated_at": room.updated_at.isoformat(),
+            "summary": room.summary or "",
+        },
+    )
     return insight
+
+
+def _is_xiaoce_dm(room: CollabRoom) -> bool:
+    if getattr(room, "room_kind", "") != "dm":
+        return False
+    return CollabParticipant.objects.filter(
+        room=room,
+        user__username=XIAOCE_BOT_USERNAME,
+    ).exists()
+
+
+def _xiaoce_history_before(room: CollabRoom, trigger_message_id: int) -> list[dict]:
+    recent = list(
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .filter(id__lt=trigger_message_id)
+        .order_by("-id")[:20]
+    )
+    history: list[dict] = []
+    for message in reversed(recent):
+        if message.msg_type not in {"user", "ai"}:
+            continue
+        if not (message.content or "").strip() or (message.meta or {}).get("cancelled"):
+            continue
+        history.append({
+            "role": "assistant" if message.msg_type == "ai" else "user",
+            "content": message.content,
+        })
+    return history
+
+
+def _publish_xiaoce_message(run: XiaoceRun, message: CollabMessage | None) -> None:
+    if message is None:
+        return
+    run.room.refresh_from_db(fields=["status", "risk_level", "updated_at"])
+    ws_push.publish_sync(
+        run.room_id,
+        messages=[_message_payload(message)],
+        room={
+            "id": str(run.room_id),
+            "status": run.room.status,
+            "risk_level": run.room.risk_level,
+            "updated_at": run.room.updated_at.isoformat(),
+            "active_xiaoce_run": None,
+        },
+    )
+
+
+def _run_xiaoce_reply_async(run_id) -> None:
+    """小策bot 单聊：复用 Agent 知识问答链路自动回复。"""
+    try:
+        from apps.core.cancellation import AgentRunCancelled
+        from apps.core.agent_chat import run_chat
+        from apps.core.conversation_skill import (
+            ConversationSkillError,
+            is_conversation_skill_request,
+            prepare_conversation_skill,
+        )
+
+        run = (
+            XiaoceRun.objects.select_related("room", "user", "trigger_message")
+            .get(id=run_id)
+        )
+        trigger_content = run.trigger_message.content or ""
+        cancel_check = lambda: is_xiaoce_run_cancelled(run.id)
+        if is_conversation_skill_request(trigger_content):
+            try:
+                prepared = prepare_conversation_skill(
+                    run.user,
+                    run.room,
+                    exclude_message_id=run.trigger_message_id,
+                    cancel_check=cancel_check,
+                )
+                ai_msg = complete_xiaoce_run_with_skill(run.id, prepared)
+            except AgentRunCancelled:
+                raise
+            except Exception as exc:
+                detail = (
+                    str(exc)
+                    if isinstance(exc, ConversationSkillError)
+                    else "Skill 上传或保存失败，请稍后重试"
+                )
+                ai_msg = complete_xiaoce_run(
+                    run.id,
+                    f"Skill 自动生成失败：{detail}",
+                    {"skill_generation_failed": True},
+                )
+        else:
+            history = _xiaoce_history_before(run.room, run.trigger_message_id)
+            result = run_chat(
+                message=trigger_content,
+                history=history[-16:],
+                user=run.user,
+                cancel_check=cancel_check,
+            )
+            if result.get("ok"):
+                reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
+            else:
+                reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
+            ai_msg = complete_xiaoce_run(run.id, reply)
+        _publish_xiaoce_message(run, ai_msg)
+    except AgentRunCancelled:
+        return
+    except Exception as exc:
+        fail_xiaoce_run(run_id, exc)
+        logger.exception("xiaoce bot reply failed run=%s", run_id)
 
 
 def _run_analysis_async(room_id, user_id: int, *, had_ai_reply: bool = False) -> None:
@@ -490,7 +772,7 @@ def _run_ai_reply_async(
                 "请稍后重试，或换个问法再 @AI / Skill。"
             )[:2000]
         ai_user = get_collab_ai_user()
-        CollabMessage.objects.create(
+        ai_msg = CollabMessage.objects.create(
             room=room,
             sender=ai_user,
             content=reply,
@@ -500,6 +782,16 @@ def _run_ai_reply_async(
             ai_kind="reply",
         )
         room.save(update_fields=["updated_at"])
+        ws_push.publish_sync(
+            room.id,
+            messages=[_message_payload(ai_msg)],
+            room={
+                "id": str(room.id),
+                "status": room.status,
+                "risk_level": room.risk_level,
+                "updated_at": room.updated_at.isoformat(),
+            },
+        )
         ai_ok = True
     except Exception:
         logger.exception("collab background AI reply failed room=%s", room_id)
@@ -526,6 +818,12 @@ def room_list(request):
         if not peer_usernames:
             return Response({"ok": False, "error": "请选择至少一位聊天对象"}, status=400)
 
+        # 确保小策bot 账号存在，可被选为单聊对象
+        if XIAOCE_BOT_USERNAME in peer_usernames:
+            get_xiaoce_bot_user()
+            if len(peer_usernames) > 1:
+                return Response({"ok": False, "error": "小策bot 仅支持单聊，不能拉入群聊"}, status=400)
+
         peers = list(User.objects.filter(username__in=peer_usernames, is_active=True))
         found = {u.username for u in peers}
         missing = [u for u in peer_usernames if u not in found]
@@ -548,8 +846,26 @@ def room_list(request):
                     _room_payload(existing, include_messages=True, viewer=request.user),
                     status=200,
                 )
-            title = str(request.data.get("title") or peers[0].username).strip() or peers[0].username
+            peer = peers[0]
+            title = str(request.data.get("title") or "").strip()
+            if not title:
+                title = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(peer) else peer.username
             room = _create_room(creator=request.user, peers=peers, room_kind="dm", title=title)
+            if is_xiaoce_bot_user(peer):
+                welcome = CollabMessage.objects.create(
+                    room=room,
+                    sender=peer,
+                    content=(
+                        "你好，我是小策bot。\n"
+                        "可以直接问我经营指标、知识库、图谱或业务问题；"
+                        "我会结合平台知识与数据作答。"
+                    ),
+                    attachments=[],
+                    mentions=[],
+                    msg_type="ai",
+                    ai_kind="xiaoce",
+                )
+                ws_push.publish_sync(room.id, messages=[_message_payload(welcome)])
             return Response(
                 _room_payload(room, include_messages=True, viewer=request.user),
                 status=201,
@@ -608,8 +924,14 @@ def room_detail(request, room_id):
             return Response({"ok": False, "error": "会话已结束"}, status=400)
         new_status = str(request.data.get("status") or "").strip()
         title = request.data.get("title")
+        title_changed = False
         if title is not None:
-            room.title = str(title).strip()[:120] or room.title
+            new_title = str(title).strip()[:120]
+            if not new_title:
+                return Response({"ok": False, "error": "群名不能为空"}, status=400)
+            if new_title != room.title:
+                room.title = new_title
+                title_changed = True
         if "interject_enabled" in request.data:
             raw = request.data.get("interject_enabled")
             if isinstance(raw, bool):
@@ -624,6 +946,23 @@ def room_detail(request, room_id):
             except Exception:
                 pass
         room.save()
+        if title_changed and room.room_kind == "group":
+            tip = CollabMessage.objects.create(
+                room=room,
+                sender=request.user,
+                content=f"{request.user.username} 将群名改为「{room.title}」",
+                attachments=[],
+                mentions=[],
+                msg_type="system",
+            )
+            room.save(update_fields=["updated_at"])
+            payload = _room_payload(room, include_messages=False, viewer=request.user)
+            ws_push.publish_sync(
+                room.id,
+                messages=[_message_payload(tip)],
+                room=payload,
+            )
+            return Response(_room_payload(room, include_messages=True, viewer=request.user))
         return Response(_room_payload(room, include_messages=True, viewer=request.user))
 
     # 打开会话详情视为已读
@@ -635,7 +974,7 @@ def room_detail(request, room_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def room_mark_read(request, room_id):
-    """将会话标记为已读。"""
+    """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
     if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
@@ -645,11 +984,42 @@ def room_mark_read(request, room_id):
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
     last_id = _mark_room_read(request.user, room, up_to_id=up_to)
+    raw_session = str(request.data.get("session_id") or "").strip()
+    session_id = re.sub(r"[^a-zA-Z0-9_-]", "", raw_session)[:64]
+    try:
+        active_ms = int(request.data.get("active_duration_ms") or 0)
+    except (TypeError, ValueError):
+        active_ms = 0
+    active_ms = max(0, min(active_ms, 5 * 60 * 1000))
+    ended = str(request.data.get("ended") or "").lower() in ("1", "true", "yes")
+    session_payload = None
+    if session_id:
+        session, _ = CollabReadSession.objects.get_or_create(
+            room=room,
+            user=request.user,
+            session_key=session_id,
+        )
+        session.active_duration_ms = int(session.active_duration_ms or 0) + active_ms
+        session.up_to_message_id = max(int(session.up_to_message_id or 0), int(last_id or 0))
+        if ended:
+            session.ended_at = timezone.now()
+        session.save(update_fields=[
+            "active_duration_ms",
+            "up_to_message_id",
+            "ended_at",
+            "last_active_at",
+        ])
+        session_payload = {
+            "session_id": session.session_key,
+            "active_duration_ms": session.active_duration_ms,
+            "ended": bool(session.ended_at),
+        }
     return Response({
         "ok": True,
         "last_read_message_id": last_id,
         "unread_count": 0,
         "room_id": str(room.id),
+        "session": session_payload,
     })
 
 
@@ -830,6 +1200,9 @@ def room_members(request, room_id):
     if not is_member:
         return Response({"ok": False, "error": "仅群成员可邀请他人"}, status=403)
 
+    if XIAOCE_BOT_USERNAME in usernames:
+        return Response({"ok": False, "error": "小策bot 仅支持单聊，不能拉入群聊"}, status=400)
+
     existing_ids = set(
         CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
     )
@@ -883,6 +1256,7 @@ def room_messages(request, room_id):
         is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
         if not is_member and not _is_admin(request.user):
             return Response({"ok": False, "error": "仅成员可清空聊天记录"}, status=403)
+        summary_count, _ = room.summaries.all().delete()
         msg_count, _ = room.messages.all().delete()
         insight_count, _ = room.insights.all().delete()
         room.risk_level = "green"
@@ -900,12 +1274,17 @@ def room_messages(request, room_id):
             )
         else:
             tip = None
+        tip_payload = _message_payload(tip) if tip else None
+        room_payload = _room_payload(room, include_messages=True, viewer=request.user)
+        if tip_payload:
+            ws_push.publish_sync(room.id, messages=[tip_payload], room=room_payload)
         return Response({
             "ok": True,
             "cleared_messages": msg_count,
             "cleared_insights": insight_count,
-            "message": _message_payload(tip) if tip else None,
-            "room": _room_payload(room, include_messages=True, viewer=request.user),
+            "cleared_summaries": summary_count,
+            "message": tip_payload,
+            "room": room_payload,
         })
 
     if request.method == "POST":
@@ -915,6 +1294,25 @@ def room_messages(request, room_id):
         if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
             return Response({"ok": False, "error": "旁观者无法发送消息"}, status=403)
         content = str(request.data.get("content") or "").strip()
+        is_bot_dm = _is_xiaoce_dm(room)
+        xiaoce_run_id = None
+        if is_bot_dm and content:
+            active_run = XiaoceRun.objects.filter(
+                room=room,
+                user=request.user,
+                status=XiaoceRun.Status.RUNNING,
+            ).first()
+            if active_run is not None:
+                return Response({
+                    "ok": False,
+                    "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
+                    "xiaoce_run": xiaoce_run_payload(active_run),
+                }, status=409)
+            raw_run_id = str(request.data.get("run_id") or "").strip()
+            try:
+                xiaoce_run_id = uuid.UUID(raw_run_id) if raw_run_id else uuid.uuid4()
+            except (TypeError, ValueError):
+                return Response({"ok": False, "error": "run_id 格式无效"}, status=400)
         files = request.FILES.getlist("files") or request.FILES.getlist("file")
         attachments_meta: list[dict] = []
         if files:
@@ -937,29 +1335,88 @@ def room_messages(request, room_id):
             .values_list("user__username", flat=True)
         )
         mentions = parse_mentions(content, member_names)
+        reply_to = None
+        raw_reply_to = request.data.get("reply_to_id")
+        if raw_reply_to not in (None, ""):
+            if not str(raw_reply_to).isdigit():
+                return Response({"ok": False, "error": "引用消息无效"}, status=400)
+            reply_to = (
+                room.messages.select_related("sender")
+                .filter(id=int(raw_reply_to))
+                .exclude(status="deleted")
+                .first()
+            )
+            if reply_to is None:
+                return Response({"ok": False, "error": "引用消息不存在或已删除"}, status=400)
 
-        msg = CollabMessage.objects.create(
-            room=room,
-            sender=request.user,
-            content=content,
-            attachments=attachments_meta,
-            mentions=mentions,
-            msg_type="user",
-        )
+        xiaoce_run = None
+        try:
+            with transaction.atomic():
+                msg = CollabMessage.objects.create(
+                    room=room,
+                    sender=request.user,
+                    reply_to=reply_to,
+                    content=content,
+                    attachments=attachments_meta,
+                    mentions=mentions,
+                    msg_type="user",
+                    meta={"run_id": str(xiaoce_run_id)} if xiaoce_run_id else {},
+                )
+                if xiaoce_run_id:
+                    xiaoce_run = create_xiaoce_run(
+                        xiaoce_run_id,
+                        room,
+                        request.user,
+                        msg,
+                    )
+        except IntegrityError:
+            active_run = XiaoceRun.objects.filter(
+                room=room,
+                user=request.user,
+                status=XiaoceRun.Status.RUNNING,
+            ).first()
+            return Response({
+                "ok": False,
+                "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
+                "xiaoce_run": xiaoce_run_payload(active_run),
+            }, status=409)
+        # 硬红线即时落标，不等后台 LLM 分析，前端立刻能画红线
+        if content and _HARD_RISK_RE.search(content):
+            from .analyze import infer_risk_label
+            msg.risk_flag = infer_risk_label(content, level="red") or "危险发言"
+            msg.risk_flag_level = "red"
+            msg.save(update_fields=["risk_flag", "risk_flag_level", "updated_at"])
         room.save(update_fields=["updated_at"])
+        msg_payload = _message_payload(
+            msg,
+            nickname_map=_nickname_map(room),
+            read_state=_message_read_state_map(room, [msg]).get(msg.id),
+        )
+        room_lite = _room_payload_lite(room, viewer=request.user)
+        ws_push.publish_sync(room.id, messages=[msg_payload], room=room_lite)
 
         need_ai_reply = has_ai_mention(mentions) or (
             "@" in content and collab_skill_hits(content, request.user)
         )
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
-        # @AI 与旁路分析都后台跑，发送只落库用户消息
+        # 小策bot 单聊：每条用户消息自动走知识问答；群聊仍需 @AI / Skill
+        if is_bot_dm and content:
+            need_ai_reply = True
+            analyze = False
         if need_ai_reply:
-            threading.Thread(
-                target=_run_ai_reply_async,
-                args=(room.id, request.user.id, content, mentions),
-                kwargs={"also_analyze": analyze},
-                daemon=True,
-            ).start()
+            if is_bot_dm:
+                threading.Thread(
+                    target=_run_xiaoce_reply_async,
+                    args=(xiaoce_run.id,),
+                    daemon=True,
+                ).start()
+            else:
+                threading.Thread(
+                    target=_run_ai_reply_async,
+                    args=(room.id, request.user.id, content, mentions),
+                    kwargs={"also_analyze": analyze},
+                    daemon=True,
+                ).start()
         elif analyze:
             threading.Thread(
                 target=_run_analysis_async,
@@ -968,13 +1425,16 @@ def room_messages(request, room_id):
                 daemon=True,
             ).start()
 
-        return Response({
+        response_body = {
             "ok": True,
-            "message": _message_payload(msg),
-            "room": _room_payload_lite(room, viewer=request.user),
+            "message": msg_payload,
+            "room": room_lite,
             "analyze_pending": bool(analyze),
             "ai_pending": bool(need_ai_reply),
-        }, status=201)
+        }
+        if xiaoce_run is not None:
+            response_body["xiaoce_run"] = xiaoce_run_payload(xiaoce_run)
+        return Response(response_body, status=201)
 
     after_id = int(request.query_params.get("after_id") or 0)
     before_id = int(request.query_params.get("before_id") or 0)
@@ -989,7 +1449,7 @@ def room_messages(request, room_id):
         or ("0" if lite or after_id or before_id else "1")
     ).lower() in ("1", "true", "yes")
 
-    base = room.messages.select_related("sender")
+    base = room.messages.select_related("sender", "reply_to", "reply_to__sender")
     has_more_before = False
     if before_id > 0:
         # 历史上拉：取更旧的一页，正序返回
@@ -1020,7 +1480,7 @@ def room_messages(request, room_id):
     changed_rows: list[CollabMessage] = []
     if after_id > 0:
         changed_rows = list(
-            room.messages.select_related("sender")
+            room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .filter(
                 id__lte=after_id,
                 updated_at__gte=timezone.now() - timedelta(minutes=3),
@@ -1030,8 +1490,18 @@ def room_messages(request, room_id):
     sender_ids = list({m.sender_id for m in rows} | {m.sender_id for m in changed_rows})
     msg_profiles = _profile_map(sender_ids)
     if changed_rows:
+        changed_read_states = _message_read_state_map(
+            room,
+            changed_rows,
+            nickname_map=nick_map,
+        )
         changed = [
-            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_map,
+                profile_map=msg_profiles,
+                read_state=changed_read_states.get(m.id),
+            )
             for m in changed_rows
         ]
 
@@ -1041,6 +1511,7 @@ def room_messages(request, room_id):
         "risk_level": room.risk_level,
         "updated_at": room.updated_at.isoformat(),
         "unread_count": 0,
+        "active_xiaoce_run": _active_xiaoce_run_payload(room, request.user),
     }
     if include_participants:
         room_view = _room_payload(room, viewer=request.user)
@@ -1067,15 +1538,60 @@ def room_messages(request, room_id):
     if before_id <= 0 and CollabParticipant.objects.filter(room=room, user=request.user).exists():
         _mark_room_read(request.user, room)
 
+    read_states = _message_read_state_map(room, rows, nickname_map=nick_map)
     return Response({
         "count": len(rows),
         "results": [
-            _message_payload(m, nickname_map=nick_map, profile_map=msg_profiles)
+            _message_payload(
+                m,
+                nickname_map=nick_map,
+                profile_map=msg_profiles,
+                read_state=read_states.get(m.id),
+            )
             for m in rows
         ],
         "changed": changed,
         "has_more_before": has_more_before,
         "room": room_meta,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def xiaoce_run_cancel(request, room_id, run_id):
+    room = get_object_or_404(CollabRoom, id=room_id)
+    run = (
+        XiaoceRun.objects.filter(
+            id=run_id,
+            room=room,
+            user=request.user,
+        )
+        .select_related("room", "cancel_message", "cancel_message__sender")
+        .first()
+    )
+    if run is None:
+        return Response({"ok": False, "error": "未找到可暂停的运行"}, status=404)
+    was_cancelled = run.status == XiaoceRun.Status.CANCELLED
+    try:
+        cancelled = cancel_xiaoce_run(run)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=409)
+
+    message = cancelled.cancel_message
+    message_payload = _message_payload(message)
+    room_payload = _room_payload_lite(room, viewer=request.user)
+    if not was_cancelled:
+        ws_push.publish_sync(
+            room.id,
+            messages=[message_payload],
+            room=room_payload,
+        )
+    return Response({
+        "ok": True,
+        "xiaoce_run": xiaoce_run_payload(cancelled),
+        "active_xiaoce_run": None,
+        "message": message_payload,
+        "room": room_payload,
     })
 
 
@@ -1118,11 +1634,14 @@ def room_message_detail(request, room_id, message_id):
         msg.risk_flag_level = ""
         msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
         room.save(update_fields=["updated_at"])
+        payload = _message_payload(msg, nickname_map=nick_map)
+        room_payload = _room_payload(room, viewer=request.user)
+        ws_push.publish_sync(room.id, changed=[payload], room=room_payload)
         return Response({
             "ok": True,
             "action": "deleted",
-            "message": _message_payload(msg, nickname_map=nick_map),
-            "room": _room_payload(room, viewer=request.user),
+            "message": payload,
+            "room": room_payload,
         })
 
     # POST → recall
@@ -1145,11 +1664,14 @@ def room_message_detail(request, room_id, message_id):
     msg.risk_flag_level = ""
     msg.save(update_fields=["status", "content", "attachments", "mentions", "risk_flag", "risk_flag_level", "updated_at"])
     room.save(update_fields=["updated_at"])
+    payload = _message_payload(msg, nickname_map=nick_map)
+    room_payload = _room_payload(room, viewer=request.user)
+    ws_push.publish_sync(room.id, changed=[payload], room=room_payload)
     return Response({
         "ok": True,
         "action": "recalled",
-        "message": _message_payload(msg, nickname_map=nick_map),
-        "room": _room_payload(room, viewer=request.user),
+        "message": payload,
+        "room": room_payload,
     })
 
 
@@ -1225,6 +1747,27 @@ def room_stats(request, room_id):
         if (ins.risk_level or "").lower() in ("yellow", "red")
     ][:20]
 
+    read_agg = room.message_reads.aggregate(
+        avg_latency_ms=Avg("latency_ms"),
+    )
+    session_agg = room.read_sessions.aggregate(
+        total_active_ms=Sum("active_duration_ms"),
+        avg_active_ms=Avg("active_duration_ms"),
+    )
+    unique_readers = room.message_reads.values("user_id").distinct().count()
+    messages_today = sum(
+        1 for m in user_msgs
+        if timezone.localdate(m.created_at) == timezone.localdate(now)
+    )
+    seven_days_ago = now - timedelta(days=7)
+    messages_7d = sum(1 for m in user_msgs if m.created_at >= seven_days_ago)
+    latest_summary = (
+        room.summaries
+        .select_related("start_message", "end_message", "created_by")
+        .order_by("-id")
+        .first()
+    )
+
     return Response({
         "ok": True,
         "room_id": str(room.id),
@@ -1239,7 +1782,75 @@ def room_stats(request, room_id):
         "speaker_top": speaker_top,
         "hourly": hourly,
         "alerts": alerts,
+        "messages_today": messages_today,
+        "messages_7d": messages_7d,
+        "read_metrics": {
+            "receipt_count": room.message_reads.count(),
+            "unique_readers": unique_readers,
+            "avg_read_latency_ms": int(read_agg.get("avg_latency_ms") or 0),
+            "total_active_read_ms": int(session_agg.get("total_active_ms") or 0),
+            "avg_session_read_ms": int(session_agg.get("avg_active_ms") or 0),
+            "session_count": room.read_sessions.count(),
+        },
+        "summary_model": summary_model_status(request.user),
+        "summary_suggestion": summary_suggestion(room),
+        "latest_summary": summary_payload(latest_summary),
     })
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def room_summaries(request, room_id):
+    """查看纪要/总结提醒，或按智能窗口生成一版新纪要。"""
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    if request.method == "GET":
+        rows = list(
+            room.summaries
+            .select_related("start_message", "end_message", "created_by")
+            .order_by("-id")[:10]
+        )
+        return Response({
+            "ok": True,
+            "model": summary_model_status(request.user),
+            "suggestion": summary_suggestion(room),
+            "latest": summary_payload(rows[0]) if rows else None,
+            "results": [summary_payload(row) for row in rows],
+        })
+
+    def _optional_int(key: str, default: int | None = None) -> int | None:
+        raw = request.data.get(key)
+        if raw in (None, ""):
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        row = create_summary(
+            room,
+            user=request.user,
+            range_mode=str(request.data.get("range_mode") or "auto"),
+            message_count=_optional_int("message_count", 20) or 20,
+            minutes=_optional_int("minutes", 60) or 60,
+            start_message_id=_optional_int("start_message_id"),
+            end_message_id=_optional_int("end_message_id"),
+        )
+    except SummaryLLMConfigurationError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    except SummaryLLMError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=502)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({
+        "ok": True,
+        "summary": summary_payload(row),
+        "model": summary_model_status(request.user),
+        "suggestion": summary_suggestion(room),
+    }, status=201)
 
 
 @api_view(["GET", "POST"])
@@ -1285,10 +1896,45 @@ def room_insights(request, room_id):
     })
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def room_draft_check(request, room_id):
+    """输入框句号触发：结合最近几条消息，给草稿即时提示（不落库、不插嘴）。"""
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    text = str(request.data.get("text") or "").strip()
+    if not text:
+        return Response({"ok": True, "level": "green", "tips": [], "label": "", "advice": ""})
+
+    rows = list(
+        room.messages.select_related("sender")
+        .exclude(status__in=["deleted", "recalled"])
+        .order_by("-id")[:10]
+    )
+    rows.reverse()
+    recent = [
+        {
+            "id": m.id,
+            "username": "良策AI" if m.msg_type == "ai" else m.sender.username,
+            "content": _message_analysis_text(m),
+            "msg_type": m.msg_type,
+        }
+        for m in rows
+    ]
+    try:
+        result = analyze_draft(text, recent, llm_user=request.user)
+    except Exception as exc:
+        logger.exception("draft check failed room=%s", room_id)
+        return Response({"ok": False, "error": str(exc)}, status=500)
+    return Response(result)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    """供创建会话时选择对方账号。新注册靠前；排除 AI 机器人。"""
+    """供创建会话时选择对方账号。新注册靠前；通讯录置顶小策bot。"""
     from .mentions import AI_USERNAMES
 
     touch_presence(request.user)
@@ -1309,15 +1955,26 @@ def list_users(request):
     ids = [u.id for u in rows]
     pmap = presence_map(ids)
     profiles = _profile_map(ids)
+    results = [
+        {
+            **_user_brief(u, presence=pmap, profile=profiles.get(u.id)),
+            "date_joined": u.date_joined.isoformat() if u.date_joined else None,
+        }
+        for u in rows
+    ]
+
+    bot = xiaoce_bot_brief()
+    q_l = q.lower()
+    bot_hit = (not q) or any(
+        q_l in str(bot.get(k) or "").lower()
+        for k in ("username", "display_name", "bio", "bot_id")
+    )
+    if bot_hit and bot["id"] != request.user.id:
+        results = [bot, *[r for r in results if r.get("username") != XIAOCE_BOT_USERNAME]]
+
     return Response({
-        "count": len(rows),
-        "results": [
-            {
-                **_user_brief(u, presence=pmap, profile=profiles.get(u.id)),
-                "date_joined": u.date_joined.isoformat() if u.date_joined else None,
-            }
-            for u in rows
-        ],
+        "count": len(results),
+        "results": results,
     })
 
 

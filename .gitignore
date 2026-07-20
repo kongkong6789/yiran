@@ -17,3 +17,16 @@ frontend/tsconfig.tsbuildinfo
 # 编辑器
 .vscode/
 .idea/
+
+# Superpowers visual brainstorming artifacts
+.superpowers/
+
+# Local feature worktrees
+.worktrees/
+
+# local runtime logs
+*.log
+backend/runserver.*.log
+backend/wecom-queue.*.log
+frontend/vite.*.log
+

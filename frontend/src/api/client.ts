@@ -1,7 +1,9 @@
 import axios from "axios";
 
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+
 export const api = axios.create({
-  baseURL: "/api",
+  baseURL: configuredApiBaseUrl || "/api",
   timeout: 20000,
 });
 
@@ -49,6 +51,13 @@ export interface AuthUser {
   avatar_url?: string;
   is_staff?: boolean;
   is_superuser?: boolean;
+  organization?: {
+    id: number;
+    name: string;
+    role: "owner" | "admin" | "member";
+    roleLabel: string;
+    canManage: boolean;
+  } | null;
 }
 
 export const login = (body: { username: string; password: string }) =>
@@ -89,7 +98,77 @@ export interface AdminUserRow {
   has_usable_password: boolean;
   date_joined: string | null;
   last_login: string | null;
+  phone_masked: string;
+  organization_id: number | null;
+  organization_name: string;
+  organization_role: "owner" | "admin" | "member" | "";
 }
+
+export interface OrganizationMember {
+  id: number;
+  username: string;
+  displayName: string;
+  role: "owner" | "admin" | "member";
+  roleLabel: string;
+  isActive: boolean;
+  canRemove: boolean;
+}
+
+export interface OrganizationSummary {
+  id: number;
+  code: string;
+  name: string;
+  isActive: boolean;
+  memberCount: number;
+  role: "owner" | "admin" | "member" | "";
+  canManage: boolean;
+  createdAt: string | null;
+}
+
+export const getCurrentOrganization = () =>
+  api.get<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
+    "/auth/organization/",
+  ).then((r) => r.data);
+export const updateCurrentOrganization = (name: string) =>
+  api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
+    "/auth/organization/",
+    { name },
+  ).then((r) => r.data);
+export const transferOrganizationOwnership = (targetUserId: number) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    previousOwner: { id: number; username: string; role: "admin" };
+    newOwner: { id: number; username: string; role: "owner" };
+    transferredAt: string;
+  }>("/auth/organization/transfer-ownership/", { targetUserId }).then((r) => r.data);
+export const removeOrganizationMember = (userId: number) =>
+  api.delete<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    removedUser: { id: number; username: string };
+  }>(`/auth/organization/members/${userId}/`).then((r) => r.data);
+export const createOrganization = (body: { name: string; ownerUserId: number }) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    owner: { id: number; username: string; role: "owner" };
+  }>("/auth/admin/organizations/", body).then((r) => r.data);
+export const listOrganizations = () =>
+  api.get<{ ok: boolean; count: number; results: OrganizationSummary[] }>(
+    "/auth/admin/organizations/",
+  ).then((r) => r.data);
+export const assignUsersToOrganization = (body: {
+  organizationId: number;
+  userIds: number[];
+  role: "admin" | "member";
+}) =>
+  api.post<{
+    ok: boolean;
+    organization: OrganizationSummary;
+    assignedCount: number;
+    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
+  }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
 export const listAdminUsers = (q?: string) =>
   api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
@@ -102,6 +181,9 @@ export const createAdminUser = (body: {
   email?: string;
   display_name?: string;
   is_staff?: boolean;
+  phone?: string;
+  organization_id?: number;
+  organization_role?: "owner" | "admin" | "member";
 }) =>
   api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     "/auth/admin/users/",
@@ -116,12 +198,30 @@ export const updateAdminUser = (
     display_name?: string;
     is_active?: boolean;
     is_staff?: boolean;
+    phone?: string;
+    organization_id?: number;
+    organization_role?: "owner" | "admin" | "member";
   },
 ) =>
   api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     `/auth/admin/users/${id}/`,
     body,
   ).then((r) => r.data);
+
+export const deleteAdminUser = (id: number) =>
+  api
+    .delete<{ ok: boolean; deleted?: string; error?: string }>(`/auth/admin/users/${id}/`)
+    .then((r) => r.data);
+
+export type WeComBindingStatus = "pending" | "matched" | "not_found" | "invalid_phone" | "duplicate_phone" | "conflict" | "permission_denied" | "retry_waiting" | "disabled";
+
+export interface UserWeComBindingSummary {
+  status: WeComBindingStatus;
+  statusLabel: string;
+  weComUserId: string;
+  weComMember: string;
+  failureReason: string;
+}
 
 export interface UserProfileSettings {
   display_name: string;
@@ -133,7 +233,62 @@ export interface UserProfileSettings {
   llm_base_url: string;
   llm_model: string;
   configured: boolean;
+  phone_masked?: string;
+  wecom_binding?: UserWeComBindingSummary;
 }
+
+export interface WeComBindingRow {
+  id: number;
+  platformUserId: number;
+  platformUser: string;
+  phoneMasked: string;
+  weComUserId: string;
+  weComMember: string;
+  weComAvatar: string;
+  weComDepartment: string;
+  weComPosition: string;
+  weComAvailable: boolean | null;
+  status: WeComBindingStatus;
+  statusLabel: string;
+  source: string;
+  sourceLabel: string;
+  matchedAt: string | null;
+  verifiedAt: string | null;
+  nextRetryAt: string | null;
+  failureReason: string;
+  retry_count: number;
+}
+
+export interface WeComBindingSyncJob {
+  id: number;
+  status: string;
+  source: string;
+  scanned_count: number;
+  matched_count: number;
+  not_found_count: number;
+  invalid_phone_count: number;
+  duplicate_phone_count: number;
+  conflict_count: number;
+  permission_denied_count: number;
+  retry_waiting_count: number;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export const listWeComBindings = (params?: { q?: string; status?: string; page?: number; page_size?: number }) =>
+  api.get<{ ok: boolean; count: number; results: WeComBindingRow[] }>("/wecom/bindings/", { params }).then((r) => r.data);
+export const syncWeComBindings = () =>
+  api.post<{ ok: boolean; job: WeComBindingSyncJob }>("/wecom/bindings/sync/", {}).then((r) => r.data);
+export const matchWeComBinding = (userId: number) =>
+  api.post<{ ok: boolean; binding: WeComBindingRow }>(`/wecom/bindings/${userId}/match/`, {}).then((r) => r.data);
+export const manualWeComBinding = (platformUserId: number, weComUserId: string) =>
+  api.post<{ ok: boolean; binding: WeComBindingRow }>("/wecom/bindings/manual/", { platformUserId, weComUserId }).then((r) => r.data);
+export const deleteWeComBinding = (bindingId: number) =>
+  api.delete<{ ok: boolean }>(`/wecom/bindings/${bindingId}/`).then((r) => r.data);
+export const listWeComBindingJobs = () =>
+  api.get<{ ok: boolean; results: WeComBindingSyncJob[] }>("/wecom/bindings/sync-jobs/").then((r) => r.data);
+export const listWeComBindingLogs = (bindingId: number) =>
+  api.get<{ ok: boolean; results: Array<{ id: number; action: string; status: string; message: string; actorName: string; created_at: string }> }>(`/wecom/bindings/${bindingId}/logs/`).then((r) => r.data);
 
 /** @deprecated 使用 UserProfileSettings */
 export type UserLlmSettings = UserProfileSettings;
@@ -142,11 +297,16 @@ export const getUserSettings = () =>
   api.get<UserProfileSettings>("/auth/settings/").then((r) => r.data);
 
 export const updateUserSettings = (
-  body: Partial<Omit<UserProfileSettings, "avatar" | "avatar_url" | "configured">>,
+  body: Partial<Omit<UserProfileSettings, "avatar" | "avatar_url" | "configured" | "wecom_binding">> & {
+    phone?: string;
+  },
 ) =>
   api.put<{
     ok: boolean;
     configured: boolean;
+    wecom_sync_triggered?: boolean;
+    phone_masked?: string;
+    wecom_binding?: UserWeComBindingSummary;
     user?: AuthUser;
     display_name?: string;
     bio?: string;
@@ -165,6 +325,134 @@ export const uploadUserAvatar = (file: File) => {
     )
     .then((r) => r.data);
 };
+
+// ================= Knowledge Center =================
+export type KnowledgeBaseStatus = "draft" | "processing" | "ready" | "review" | "archived";
+export type KnowledgeFileStatus = "uploaded" | "processing" | "ready" | "review" | "failed" | "archived";
+
+export interface KnowledgeBaseItem {
+  id: number;
+  template: number | null;
+  owner_username?: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  tags: string[];
+  visibility: "private" | "team" | "company";
+  retrieval_mode: "naive-rag" | "graph-rag" | "hybrid-rag";
+  review_policy: string;
+  status: KnowledgeBaseStatus;
+  config: Record<string, unknown>;
+  file_count: number;
+  app_count: number;
+  recall_count: number;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeFileItem {
+  id: number;
+  knowledge_base: number;
+  uploaded_by_username?: string;
+  original_filename: string;
+  file_type: string;
+  segment_mode: string;
+  char_count: number;
+  chunk_count: number;
+  recall_count: number;
+  status: KnowledgeFileStatus;
+  storage_path: string;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  uploaded_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+}
+
+export interface KnowledgeIngestJobItem {
+  id: number;
+  file: number;
+  status: "pending" | "parsing" | "chunking" | "embedding" | "graphing" | "ready" | "failed";
+  stage: string;
+  progress: number;
+  error: Record<string, unknown> | null;
+  metrics: Record<string, unknown>;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface KnowledgeChunkItem {
+  id: number;
+  file: number;
+  chunk_index: number;
+  chunk_ref: string;
+  text_preview: string;
+  embedding_ref: string;
+  graph_entity_ref: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export const listKnowledgeBases = (params?: { q?: string; category?: string; visibility?: string }) =>
+  api.get<KnowledgeBaseItem[] | { count?: number; results: KnowledgeBaseItem[] }>("/knowledge/bases/", { params })
+    .then((r) => Array.isArray(r.data) ? r.data : r.data.results);
+
+export const createKnowledgeBase = (body: Partial<KnowledgeBaseItem>) =>
+  api.post<KnowledgeBaseItem>("/knowledge/bases/", body).then((r) => r.data);
+
+export const updateKnowledgeBase = (id: number, body: Partial<KnowledgeBaseItem>) =>
+  api.patch<KnowledgeBaseItem>(`/knowledge/bases/${id}/`, body).then((r) => r.data);
+
+export const deleteKnowledgeBase = (id: number) =>
+  api.delete(`/knowledge/bases/${id}/`);
+
+export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: string; file_type?: string }) =>
+  api.get<{ knowledge_base: KnowledgeBaseItem; count: number; results: KnowledgeFileItem[] }>(
+    `/knowledge/bases/${knowledgeBaseId}/files/`,
+    { params },
+  ).then((r) => r.data);
+
+export const uploadKnowledgeFile = (
+  knowledgeBaseId: number,
+  file: File,
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (body?.segment_mode) form.append("segment_mode", body.segment_mode);
+  if (body?.chunk_size) form.append("chunk_size", String(body.chunk_size));
+  if (body?.chunk_overlap !== undefined) form.append("chunk_overlap", String(body.chunk_overlap));
+  return api.post<{
+    file: KnowledgeFileItem;
+    job: KnowledgeIngestJobItem;
+    chunk_count: number;
+    job_id: number;
+    chunks_preview: KnowledgeChunkItem[];
+  }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 60_000,
+  }).then((r) => r.data);
+};
+
+export const getKnowledgeJob = (jobId: number) =>
+  api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
+export const getKnowledgeFileChunks = (fileId: number) =>
+  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+    .then((r) => r.data);
+
+export const deleteKnowledgeFile = (fileId: number) =>
+  api.delete(`/knowledge/files/${fileId}/`);
+
+export const deleteKnowledgeChunk = (fileId: number, chunkId: number) =>
+  api.delete<{ deleted: boolean; chunk_id: number }>(`/knowledge/files/${fileId}/chunks/${chunkId}/`)
+    .then((r) => r.data);
+
+export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic"; limit?: number }) =>
+  api.get<{ query: string; mode?: string; count: number; results: KnowledgeChunkItem[] }>("/knowledge/traditional-search/", { params })
+    .then((r) => r.data);
 
 // ================= Agent Skills =================
 export const getSkills = () =>
@@ -329,6 +617,7 @@ export interface SopResult {
   result?: Record<string, unknown>;
   missing?: string[];
   schema?: Record<string, string>;
+  executor?: Agent;
   steps: SopStep[];
 }
 
@@ -389,6 +678,8 @@ export const runSop = (body: {
   text: string;
   payload?: Record<string, unknown>;
   role?: string;
+  agent_id?: number;
+  trace_id?: string;
 }) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
 
 export const resumeSop = (body: {
@@ -495,7 +786,21 @@ export interface Agent {
   role: string;
   expertise: string;
   persona: string;
+  execution_role: "operator" | "manager" | "director";
+  is_active: boolean;
+  quota_limit: number;
+  quota_used: number;
+  quota_remaining: number;
+  status: "available" | "disabled" | "quota_exhausted";
   created_at: string;
+}
+
+export interface CouncilHuman {
+  id: number;
+  username: string;
+  display_name: string;
+  avatar_url?: string | null;
+  kind?: "human";
 }
 
 export interface CouncilMessage {
@@ -513,15 +818,24 @@ export interface Meeting {
   id: number;
   title: string;
   question: string;
-  status: "active" | "paused" | "stopped";
+  intro?: string;
+  scheduled_at?: string | null;
+  duration_minutes?: number;
+  started_at?: string | null;
+  status: "draft" | "active" | "paused" | "stopped";
   round: number;
   context_summary: string;
   participants: Agent[];
+  human_participants?: CouncilHuman[];
   created_at: string;
   message_count?: number;
   has_deliverable?: boolean;
   deliverable_title?: string | null;
   graph_ref_count?: number;
+  agent_count?: number;
+  human_count?: number;
+  agent_names?: string[];
+  human_names?: string[];
 }
 
 export interface Deliverable {
@@ -555,7 +869,31 @@ export interface GraphWriteback {
 }
 
 export const listAgents = () =>
-  api.get<{ results: Agent[]; llm: boolean }>("/council/agents/").then((r) => r.data);
+  api.get<{ results: Partial<Agent>[]; llm: boolean }>("/council/agents/").then((r) => ({
+    ...r.data,
+    results: (r.data.results || []).map((row) => {
+      const quotaLimit = Number(row.quota_limit ?? 10000);
+      const quotaUsed = Number(row.quota_used ?? 0);
+      const quotaRemaining = Number(row.quota_remaining ?? Math.max(0, quotaLimit - quotaUsed));
+      const isActive = row.is_active !== false;
+      return {
+        id: Number(row.id),
+        name: String(row.name || "未命名智能体"),
+        emoji: String(row.emoji || "🤖"),
+        group: String(row.group || "未分类"),
+        role: String(row.role || ""),
+        expertise: String(row.expertise || ""),
+        persona: String(row.persona || ""),
+        execution_role: row.execution_role || "operator",
+        is_active: isActive,
+        quota_limit: quotaLimit,
+        quota_used: quotaUsed,
+        quota_remaining: quotaRemaining,
+        status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
+        created_at: String(row.created_at || ""),
+      } satisfies Agent;
+    }),
+  }));
 export const createAgent = (body: Partial<Agent>) =>
   api.post<Agent>("/council/agents/", body).then((r) => r.data);
 export const updateAgent = (id: number, body: Partial<Agent>) =>
@@ -565,9 +903,95 @@ export const deleteAgent = (id: number) =>
 
 export const createMeeting = (body: {
   title?: string;
-  question: string;
+  intro?: string;
+  question?: string;
   agent_ids: number[];
-}) => api.post<Meeting>("/council/meetings/", body).then((r) => r.data);
+  user_ids?: number[];
+  scheduled_at?: string | null;
+  duration_minutes?: number;
+  start_now?: boolean;
+}) =>
+  api
+    .post<{ meeting: Meeting; messages: CouncilMessage[] }>("/council/meetings/", body, {
+      timeout: 30_000,
+    })
+    .then((r) => r.data);
+
+export const startMeeting = (id: number) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null }>(`/council/meetings/${id}/start/`)
+    .then((r) => r.data);
+
+export const pauseMeeting = (id: number) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null }>(`/council/meetings/${id}/pause/`)
+    .then((r) => r.data);
+
+/** 批量暂停进行中的会议；不传 ids 则暂停全部 active */
+export const pauseActiveMeetings = (meeting_ids?: number[]) =>
+  api
+    .post<{ ok: boolean; paused_count: number; results: Meeting[] }>(
+      "/council/meetings/pause-active/",
+      meeting_ids ? { meeting_ids } : {},
+    )
+    .then((r) => r.data);
+
+export const inviteMeetingParticipants = (
+  id: number,
+  body: { agent_ids?: number[]; user_ids?: number[] },
+) =>
+  api
+    .post<{ meeting: Meeting; message: CouncilMessage | null; invited_count?: number }>(
+      `/council/meetings/${id}/invite/`,
+      body,
+    )
+    .then((r) => r.data);
+
+export type CouncilInvite = {
+  invite_id: number;
+  meeting_id: number;
+  title: string;
+  question: string;
+  status: string;
+  inviter_name: string;
+  created_at?: string | null;
+};
+
+export const listPendingCouncilInvites = () =>
+  api
+    .get<{ count: number; results: CouncilInvite[] }>("/council/invites/pending/")
+    .then((r) => r.data);
+
+export const ackCouncilInvite = (inviteId: number, action: "seen" | "join" | "dismiss") =>
+  api
+    .post<{ ok: boolean; invite: CouncilInvite }>(`/council/invites/${inviteId}/ack/`, { action })
+    .then((r) => r.data);
+
+/** 用户级通知 WebSocket（会议邀请等） */
+export function openUserNotifySocket(opts: {
+  onInvite?: (data: CouncilInvite) => void;
+  onOpen?: () => void;
+  onClose?: (ev: CloseEvent) => void;
+}): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/notify/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as { event?: string; data?: CouncilInvite };
+      if (packet.event === "council_invite" && packet.data) opts.onInvite?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
 
 export const listMeetings = () =>
   api.get<{ count: number; results: Meeting[] }>("/council/meetings/").then((r) => r.data);
@@ -603,6 +1027,43 @@ export const pollMessages = (id: number, after: number) =>
     )
     .then((r) => r.data);
 
+/** 圆桌会议 WebSocket（对方消息 / 状态实时推送） */
+export function openCouncilMeetingSocket(
+  meetingId: number,
+  opts: {
+    onMessages?: (data: { status?: string; round?: number; results?: CouncilMessage[] }) => void;
+    onStatus?: (data: { status?: string; round?: number }) => void;
+    onOpen?: () => void;
+    onClose?: (ev: CloseEvent) => void;
+    onError?: (err: Event) => void;
+  },
+): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // 开发环境直连后端 :8000，避开 Vite 对 WebSocket 代理经常失败的问题（局域网同主机名）
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/council/meetings/${meetingId}/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onerror = (e) => opts.onError?.(e);
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as {
+        event?: string;
+        data?: { status?: string; round?: number; results?: CouncilMessage[] };
+      };
+      if (packet.event === "messages" && packet.data) opts.onMessages?.(packet.data);
+      if (packet.event === "status" && packet.data) opts.onStatus?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
+
 export const tickMeeting = (id: number) =>
   api
     .post<{ stopped: boolean; messages: CouncilMessage[] }>(
@@ -613,7 +1074,13 @@ export const tickMeeting = (id: number) =>
     .then((r) => r.data);
 
 export const interject = (id: number, text: string) =>
-  api.post<CouncilMessage>(`/council/meetings/${id}/interject/`, { text }).then((r) => r.data);
+  api
+    .post<{ message: CouncilMessage; replies?: CouncilMessage[] }>(
+      `/council/meetings/${id}/interject/`,
+      { text },
+      { timeout: 45_000 },
+    )
+    .then((r) => r.data);
 
 export const stopMeeting = (id: number) =>
   api
@@ -672,7 +1139,7 @@ export interface OntGraph {
   source?: string;
 }
 
-export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; refresh?: 1 }) =>
+export const getAgeLiveGraph = (params?: { limit?: number; edge_limit?: number; focus_age_id?: number; refresh?: 1 }) =>
   api.get<OntGraph>("/ontology/graph/age-live/", { params }).then((r) => r.data);
 
 export const getGraph = (params?: { scope?: "age" | "all" }) =>
@@ -742,8 +1209,25 @@ export const getCommerceFactsHealth = () =>
     duckdb: { available: boolean; path: string; table_count: number; tables: { schema?: string; name: string }[]; error?: string };
     postgres: { available: boolean; table_count: number; tables: Record<string, unknown>[]; error?: string };
     connectors: { id: string; name: string; status: string; note: string }[];
+    facts?: FactTableHealth[];
+    facts_summary?: { total: number; ok: number; partial: number; missing: number };
     guidance: string[];
   }>("/commerce/facts/health/").then((r) => r.data);
+
+export type FactTableHealth = {
+  id: string;
+  code: string;
+  name: string;
+  source: string;
+  grain: string;
+  status: "ok" | "empty" | "partial" | "missing";
+  available: boolean;
+  missing: boolean;
+  rows: number | null;
+  matched_tables: { table: string; engines: string[]; refs: string[]; rows: number | null }[];
+  expected_tables: string[];
+  note: string;
+};
 
 export const simulateCommerceLoops = (body?: {
   model_id?: string;
@@ -975,6 +1459,27 @@ export interface CollabUserBrief {
   online?: boolean;
   last_seen?: string | null;
   date_joined?: string | null;
+  kind?: "human" | "bot";
+  bot_id?: string;
+  last_read_message_id?: number;
+}
+
+export interface XiaoceRunSummary {
+  id: string;
+  status: "running" | "cancelled" | "completed" | "failed";
+  room_id: string;
+}
+
+export interface CreatedSkillItem {
+  asset_id: number;
+  personal_id: number;
+  skill_id: string;
+  name: string;
+  description?: string;
+  visibility: "private" | "shared";
+  enabled: boolean;
+  package_kind?: "single" | "package";
+  storage?: "cos" | "local";
 }
 
 export interface CollabRoom {
@@ -1006,6 +1511,7 @@ export interface CollabRoom {
   has_more_before?: boolean;
   unread_count?: number;
   last_read_message_id?: number;
+  active_xiaoce_run?: XiaoceRunSummary | null;
 }
 
 export interface CollabMessage {
@@ -1023,13 +1529,71 @@ export interface CollabMessage {
     url?: string;
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
+  meta?: {
+    run_id?: string;
+    cancelled?: boolean;
+    created_skill?: CreatedSkillItem;
+    skill_generation_failed?: boolean;
+    [key: string]: unknown;
+  };
   msg_type?: "user" | "system" | "ai";
-  ai_kind?: "" | "reply" | "interject" | "suggest";
+  ai_kind?: "" | "reply" | "interject" | "suggest" | "xiaoce";
   status?: "normal" | "recalled" | "deleted";
   risk_flag?: string;
   risk_flag_level?: "" | "yellow" | "red";
+  reply_to?: {
+    id: number;
+    sender: Pick<CollabUserBrief, "id" | "username" | "display_name">;
+    content: string;
+    status?: "normal" | "recalled" | "deleted";
+    attachment_count?: number;
+  } | null;
+  read_state?: {
+    reader_count: number;
+    unread_count: number;
+    read_by: string[];
+    unread_by: string[];
+  };
   created_at: string;
   updated_at?: string;
+}
+
+export interface CollabSummary {
+  id: number;
+  room_id: string;
+  range_mode: "auto" | "latest" | "time" | "custom";
+  start_message_id?: number | null;
+  end_message_id?: number | null;
+  start_at?: string | null;
+  end_at?: string | null;
+  message_count: number;
+  selection_reason: string;
+  content: string;
+  key_points: string[];
+  decisions: string[];
+  action_items: string[];
+  participants: string[];
+  generated_by: "llm" | "local";
+  model_name?: string;
+  model_source?: "personal" | "platform" | "platform_fallback" | "";
+  created_by: string;
+  created_at: string;
+}
+
+export interface CollabSummaryModel {
+  configured: boolean;
+  model: string;
+  source: "personal" | "platform";
+  missing: ("api_key" | "base_url" | "model")[];
+}
+
+export interface CollabSummarySuggestion {
+  should_summarize: boolean;
+  reason: string;
+  pending_message_count: number;
+  span_minutes: number;
+  suggested_range: "auto";
+  last_summary_message_id?: number | null;
 }
 
 export interface CollabInsight {
@@ -1068,6 +1632,19 @@ export interface CollabRoomStats {
     draft_reply: string;
     created_at: string;
   }[];
+  messages_today?: number;
+  messages_7d?: number;
+  read_metrics?: {
+    receipt_count: number;
+    unique_readers: number;
+    avg_read_latency_ms: number;
+    total_active_read_ms: number;
+    avg_session_read_ms: number;
+    session_count: number;
+  };
+  summary_model?: CollabSummaryModel;
+  latest_summary?: CollabSummary | null;
+  summary_suggestion?: CollabSummarySuggestion;
 }
 
 export const listCollabRooms = (params?: { status?: string }) =>
@@ -1192,6 +1769,7 @@ export const getCollabRoomPresence = (id: string) =>
     participants: CollabUserBrief[];
     member_count?: number;
     display_title?: string;
+    active_xiaoce_run?: XiaoceRunSummary | null;
   }>(`/collab/rooms/${id}/presence/`).then((r) => r.data);
 
 export type CollabSyncEvent = {
@@ -1203,7 +1781,38 @@ export type CollabSyncEvent = {
   after_insight_id?: number;
 };
 
-/** fetch + SSE（可带 Authorization，避免 EventSource 无法设 header） */
+/** 协作会话 WebSocket（开发环境直连 :8000） */
+export function openCollabRoomSocket(
+  roomId: string,
+  opts: {
+    onSync?: (data: CollabSyncEvent) => void;
+    onOpen?: () => void;
+    onClose?: (ev: CloseEvent) => void;
+    onError?: (err: Event) => void;
+  },
+): WebSocket {
+  const token = getAuthToken() || "";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = import.meta.env.DEV
+    ? `${window.location.hostname}:8000`
+    : window.location.host;
+  const url = `${proto}//${host}/ws/collab/rooms/${roomId}/?token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(url);
+  ws.onopen = () => opts.onOpen?.();
+  ws.onerror = (e) => opts.onError?.(e);
+  ws.onclose = (e) => opts.onClose?.(e);
+  ws.onmessage = (ev) => {
+    try {
+      const packet = JSON.parse(ev.data) as { event?: string; data?: CollabSyncEvent };
+      if (packet.event === "sync" && packet.data) opts.onSync?.(packet.data);
+    } catch {
+      /* ignore */
+    }
+  };
+  return ws;
+}
+
+/** @deprecated 保留兼容；新逻辑走 WebSocket */
 export function openCollabRoomEvents(
   roomId: string,
   opts: {
@@ -1261,7 +1870,11 @@ export function openCollabRoomEvents(
           }
           if (eventName === "sync") opts.onSync?.(payload);
           if (eventName === "error") opts.onError?.(payload);
-          if (eventName === "reconnect") break;
+          if (eventName === "reconnect") {
+            try { await reader.cancel(); } catch { /* ignore */ }
+            opts.onDone?.();
+            return;
+          }
         }
       }
       opts.onDone?.();
@@ -1296,11 +1909,15 @@ export const sendCollabMessage = (
   content: string,
   analyze = true,
   files?: File[],
+  replyToId?: number,
+  runId?: string,
 ) => {
   if (files?.length) {
     const form = new FormData();
     form.append("content", content || "");
     form.append("analyze", analyze ? "1" : "0");
+    if (replyToId) form.append("reply_to_id", String(replyToId));
+    if (runId) form.append("run_id", runId);
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -1311,6 +1928,7 @@ export const sendCollabMessage = (
         insight?: CollabInsight;
         analyze_pending?: boolean;
         ai_pending?: boolean;
+        xiaoce_run?: XiaoceRunSummary;
       }>(`/collab/rooms/${id}/messages/`, form, { timeout: 120_000 })
       .then((r) => r.data);
   }
@@ -1323,9 +1941,61 @@ export const sendCollabMessage = (
       insight?: CollabInsight;
       analyze_pending?: boolean;
       ai_pending?: boolean;
-    }>(`/collab/rooms/${id}/messages/`, { content, analyze: analyze ? "1" : "0" }, { timeout: 120_000 })
+      xiaoce_run?: XiaoceRunSummary;
+    }>(
+      `/collab/rooms/${id}/messages/`,
+      {
+        content,
+        analyze: analyze ? "1" : "0",
+        ...(replyToId ? { reply_to_id: replyToId } : {}),
+        ...(runId ? { run_id: runId } : {}),
+      },
+      { timeout: 120_000 },
+    )
     .then((r) => r.data);
 };
+
+export const cancelXiaoceRun = (roomId: string, runId: string) =>
+  api.post<{
+    ok: boolean;
+    xiaoce_run: XiaoceRunSummary;
+    active_xiaoce_run: null;
+    message: CollabMessage;
+    room: Partial<CollabRoom>;
+    error?: string;
+  }>(`/collab/rooms/${roomId}/xiaoce-runs/${runId}/cancel/`, {})
+    .then((response) => response.data);
+
+export const listCollabSummaries = (id: string) =>
+  api
+    .get<{
+      ok: boolean;
+      model: CollabSummaryModel;
+      suggestion: CollabSummarySuggestion;
+      latest: CollabSummary | null;
+      results: CollabSummary[];
+    }>(`/collab/rooms/${id}/summaries/`)
+    .then((r) => r.data);
+
+export const summarizeCollabRoom = (
+  id: string,
+  body: {
+    range_mode?: "auto" | "latest" | "time" | "custom";
+    message_count?: number;
+    minutes?: number;
+    start_message_id?: number;
+    end_message_id?: number;
+  } = {},
+) =>
+  api
+    .post<{
+      ok: boolean;
+      summary: CollabSummary;
+      model: CollabSummaryModel;
+      suggestion: CollabSummarySuggestion;
+      error?: string;
+    }>(`/collab/rooms/${id}/summaries/`, body, { timeout: 60_000 })
+    .then((r) => r.data);
 
 export const listCollabInsights = (id: string, afterId = 0) =>
   api.get<{ count: number; results: CollabInsight[]; room_risk_level: string }>(
@@ -1338,6 +2008,28 @@ export const refreshCollabInsights = (id: string) =>
     `/collab/rooms/${id}/insights/`,
     {},
   ).then((r) => r.data);
+
+export type CollabDraftTip = {
+  kind: "tip" | "optimize" | "warn" | "risk" | string;
+  level: "info" | "yellow" | "red" | "green" | string;
+  label: string;
+  advice: string;
+  /** 可一键写入输入框的改写示例 */
+  example?: string;
+};
+
+export const checkCollabDraft = (id: string, text: string) =>
+  api
+    .post<{
+      ok: boolean;
+      level: string;
+      tips: CollabDraftTip[];
+      examples?: string[];
+      label: string;
+      advice: string;
+      error?: string;
+    }>(`/collab/rooms/${id}/draft-check/`, { text }, { timeout: 20_000 })
+    .then((r) => r.data);
 
 export const getCollabRoomStats = (id: string) =>
   api.get<CollabRoomStats>(`/collab/rooms/${id}/stats/`).then((r) => r.data);
@@ -1395,11 +2087,98 @@ export const getCollabUnread = () =>
     .then((r) => r.data);
 
 /** 标记会话已读 */
-export const markCollabRoomRead = (id: string, upToId?: number) =>
+export const markCollabRoomRead = (
+  id: string,
+  upToId?: number,
+  tracking?: {
+    sessionId?: string;
+    activeDurationMs?: number;
+    ended?: boolean;
+  },
+) =>
   api
-    .post<{ ok: boolean; last_read_message_id: number; unread_count: number; room_id: string }>(
+    .post<{
+      ok: boolean;
+      last_read_message_id: number;
+      unread_count: number;
+      room_id: string;
+      session?: {
+        session_id: string;
+        active_duration_ms: number;
+        ended: boolean;
+      } | null;
+    }>(
       `/collab/rooms/${id}/read/`,
-      upToId ? { up_to_id: upToId } : {},
+      {
+        ...(upToId ? { up_to_id: upToId } : {}),
+        ...(tracking?.sessionId ? { session_id: tracking.sessionId } : {}),
+        ...(tracking?.activeDurationMs
+          ? { active_duration_ms: Math.round(tracking.activeDurationMs) }
+          : {}),
+        ...(tracking?.ended ? { ended: true } : {}),
+      },
     )
     .then((r) => r.data);
 
+export type WorkTodoItem = {
+  id: string;
+  title: string;
+  description?: string;
+  status: "pending" | "completed" | "cancelled";
+  userStatus?: number;
+  priority?: "normal" | "high" | "urgent";
+  dueAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  creatorName: string;
+  assigneeNames: string[];
+  remindTypes: number[];
+  syncRequested?: boolean;
+  syncStatus?: "not_requested" | "pending" | "synced" | "failed" | "partial";
+  recipients?: Array<{
+    name: string;
+    type: "platform" | "wecom";
+    avatar?: string;
+    syncStatus: "not_requested" | "pending" | "synced" | "failed";
+  }>;
+  syncErrorReason?: string;
+  lastSyncedAt?: string | null;
+  source: "platform";
+};
+
+export type WeComTodoMember = { id: number; name: string; department: string; avatar: string; bound: boolean };
+export type WeComCliConfig = {
+  configured: boolean; enabled: boolean; botId: string; secretConfigured: boolean; canManage: boolean;
+  canUse: boolean; accessScope: "organization" | "selected" | "owner"; allowedUserIds: number[];
+  lastTestedAt?: string | null; lastErrorReason?: string; organizationName?: string;
+};
+
+export const getWeComCliConfig = () =>
+  api.get<WeComCliConfig & { ok: boolean }>("/wecom/cli-config/").then((r) => r.data);
+export const saveWeComCliConfig = (body: {
+  botId: string; secret?: string; enabled?: boolean;
+  accessScope?: "organization" | "selected" | "owner"; allowedUserIds?: number[];
+}) =>
+  api.patch<{ ok: boolean; detail: string }>("/wecom/cli-config/", body).then((r) => r.data);
+export const testWeComCliConfig = () =>
+  api.post<{ ok: boolean; detail: string }>("/wecom/cli-config/test/", {}).then((r) => r.data);
+export const getWeComTodoMembers = () =>
+  api.get<{ ok: boolean; results: WeComTodoMember[] }>("/wecom/todos/members/").then((r) => r.data);
+export const listWeComTodos = (view: "assigned" | "created", status?: "pending" | "completed") =>
+  api.get<{ ok: boolean; source: string; results: WorkTodoItem[] }>("/wecom/todos/", {
+    params: { view, ...(status ? { status } : {}) },
+  }).then((r) => r.data);
+export const createWeComTodo = (body: {
+  title: string; description?: string; platformAssigneeIds: number[]; wecomContactIds: number[];
+  dueAt?: string; priority?: string; remindTypes?: number[];
+  syncToWeCom?: boolean;
+}) => api.post<{
+  ok: boolean; ids: string[]; detail: string; syncStatus: WorkTodoItem["syncStatus"]; syncDetail: string;
+  skippedPlatformAssigneeNames: string[];
+}>("/wecom/todos/", body).then((r) => r.data);
+export const setWeComTodoStatus = (id: string, status: "pending" | "completed") =>
+  api.post<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>("/wecom/todos/status/", { id, status }).then((r) => r.data);
+export const retryWeComTodoSync = (id: string) =>
+  api.post<{ ok: boolean; detail: string; syncStatus: WorkTodoItem["syncStatus"] }>(`/wecom/todos/${id}/sync/`, {}).then((r) => r.data);
+export const deleteWeComTodo = (id: string) =>
+  api.delete<{ ok: boolean; detail: string; deletedCount: number; weComDeleted: boolean }>(`/wecom/todos/${id}/`).then((r) => r.data);

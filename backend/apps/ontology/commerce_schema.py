@@ -3,7 +3,8 @@
 
 - 对象类型 / 关系类型：图谱预设与回路层级对齐
 - 层级包含：公司 → 品牌 → 平台(渠道) → 店铺 → 链接(商品) → SKU
-说明：知行里 Channel≈平台渠道、Shop≈店；良策回路「channel」层对应店铺 Shop。
+说明：知行里 Channel≈平台渠道、Shop≈店；良策回路「channel」层对应店铺 Shop；
+最下层「基础数据」对应采集事实表 FactTable。
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ VIRTUAL_KEYS = {
     "Channel", "Shop", "SalesOrder", "SettlementRecord", "StockMovement",
     "TransferReview", "SalesFact", "InventorySnapshot", "AdCampaign",
     "FinanceRecord", "DataSource", "Dataset", "Document", "Report",
+    "FactTable",
     "ActionRequest", "Risk", "Agent", "KnowledgeAsset", "Capability",
     "Evidence", "CashFlow", "ToolContract", "PurchaseRequisition",
     "PurchaseOrder", "PurchaseReceiveBill", "PaymentApplication",
@@ -70,6 +72,13 @@ COMMERCE_OBJECT_TYPES: dict[str, dict[str, Any]] = {
         "key_properties": ["sku", "product_name", "brand"],
         "sensitivity": "low",
         "loop_level": "sku",
+    },
+    "FactTable": {
+        "label": "事实表",
+        "description": "订单/退款/推广/库存等采集事实。对应回路「基础数据」层。",
+        "key_properties": ["table_name", "source_system", "grain"],
+        "sensitivity": "medium",
+        "loop_level": "fact",
     },
     "Warehouse": {
         "label": "仓库",
@@ -165,6 +174,7 @@ LOOP_LEVEL_OBJECT: dict[str, str] = {
     "channel": "Shop",
     "link": "Product",
     "sku": "SKU",
+    "fact": "FactTable",
 }
 
 # 包含链（父类型 key → 子类型 key）
@@ -174,6 +184,7 @@ CONTAINMENT_CHAIN: list[tuple[str, str, str]] = [
     ("Channel", "Shop", "包含店铺"),
     ("Shop", "Product", "包含链接"),
     ("Product", "SKU", "包含SKU"),
+    ("SKU", "FactTable", "依赖事实"),
 ]
 
 

@@ -3,10 +3,7 @@ import { Avatar, Button, Empty, Input, Popover, Spin, Tag, Tooltip, message } fr
 import {
   AccountBookOutlined,
   ApiOutlined,
-  CloudOutlined,
-  FileTextOutlined,
   HddOutlined,
-  RobotOutlined,
   SearchOutlined,
   SettingOutlined,
   ShoppingOutlined,
@@ -22,12 +19,9 @@ type Props = {
 
 const ICONS: Record<string, ReactNode> = {
   wecom: <WecomIcon size={18} />,
-  tencent_docs: <FileTextOutlined />,
-  wedrive: <CloudOutlined />,
   kingdee: <AccountBookOutlined />,
   jackyun: <ShoppingOutlined />,
   nas: <HddOutlined />,
-  workbuddy: <RobotOutlined />,
 };
 
 const STATUS_LABEL: Record<string, { color: string; text: string }> = {
@@ -169,9 +163,6 @@ export default function ChatConnectorPicker({ onSelect }: Props) {
 export function connectorPrompt(server: McpServer): string {
   if (server.id === "wecom") {
     return "请用企业微信连接器读取这篇文档：https://doc.weixin.qq.com/";
-  }
-  if (server.id === "tencent_docs") {
-    return "请用腾讯文档连接器帮我打开并总结：";
   }
   if (server.id === "jackyun") {
     return "请通过吉客云连接器查询：";

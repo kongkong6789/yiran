@@ -12,7 +12,7 @@ import time
 
 from django.conf import settings
 
-from .pg import PgLake, PgSession, pglake
+from .pg import PgSession, age_pglake as pglake
 
 
 def _sid() -> str:
@@ -179,8 +179,9 @@ def fetch_graph_live(
     graph: str | None = None,
     *,
     source_id: str | None = None,
-    node_limit: int = 2000,
-    edge_limit: int = 3000,
+    focus_age_id: int | None = None,
+    node_limit: int = 1000,
+    edge_limit: int = 1500,
     sess: PgSession | None = None,
     use_cache: bool = True,
 ) -> dict:
@@ -189,7 +190,8 @@ def fetch_graph_live(
     结果按 (graph, source_id, limits) 缓存 5 分钟;use_cache=False 强制重查。
     """
     sid_key = (source_id or _sid()).strip()
-    cache_key = (graph or "", sid_key, int(node_limit), int(edge_limit))
+    focus_id = int(focus_age_id) if focus_age_id is not None else None
+    cache_key = (graph or "", sid_key, focus_id or 0, int(node_limit), int(edge_limit))
     if use_cache:
         hit = _LIVE_CACHE.get(cache_key)
         if hit and time.time() - hit[0] < _LIVE_CACHE_TTL:
@@ -210,16 +212,50 @@ def fetch_graph_live(
     edge_limit = max(1, min(int(edge_limit), 20000))
 
     def _load(s: PgSession):
+        if focus_id is not None:
+            outgoing = cypher(
+                graph,
+                (
+                    f"MATCH (a)-[r]->(b) WHERE id(a) = {focus_id} "
+                    f"RETURN id(a), id(b), type(r), properties(a), properties(b) "
+                    f"LIMIT {edge_limit}"
+                ),
+                ["src", "tgt", "rlabel", "src_props", "tgt_props"],
+                sess=s,
+            )
+            incoming = cypher(
+                graph,
+                (
+                    f"MATCH (a)-[r]->(b) WHERE id(b) = {focus_id} "
+                    f"RETURN id(a), id(b), type(r), properties(a), properties(b) "
+                    f"LIMIT {edge_limit}"
+                ),
+                ["src", "tgt", "rlabel", "src_props", "tgt_props"],
+                sess=s,
+            )
+            seen_edges: set[tuple[str, str, str]] = set()
+            edge_rows = []
+            for row in outgoing + incoming:
+                key = (str(row.get("src")), str(row.get("tgt")), str(row.get("rlabel")))
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                edge_rows.append(row)
+        else:
+            edge_rows = cypher(
+                graph,
+                (
+                    f"MATCH (a)-[r]->(b) "
+                    f"RETURN id(a), id(b), type(r), properties(a), properties(b) "
+                    f"LIMIT {edge_limit}"
+                ),
+                ["src", "tgt", "rlabel", "src_props", "tgt_props"],
+                sess=s,
+            )
         node_rows = cypher(
             graph,
             f"MATCH (n) RETURN id(n), properties(n) LIMIT {node_limit}",
             ["vid", "props"],
-            sess=s,
-        )
-        edge_rows = cypher(
-            graph,
-            f"MATCH (a)-[r]->(b) RETURN id(a), id(b), type(r) LIMIT {edge_limit}",
-            ["src", "tgt", "rlabel"],
             sess=s,
         )
         return node_rows, edge_rows
@@ -232,16 +268,13 @@ def fetch_graph_live(
 
     id_set: set[int] = set()
     objects: list[dict] = []
-    for i, row in enumerate(node_rows):
-        vid = _parse_agtype_scalar(row.get("vid"))
-        if vid is None:
-            continue
-        try:
-            nid = int(vid)
-        except (TypeError, ValueError):
-            continue
-        props = _parse_agtype_props(row.get("props"))
+    relations: list[dict] = []
+
+    def _add_object(nid: int, props: dict):
+        if nid in id_set:
+            return
         id_set.add(nid)
+        i = len(objects)
         angle = i * 0.618033988749895 * 6.28318
         radius = 80 + (i % 20) * 18
         objects.append({
@@ -249,30 +282,45 @@ def fetch_graph_live(
             "category": "virtual",
             "otype": str(props.get("entity_type") or props.get("label") or "base"),
             "name": _pick_node_name(props),
-            "attributes": {**props, "_age_id": nid, "_table": f"age.{graph}", "数据来源": f"AGE·{graph}"},
+            "attributes": {**props, "_age_id": nid, "_table": f"age.{graph}", "\u6570\u636e\u6765\u6e90": f"AGE\u00b7{graph}"},
             "x": 500 + radius * __import__("math").cos(angle),
             "y": 340 + radius * __import__("math").sin(angle),
         })
 
-    relations: list[dict] = []
-    for i, row in enumerate(edge_rows):
+    for row in edge_rows:
         src_id = _parse_agtype_scalar(row.get("src"))
         tgt_id = _parse_agtype_scalar(row.get("tgt"))
         try:
             s_id, t_id = int(src_id), int(tgt_id)
         except (TypeError, ValueError):
             continue
-        if s_id not in id_set or t_id not in id_set:
+        needed = int(s_id not in id_set) + int(t_id not in id_set)
+        if len(objects) + needed > node_limit:
             continue
-        label = str(_parse_agtype_scalar(row.get("rlabel")) or "关联")[:64]
+        _add_object(s_id, _parse_agtype_props(row.get("src_props")))
+        _add_object(t_id, _parse_agtype_props(row.get("tgt_props")))
+        label = str(_parse_agtype_scalar(row.get("rlabel")) or "related")[:64]
         relations.append({
-            "id": i + 1,
+            "id": len(relations) + 1,
             "source": s_id,
             "target": t_id,
             "label": label,
         })
 
-    stats = graph_stats(sid, sess=sess) if sid else {}
+    if focus_id is not None and len(objects) < node_limit:
+        for row in node_rows:
+            vid = _parse_agtype_scalar(row.get("vid"))
+            if vid is None:
+                continue
+            try:
+                nid = int(vid)
+            except (TypeError, ValueError):
+                continue
+            if nid == focus_id:
+                _add_object(nid, _parse_agtype_props(row.get("props")))
+                break
+
+    stats = graph_stats(sid or None, sess=sess)
     pg_v = stats.get("vertices", 0)
     pg_e = stats.get("edges", 0)
     result = {
@@ -292,6 +340,7 @@ def fetch_graph_live(
             "pg_edges": pg_e,
             "node_limit": node_limit,
             "edge_limit": edge_limit,
+            "focus_age_id": focus_id,
             "truncated": len(objects) >= node_limit or len(relations) >= edge_limit,
         },
         "lightrag": {
@@ -360,16 +409,17 @@ def _count_graph(
 
 
 def graph_stats(source_id: str | None = None, sess: PgSession | None = None) -> dict:
-    """统计指定 source_id 对应 AGE 图中的节点/边数量。"""
-    sid = source_id or _sid()
-    if not sid:
-        return {"error": "未配置 LIGHTRAG_SOURCE_ID"}
+    """Count AGE vertices and edges for source_id or LIGHTRAG_WORKSPACE."""
+    sid = (source_id or _sid()).strip()
+    workspace = (settings.LIGHTRAG_WORKSPACE or "").strip()
+    if not sid and not workspace:
+        return {"error": "Missing LIGHTRAG_SOURCE_ID / LIGHTRAG_WORKSPACE"}
     if not has_age():
-        return {"error": "当前 PostgreSQL 未安装 AGE 扩展", "source_id": sid}
+        return {"error": "PostgreSQL AGE extension is unavailable", "source_id": sid}
 
-    src = resolve_source(sid)
-    workspace_scoped = bool(src and src.get("workspace"))
-    graphs = _candidate_graphs(sid)
+    src = resolve_source(sid) if sid else None
+    workspace_scoped = bool((src and src.get("workspace")) or workspace)
+    graphs = _candidate_graphs(sid or None)
 
     result = {
         "source_id": sid,
@@ -389,8 +439,9 @@ def graph_stats(source_id: str | None = None, sess: PgSession | None = None) -> 
     result["selected_graph"] = best["graph"] if best else None
     result["vertices"] = best["vertices"] if best else 0
     result["edges"] = best["edges"] if best else 0
-    if not best and src and not graphs:
-        result["error"] = f"workspace {src.get('workspace')} 对应 AGE 图不存在"
+    if not best and (src or workspace) and not graphs:
+        missing_ws = (src or {}).get("workspace") or workspace
+        result["error"] = f"workspace {missing_ws} AGE graph does not exist"
     return result
 
 

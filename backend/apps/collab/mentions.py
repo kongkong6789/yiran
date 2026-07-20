@@ -8,6 +8,7 @@ from typing import Any
 from django.contrib.auth import get_user_model
 
 from apps.council import llm
+from apps.core.agent_chat import _selected_knowledge_context
 from apps.skills.service import build_skill_system_block, resolve_skills
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -27,18 +28,17 @@ Skill 脚本执行规则(必须遵守):
 4. 若仅有【Skill 执行状态】,按其中原因引导(重传 zip、补参数等),不要重复 Skill 原文的手工步骤清单。
 """
 
-AI_USERNAMES = ("良策AI", "AI助手")
-AI_ALIASES = {"ai", "AI", "Ai", "良策ai", "良策AI", "助手"}
+AI_USERNAMES = ("良策AI", "AI助手", "小策bot")
+AI_ALIASES = {"ai", "AI", "Ai", "良策ai", "良策AI", "助手", "小策bot", "小策"}
 ALL_ALIASES = {"所有人", "全体", "全体成员", "everyone", "all", "ALL"}
 
-_TOKEN_RE = re.compile(r"@([^\s@]+)")
-_MENTION_TARGET_RE = re.compile(
-    r"@(?:AI|ai|良策AI|良策ai)\s*.*?@([^\s@]+)|@([^\s@]+)\s*.*?@(?:AI|ai|良策AI|良策ai)"
-)
+XIAOCE_BOT_USERNAME = "小策bot"
+XIAOCE_BOT_DISPLAY = "小策bot"
+XIAOCE_BOT_BIO = "AI 知识问答助手 · 经营指标 / 知识库 / 图谱"
 
 
 def get_collab_ai_user():
-    """专用 AI 发言账号（不加入群成员列表）。"""
+    """专用 AI 发言账号（群内 @AI / 插嘴，可不在成员列表展示）。"""
     user, created = User.objects.get_or_create(
         username="良策AI",
         defaults={
@@ -51,6 +51,64 @@ def get_collab_ai_user():
         user.set_unusable_password()
         user.save(update_fields=["password"])
     return user
+
+
+def get_xiaoce_bot_user():
+    """团队聊天通讯录中的「小策bot」知识问答助手。"""
+    user, created = User.objects.get_or_create(
+        username=XIAOCE_BOT_USERNAME,
+        defaults={
+            "is_active": True,
+            "is_staff": False,
+            "is_superuser": False,
+        },
+    )
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    try:
+        from apps.core.models import UserSettings
+
+        settings_row, _ = UserSettings.objects.get_or_create(user=user)
+        dirty = False
+        if (settings_row.display_name or "").strip() != XIAOCE_BOT_DISPLAY:
+            settings_row.display_name = XIAOCE_BOT_DISPLAY
+            dirty = True
+        if (settings_row.bio or "").strip() != XIAOCE_BOT_BIO:
+            settings_row.bio = XIAOCE_BOT_BIO
+            dirty = True
+        if dirty:
+            settings_row.save(update_fields=["display_name", "bio", "updated_at"])
+    except Exception:
+        logger.exception("ensure xiaoce bot profile failed")
+    return user
+
+
+def is_xiaoce_bot_user(user) -> bool:
+    return bool(user) and getattr(user, "username", "") == XIAOCE_BOT_USERNAME
+
+
+def xiaoce_bot_brief() -> dict:
+    bot = get_xiaoce_bot_user()
+    return {
+        "id": bot.id,
+        "username": bot.username,
+        "nickname": "",
+        "display_name": XIAOCE_BOT_DISPLAY,
+        "avatar_url": "",
+        "bio": XIAOCE_BOT_BIO,
+        "online": True,
+        "last_seen": None,
+        "date_joined": bot.date_joined.isoformat() if bot.date_joined else None,
+        "kind": "bot",
+        "bot_id": "xiaoce",
+    }
+
+
+_TOKEN_RE = re.compile(r"@([^\s@]+)")
+_MENTION_TARGET_RE = re.compile(
+    r"@(?:AI|ai|良策AI|良策ai|小策bot|小策)\s*.*?@([^\s@]+)|@([^\s@]+)\s*.*?@(?:AI|ai|良策AI|良策ai|小策bot|小策)"
+)
 
 
 def parse_mentions(content: str, member_usernames: list[str] | None = None) -> list[dict[str, Any]]:
@@ -244,13 +302,28 @@ def reply_ai_mention(
 
     skill_names = "、".join(s.name for s in active_skills) if active_skills else ""
 
+
+    knowledge_context = ""
+    if llm_user is not None:
+        try:
+            knowledge_context, _knowledge_refs = _selected_knowledge_context(
+                trigger_content,
+                knowledge_mode="auto",
+                knowledge_base_ids=None,
+                user=llm_user,
+            )
+        except Exception as exc:
+            logger.exception("collab @AI knowledge retrieval failed: %s", exc)
+
     system = (
         "你是「良策AI」，在企业协作风控会话中被成员召唤。用中文直接回答，简洁专业、可执行。\n"
         "能力说明（必须按此回答，不要编造相反规则）：\n"
         "1) 召唤应答：有人 @AI，或消息中 @ 了 Skill 时，你会立刻在聊天里回复（本条就是）。\n"
-        "2) Skill：用户可通过锤子按钮或 @skill-id 加载技能；平台可能已自动执行其中的 python 脚本，"
-        "你必须按下方 Skill 说明与脚本结果处理任务，不要让用户去本地终端重跑。\n"
-        "3) 监控插嘴：开关"
+        "2) \u77e5\u8bc6\u5e93\uff1a\u88ab @AI \u65f6\uff0c\u5e73\u53f0\u4f1a\u81ea\u52a8\u68c0\u7d22\u5f53\u524d\u7528\u6237\u53ef\u89c1\u7684\u77e5\u8bc6\u5e93\uff1b\u82e5\u4e0b\u65b9\u6709\u3010\u77e5\u8bc6\u5e93\u53c2\u8003\u8d44\u6599\u3011\uff0c"
+        "\u5fc5\u987b\u4f18\u5148\u7ed3\u5408\u8fd9\u4e9b\u771f\u5b9e\u5207\u7247\u56de\u7b54\uff0c\u5e76\u5728\u4e0d\u786e\u5b9a\u65f6\u8bf4\u660e\u6ca1\u6709\u68c0\u7d22\u5230\u8db3\u591f\u8bc1\u636e\u3002\n"
+        "3) Skill\uff1a\u7528\u6237\u53ef\u901a\u8fc7\u9524\u5b50\u6309\u94ae\u6216 @skill-id \u52a0\u8f7d\u6280\u80fd\uff1b\u5e73\u53f0\u53ef\u80fd\u5df2\u81ea\u52a8\u6267\u884c\u5176\u4e2d\u7684 python \u811a\u672c\uff0c"
+        "\u4f60\u5fc5\u987b\u6309\u4e0b\u65b9 Skill \u8bf4\u660e\u4e0e\u811a\u672c\u7ed3\u679c\u5904\u7406\u4efb\u52a1\uff0c\u4e0d\u8981\u8ba9\u7528\u6237\u53bb\u672c\u5730\u7ec8\u7aef\u91cd\u8dd1\u3002\n"
+        "4) \u76d1\u63a7\u63d2\u5634\uff1a\u5f00\u5173"
         f"为{interject_state}并过冷却时，仅黄/红风险会发【监控提醒/警告】；"
         "怎么做、方案、流程图等日常问答只在被 @AI 时回答，不会每条都插嘴。\n"
         "回答风格：怎么做要给步骤；剖析/分析某人给特征·意图·风险·建议；违法请求拒绝。\n"
@@ -293,6 +366,9 @@ def reply_ai_mention(
     if skill_names:
         ref_parts.append(f"已加载 Skill：{skill_names}")
 
+    if knowledge_context:
+        ref_parts.append(f"\u3010\u77e5\u8bc6\u5e93\u53c2\u8003\u8d44\u6599\u3011\n{knowledge_context}")
+
     ref_block = ("\n\n".join(ref_parts) + "\n\n") if ref_parts else ""
 
     user = (
@@ -323,7 +399,7 @@ def reply_ai_mention(
             "同一次消息里如果已经召唤了我，该轮一般不再额外插嘴。"
         )
 
-    max_tokens = 2000 if active_skills else 1000
+    max_tokens = 4096 if active_skills else 4096
     result = _call_llm(system, user, llm_user=llm_user, max_tokens=max_tokens)
     text = (result.get("content") or "").strip()
     err = (result.get("error") or "").strip()

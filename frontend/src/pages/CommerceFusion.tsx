@@ -205,9 +205,25 @@ function FactsPane() {
     ...data.postgres.tables.map((t, i) => ({
       key: `p-${i}`,
       engine: "Postgres",
-      name: String((t as { name?: string }).name || JSON.stringify(t)),
+      name: String(
+        (t as { table?: string; name?: string }).table
+        || (t as { name?: string }).name
+        || JSON.stringify(t),
+      ),
     })),
   ];
+  const statusColor = (s: string) => {
+    if (s === "ok") return "green";
+    if (s === "partial") return "gold";
+    if (s === "empty") return "orange";
+    return "red";
+  };
+  const statusLabel = (s: string) => {
+    if (s === "ok") return "已接入";
+    if (s === "partial") return "部分接入";
+    if (s === "empty") return "表空无数据";
+    return "数据缺失";
+  };
   return (
     <Space direction="vertical" style={{ width: "100%" }} size={16}>
       <Alert
@@ -216,6 +232,42 @@ function FactsPane() {
         message={`事实层状态：${data.status}`}
         description={data.guidance.join(" · ")}
       />
+      {data.facts?.length ? (
+        <Card
+          size="small"
+          title={`基础数据 F1–F8${data.facts_summary ? `（接入 ${data.facts_summary.ok} · 部分 ${data.facts_summary.partial} · 缺失 ${data.facts_summary.missing}）` : ""}`}
+        >
+          <Table
+            size="small"
+            rowKey="id"
+            pagination={false}
+            dataSource={data.facts}
+            columns={[
+              { title: "编码", dataIndex: "code", width: 64 },
+              { title: "名称", dataIndex: "name", width: 110 },
+              {
+                title: "状态",
+                dataIndex: "status",
+                width: 100,
+                render: (s: string) => <Tag color={statusColor(s)}>{statusLabel(s)}</Tag>,
+              },
+              {
+                title: "行数",
+                dataIndex: "rows",
+                width: 72,
+                render: (v: number | null) => (v == null ? "—" : v),
+              },
+              {
+                title: "命中表",
+                dataIndex: "matched_tables",
+                render: (rows: { table: string }[]) =>
+                  rows?.length ? rows.map((r) => r.table).join(", ") : "—",
+              },
+              { title: "说明", dataIndex: "note", ellipsis: true },
+            ]}
+          />
+        </Card>
+      ) : null}
       <Row gutter={16}>
         <Col span={12}>
           <Card size="small" title="DuckDB">

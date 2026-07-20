@@ -26,12 +26,12 @@ const DOMAINS: Domain[] = [
     samples: ["蝉妈妈分析", "日报汇总", "价格监控", "企微同步"], share: 18,
   },
   {
-    name: "专家团", sub: "Council", desc: "多智能体 · 圆桌",
-    color: "#5bd5f2", route: "/council", countLabel: "128 个节点",
+    name: "圆桌会议", sub: "Council", desc: "多个专家一起研讨方案",
+    color: "#5bd5f2", route: "/collab?view=roundtable", countLabel: "128 个节点",
     samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 14,
   },
   {
-    name: "对话", sub: "Chat", desc: "问答 · 文档 · 工具",
+    name: "AI 问答", sub: "Chat", desc: "直接提问、读文档、调工具",
     color: "#315efb", route: "/agent", countLabel: "核心入口",
     samples: ["问答会话", "文档解读", "Skill 调度", "MCP 调用"], share: 12,
   },
@@ -46,7 +46,7 @@ const DOMAINS: Domain[] = [
     samples: ["订单明细", "用户标签", "GMV 指标", "退款率"], share: 10,
   },
   {
-    name: "任务", sub: "Tasks", desc: "编排 · 执行 · 审批",
+    name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
     samples: ["审批流", "编排任务", "执行记录", "审计"], share: 7,
   },
@@ -356,7 +356,7 @@ export default function Home() {
         ctx.restore();
       }
 
-      if ((hovered || selectedN) && node.type !== "center") {
+      if (hovered || selectedN) {
         ctx.fillStyle = "#56627a";
         ctx.font = "600 12px PingFang SC, Microsoft YaHei, sans-serif";
         ctx.textAlign = "center";
@@ -589,7 +589,7 @@ export default function Home() {
   const fallbackFeed = useMemo(() => [
     { text: "智能客服解决方案知识库", meta: "知识库 · 今天 14:30" },
     { text: "客户需求 → 解决方案", meta: "流程 · 今天 11:20" },
-    { text: "数据分析专家", meta: "专家团 · 昨天 16:45" },
+    { text: "数据分析专家", meta: "圆桌会议 · 昨天 16:45" },
     { text: "蝉妈妈分析 Skill", meta: "技能库 · 昨天 09:10" },
   ], []);
   const feedRows = feed.length ? feed : fallbackFeed;

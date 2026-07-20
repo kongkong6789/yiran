@@ -1,4 +1,5 @@
 export type LoopLevel =
+  | "fact"
   | "sku"
   | "link"
   | "channel"
@@ -83,6 +84,7 @@ export const LEVEL_ORDER: LoopLevel[] = [
   "channel",
   "link",
   "sku",
+  "fact",
 ];
 
 export const LEVEL_LABEL: Record<LoopLevel, string> = {
@@ -92,6 +94,7 @@ export const LEVEL_LABEL: Record<LoopLevel, string> = {
   channel: "渠道",
   link: "链接",
   sku: "SKU",
+  fact: "基础数据",
 };
 
 /** 从粗到细：下一层（可下钻） */
@@ -101,6 +104,7 @@ export const CHILD_LEVEL: Partial<Record<LoopLevel, LoopLevel>> = {
   platform: "channel",
   channel: "link",
   link: "sku",
+  sku: "fact",
 };
 
 /** 从细到粗：上一层 */
@@ -110,4 +114,5 @@ export const PARENT_LEVEL: Partial<Record<LoopLevel, LoopLevel>> = {
   channel: "platform",
   link: "channel",
   sku: "link",
+  fact: "sku",
 };

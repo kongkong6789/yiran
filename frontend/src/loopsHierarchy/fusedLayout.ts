@@ -45,6 +45,7 @@ const LANE_TINT: Record<LoopLevel, string> = {
   channel: "#f3f0fa",
   link: "#eef8f4",
   sku: "#faf6f0",
+  fact: "#f1f5f9",
 };
 
 /** 每层保留关键节点，便于一屏融合（完整细项点开仍可见 details） */
@@ -55,6 +56,7 @@ const FOCUS_IDS: Record<LoopLevel, string[]> = {
   channel: ["c1", "c2", "c3", "c5", "c7", "c8", "c9"],
   link: ["l1", "l2", "l3", "l4", "l6", "l7", "l8"],
   sku: ["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k11", "k12", "k13"],
+  fact: ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"],
 };
 
 /** 层内节点在泳道内的相对排布（紧凑一行/两行） */
@@ -165,6 +167,9 @@ export function buildFusedScene(): FusedScene {
 
   // 跨层上卷桥：销售链 + 资源链
   const bridges: { from: [LoopLevel, string]; to: [LoopLevel, string]; label: string; polarity: "+" | "-" }[] = [
+    { from: ["fact", "f1"], to: ["sku", "k3"], label: "订单→SKU销售", polarity: "+" },
+    { from: ["fact", "f2"], to: ["sku", "k4"], label: "退款→SKU退款", polarity: "+" },
+    { from: ["fact", "f5"], to: ["sku", "k13"], label: "库存→SKU周转", polarity: "+" },
     { from: ["sku", "k3"], to: ["link", "l4"], label: "SKU→页销售", polarity: "+" },
     { from: ["link", "l4"], to: ["channel", "c2"], label: "页→店销售", polarity: "+" },
     { from: ["channel", "c2"], to: ["platform", "p3"], label: "店→平台销售", polarity: "+" },
