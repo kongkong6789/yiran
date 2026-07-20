@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosProgressEvent } from "axios";
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
 
@@ -420,7 +421,7 @@ export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: strin
 export const uploadKnowledgeFile = (
   knowledgeBaseId: number,
   file: File,
-  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number; onUploadProgress?: (event: AxiosProgressEvent) => void },
 ) => {
   const form = new FormData();
   form.append("file", file);
@@ -436,6 +437,7 @@ export const uploadKnowledgeFile = (
   }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
     headers: { "Content-Type": "multipart/form-data" },
     timeout: 60_000,
+    onUploadProgress: body?.onUploadProgress,
   }).then((r) => r.data);
 };
 

@@ -13,6 +13,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Progress,
   Row,
   Segmented,
   Select,
@@ -64,6 +65,13 @@ type Engine = "naive-rag" | "graph-rag" | "hybrid-rag";
 type ReviewPolicy = "none" | "sample" | "required";
 
 type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; downloadUrl?: string; };
+
+type CreateUploadProgress = {
+  percent: number;
+  title: string;
+  detail: string;
+  status?: "normal" | "active" | "success" | "exception";
+};
 
 const keywordStopwords = new Set([
   "and", "or", "the", "for", "with", "from", "this", "that", "http", "https", "www", "com", "cn",
@@ -429,6 +437,7 @@ export default function Knowledge() {
   const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
   const [detailPageSize, setDetailPageSize] = useState(10);
   const [processedFile, setProcessedFile] = useState<KnowledgeTemplateFile | null>(null);
+  const [chunkPageFile, setChunkPageFile] = useState<KnowledgeTemplateFile | null>(null);
   const [deletedTemplateFiles, setDeletedTemplateFiles] = useState<Record<string, string[]>>({});
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploadPurpose, setUploadPurpose] = useState("作为当前知识应用的补充资料，进入解析、切块、向量化和权限标注流程。");
@@ -437,6 +446,7 @@ export default function Knowledge() {
   const [detailFilesByBase, setDetailFilesByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [createUploadProgress, setCreateUploadProgress] = useState<CreateUploadProgress | null>(null);
   const [processedChunks, setProcessedChunks] = useState<KnowledgeChunkItem[]>([]);
   const [chunkLoading, setChunkLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeTemplate | null>(null);
@@ -536,6 +546,7 @@ export default function Knowledge() {
 
   function handleCreateKnowledgeBase() {
     setUploadFiles([]);
+    setCreateUploadProgress(null);
     setCreateSource("file");
     setCreateName("");
     setCreateDescription("");
@@ -594,24 +605,51 @@ export default function Knowledge() {
       return;
     }
     setUploading(true);
+    setCreateUploadProgress({ percent: 3, title: "创建知识库", detail: "正在生成知识库记录...", status: "active" });
+    const totalBytes = rawFiles.reduce((sum, file) => sum + Math.max(file.size || 0, 1), 0);
+    const uploadedBytesByIndex = new Map<number, number>();
+    const updateFileProgress = (fileIndex: number, loaded: number, total: number) => {
+      uploadedBytesByIndex.set(fileIndex, Math.min(loaded, total));
+      const uploadedBytes = Array.from(uploadedBytesByIndex.values()).reduce((sum, value) => sum + value, 0);
+      const uploadPercent = totalBytes ? uploadedBytes / totalBytes : (fileIndex + 1) / rawFiles.length;
+      const percent = Math.max(12, Math.min(88, Math.round(10 + uploadPercent * 78)));
+      setCreateUploadProgress({
+        percent,
+        title: "上传文件",
+        detail: `正在上传 ${fileIndex + 1}/${rawFiles.length}：${rawFiles[fileIndex].name}`,
+        status: "active",
+      });
+    };
     try {
       const created = await createKnowledgeBaseRecord();
+      setCreateUploadProgress({ percent: 10, title: "上传文件", detail: "知识库已创建，开始上传文件...", status: "active" });
       const jobIds: number[] = [];
-      for (const file of rawFiles) {
-        const result = await uploadKnowledgeFile(created.id, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: 160 });
+      for (const [index, file] of rawFiles.entries()) {
+        updateFileProgress(index, 0, Math.max(file.size || 0, 1));
+        const result = await uploadKnowledgeFile(created.id, file, {
+          segment_mode: "general",
+          chunk_size: chunkSize,
+          chunk_overlap: 160,
+          onUploadProgress: (event) => updateFileProgress(index, event.loaded, event.total || Math.max(file.size || 0, 1)),
+        });
+        uploadedBytesByIndex.set(index, Math.max(file.size || 0, 1));
         if (result.job_id) jobIds.push(result.job_id);
       }
+      setCreateUploadProgress({ percent: 92, title: "刷新列表", detail: "文件已上传，正在刷新知识库状态...", status: "active" });
       setUploadFiles([]);
       await refreshKnowledgeBases();
       await refreshKnowledgeFiles(String(created.id));
       setTemplateId(String(created.id));
       setDetailTemplateId(String(created.id));
+      setCreateUploadProgress({ percent: 100, title: "上传完成", detail: "入库任务已提交，后台正在解析和向量化。", status: "success" });
       setCreateMode(false);
       message.success(`\u5df2\u4e0a\u4f20 ${rawFiles.length} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u6b63\u5728\u5165\u5e93`);
       void pollIngestJobs(String(created.id), jobIds);
     } catch (error) {
       console.error(error);
-      message.error(apiErrorMessage(error, "Create or upload failed"));
+      const detail = apiErrorMessage(error, "Create or upload failed");
+      setCreateUploadProgress({ percent: 100, title: "上传失败", detail, status: "exception" });
+      message.error(detail);
     } finally {
       setUploading(false);
     }
@@ -735,8 +773,7 @@ export default function Knowledge() {
     }
   }
 
-  async function openProcessedFile(file: KnowledgeTemplateFile) {
-    setProcessedFile(file);
+  async function loadFileChunks(file: KnowledgeTemplateFile) {
     setProcessedChunks([]);
     if (!file.id) return;
     setChunkLoading(true);
@@ -751,12 +788,24 @@ export default function Knowledge() {
     }
   }
 
+  async function openProcessedFile(file: KnowledgeTemplateFile) {
+    setProcessedFile(file);
+    await loadFileChunks(file);
+  }
+
+  async function openChunkPage(file: KnowledgeTemplateFile) {
+    setProcessedFile(null);
+    setChunkPageFile(file);
+    await loadFileChunks(file);
+  }
+
   async function removeKnowledgeFile(file: KnowledgeTemplateFile) {
     if (file.id) {
       try {
         await deleteKnowledgeFile(file.id);
         if (detailTemplate) await refreshKnowledgeFiles(detailTemplate.id);
         if (processedFile?.id === file.id) setProcessedFile(null);
+        if (chunkPageFile?.id === file.id) setChunkPageFile(null);
         message.success("File deleted");
       } catch (error) {
         console.error(error);
@@ -776,6 +825,7 @@ export default function Knowledge() {
       [detailTemplate.id]: [...(prev[detailTemplate.id] ?? []), file.name],
     }));
     if (processedFile?.name === file.name) setProcessedFile(null);
+    if (chunkPageFile?.name === file.name) setChunkPageFile(null);
     message.success("File removed");
   }
 
@@ -785,6 +835,7 @@ export default function Knowledge() {
 
   useEffect(() => {
     if (detailTemplateId) void refreshKnowledgeFiles(detailTemplateId);
+    setChunkPageFile(null);
   }, [detailTemplateId]);
 
   const configDraft = useMemo(() => ({
@@ -939,7 +990,10 @@ export default function Knowledge() {
                         multiple
                         fileList={uploadFiles}
                         beforeUpload={() => false}
-                        onChange={(info) => setUploadFiles(info.fileList)}
+                        onChange={(info) => {
+                          setUploadFiles(info.fileList);
+                          setCreateUploadProgress(null);
+                        }}
                         accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
                       >
                         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
@@ -964,7 +1018,7 @@ export default function Knowledge() {
                   )}
 
                   <div className="create-actions">
-                    <Button onClick={() => setCreateMode(false)}>取消</Button>
+                    <Button onClick={() => { setCreateUploadProgress(null); setCreateMode(false); }}>取消</Button>
                     <Button icon={<DatabaseOutlined />} loading={baseLoading} onClick={() => void handleCreateEmptyKnowledgeBase()}>
                       创建空知识库
                     </Button>
@@ -972,9 +1026,95 @@ export default function Knowledge() {
                       创建并上传
                     </Button>
                   </div>
+                  {createUploadProgress ? (
+                    <div className="create-upload-progress">
+                      <div className="create-upload-progress-head">
+                        <b>{createUploadProgress.title}</b>
+                        <span>{createUploadProgress.percent}%</span>
+                      </div>
+                      <Progress percent={createUploadProgress.percent} status={createUploadProgress.status} showInfo={false} />
+                      <p>{createUploadProgress.detail}</p>
+                    </div>
+                  ) : null}
                 </section>
               </div>
             </div>
+          </div>
+        </section>
+      ) : detailTemplate && chunkPageFile ? (
+        <section className="knowledge-chunk-window">
+          <div className="doc-window-topbar">
+            <Button icon={<ArrowLeftOutlined />} onClick={() => { setChunkPageFile(null); setProcessedChunks([]); }}>返回文档列表</Button>
+            <Space wrap>
+              <Tag color={chunkPageFile.status === "ready" ? "green" : chunkPageFile.status === "failed" ? "red" : "blue"}>{displayStatus(chunkPageFile.status)}</Tag>
+              <Tag>{chunkPageFile.kind || "file"}</Tag>
+              <Tag>{chunkPageFile.chunks || processedChunks.length} chunks</Tag>
+            </Space>
+          </div>
+
+          <div className="chunk-window-header">
+            <div>
+              <Title level={3}>{chunkPageFile.name}</Title>
+              <Paragraph>{chunkPageFile.source}</Paragraph>
+            </div>
+            <Space>
+              <Button icon={<EyeOutlined />} onClick={() => void openProcessedFile(chunkPageFile)}>处理详情</Button>
+              <Button icon={<FileSearchOutlined />} onClick={() => void downloadOriginalFile(chunkPageFile)}>下载原文件</Button>
+            </Space>
+          </div>
+
+          <div className="chunk-page-layout">
+            <section className="chunk-list-panel">
+              <div className="chunk-list-topbar">
+                <b>{chunkLoading ? "正在加载切片" : `${processedChunks.length || chunkPageFile.chunks || 0} 个切片`}</b>
+                <span>一行成交明细对应一个 chunk</span>
+              </div>
+              <List
+                loading={chunkLoading}
+                dataSource={processedChunks}
+                locale={{ emptyText: chunkPageFile.id ? "暂无切片，可能仍在后台入库" : "示例文件暂无后端切片" }}
+                renderItem={(chunk) => {
+                  const text = chunk.text_preview || chunk.chunk_ref;
+                  const keywords = chunkKeywords(chunk, text);
+                  return (
+                    <List.Item className="chunk-row">
+                      <div className="chunk-row-main">
+                        <div className="chunk-row-title">
+                          <span>分段-{String(chunk.chunk_index + 1).padStart(2, "0")}</span>
+                          <small>{text.length.toLocaleString()} 字符</small>
+                        </div>
+                        <Paragraph className="chunk-preview-text">{text}</Paragraph>
+                        {keywords.length ? (
+                          <Space size={[6, 6]} wrap>
+                            {keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)}
+                          </Space>
+                        ) : null}
+                      </div>
+                    </List.Item>
+                  );
+                }}
+              />
+            </section>
+
+            <aside className="chunk-meta-panel">
+              <Card title="文档信息">
+                <List
+                  size="small"
+                  dataSource={[
+                    `原始文件名称：${chunkPageFile.name}`,
+                    `文件类型：${chunkPageFile.kind || "file"}`,
+                    `上传时间：${formatDateTime(chunkPageFile.uploadedAt)}`,
+                    `字符数：${(chunkPageFile.charCount ?? 0).toLocaleString()}`,
+                    `切片数量：${chunkPageFile.chunks || processedChunks.length || 0}`,
+                    `召回次数：${chunkPageFile.recallCount ?? 0}`,
+                  ]}
+                  renderItem={(item) => <List.Item>{item}</List.Item>}
+                />
+              </Card>
+              <Card title="切分方式">
+                <p className="chunk-meta-copy">XLSX/CSV 明细表按行切分，一条表格数据生成一个 chunk；普通文档仍按段落和字符长度合并切分。</p>
+              </Card>
+            </aside>
           </div>
         </section>
       ) : detailTemplate ? (
@@ -1039,7 +1179,7 @@ export default function Knowledge() {
                       <td className="check-col"><input type="checkbox" aria-label={`选择 ${file.name}`} /></td>
                       <td className="index-col">{index + 1}</td>
                       <td>
-                        <button className="doc-name" onClick={() => void downloadOriginalFile(file)}>
+                        <button className="doc-name" onClick={() => void openChunkPage(file)}>
                           <span className="file-type-icon"><FileExcelOutlined /></span>
                           <span>{file.name}</span>
                         </button>
@@ -1693,6 +1833,32 @@ const styles = `
   border-color: #dbe4ff !important;
   color: #ffffff !important;
 }
+.create-upload-progress {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.create-upload-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #1d2939;
+}
+.create-upload-progress-head span {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+.create-upload-progress p {
+  margin: 8px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.5;
+}
 @media (max-width: 980px) {
   .create-grid {
     grid-template-columns: 1fr;
@@ -2255,6 +2421,72 @@ const styles = `
 }
 .doc-name:hover span:last-child {
   color: #155eef;
+}
+.knowledge-chunk-window {
+  min-height: calc(100vh - 104px);
+  padding: 26px 28px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+}
+.chunk-window-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+.chunk-window-header h3 { margin: 0 0 4px; }
+.chunk-window-header p { margin: 0; color: #64748b; }
+.chunk-page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+.chunk-list-panel {
+  min-height: 560px;
+  border-top: 1px solid #eef2f7;
+}
+.chunk-list-topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  color: #0f172a;
+}
+.chunk-list-topbar span { color: #64748b; font-size: 13px; }
+.chunk-row {
+  align-items: flex-start !important;
+  padding: 18px 0 !important;
+}
+.chunk-row-main { width: 100%; min-width: 0; }
+.chunk-row-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.chunk-row-title span { color: #1e293b; font-weight: 700; }
+.chunk-row-title small { color: #64748b; }
+.chunk-meta-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: sticky;
+  top: 84px;
+}
+.chunk-meta-panel .ant-card {
+  border-radius: 8px;
+  border-color: rgba(15,23,42,0.08);
+  box-shadow: 0 8px 24px rgba(15,23,42,0.06);
+}
+.chunk-meta-copy {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.65;
 }
 .file-type-icon {
   display: inline-flex;

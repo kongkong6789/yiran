@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import hashlib
 import json
@@ -587,6 +588,28 @@ def split_into_chunks(parsed: ParsedDocument, *, max_chars: int = DEFAULT_CHUNK_
     max_chars = max(1, max_chars)
     overlap_chars = max(0, min(overlap_chars, max_chars - 1))
     chunks: list[tuple[str, dict]] = []
+    parser = parsed.metadata.get("parser")
+    if parser in TABLE_FILE_TYPES and bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)):
+        for segment_index, segment in enumerate(parsed.segments):
+            text = segment.text.strip()
+            if not text:
+                continue
+            references = [segment_reference(segment_index, segment.metadata)]
+            metadata = dict(segment.metadata)
+            metadata.update(
+                {
+                    "segment_start": segment_index,
+                    "segment_end": segment_index,
+                    "segments": references,
+                    "reference_kinds": reference_kinds(references),
+                    "char_count": len(text),
+                    "chunking_strategy": "table_row",
+                }
+            )
+            chunks.append((text, metadata))
+        if not chunks:
+            raise TraditionalRagError("No chunks generated from file.", "empty_chunks")
+        return chunks
     current_parts: list[str] = []
     current_references: list[dict] = []
     current_start: int | None = None
@@ -669,6 +692,9 @@ def embedding_settings() -> dict | None:
     api_format = (getattr(settings, "EMBEDDING_API_FORMAT", "local-inputs") or "local-inputs").strip().lower()
     normalize = bool(getattr(settings, "EMBEDDING_NORMALIZE", True))
     pooling = (getattr(settings, "EMBEDDING_POOLING", "mean") or "mean").strip()
+    dimensions = max(0, int(getattr(settings, "EMBEDDING_DIMENSIONS", 0) or 0))
+    document_instruction = (getattr(settings, "EMBEDDING_DOCUMENT_INSTRUCTION", "") or "").strip()
+    query_instruction = (getattr(settings, "EMBEDDING_QUERY_INSTRUCTION", "") or "").strip()
     if not base_url:
         return None
     if api_format == "openai" and (not api_key or not model):
@@ -683,6 +709,9 @@ def embedding_settings() -> dict | None:
         "api_format": api_format,
         "normalize": normalize,
         "pooling": pooling,
+        "dimensions": dimensions,
+        "document_instruction": document_instruction,
+        "query_instruction": query_instruction,
     }
 
 
@@ -699,13 +728,55 @@ def embedding_endpoint(base_url: str) -> str:
 
 def build_embedding_payload(config: dict, texts: list[str]) -> dict:
     if config["api_format"] == "openai":
-        return {"model": config["model"], "input": texts}
-    return {
+        payload = {"model": config["model"], "input": texts}
+        if config.get("dimensions"):
+            payload["dimensions"] = config["dimensions"]
+        return payload
+    payload = {
         "inputs": [{"text": text} for text in texts],
         "normalize": config["normalize"],
         "pooling": config["pooling"],
     }
+    if config.get("dimensions"):
+        payload["dimensions"] = config["dimensions"]
+    return payload
 
+
+def prepare_embedding_texts(texts: list[str], config: dict, *, input_type: str, max_text_chars: int) -> tuple[list[str], dict]:
+    instruction = config.get("query_instruction") if input_type == "query" else config.get("document_instruction")
+    prefix = f"{instruction}\n" if instruction else ""
+    prepared: list[str] = []
+    truncated_count = 0
+    max_original_chars = 0
+    max_prepared_chars = 0
+    for text in texts:
+        raw = text or ""
+        max_original_chars = max(max_original_chars, len(raw))
+        budget = max_text_chars - len(prefix) if max_text_chars > 0 else 0
+        if max_text_chars > 0 and budget <= 0:
+            clipped = ""
+            truncated = bool(raw)
+        elif max_text_chars > 0 and len(raw) > budget:
+            clipped = raw[:budget]
+            truncated = True
+        else:
+            clipped = raw
+            truncated = False
+        value = f"{prefix}{clipped}" if prefix else clipped
+        if max_text_chars > 0 and len(value) > max_text_chars:
+            value = value[:max_text_chars]
+            truncated = True
+        if truncated:
+            truncated_count += 1
+        max_prepared_chars = max(max_prepared_chars, len(value))
+        prepared.append(value)
+    return prepared, {
+        "input_type": input_type,
+        "instruction_applied": bool(prefix),
+        "truncated_count": truncated_count,
+        "max_original_chars": max_original_chars,
+        "max_prepared_chars": max_prepared_chars,
+    }
 
 def extract_embedding_vectors(result: object, expected_count: int) -> list[list[float]]:
     data: object
@@ -731,7 +802,26 @@ def extract_embedding_vectors(result: object, expected_count: int) -> list[list[
     return vectors
 
 
-def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[list[float]], dict]:
+def iter_embedding_batches(texts: list[str], *, batch_size: int, max_batch_chars: int) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for text in texts:
+        text_chars = len(text or "")
+        would_exceed_count = len(current) >= batch_size
+        would_exceed_chars = bool(current) and max_batch_chars > 0 and current_chars + text_chars > max_batch_chars
+        if would_exceed_count or would_exceed_chars:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(text)
+        current_chars += text_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def embed_texts(texts: list[str], *, fail_on_error: bool = True, input_type: str = "document") -> tuple[list[list[float]], dict]:
     config = embedding_settings()
     if config is None:
         return [], {"status": "not_configured"}
@@ -752,16 +842,24 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
         "EMBEDDING_TIMEOUT_SECONDS" if fail_on_error else "EMBEDDING_OPTIONAL_TIMEOUT_SECONDS",
         30 if fail_on_error else 90,
     )))
-    batch_size = max(1, int(getattr(settings, "EMBEDDING_BATCH_SIZE", 4)))
-    max_text_chars = max(1, int(getattr(settings, "EMBEDDING_MAX_TEXT_CHARS", 300)))
-    normalized_texts = [(text or "")[:max_text_chars] for text in texts]
+    batch_size = max(1, int(getattr(settings, "EMBEDDING_BATCH_SIZE", 64)))
+    max_text_chars = max(0, int(getattr(settings, "EMBEDDING_MAX_TEXT_CHARS", 8192)))
+    max_batch_chars = max(0, int(getattr(settings, "EMBEDDING_MAX_BATCH_CHARS", 60000)))
+    request_concurrency = max(1, int(getattr(settings, "EMBEDDING_REQUEST_CONCURRENCY", 4)))
+    normalized_texts, input_metadata = prepare_embedding_texts(
+        texts,
+        config,
+        input_type=input_type,
+        max_text_chars=max_text_chars,
+    )
     endpoint = embedding_endpoint(config["base_url"])
     all_vectors: list[list[float]] = []
     last_error: Exception | None = None
+    batches = iter_embedding_batches(normalized_texts, batch_size=batch_size, max_batch_chars=max_batch_chars)
 
-    for start_index in range(0, len(normalized_texts), batch_size):
-        batch = normalized_texts[start_index:start_index + batch_size]
+    def request_batch(batch: list[str]) -> list[list[float]]:
         payload = json.dumps(build_embedding_payload(config, batch), ensure_ascii=False).encode("utf-8")
+        batch_last_error: Exception | None = None
         for attempt in range(attempts):
             request = urllib.request.Request(
                 endpoint,
@@ -772,33 +870,54 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
             try:
                 with opener.open(request, timeout=timeout_seconds) as response:
                     result = json.loads(response.read().decode("utf-8"))
-                all_vectors.extend(extract_embedding_vectors(result, len(batch)))
-                last_error = None
-                break
+                return extract_embedding_vectors(result, len(batch))
             except urllib.error.HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace")
                 raise TraditionalRagError(f"Embedding API HTTP {error.code}: {detail}", "embedding_error") from error
             except (urllib.error.URLError, TimeoutError, OSError) as error:
-                last_error = error
+                batch_last_error = error
                 if attempt < attempts - 1:
                     time.sleep(min(1.0 * (attempt + 1), 3.0))
                     continue
             except json.JSONDecodeError as error:
                 raise TraditionalRagError("Embedding API returned invalid JSON.", "embedding_error") from error
-        if last_error is not None:
-            message = f"Embedding API network error: {last_error}"
-            if fail_on_error:
-                raise TraditionalRagError(message, "embedding_error")
-            return [], {
-                "status": "unavailable",
-                "error": "embedding_error",
-                "message": message,
-                "provider": config["api_format"],
-                "model": config["model"],
-                "endpoint": endpoint,
-                "batch_size": batch_size,
-                "max_text_chars": max_text_chars,
-            }
+        raise TraditionalRagError(f"Embedding API network error: {batch_last_error}", "embedding_error")
+
+    try:
+        if request_concurrency == 1 or len(batches) <= 1:
+            batch_vectors = [request_batch(batch) for batch in batches]
+        else:
+            workers = min(request_concurrency, len(batches))
+            batch_vectors = [None] * len(batches)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_index = {executor.submit(request_batch, batch): index for index, batch in enumerate(batches)}
+                for future in concurrent.futures.as_completed(future_to_index):
+                    batch_vectors[future_to_index[future]] = future.result()
+        for vectors in batch_vectors:
+            all_vectors.extend(vectors or [])
+        last_error = None
+    except TraditionalRagError as error:
+        last_error = error
+
+    if last_error is not None:
+        message = last_error.message if isinstance(last_error, TraditionalRagError) else f"Embedding API network error: {last_error}"
+        if fail_on_error:
+            raise last_error if isinstance(last_error, TraditionalRagError) else TraditionalRagError(message, "embedding_error")
+        return [], {
+            "status": "unavailable",
+            "error": "embedding_error",
+            "message": message,
+            "provider": config["api_format"],
+            "model": config["model"],
+            "endpoint": endpoint,
+            "batch_size": batch_size,
+            "max_text_chars": max_text_chars,
+            "max_batch_chars": max_batch_chars,
+            "batch_count": len(batches),
+            "request_concurrency": request_concurrency,
+            "dimensions_requested": config.get("dimensions") or None,
+            **input_metadata,
+        }
 
     if len(all_vectors) != len(texts):
         raise TraditionalRagError("Embedding API returned an unexpected number of vectors.", "embedding_error")
@@ -811,6 +930,11 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
         "endpoint": endpoint,
         "batch_size": batch_size,
         "max_text_chars": max_text_chars,
+        "max_batch_chars": max_batch_chars,
+        "batch_count": len(batches),
+        "request_concurrency": request_concurrency,
+        "dimensions_requested": config.get("dimensions") or None,
+        **input_metadata,
     }
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -823,7 +947,7 @@ def semantic_search(*, query: str, knowledge_base_id: int | None = None, limit: 
     normalized = query.strip()
     if not normalized:
         raise TraditionalRagError("Search query cannot be empty.", "invalid_input")
-    vectors, metadata = embed_texts([normalized])
+    vectors, metadata = embed_texts([normalized], input_type="query")
     if metadata.get("status") != "ready" or not vectors:
         raise TraditionalRagError("Embedding is not configured, semantic search is unavailable.", "config_error")
     embeddings = KnowledgeEmbedding.objects.select_related("chunk", "chunk__file", "chunk__file__knowledge_base").filter(
@@ -875,7 +999,7 @@ def _run_ingest_pipeline(
     job.progress = 80
     job.save(update_fields=["status", "stage", "progress", "updated_at"])
 
-    vectors, embedding_metadata = embed_texts([text for text, _ in chunk_items], fail_on_error=False)
+    vectors, embedding_metadata = embed_texts([text for text, _ in chunk_items], fail_on_error=False, input_type="document")
     knowledge_db = file._state.db or "knowledge"
     with transaction.atomic(using=knowledge_db):
         file.file_type = file_type
@@ -891,6 +1015,7 @@ def _run_ingest_pipeline(
             "chunk_config": {
                 "max_chars": chunk_size or DEFAULT_CHUNK_SIZE,
                 "overlap_chars": chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+                "table_row_chunking": bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)),
             },
             "embedding": embedding_metadata,
         }
