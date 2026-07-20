@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+from copy import deepcopy
 from pathlib import Path
 
 from django.conf import settings
@@ -276,16 +278,69 @@ def save_skill_asset_from_bytes(
     return asset, personal
 
 
+def skill_asset_storage_snapshot(asset: SkillAsset) -> dict:
+    return {
+        "uploader_id": asset.uploader_id,
+        "skill_id": asset.skill_id,
+        "cos_bucket": asset.cos_bucket,
+        "cos_key": asset.cos_key,
+        "package_kind": asset.package_kind,
+        "package_manifest": deepcopy(asset.package_manifest or []),
+    }
+
+
+def _remove_local_skill_paths(snapshot: dict) -> None:
+    user_id = int(snapshot.get("uploader_id") or 0)
+    if user_id <= 0:
+        return
+    workspace = Path(
+        getattr(settings, "SKILLS_WORKSPACE_ROOT", settings.BASE_DIR / "skill_workspaces")
+    ).resolve()
+    user_root = (workspace / str(user_id)).resolve()
+    local_files: list[Path] = []
+    for item in snapshot.get("package_manifest") or []:
+        raw_path = item.get("local_path") or ""
+        if not raw_path:
+            continue
+        path = Path(raw_path).resolve()
+        try:
+            path.relative_to(user_root)
+        except ValueError:
+            continue
+        local_files.append(path)
+        if path.is_file() or path.is_symlink():
+            path.unlink(missing_ok=True)
+
+    for path in local_files:
+        parent = path.parent
+        while parent != user_root and user_root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+    skill_id = str(snapshot.get("skill_id") or "")
+    legacy_root = (user_root / skill_id).resolve() if skill_id else user_root
+    if legacy_root != user_root and user_root in legacy_root.parents and legacy_root.exists():
+        shutil.rmtree(legacy_root, ignore_errors=True)
+
+
+def delete_skill_storage(snapshot: dict) -> None:
+    try:
+        manifest = snapshot.get("package_manifest") or []
+        bucket = str(snapshot.get("cos_bucket") or "")
+        if snapshot.get("package_kind") == "package" and manifest:
+            delete_skill_package(bucket, manifest)
+        elif bucket and snapshot.get("cos_key"):
+            delete_object(bucket, str(snapshot["cos_key"]))
+    finally:
+        _remove_local_skill_paths(snapshot)
+
+
 def delete_skill_asset(user, skill_id: str) -> None:
     asset = SkillAsset.objects.filter(uploader=user, skill_id=skill_id).first()
     if not asset:
         return
-    if asset.package_kind == "package" and asset.package_manifest:
-        delete_skill_package(asset.cos_bucket, asset.package_manifest)
-    elif asset.cos_bucket and asset.cos_key:
-        delete_object(asset.cos_bucket, asset.cos_key)
-    local_root = _local_skill_root(user.id, skill_id)
-    if local_root.exists():
-        import shutil
-        shutil.rmtree(local_root, ignore_errors=True)
+    delete_skill_storage(skill_asset_storage_snapshot(asset))
     asset.delete()

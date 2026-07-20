@@ -23,6 +23,7 @@ class XiaoceApiTests(APITestCase):
         self.user = User.objects.create_user("api-owner", password="pw")
         self.other = User.objects.create_user("api-other", password="pw")
         self.colleague = User.objects.create_user("api-colleague", password="pw")
+        self.staff = User.objects.create_user("api-staff", password="pw", is_staff=True)
         bot = get_xiaoce_bot_user()
         self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
         CollabParticipant.objects.create(room=self.room, user=self.user)
@@ -79,6 +80,41 @@ class XiaoceApiTests(APITestCase):
         by_id = {row["id"]: row for row in listed}
         self.assertEqual(by_id[task["id"]]["display_title"], "小策bot（GMV运算处理任务）")
         self.assertEqual(by_id[normal["id"]]["display_title"], self.colleague.username)
+
+    def test_staff_observer_sees_active_room_run_while_ordinary_outsider_is_isolated(self):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="long running task",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        self.client.force_authenticate(self.staff)
+        detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
+        listed = self.client.get("/api/collab/rooms/")
+        listed_room = next(row for row in listed.data["results"] if row["id"] == str(self.room.id))
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertIsNotNone(detail.data["active_xiaoce_run"])
+        self.assertEqual(detail.data["active_xiaoce_run"]["id"], str(run.id))
+        self.assertEqual(detail.data["active_xiaoce_run"]["status"], "running")
+        self.assertEqual(listed_room["active_xiaoce_run"]["id"], str(run.id))
+
+        self.client.force_authenticate(self.other)
+        self.assertEqual(
+            self.client.get(f"/api/collab/rooms/{self.room.id}/").status_code,
+            403,
+        )
+        ordinary_ids = {
+            row["id"] for row in self.client.get("/api/collab/rooms/").data["results"]
+        }
+        self.assertNotIn(str(self.room.id), ordinary_ids)
 
     def test_existing_room_endpoint_reuses_the_latest_xiaoce_task(self):
         first = self.client.post(self.tasks_url, {"title": "任务一"}, format="json").data

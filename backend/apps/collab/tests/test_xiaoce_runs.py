@@ -1,17 +1,21 @@
 import io
 import tempfile
+import threading
 import uuid
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.db import IntegrityError, close_old_connections, connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from rest_framework.test import APIClient
 
 from apps.collab.mentions import get_xiaoce_bot_user
+from apps.collab import views
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
-from apps.collab.xiaoce_progress import XiaoceProgressReporter
+from apps.collab.xiaoce_progress import XiaoceProgressReporter, _publish_after_commit
 from apps.collab.xiaoce_runs import (
     cancel_xiaoce_run,
     complete_xiaoce_run,
@@ -21,6 +25,7 @@ from apps.collab.xiaoce_runs import (
 )
 from apps.core.conversation_skill import PreparedConversationSkill
 from apps.skills.models import SkillAsset, UserSkill
+from apps.skills.repository import save_skill_asset_from_bytes
 
 
 def prepared_skill(room) -> PreparedConversationSkill:
@@ -91,6 +96,22 @@ class XiaoceRunLifecycleTests(TestCase):
         self.assertEqual(message.meta["process_steps"], self.run.progress_steps)
 
     @patch("apps.collab.xiaoce_progress.ws_push.publish_sync")
+    def test_progress_writer_acquires_room_before_run(self, _publish):
+        with CaptureQueriesContext(connection) as captured:
+            XiaoceProgressReporter(self.run.id).start("understanding")
+
+        selects = [query["sql"].lower() for query in captured.captured_queries if "select" in query["sql"].lower()]
+        room_index = next((
+            index for index, sql in enumerate(selects) if "collab_collabroom" in sql
+        ), -1)
+        run_index = next((
+            index for index, sql in reversed(list(enumerate(selects))) if "collab_xiaocerun" in sql
+        ), -1)
+        self.assertGreaterEqual(room_index, 0)
+        self.assertGreaterEqual(run_index, 0)
+        self.assertLess(room_index, run_index)
+
+    @patch("apps.collab.xiaoce_progress.ws_push.publish_sync")
     def test_failure_persists_safe_message_and_failed_snapshot(self, _publish):
         XiaoceProgressReporter(self.run.id).start("skill_summary")
 
@@ -152,6 +173,84 @@ class XiaoceRunLifecycleTests(TestCase):
         self.assertIsNone(message)
         save_asset.assert_not_called()
 
+    @patch("apps.collab.xiaoce_runs.save_skill_asset_from_bytes")
+    def test_deleted_run_does_not_start_skill_upload(self, save_asset):
+        run_id = self.run.id
+        prepared = prepared_skill(self.room)
+        self.room.delete()
+
+        message = complete_xiaoce_run_with_skill(run_id, prepared)
+
+        self.assertIsNone(message)
+        save_asset.assert_not_called()
+
+    @patch("apps.skills.repository.cos_enabled", return_value=False)
+    @patch("apps.collab.xiaoce_progress.ws_push.publish_sync")
+    def test_room_deleted_after_skill_staging_cleans_stage_and_preserves_existing_skill(
+        self,
+        _publish,
+        _cos_enabled,
+    ):
+        prepared = prepared_skill(self.room)
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(SKILLS_WORKSPACE_ROOT=Path(tmp)):
+                existing_asset, existing_personal = save_skill_asset_from_bytes(
+                    self.user,
+                    prepared.filename,
+                    prepared.package_data,
+                    adopt=True,
+                    visibility=SkillAsset.Visibility.PRIVATE,
+                    skill_id_override=prepared.skill_id,
+                )
+                existing_asset.name = "Existing skill"
+                existing_asset.save(update_fields=["name"])
+                existing_personal.name = "Existing personal skill"
+                existing_personal.save(update_fields=["name"])
+
+                real_save = save_skill_asset_from_bytes
+
+                def delete_room_after_staging(*args, **kwargs):
+                    staged = real_save(*args, **kwargs)
+                    self.room.delete()
+                    return staged
+
+                with patch(
+                    "apps.collab.xiaoce_runs.save_skill_asset_from_bytes",
+                    side_effect=delete_room_after_staging,
+                ):
+                    message = complete_xiaoce_run_with_skill(self.run.id, prepared)
+
+                self.assertIsNone(message)
+                self.assertEqual(SkillAsset.objects.count(), 1)
+                self.assertEqual(UserSkill.objects.count(), 1)
+                existing_asset.refresh_from_db()
+                existing_personal.refresh_from_db()
+                self.assertEqual(existing_asset.skill_id, prepared.skill_id)
+                self.assertEqual(existing_asset.name, "Existing skill")
+                self.assertEqual(existing_personal.name, "Existing personal skill")
+                self.assertEqual(
+                    sorted(path.name for path in (Path(tmp) / str(self.user.id)).iterdir()),
+                    [prepared.skill_id],
+                )
+
+    @patch("apps.collab.views.ws_push.publish_sync")
+    def test_final_publish_is_a_noop_after_room_deletion(self, publish):
+        message = complete_xiaoce_run(self.run.id, "finished")
+        self.room.delete()
+
+        views._publish_xiaoce_message(self.run, message)
+
+        publish.assert_not_called()
+
+    @patch("apps.collab.xiaoce_progress.ws_push.publish_sync")
+    def test_committed_progress_publish_is_a_noop_after_room_deletion(self, publish):
+        self.room.delete()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            _publish_after_commit(self.run)
+
+        publish.assert_not_called()
+
     def test_same_user_can_run_in_two_rooms_but_not_twice_in_one_room(self):
         room_b = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
         CollabParticipant.objects.create(room=room_b, user=self.user)
@@ -193,3 +292,76 @@ class XiaoceRunLifecycleTests(TestCase):
         self.assertIsNone(complete_xiaoce_run(run_id, "迟到回答"))
         self.assertIsNone(fail_xiaoce_run(run_id, RuntimeError("late")))
         self.assertFalse(CollabMessage.objects.filter(content="迟到回答").exists())
+
+
+class XiaoceRunConcurrencyTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("concurrent-owner", password="pw")
+        bot = get_xiaoce_bot_user()
+        self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
+        CollabParticipant.objects.create(room=self.room, user=self.user)
+        CollabParticipant.objects.create(room=self.room, user=bot)
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="package this room",
+            msg_type="user",
+        )
+        self.run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+    @patch("apps.skills.repository.cos_enabled", return_value=False)
+    def test_delete_wins_while_worker_waits_after_staging(self, _cos_enabled):
+        staged = threading.Event()
+        allow_finalize = threading.Event()
+        outcome: dict[str, object] = {}
+        prepared = prepared_skill(self.room)
+        real_save = save_skill_asset_from_bytes
+
+        def stage_then_wait(*args, **kwargs):
+            result = real_save(*args, **kwargs)
+            staged.set()
+            self.assertTrue(allow_finalize.wait(timeout=5))
+            return result
+
+        def worker():
+            close_old_connections()
+            try:
+                with patch(
+                    "apps.collab.xiaoce_runs.save_skill_asset_from_bytes",
+                    side_effect=stage_then_wait,
+                ):
+                    outcome["message"] = complete_xiaoce_run_with_skill(
+                        self.run.id,
+                        prepared,
+                    )
+            except BaseException as exc:  # surfaced in the main test thread
+                outcome["error"] = exc
+            finally:
+                close_old_connections()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(SKILLS_WORKSPACE_ROOT=Path(tmp)):
+                thread = threading.Thread(target=worker)
+                thread.start()
+                try:
+                    self.assertTrue(staged.wait(timeout=5))
+                    client = APIClient()
+                    client.force_authenticate(self.user)
+                    response = client.delete(f"/api/collab/rooms/{self.room.id}/")
+                    self.assertEqual(response.status_code, 200)
+                finally:
+                    allow_finalize.set()
+                    thread.join(timeout=5)
+
+                self.assertFalse(thread.is_alive())
+                self.assertNotIn("error", outcome)
+                self.assertIsNone(outcome.get("message"))
+                self.assertFalse(SkillAsset.objects.exists())
+                self.assertFalse(UserSkill.objects.exists())
+                user_root = Path(tmp) / str(self.user.id)
+                self.assertFalse(user_root.exists() and any(user_root.iterdir()))

@@ -22,8 +22,12 @@ type Args = {
   mergeMessages: (incoming: CollabMessage[], changed?: CollabMessage[]) => void;
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
-  onXiaoceRuns?: (runs: XiaoceRun[]) => void;
+  onXiaoceRuns?: (
+    runs: XiaoceRun[],
+    context?: { authoritative?: boolean; requestRevision?: number },
+  ) => void;
   isRoomCurrent: (roomId: string) => boolean;
+  getRoomRevision: (roomId: string) => number;
   setRoomStats: React.Dispatch<React.SetStateAction<CollabRoomStats | null>>;
   /** 兼容旧调用，当前未使用 */
   participantsEqual?: (a?: CollabRoom["participants"], b?: CollabRoom["participants"]) => boolean;
@@ -41,6 +45,7 @@ export function useCollabRoomLive({
   patchRoomMeta,
   onXiaoceRuns,
   isRoomCurrent,
+  getRoomRevision,
   setRoomStats,
 }: Args) {
   const generationRef = useRef(0);
@@ -73,8 +78,10 @@ export function useCollabRoomLive({
       0,
     );
 
-    const applySync = (data: CollabSyncEvent) => {
+    const applySync = (data: CollabSyncEvent, requestRevision?: number) => {
       if (!isCurrent()) return;
+      const runUpdateAuthoritative = requestRevision === undefined
+        || getRoomRevision(roomId) === requestRevision;
       if (typeof data.after_id === "number" && data.after_id > afterMsgRef.current) {
         afterMsgRef.current = data.after_id;
       }
@@ -94,12 +101,18 @@ export function useCollabRoomLive({
         }
       }
       if (data.room) {
-        patchRoomMeta(data.room);
+        const { active_xiaoce_run: _activeRun, ...roomMeta } = data.room;
+        patchRoomMeta(roomMeta);
       }
       if (data.xiaoce_runs) {
-        onXiaoceRuns?.(data.xiaoce_runs);
+        onXiaoceRuns?.(data.xiaoce_runs, {
+          authoritative: runUpdateAuthoritative,
+        });
       } else if (data.room && "active_xiaoce_run" in data.room) {
-        onXiaoceRuns?.(data.room.active_xiaoce_run ? [data.room.active_xiaoce_run] : []);
+        onXiaoceRuns?.(
+          data.room.active_xiaoce_run ? [data.room.active_xiaoce_run] : [],
+          { authoritative: runUpdateAuthoritative },
+        );
       }
       if (data.messages?.length || data.insights?.length) {
         getCollabRoomStats(roomId).then((st) => {
@@ -129,6 +142,7 @@ export function useCollabRoomLive({
 
     const pollOnce = async () => {
       if (!isCurrent()) return;
+      const requestRevision = getRoomRevision(roomId);
       const cursor = Math.max(
         afterMsgRef.current,
         messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
@@ -155,7 +169,7 @@ export function useCollabRoomLive({
           changed,
           after_id: incoming.length ? incoming[incoming.length - 1].id : cursor,
           room: page.room,
-        });
+        }, requestRevision);
         const newInsights = insights.results || [];
         if (newInsights.length) {
           applySync({
@@ -198,6 +212,7 @@ export function useCollabRoomLive({
     };
 
     const refreshPresence = async () => {
+      const requestRevision = getRoomRevision(roomId);
       try {
         const p = await getCollabRoomPresence(roomId);
         if (!isCurrent()) return;
@@ -210,9 +225,11 @@ export function useCollabRoomLive({
           participants: p.participants,
           member_count: p.member_count,
           display_title: p.display_title,
-          active_xiaoce_run: p.active_xiaoce_run,
         });
-        onXiaoceRuns?.(p.active_xiaoce_run ? [p.active_xiaoce_run] : []);
+        onXiaoceRuns?.(
+          p.active_xiaoce_run ? [p.active_xiaoce_run] : [],
+          { authoritative: true, requestRevision },
+        );
       } catch {
         /* ignore */
       }
@@ -251,6 +268,7 @@ export function useCollabRoomLive({
     patchRoomMeta,
     onXiaoceRuns,
     isRoomCurrent,
+    getRoomRevision,
     setRoomStats,
   ]);
 }

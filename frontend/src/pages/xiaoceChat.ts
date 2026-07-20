@@ -1,4 +1,4 @@
-import type { XiaoceRun } from "../api/client";
+import type { CollabMessage, XiaoceRun } from "../api/client";
 
 
 export type XiaoceRoomLike = {
@@ -51,6 +51,16 @@ export function isRoomAsyncResultCurrent(
   targetRoomId: string,
 ): boolean {
   return activeRoomId === targetRoomId;
+}
+
+
+export function isRoomSelectionCurrent(
+  activeRoomId: string | null,
+  currentGeneration: number,
+  targetRoomId: string,
+  targetGeneration: number,
+): boolean {
+  return activeRoomId === targetRoomId && currentGeneration === targetGeneration;
 }
 
 
@@ -160,9 +170,32 @@ export function createXiaoceRunId(): string {
 export function mergeXiaoceRunSnapshot(
   current: XiaoceRun | null,
   incoming: XiaoceRun | null,
+  context: {
+    authoritative?: boolean;
+    requestRevision?: number;
+    currentRevision?: number;
+  } = {},
 ): XiaoceRun | null {
-  if (incoming === null) return null;
-  if (current === null || current.id !== incoming.id) return incoming;
+  if (incoming === null) {
+    if (current === null) return null;
+    if (!context.authoritative) return current;
+    if (
+      context.requestRevision !== undefined
+      && context.currentRevision !== undefined
+      && context.requestRevision !== context.currentRevision
+    ) {
+      return current;
+    }
+    return null;
+  }
+  if (current === null) return incoming;
+  if (current.id !== incoming.id) {
+    const currentCreated = Date.parse(current.created_at || "") || 0;
+    const incomingCreated = Date.parse(incoming.created_at || "") || 0;
+    if (incomingCreated !== currentCreated) {
+      return incomingCreated > currentCreated ? incoming : current;
+    }
+  }
   const currentTime = Date.parse(current.updated_at || "") || 0;
   const incomingTime = Date.parse(incoming.updated_at || "") || 0;
   return incomingTime >= currentTime ? incoming : current;
@@ -175,8 +208,84 @@ export function mergeXiaoceRunSnapshots(
 ): XiaoceRun {
   let merged = incoming;
   for (const snapshot of snapshots) {
-    if (!snapshot || snapshot.id !== incoming.id) continue;
+    if (!snapshot) continue;
     merged = mergeXiaoceRunSnapshot(merged, snapshot) || merged;
   }
   return merged;
+}
+
+
+function messageTime(message: Pick<CollabMessage, "updated_at">): number {
+  return Date.parse(message.updated_at || "") || 0;
+}
+
+
+function mergeDetailMessages(
+  pageMessages: CollabMessage[],
+  currentMessages: CollabMessage[],
+  requestStartMessageIds: number[],
+): CollabMessage[] {
+  const currentIds = new Set(currentMessages.map((message) => message.id));
+  const requestStartIds = new Set(requestStartMessageIds);
+  const byId = new Map<number, CollabMessage>();
+  for (const message of pageMessages) {
+    if (requestStartIds.has(message.id) && !currentIds.has(message.id)) continue;
+    byId.set(message.id, message);
+  }
+  for (const message of currentMessages) {
+    const pageMessage = byId.get(message.id);
+    if (!pageMessage || messageTime(message) >= messageTime(pageMessage)) {
+      byId.set(message.id, message);
+    }
+  }
+  return [...byId.values()].sort((left, right) => {
+    if (left.id < 0 && right.id >= 0) return 1;
+    if (right.id < 0 && left.id >= 0) return -1;
+    return left.id - right.id;
+  });
+}
+
+
+export function reconcileRoomDetailSnapshot(input: {
+  pageMessages: CollabMessage[];
+  currentMessages: CollabMessage[];
+  requestStartMessageIds?: number[];
+  pageRun: XiaoceRun | null;
+  currentRun: XiaoceRun | null;
+  requestRevision: number;
+  currentRevision: number;
+}): { messages: CollabMessage[]; xiaoceRun: XiaoceRun | null } {
+  const changedDuringRequest = input.requestRevision !== input.currentRevision;
+  return {
+    messages: changedDuringRequest
+      ? mergeDetailMessages(
+          input.pageMessages,
+          input.currentMessages,
+          input.requestStartMessageIds || [],
+        )
+      : input.pageMessages,
+    xiaoceRun: mergeXiaoceRunSnapshot(input.currentRun, input.pageRun, {
+      authoritative: true,
+      requestRevision: input.requestRevision,
+      currentRevision: input.currentRevision,
+    }),
+  };
+}
+
+
+export function mergeOlderRoomPage<TMessage extends { id: number }>(
+  current: {
+    messages: TMessage[];
+    hasMoreBefore: boolean;
+    firstItemIndex: number;
+  },
+  page: { results: TMessage[]; has_more_before?: boolean },
+): { messages: TMessage[]; hasMoreBefore: boolean; firstItemIndex: number } {
+  const known = new Set(current.messages.map((message) => message.id));
+  const unique = (page.results || []).filter((message) => !known.has(message.id));
+  return {
+    messages: unique.length ? [...unique, ...current.messages] : current.messages,
+    hasMoreBefore: Boolean(page.has_more_before),
+    firstItemIndex: current.firstItemIndex - unique.length,
+  };
 }

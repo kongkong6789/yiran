@@ -6,7 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import ws_push
-from .models import XiaoceRun
+from .models import CollabRoom, XiaoceRun
 
 
 STAGES: dict[str, tuple[str, str]] = {
@@ -102,10 +102,25 @@ def xiaoce_run_payload(run: XiaoceRun | None) -> dict | None:
 
 
 def _publish_after_commit(run: XiaoceRun) -> None:
-    payload = xiaoce_run_payload(run)
+    run_id = run.id
     room_id = run.room_id
+
+    def publish_if_room_survives() -> None:
+        with transaction.atomic():
+            room = CollabRoom.objects.select_for_update().filter(id=room_id).first()
+            if room is None:
+                return
+            current = (
+                XiaoceRun.objects.select_for_update()
+                .filter(id=run_id, room=room)
+                .first()
+            )
+            if current is None:
+                return
+            ws_push.publish_sync(room_id, xiaoce_runs=[xiaoce_run_payload(current)])
+
     transaction.on_commit(
-        lambda: ws_push.publish_sync(room_id, xiaoce_runs=[payload]),
+        publish_if_room_survives,
     )
 
 
@@ -144,7 +159,21 @@ class XiaoceProgressReporter:
             raise ValueError("小策工作阶段无效")
         if error_code and error_code not in ERROR_MESSAGES:
             error_code = "stage_failed"
-        run = XiaoceRun.objects.select_for_update().filter(id=self.run_id).first()
+        room_id = (
+            XiaoceRun.objects.filter(id=self.run_id)
+            .values_list("room_id", flat=True)
+            .first()
+        )
+        if room_id is None:
+            return None
+        room = CollabRoom.objects.select_for_update().filter(id=room_id).first()
+        if room is None:
+            return None
+        run = (
+            XiaoceRun.objects.select_for_update()
+            .filter(id=self.run_id, room=room)
+            .first()
+        )
         if run is None or run.status != XiaoceRun.Status.RUNNING:
             return xiaoce_run_payload(run)
         run.current_stage = code

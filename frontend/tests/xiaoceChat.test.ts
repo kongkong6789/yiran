@@ -103,7 +103,176 @@ test("keeps the newest Xiaoce run snapshot", () => {
 
   assert.equal(mergeXiaoceRunSnapshot(current, stale), current);
   assert.deepEqual(mergeXiaoceRunSnapshot(current, completed), completed);
-  assert.equal(mergeXiaoceRunSnapshot(current, null), null);
+  assert.equal(
+    mergeXiaoceRunSnapshot(current, null, { authoritative: true }),
+    null,
+  );
+});
+
+test("an older terminal run cannot replace a newer running run", () => {
+  const newerRunning = {
+    id: "run-b",
+    room_id: "room-1",
+    status: "running" as const,
+    current_stage: "understanding",
+    progress_steps: [],
+    error_code: "",
+    error_message: "",
+    created_at: "2026-07-20T10:05:00Z",
+    updated_at: "2026-07-20T10:05:01Z",
+  };
+  const delayedTerminal = {
+    ...newerRunning,
+    id: "run-a",
+    status: "completed" as const,
+    created_at: "2026-07-20T10:00:00Z",
+    updated_at: "2026-07-20T10:06:00Z",
+  };
+
+  assert.equal(mergeXiaoceRunSnapshot(newerRunning, delayedTerminal), newerRunning);
+});
+
+test("only an authoritative current-generation null clears a Xiaoce run", () => {
+  const running = {
+    id: "run-b",
+    room_id: "room-1",
+    status: "running" as const,
+    current_stage: "understanding",
+    progress_steps: [],
+    error_code: "",
+    error_message: "",
+    created_at: "2026-07-20T10:05:00Z",
+    updated_at: "2026-07-20T10:05:01Z",
+  };
+
+  assert.equal(
+    mergeXiaoceRunSnapshot(running, null, {
+      authoritative: true,
+      requestRevision: 3,
+      currentRevision: 4,
+    }),
+    running,
+  );
+  assert.equal(
+    mergeXiaoceRunSnapshot(running, null, {
+      authoritative: true,
+      requestRevision: 4,
+      currentRevision: 4,
+    }),
+    null,
+  );
+});
+
+test("late room detail preserves messages and run updates created after request start", async () => {
+  const reconcileDetail = (xiaoceChatHelpers as Record<string, unknown>)
+    .reconcileRoomDetailSnapshot as ((input: Record<string, any>) => {
+      messages: Array<Record<string, any>>;
+      xiaoceRun: Record<string, any> | null;
+    }) | undefined;
+  assert.equal(typeof reconcileDetail, "function");
+
+  const pageMessage = {
+    id: 10,
+    content: "before",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:01Z",
+  };
+  const liveEdit = {
+    ...pageMessage,
+    content: "live edit",
+    updated_at: "2026-07-20T10:00:03Z",
+  };
+  const sentAfterStart = {
+    id: 11,
+    content: "sent after detail started",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:04Z",
+  };
+  const deletedAfterStart = {
+    id: 12,
+    content: "deleted while detail was loading",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:01Z",
+  };
+  const olderRun = {
+    id: "run-a",
+    status: "completed",
+    created_at: "2026-07-20T09:59:00Z",
+    updated_at: "2026-07-20T10:00:05Z",
+  };
+  const newerRun = {
+    id: "run-b",
+    status: "running",
+    created_at: "2026-07-20T10:00:02Z",
+    updated_at: "2026-07-20T10:00:04Z",
+  };
+  let resolveDetail!: () => void;
+  const delayedDetail = new Promise<void>((resolve) => { resolveDetail = resolve; });
+  const resolved = delayedDetail.then(() => reconcileDetail!({
+    pageMessages: [pageMessage, deletedAfterStart],
+    currentMessages: [liveEdit, sentAfterStart],
+    requestStartMessageIds: [10, 12],
+    pageRun: olderRun,
+    currentRun: newerRun,
+    requestRevision: 7,
+    currentRevision: 9,
+  }));
+
+  resolveDetail();
+  const result = await resolved;
+
+  assert.deepEqual(result.messages.map((row) => [row.id, row.content]), [
+    [10, "live edit"],
+    [11, "sent after detail started"],
+  ]);
+  assert.equal(result.xiaoceRun, newerRun);
+});
+
+test("deferred room A pagination updates only A after selecting room B", async () => {
+  const isSelectionCurrent = (xiaoceChatHelpers as Record<string, unknown>)
+    .isRoomSelectionCurrent as ((
+      activeRoomId: string | null,
+      currentGeneration: number,
+      targetRoomId: string,
+      targetGeneration: number,
+    ) => boolean) | undefined;
+  const mergeOlderPage = (xiaoceChatHelpers as Record<string, unknown>)
+    .mergeOlderRoomPage as ((
+      current: { messages: Array<{ id: number }>; hasMoreBefore: boolean; firstItemIndex: number },
+      page: { results: Array<{ id: number }>; has_more_before?: boolean },
+    ) => { messages: Array<{ id: number }>; hasMoreBefore: boolean; firstItemIndex: number }) | undefined;
+  assert.equal(typeof isSelectionCurrent, "function");
+  assert.equal(typeof mergeOlderPage, "function");
+
+  let activeRoomId: string | null = "room-a";
+  let generation = 12;
+  const targetGeneration = generation;
+  const cache = new Map([
+    ["room-a", { messages: [{ id: 5 }], hasMoreBefore: true, firstItemIndex: 100 }],
+    ["room-b", { messages: [{ id: 50 }], hasMoreBefore: false, firstItemIndex: 200 }],
+  ]);
+  let visible = cache.get("room-a")!;
+  let resolvePage!: (page: { results: Array<{ id: number }>; has_more_before: boolean }) => void;
+  const pageRequest = new Promise<{ results: Array<{ id: number }>; has_more_before: boolean }>(
+    (resolve) => { resolvePage = resolve; },
+  );
+  const completion = pageRequest.then((page) => {
+    const nextA = mergeOlderPage!(cache.get("room-a")!, page);
+    cache.set("room-a", nextA);
+    if (isSelectionCurrent!(activeRoomId, generation, "room-a", targetGeneration)) {
+      visible = nextA;
+    }
+  });
+
+  activeRoomId = "room-b";
+  generation += 1;
+  visible = cache.get("room-b")!;
+  resolvePage({ results: [{ id: 3 }, { id: 4 }], has_more_before: false });
+  await completion;
+
+  assert.deepEqual(cache.get("room-a")!.messages.map((row) => row.id), [3, 4, 5]);
+  assert.deepEqual(cache.get("room-b")!.messages.map((row) => row.id), [50]);
+  assert.deepEqual(visible.messages.map((row) => row.id), [50]);
 });
 
 test("room A async completion cannot mutate room B", async () => {

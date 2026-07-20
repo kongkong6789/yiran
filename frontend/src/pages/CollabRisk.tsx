@@ -57,11 +57,14 @@ import {
   beginRoomSelection,
   createXiaoceRunId,
   isRoomAsyncResultCurrent,
+  isRoomSelectionCurrent,
   isXiaoceTaskRunning,
   isXiaoceRoom,
+  mergeOlderRoomPage,
   mergeXiaoceRunSnapshot,
   mergeXiaoceRunSnapshots,
   partitionXiaoceRooms,
+  reconcileRoomDetailSnapshot,
   resolveXiaoceDeleteState,
   setRoomPending,
   transitionRoomComposer,
@@ -673,6 +676,7 @@ export default function CollabRisk({
   };
   const roomComposerCacheRef = useRef<Map<string, RoomComposerCache>>(new Map());
   const roomViewCacheRef = useRef<Map<string, RoomViewCache>>(new Map());
+  const roomDataRevisionRef = useRef<Map<string, number>>(new Map());
   const roomLoadSeqRef = useRef(0);
   const prevActiveIdForComposerRef = useRef<string | null>(null);
   const [draftCoach, setDraftCoach] = useState<{
@@ -738,7 +742,7 @@ export default function CollabRisk({
   const roomStatsRef = useRef<CollabRoomStats | null>(null);
   const sendingRoomIdsRef = useRef<Set<string>>(new Set());
   const contactKeywordRef = useRef("");
-  const loadingOlderRef = useRef(false);
+  const loadingOlderRequestRef = useRef<Map<string, number>>(new Map());
   const readSessionRef = useRef(
     `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   );
@@ -776,6 +780,17 @@ export default function CollabRisk({
     const next = setRoomPending(sendingRoomIdsRef.current, roomId, pending);
     sendingRoomIdsRef.current = next;
     setSendingRoomIds(next);
+  }, []);
+
+  const getRoomDataRevision = useCallback(
+    (roomId: string) => roomDataRevisionRef.current.get(roomId) || 0,
+    [],
+  );
+
+  const bumpRoomDataRevision = useCallback((roomId: string) => {
+    const next = (roomDataRevisionRef.current.get(roomId) || 0) + 1;
+    roomDataRevisionRef.current.set(roomId, next);
+    return next;
   }, []);
 
   const isParticipant = useMemo(() => {
@@ -849,9 +864,24 @@ export default function CollabRisk({
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
+    const revisionsAtStart = new Map(roomDataRevisionRef.current);
     try {
       const data = await listCollabRooms();
-      setRooms(data.results || []);
+      setRooms((current) => {
+        const currentById = new Map(current.map((room) => [room.id, room]));
+        return (data.results || []).map((room) => ({
+          ...room,
+          active_xiaoce_run: mergeXiaoceRunSnapshot(
+            currentById.get(room.id)?.active_xiaoce_run || null,
+            room.active_xiaoce_run || null,
+            {
+              authoritative: true,
+              requestRevision: revisionsAtStart.get(room.id) || 0,
+              currentRevision: getRoomDataRevision(room.id),
+            },
+          ),
+        }));
+      });
       if (selectFirst && !activeId && data.results?.[0]) {
         setActiveId(data.results[0].id);
       }
@@ -860,10 +890,14 @@ export default function CollabRisk({
     } finally {
       setLoadingRooms(false);
     }
-  }, [activeId, message]);
+  }, [activeId, getRoomDataRevision, message]);
 
   const loadRoomDetail = useCallback(async (id: string) => {
     const seq = ++roomLoadSeqRef.current;
+    const requestRevision = getRoomDataRevision(id);
+    const requestStartMessageIds = activeIdRef.current === id
+      ? messagesRef.current.map((row) => row.id)
+      : roomViewCacheRef.current.get(id)?.messages.map((row) => row.id) || [];
     try {
       const [room, page] = await Promise.all([
         getCollabRoom(id),
@@ -877,11 +911,32 @@ export default function CollabRisk({
         messages: page.results,
         has_more_before: page.has_more_before,
       } as CollabRoom;
-      const nextMessages = page.results || [];
+      const cachedAtResolution = roomViewCacheRef.current.get(id);
+      const currentMessages = activeIdRef.current === id
+        ? messagesRef.current
+        : cachedAtResolution?.messages || [];
+      const currentRun = activeIdRef.current === id
+        ? activeXiaoceRunRef.current
+        : cachedAtResolution?.xiaoceRun || null;
+      const pageRun = isXiaoceRoom(hydratedRoom)
+        ? (hydratedRoom.active_xiaoce_run || null)
+        : null;
+      const reconciled = reconcileRoomDetailSnapshot({
+        pageMessages: page.results || [],
+        currentMessages,
+        requestStartMessageIds,
+        pageRun,
+        currentRun,
+        requestRevision,
+        currentRevision: getRoomDataRevision(id),
+      });
+      const nextMessages = reconciled.messages;
       const nextInsights = room.insights || [];
       const nextHasMore = Boolean(page.has_more_before ?? room.has_more_before);
-      const nextXiaoce = isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null;
-      setActiveRoom(hydratedRoom);
+      const nextXiaoce = isXiaoceRoom(hydratedRoom) ? reconciled.xiaoceRun : null;
+      const reconciledRoom = { ...hydratedRoom, active_xiaoce_run: nextXiaoce };
+      activeXiaoceRunRef.current = nextXiaoce;
+      setActiveRoom(reconciledRoom);
       setActiveXiaoceRun(nextXiaoce);
       setMessages(nextMessages);
       setHasMoreBefore(nextHasMore);
@@ -904,7 +959,7 @@ export default function CollabRisk({
           }
         });
       roomViewCacheRef.current.set(id, {
-        room: hydratedRoom,
+        room: reconciledRoom,
         messages: nextMessages,
         insights: nextInsights,
         hasMoreBefore: nextHasMore,
@@ -917,13 +972,16 @@ export default function CollabRisk({
         message.error("读取会话失败");
       }
     }
-  }, [message, scrollMessagesToBottom]);
+  }, [getRoomDataRevision, message, scrollMessagesToBottom]);
 
   const selectRoom = useCallback((roomId: string) => {
     if (roomId === activeIdRef.current) return;
     // 先把当前会话的输入框状态存起来
     const prevId = beginRoomSelection(activeIdRef, roomLoadSeqRef, roomId);
     setStatsLoading(false);
+    setLoadingOlder(
+      loadingOlderRequestRef.current.get(roomId) === roomLoadSeqRef.current,
+    );
     const composerTransition = transitionRoomComposer(
       roomComposerCacheRef.current,
       prevId,
@@ -1150,6 +1208,7 @@ export default function CollabRisk({
         await collabPresenceHeartbeat();
         if (stopped) return;
         const q = contactKeywordRef.current.trim() || undefined;
+        const revisionsAtStart = new Map(roomDataRevisionRef.current);
         const [roomData, userData] = await Promise.all([
           listCollabRooms(),
           listCollabUsers(q),
@@ -1157,7 +1216,19 @@ export default function CollabRisk({
         if (stopped) return;
         setContacts(userData.results || []);
         setRooms((prev) => {
-          const next = roomData.results || [];
+          const previousById = new Map(prev.map((room) => [room.id, room]));
+          const next = (roomData.results || []).map((room) => ({
+            ...room,
+            active_xiaoce_run: mergeXiaoceRunSnapshot(
+              previousById.get(room.id)?.active_xiaoce_run || null,
+              room.active_xiaoce_run || null,
+              {
+                authoritative: true,
+                requestRevision: revisionsAtStart.get(room.id) || 0,
+                currentRevision: getRoomDataRevision(room.id),
+              },
+            ),
+          }));
           if (
             prev.length === next.length
             && prev.every((r, i) => {
@@ -1172,6 +1243,9 @@ export default function CollabRisk({
                 && r.updated_at === n.updated_at
                 && (r.last_message?.id || 0) === (n.last_message?.id || 0)
                 && (r.last_message?.content || "") === (n.last_message?.content || "")
+                && (r.active_xiaoce_run?.id || "") === (n.active_xiaoce_run?.id || "")
+                && (r.active_xiaoce_run?.status || "") === (n.active_xiaoce_run?.status || "")
+                && (r.active_xiaoce_run?.updated_at || "") === (n.active_xiaoce_run?.updated_at || "")
                 && participantsPresenceEqual(r.participants, n.participants),
               );
             })
@@ -1184,14 +1258,24 @@ export default function CollabRisk({
           if (!prev) return prev;
           const fresh = (roomData.results || []).find((r) => r.id === prev.id);
           if (!fresh) return prev;
+          const reconciledRun = mergeXiaoceRunSnapshot(
+            prev.active_xiaoce_run || null,
+            fresh.active_xiaoce_run || null,
+            {
+              authoritative: true,
+              requestRevision: revisionsAtStart.get(prev.id) || 0,
+              currentRevision: getRoomDataRevision(prev.id),
+            },
+          );
           if (
             prev.peer_online === fresh.peer_online
             && prev.online_count === fresh.online_count
             && prev.risk_level === fresh.risk_level
             && prev.status === fresh.status
             && prev.updated_at === fresh.updated_at
-            && (prev.active_xiaoce_run?.id || "") === (fresh.active_xiaoce_run?.id || "")
-            && (prev.active_xiaoce_run?.status || "") === (fresh.active_xiaoce_run?.status || "")
+            && (prev.active_xiaoce_run?.id || "") === (reconciledRun?.id || "")
+            && (prev.active_xiaoce_run?.status || "") === (reconciledRun?.status || "")
+            && (prev.active_xiaoce_run?.updated_at || "") === (reconciledRun?.updated_at || "")
             && participantsPresenceEqual(prev.participants, fresh.participants)
           ) {
             return prev;
@@ -1204,7 +1288,7 @@ export default function CollabRisk({
             risk_level: fresh.risk_level,
             status: fresh.status,
             updated_at: fresh.updated_at,
-            active_xiaoce_run: fresh.active_xiaoce_run,
+            active_xiaoce_run: reconciledRun,
           };
         });
       } catch {
@@ -1253,6 +1337,8 @@ export default function CollabRisk({
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
     const shouldStick = stickBottomRef.current || Date.now() < forceStickUntilRef.current;
+    const roomId = activeIdRef.current;
+    if (roomId && (incoming.length || changed?.length)) bumpRoomDataRevision(roomId);
     setMessages((prev) => {
       let next = prev;
       if (incoming.length) {
@@ -1270,10 +1356,9 @@ export default function CollabRisk({
       if (changed?.length) {
         next = mergeMessagePatches(next, changed);
       }
-      const rid = activeIdRef.current;
-      if (rid) {
-        const cached = roomViewCacheRef.current.get(rid);
-        if (cached) roomViewCacheRef.current.set(rid, { ...cached, messages: next });
+      if (roomId) {
+        const cached = roomViewCacheRef.current.get(roomId);
+        if (cached) roomViewCacheRef.current.set(roomId, { ...cached, messages: next });
       }
       return next;
     });
@@ -1283,7 +1368,7 @@ export default function CollabRisk({
     if ([...incoming, ...(changed || [])].some((item) => Boolean(item.meta?.created_skill))) {
       setSkillRefreshKey((value) => value + 1);
     }
-  }, [scrollMessagesToBottom]);
+  }, [bumpRoomDataRevision, scrollMessagesToBottom]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
     setInsights((prev) => {
@@ -1293,19 +1378,24 @@ export default function CollabRisk({
     });
   }, []);
 
-  const mergeLiveXiaoceRuns = useCallback((runs: XiaoceRun[]) => {
+  const mergeLiveXiaoceRuns = useCallback((
+    runs: XiaoceRun[],
+    context: { authoritative?: boolean; requestRevision?: number } = {},
+  ) => {
     const newest = runs.length > 0
-      ? runs.reduce((latest, run) => (
-          Date.parse(run.updated_at || "") >= Date.parse(latest.updated_at || "") ? run : latest
-        ))
+      ? runs.reduce((latest, run) => mergeXiaoceRunSnapshot(latest, run) || latest)
       : null;
-    const nextRun = newest
-      ? mergeXiaoceRunSnapshot(activeXiaoceRunRef.current, newest)
-      : null;
-    activeXiaoceRunRef.current = nextRun;
-    setActiveXiaoceRun(nextRun);
     const roomId = activeIdRef.current;
     if (!roomId) return;
+    const previousRun = activeXiaoceRunRef.current;
+    const nextRun = mergeXiaoceRunSnapshot(previousRun, newest, {
+      authoritative: Boolean(context.authoritative),
+      requestRevision: context.requestRevision,
+      currentRevision: getRoomDataRevision(roomId),
+    });
+    if (nextRun !== previousRun) bumpRoomDataRevision(roomId);
+    activeXiaoceRunRef.current = nextRun;
+    setActiveXiaoceRun(nextRun);
     setRooms((current) => current.map((room) => (
       room.id === roomId ? { ...room, active_xiaoce_run: nextRun } : room
     )));
@@ -1320,7 +1410,7 @@ export default function CollabRisk({
         xiaoceRun: nextRun,
       });
     }
-  }, []);
+  }, [bumpRoomDataRevision, getRoomDataRevision]);
 
   const patchRoomMeta = useCallback((meta: Partial<CollabRoom>) => {
     setActiveRoom((prev) => {
@@ -1345,7 +1435,18 @@ export default function CollabRisk({
       ) {
         return prev;
       }
-      const patched = { ...prev, ...meta, participants: nextParts };
+      const reconciledRun = "active_xiaoce_run" in meta
+        ? mergeXiaoceRunSnapshot(
+            prev.active_xiaoce_run || null,
+            meta.active_xiaoce_run || null,
+          )
+        : prev.active_xiaoce_run;
+      const patched = {
+        ...prev,
+        ...meta,
+        participants: nextParts,
+        active_xiaoce_run: reconciledRun,
+      };
       if (meta.participants?.length) {
         const byId = new Map(meta.participants.map((p) => [p.id, p]));
         setMessages((msgs) => {
@@ -1397,41 +1498,77 @@ export default function CollabRisk({
     patchRoomMeta,
     onXiaoceRuns: mergeLiveXiaoceRuns,
     isRoomCurrent: isLiveRoomCurrent,
+    getRoomRevision: getRoomDataRevision,
     setRoomStats,
     participantsEqual: participantsPresenceEqual,
   });
 
   const loadOlderMessages = useCallback(async () => {
-    if (!activeId || !hasMoreBefore || loadingOlderRef.current) return;
+    const targetRoomId = activeIdRef.current;
+    if (
+      !targetRoomId
+      || !hasMoreBeforeRef.current
+      || loadingOlderRequestRef.current.has(targetRoomId)
+    ) return;
+    const targetGeneration = roomLoadSeqRef.current;
     const oldest = messagesRef.current.find((m) => m.status !== "deleted")?.id
       || messagesRef.current[0]?.id;
     if (!oldest) return;
-    loadingOlderRef.current = true;
+    const roomAtStart = activeRoomRef.current;
+    if (!roomAtStart || roomAtStart.id !== targetRoomId) return;
+    const fallbackCache: RoomViewCache = {
+      room: roomAtStart,
+      messages: messagesRef.current,
+      insights: insightsRef.current,
+      hasMoreBefore: hasMoreBeforeRef.current,
+      firstItemIndex: firstItemIndexRef.current,
+      xiaoceRun: activeXiaoceRunRef.current,
+      stats: roomStatsRef.current,
+    };
+    loadingOlderRequestRef.current.set(targetRoomId, targetGeneration);
     setLoadingOlder(true);
     try {
-      const page = await listCollabMessages(activeId, {
+      const page = await listCollabMessages(targetRoomId, {
         beforeId: oldest,
         limit: 40,
         lite: true,
         includeParticipants: false,
       });
-      const add = page.results || [];
-      if (add.length) {
-        setFirstItemIndex((idx) => idx - add.length);
-        setMessages((prev) => {
-          const known = new Set(prev.map((m) => m.id));
-          const unique = add.filter((m) => !known.has(m.id));
-          return unique.length ? [...unique, ...prev] : prev;
-        });
+      const cached = roomViewCacheRef.current.get(targetRoomId) || fallbackCache;
+      const next = mergeOlderRoomPage(cached, page);
+      roomViewCacheRef.current.set(targetRoomId, {
+        ...cached,
+        messages: next.messages,
+        hasMoreBefore: next.hasMoreBefore,
+        firstItemIndex: next.firstItemIndex,
+      });
+      if ((page.results || []).length) bumpRoomDataRevision(targetRoomId);
+      if (isRoomSelectionCurrent(
+        activeIdRef.current,
+        roomLoadSeqRef.current,
+        targetRoomId,
+        targetGeneration,
+      )) {
+        setMessages(next.messages);
+        setFirstItemIndex(next.firstItemIndex);
+        setHasMoreBefore(next.hasMoreBefore);
       }
-      setHasMoreBefore(Boolean(page.has_more_before));
     } catch {
       /* ignore */
     } finally {
-      loadingOlderRef.current = false;
-      setLoadingOlder(false);
+      if (loadingOlderRequestRef.current.get(targetRoomId) === targetGeneration) {
+        loadingOlderRequestRef.current.delete(targetRoomId);
+      }
+      if (isRoomSelectionCurrent(
+        activeIdRef.current,
+        roomLoadSeqRef.current,
+        targetRoomId,
+        targetGeneration,
+      )) {
+        setLoadingOlder(false);
+      }
     }
-  }, [activeId, hasMoreBefore]);
+  }, [bumpRoomDataRevision]);
 
   useEffect(() => {
     if (!groupOpen && !inviteOpen) return;
@@ -1780,6 +1917,7 @@ export default function CollabRisk({
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+    bumpRoomDataRevision(targetRoomId);
     const cachedAtStart = roomViewCacheRef.current.get(targetRoomId);
     if (cachedAtStart) {
       roomViewCacheRef.current.set(targetRoomId, {
@@ -1974,11 +2112,31 @@ export default function CollabRisk({
     const roomId = activeId;
     const runId = activeXiaoceRun?.id;
     if (!roomId || !runId || cancellingRunId) return;
+    const requestRevision = getRoomDataRevision(roomId);
     setCancellingRunId(runId);
     try {
       const response = await cancelXiaoceRun(roomId, runId);
+      const nextRun = mergeXiaoceRunSnapshot(activeXiaoceRunRef.current, null, {
+        authoritative: true,
+        requestRevision,
+        currentRevision: getRoomDataRevision(roomId),
+      });
+      bumpRoomDataRevision(roomId);
+      const cached = roomViewCacheRef.current.get(roomId);
+      if (cached) {
+        const messageIndex = cached.messages.findIndex((item) => item.id === response.message.id);
+        const nextMessages = [...cached.messages];
+        if (messageIndex < 0) nextMessages.push(response.message);
+        else nextMessages[messageIndex] = response.message;
+        roomViewCacheRef.current.set(roomId, {
+          ...cached,
+          messages: nextMessages,
+          room: { ...cached.room, ...response.room, active_xiaoce_run: nextRun },
+          xiaoceRun: nextRun,
+        });
+      }
       setRooms((previous) => previous.map((room) => (
-        room.id === roomId ? { ...room, ...response.room, active_xiaoce_run: null } : room
+        room.id === roomId ? { ...room, ...response.room, active_xiaoce_run: nextRun } : room
       )));
       if (activeIdRef.current === roomId) {
         setMessages((previous) => {
@@ -1991,9 +2149,10 @@ export default function CollabRisk({
         setActiveRoom((previous) => previous ? {
           ...previous,
           ...response.room,
-          active_xiaoce_run: null,
+          active_xiaoce_run: nextRun,
         } : previous);
-        setActiveXiaoceRun(null);
+        activeXiaoceRunRef.current = nextRun;
+        setActiveXiaoceRun(nextRun);
         scrollMessagesToBottom("auto");
       }
     } catch (error: any) {
