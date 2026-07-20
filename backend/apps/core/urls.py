@@ -13,6 +13,7 @@ urlpatterns = [
     path("auth/admin/users/", auth_views.admin_users, name="auth-admin-users"),
     path("auth/admin/users/<int:user_id>/", auth_views.admin_user_detail, name="auth-admin-user-detail"),
     path("auth/organization/", auth_views.current_organization_view, name="auth-current-organization"),
+    path("auth/organization/switch/", auth_views.switch_current_organization_view, name="auth-switch-organization"),
     path("auth/organization/members/<int:user_id>/", auth_views.remove_organization_member_view, name="auth-remove-organization-member"),
     path("auth/organization/transfer-ownership/", auth_views.transfer_organization_ownership_view, name="auth-transfer-organization-ownership"),
     path("auth/admin/organizations/", auth_views.admin_organizations, name="auth-admin-organizations"),

@@ -15,7 +15,7 @@ import {
 } from "./mockWeCom";
 import WeComGroupWebhookManager from "./WeComGroupWebhookManager";
 import WeComCliConfigPanel, { type WeComCliConfigPanelHandle } from "./WeComCliConfigPanel";
-import { getCurrentOrganization, type OrganizationMember } from "../../api/client";
+import { getCurrentOrganization, getWeComCliConfig, type OrganizationMember } from "../../api/client";
 
 interface Props {
   open: boolean;
@@ -90,6 +90,15 @@ export default function WeComConfigModal({ open, onClose, onSaved, initialTab = 
       })
       .catch(() => message.error("企业微信 API 配置加载失败"))
       .finally(() => setLoadingConfig(false));
+    // 侧边导航的「智能机器人 / CLI」状态需要独立加载，否则未点开该 Tab 前会一直显示「未配置」。
+    getWeComCliConfig()
+      .then((cli) => setCliStatus({
+        canManage: !!cli.canManage,
+        saving: false,
+        configured: !!cli.configured,
+        lastTestedAt: cli.lastTestedAt,
+      }))
+      .catch(() => { /* 保持默认状态即可 */ });
   }, [form, initialTab, message, open]);
 
   const testConnection = async () => {

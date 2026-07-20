@@ -92,6 +92,7 @@ export interface AdminUserRow {
   username: string;
   email: string;
   display_name: string;
+  avatar_url: string;
   is_active: boolean;
   is_staff: boolean;
   is_superuser: boolean;
@@ -102,6 +103,13 @@ export interface AdminUserRow {
   organization_id: number | null;
   organization_name: string;
   organization_role: "owner" | "admin" | "member" | "";
+  organizations: Array<{
+    id: number;
+    name: string;
+    role: "owner" | "admin" | "member";
+    roleLabel: string;
+    isCurrent: boolean;
+  }>;
 }
 
 export interface OrganizationMember {
@@ -122,32 +130,40 @@ export interface OrganizationSummary {
   memberCount: number;
   role: "owner" | "admin" | "member" | "";
   canManage: boolean;
+  isCurrent: boolean;
+  canSwitch: boolean;
   createdAt: string | null;
 }
 
-export const getCurrentOrganization = () =>
+export const getCurrentOrganization = (organizationId?: number) =>
   api.get<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
+    { params: organizationId ? { organizationId } : {} },
   ).then((r) => r.data);
-export const updateCurrentOrganization = (name: string) =>
+export const switchCurrentOrganization = (organizationId: number) =>
+  api.post<{ ok: boolean; organization: OrganizationSummary; user: AuthUser }>(
+    "/auth/organization/switch/",
+    { organizationId },
+  ).then((r) => r.data);
+export const updateCurrentOrganization = (name: string, organizationId?: number) =>
   api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
-    { name },
+    { name, organizationId },
   ).then((r) => r.data);
-export const transferOrganizationOwnership = (targetUserId: number) =>
+export const transferOrganizationOwnership = (targetUserId: number, organizationId?: number) =>
   api.post<{
     ok: boolean;
     organization: OrganizationSummary;
     previousOwner: { id: number; username: string; role: "admin" };
     newOwner: { id: number; username: string; role: "owner" };
     transferredAt: string;
-  }>("/auth/organization/transfer-ownership/", { targetUserId }).then((r) => r.data);
-export const removeOrganizationMember = (userId: number) =>
+  }>("/auth/organization/transfer-ownership/", { targetUserId, organizationId }).then((r) => r.data);
+export const removeOrganizationMember = (userId: number, organizationId?: number) =>
   api.delete<{
     ok: boolean;
     organization: OrganizationSummary;
     removedUser: { id: number; username: string };
-  }>(`/auth/organization/members/${userId}/`).then((r) => r.data);
+  }>(`/auth/organization/members/${userId}/`, { params: organizationId ? { organizationId } : {} }).then((r) => r.data);
 export const createOrganization = (body: { name: string; ownerUserId: number }) =>
   api.post<{
     ok: boolean;
@@ -167,7 +183,9 @@ export const assignUsersToOrganization = (body: {
     ok: boolean;
     organization: OrganizationSummary;
     assignedCount: number;
-    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
+    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member"; isCurrent: boolean }>;
+    skippedCount: number;
+    skippedUsers: Array<{ id: number; username: string }>;
   }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
 export type TeamKind = "platform" | "enterprise";
@@ -239,9 +257,9 @@ export const listTeamUserOptions = (params: { kind: TeamKind; organizationId?: n
     params: params.organizationId ? { kind: params.kind, organizationId: params.organizationId } : { kind: params.kind },
   }).then((r) => r.data);
 
-export const listAdminUsers = (q?: string) =>
-  api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
-    params: q ? { q } : {},
+export const listAdminUsers = (q?: string, organizationId?: number) =>
+  api.get<{ ok: boolean; count: number; organization?: OrganizationSummary | null; results: AdminUserRow[] }>("/auth/admin/users/", {
+    params: { ...(q ? { q } : {}), ...(organizationId ? { organizationId } : {}) },
   }).then((r) => r.data);
 
 export const createAdminUser = (body: {
@@ -291,6 +309,7 @@ export interface UserWeComBindingSummary {
   weComUserId: string;
   weComMember: string;
   failureReason: string;
+  statusHint?: string;
 }
 
 export interface UserProfileSettings {
@@ -873,7 +892,10 @@ export interface McpServer {
   env_keys: string[];
   placeholders?: Record<string, string>;
   hints?: string[];
-  config_source: "none" | "ui" | "env" | "personal";
+  config_source: "none" | "ui" | "env" | "personal" | "organization";
+  organization_id?: number | null;
+  organization_name?: string;
+  can_manage?: boolean;
   updated_at?: string | null;
   status: "unconfigured" | "configured" | "reachable" | "unreachable" | "error" | "disabled";
 }

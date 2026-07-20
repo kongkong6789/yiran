@@ -191,6 +191,18 @@ python manage.py process_wecom_queue --watch --interval 30
 
 也可以由 Cron/Windows 任务计划每分钟单次执行 `python manage.py process_wecom_queue`。队列同时处理通知补偿、成员变更回调、菜单/应用消息、账号绑定同步以及平台待办的企微同步；进行中的企微待办每 5 分钟反向刷新一次，进程重启不会丢失任务。
 
+### 用户头像对象存储
+
+用户头像通过原接口 `POST /api/auth/avatar/` 上传，但文件只写入腾讯云 COS，不再写入后端本地目录。需要配置 `USE_TENCENT_COS=true`、COS 密钥、Bucket、Region，并可通过 `TENCENT_COS_AVATAR_LOCATION` 设置对象前缀。数据库保存 `cos:` 对象标识，头像对象默认使用 `private` ACL，仍通过需要登录鉴权的 `/api/auth/avatars/{对象标识}/` 读取。
+
+历史本地头像迁移：
+
+```powershell
+python manage.py migrate_avatars_to_cos
+```
+
+如果历史数据库存在已经丢失的本地头像引用，可执行 `python manage.py migrate_avatars_to_cos --clear-missing` 清理失效引用。
+
 企业微信成员选择默认读取 PostgreSQL 通讯录缓存；首次访问、用户手动同步或成员变更回调时才请求企业微信。建议每天执行一次兜底同步：
 
 ```powershell

@@ -3,7 +3,16 @@ from django.db import models
 
 
 class McpServerConfig(models.Model):
-    """用户个人的 MCP Server 连接配置(每人独立,不共享)。"""
+    """企业级 MCP Server 连接配置；企业成员共享，管理员维护。"""
+
+    organization = models.ForeignKey(
+        "core.Organization",
+        related_name="mcp_server_configs",
+        on_delete=models.CASCADE,
+        verbose_name="所属企业",
+        null=True,
+        blank=True,
+    )
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -25,8 +34,8 @@ class McpServerConfig(models.Model):
         verbose_name = "MCP 服务配置"
         verbose_name_plural = "MCP 服务配置"
         constraints = [
-            models.UniqueConstraint(fields=["user", "server_id"], name="uniq_user_mcp_server"),
+            models.UniqueConstraint(fields=["organization", "server_id"], name="uniq_org_mcp_server"),
         ]
 
     def __str__(self):
-        return f"{self.user_id}:{self.server_id}"
+        return f"{self.organization_id}:{self.server_id}"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { App, Alert, Avatar, Button, Divider, Form, Input, Modal, Select, Table, Tag, Typography } from "antd";
 import { BankOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SwapOutlined, TeamOutlined, UserAddOutlined } from "@ant-design/icons";
 
@@ -6,6 +6,7 @@ import {
   assignUsersToOrganization,
   createOrganization,
   getCurrentOrganization,
+  listAdminUsers,
   listOrganizations,
   removeOrganizationMember,
   transferOrganizationOwnership,
@@ -28,12 +29,18 @@ const compareMemberName = (left: OrganizationMember, right: OrganizationMember) 
 interface Props {
   isSuperuser?: boolean;
   platformUsers?: AdminUserRow[];
+  organizationId?: number;
+  availableOrganizations?: OrganizationSummary[];
+  onOrganizationChange?: (organizationId: number) => void;
   onOrganizationCreated?: () => void | Promise<void>;
 }
 
 export default function OrganizationManager({
   isSuperuser = false,
   platformUsers = [],
+  organizationId,
+  availableOrganizations = [],
+  onOrganizationChange,
   onOrganizationCreated,
 }: Props) {
   const { message, modal } = App.useApp();
@@ -45,17 +52,27 @@ export default function OrganizationManager({
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<number | null>(null);
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
+  const [assignmentUsers, setAssignmentUsers] = useState<AdminUserRow[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [createForm] = Form.useForm();
   const [assignForm] = Form.useForm();
+  const assignmentOrganizationId = Form.useWatch("organizationId", assignForm) as number | undefined;
+  const availableAssignmentUsers = useMemo(
+    () => assignmentUsers.filter(
+      (user) => user.is_active
+        && !user.organizations?.some((item) => item.id === assignmentOrganizationId),
+    ),
+    [assignmentOrganizationId, assignmentUsers],
+  );
 
   const load = async () => {
     setLoading(true);
     try {
-      const response = await getCurrentOrganization();
+      const response = await getCurrentOrganization(organizationId);
       setOrganization(response.organization);
       setMembers(response.members || []);
       setName(response.organization.name);
@@ -68,7 +85,8 @@ export default function OrganizationManager({
 
   useEffect(() => {
     void load();
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organizationId]);
 
   const saveName = async () => {
     const nextName = name.trim();
@@ -78,7 +96,7 @@ export default function OrganizationManager({
     }
     setSaving(true);
     try {
-      const response = await updateCurrentOrganization(nextName);
+      const response = await updateCurrentOrganization(nextName, organization?.id);
       setOrganization(response.organization);
       setName(response.organization.name);
       message.success("企业名称已保存");
@@ -116,7 +134,7 @@ export default function OrganizationManager({
       onOk: async () => {
         if (!targetUserId) throw new Error("请选择新的企业所有者");
         try {
-          await transferOrganizationOwnership(targetUserId);
+          await transferOrganizationOwnership(targetUserId, organization?.id);
           message.success("企业所有权已转移");
           await load();
         } catch (error: any) {
@@ -148,15 +166,23 @@ export default function OrganizationManager({
 
   const openAssignment = async () => {
     setAssignOpen(true);
+    setAssignmentLoading(true);
+    setAssignmentUsers([]);
     try {
-      const response = await listOrganizations();
-      setOrganizations(response.results || []);
+      const [organizationResponse, userResponse] = await Promise.all([
+        listOrganizations(),
+        listAdminUsers(),
+      ]);
+      setOrganizations(organizationResponse.results || []);
+      setAssignmentUsers(userResponse.results || []);
       assignForm.setFieldsValue({
         organizationId: organization?.id,
         role: "member",
       });
     } catch (error: any) {
       message.error(error?.response?.data?.error || "企业列表加载失败");
+    } finally {
+      setAssignmentLoading(false);
     }
   };
 
@@ -169,7 +195,11 @@ export default function OrganizationManager({
         userIds: values.userIds.map(Number),
         role: values.role,
       });
-      message.success(`已将 ${response.assignedCount} 位用户加入“${response.organization.name}”`);
+      message.success(
+        response.skippedCount
+          ? `已新增 ${response.assignedCount} 位成员，跳过 ${response.skippedCount} 位已有成员`
+          : `已将 ${response.assignedCount} 位用户加入“${response.organization.name}”`,
+      );
       setAssignOpen(false);
       assignForm.resetFields();
       await Promise.all([load(), onOrganizationCreated?.()]);
@@ -190,7 +220,7 @@ export default function OrganizationManager({
       onOk: async () => {
         setRemovingUserId(member.id);
         try {
-          await removeOrganizationMember(member.id);
+          await removeOrganizationMember(member.id, organization?.id);
           message.success("成员已移出企业");
           await Promise.all([load(), onOrganizationCreated?.()]);
         } catch (error: any) {
@@ -212,6 +242,20 @@ export default function OrganizationManager({
           </Typography.Text>
         </div>
         <div className="organization-toolbar-actions">
+          {(availableOrganizations.length > 1 || isSuperuser) && (
+            <Select
+              className="organization-scope-select"
+              value={organization?.id || organizationId}
+              onChange={(value) => onOrganizationChange?.(Number(value))}
+              placeholder="选择要管理的企业"
+              optionFilterProp="label"
+              showSearch
+              options={availableOrganizations.map((item) => ({
+                value: item.id,
+                label: `${item.name}（${item.memberCount} 人）`,
+              }))}
+            />
+          )}
           {isSuperuser && (
             <>
               <Button icon={<UserAddOutlined />} onClick={() => void openAssignment()}>
@@ -232,7 +276,7 @@ export default function OrganizationManager({
           <Typography.Text type="secondary">当前企业</Typography.Text>
           <Typography.Title level={4}>{organization?.name || "—"}</Typography.Title>
           <Typography.Text type="secondary">
-            企业角色：{organization?.role === "owner" ? "企业所有者" : organization?.role === "admin" ? "企业管理员" : "企业成员"}
+            企业角色：{organization?.role === "owner" ? "企业所有者" : organization?.role === "admin" ? "企业管理员" : organization?.role === "member" ? "企业成员" : "平台管理员（管理视图）"}
           </Typography.Text>
         </div>
         {organization?.canManage && (
@@ -300,7 +344,7 @@ export default function OrganizationManager({
                   ]}
                   onChange={async (role) => {
                     try {
-                      await updateAdminUser(row.id, { organization_role: role });
+                      await updateAdminUser(row.id, { organization_id: organization?.id, organization_role: role });
                       message.success("企业角色已更新");
                       await load();
                     } catch (error: any) {
@@ -387,6 +431,7 @@ export default function OrganizationManager({
       </Modal>
 
       <Modal
+        className="organization-assignment-modal"
         title="分配平台用户到企业"
         open={assignOpen}
         okText="确认分配"
@@ -402,10 +447,10 @@ export default function OrganizationManager({
       >
         <Form form={assignForm} layout="vertical" preserve={false}>
           <Alert
-            type="warning"
+            type="info"
             showIcon
-            message="分配后，目标企业会成为所选用户的当前企业"
-            description="用户原有的普通成员关系会停用；企业所有者不能直接移动，必须先完成所有权转移。"
+            message="分配只会新增企业成员关系"
+            description="用户原有企业和当前企业保持不变，可在个人资料中自行切换。仅当用户尚无当前企业时，目标企业才会自动成为当前企业。"
             style={{ marginBottom: 18 }}
           />
           <Form.Item
@@ -417,6 +462,8 @@ export default function OrganizationManager({
               showSearch
               optionFilterProp="label"
               placeholder="选择用户要加入的企业"
+              loading={assignmentLoading}
+              onChange={() => assignForm.setFieldValue("userIds", [])}
               options={organizations
                 .filter((item) => item.isActive)
                 .map((item) => ({
@@ -435,12 +482,14 @@ export default function OrganizationManager({
               showSearch
               optionFilterProp="label"
               maxTagCount="responsive"
-              placeholder="可一次选择多位已有平台用户"
-              options={platformUsers
-                .filter((user) => user.is_active && user.organization_role !== "owner")
+              loading={assignmentLoading}
+              disabled={!assignmentOrganizationId || assignmentLoading}
+              placeholder={assignmentOrganizationId ? "选择尚未加入该企业的平台用户" : "请先选择目标企业"}
+              notFoundContent={assignmentLoading ? "正在加载平台用户…" : "所有启用用户均已加入该企业"}
+              options={availableAssignmentUsers
                 .map((user) => ({
                   value: user.id,
-                  label: `${user.display_name || user.username}（@${user.username}）${user.organization_name ? ` · 当前：${user.organization_name}` : ""}`,
+                  label: `${user.display_name || user.username}（@${user.username}）${user.organizations?.length ? ` · 已加入：${user.organizations.map((item) => item.name).join("、")}` : ""}`,
                 }))}
             />
           </Form.Item>

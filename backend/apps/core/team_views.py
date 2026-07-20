@@ -15,7 +15,6 @@ from rest_framework.response import Response
 
 from .models import AuditLog, Organization, Team, TeamMembership, UserSettings
 from .organizations import (
-    admin_organization_ids,
     current_organization,
     is_organization_admin,
     organization_user_ids,
@@ -31,11 +30,17 @@ def _display_name(user) -> str:
 
 
 def _can_manage_team(user, team: Team) -> bool:
-    if getattr(user, "is_superuser", False):
-        return True
     if team.kind == Team.Kind.PLATFORM:
-        return bool(user.is_staff)
-    return is_organization_admin(user, team.organization)
+        return bool(
+            (user.is_staff or getattr(user, "is_superuser", False))
+            and team.memberships.filter(user=user).exists()
+        )
+    organization = current_organization(user)
+    return bool(
+        organization
+        and team.organization_id == organization.id
+        and is_organization_admin(user, organization)
+    )
 
 
 def _wecom_bound_user_ids(user_ids) -> set[int]:
@@ -93,15 +98,13 @@ def _visible_teams(user):
     qs = Team.objects.select_related("organization").prefetch_related(
         "memberships__user", "memberships__user__settings"
     )
-    if getattr(user, "is_superuser", False):
-        return qs
-    filters = Q(pk__in=[])
-    if user.is_staff:
-        filters |= Q(kind=Team.Kind.PLATFORM)
-    admin_ids = admin_organization_ids(user)
-    if admin_ids:
-        filters |= Q(kind=Team.Kind.ENTERPRISE, organization_id__in=admin_ids)
-    return qs.filter(filters)
+    # 企业团队严格跟随当前企业，避免多企业用户在一个上下文中看到其他
+    # 企业的组织结构；平台团队不受当前企业影响，但必须是团队成员。
+    filters = Q(kind=Team.Kind.PLATFORM, memberships__user=user)
+    organization = current_organization(user)
+    if organization:
+        filters |= Q(kind=Team.Kind.ENTERPRISE, organization=organization)
+    return qs.filter(filters).distinct()
 
 
 def _require_manager(user) -> Response | None:
@@ -121,17 +124,20 @@ def _eligible_user_ids_for_team(team: Team) -> set[int]:
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def teams(request):
-    denied = _require_manager(request.user)
-    if denied:
-        return denied
-
     if request.method == "GET":
         qs = _visible_teams(request.user)
         kind = str(request.query_params.get("kind") or "").strip()
         if kind in Team.Kind.values:
             qs = qs.filter(kind=kind)
+        organization_id = request.query_params.get("organizationId")
+        if organization_id:
+            qs = qs.filter(organization_id=organization_id)
         rows = [_team_payload(team, request.user) for team in qs]
         return Response({"ok": True, "count": len(rows), "results": rows})
+
+    denied = _require_manager(request.user)
+    if denied:
+        return denied
 
     name = str(request.data.get("name") or "").strip()
     kind = str(request.data.get("kind") or Team.Kind.ENTERPRISE)
@@ -179,9 +185,21 @@ def teams(request):
             description=description,
             created_by=request.user,
         )
+        if kind == Team.Kind.PLATFORM and request.user.id not in member_ids:
+            # 平台团队仅成员可见，因此创建人必须进入团队，避免创建成功后
+            # 立即从自己的列表中消失，也保证后续具备明确的管理身份。
+            member_ids.insert(0, request.user.id)
         if member_ids:
             TeamMembership.objects.bulk_create([
-                TeamMembership(team=team, user_id=uid, role=TeamMembership.Role.MEMBER)
+                TeamMembership(
+                    team=team,
+                    user_id=uid,
+                    role=(
+                        TeamMembership.Role.LEAD
+                        if kind == Team.Kind.PLATFORM and uid == request.user.id
+                        else TeamMembership.Role.MEMBER
+                    ),
+                )
                 for uid in member_ids
             ])
         AuditLog.objects.create(

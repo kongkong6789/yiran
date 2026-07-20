@@ -53,9 +53,9 @@ export default function Connectors() {
               <SafetyCertificateOutlined />
             </span>
             <div>
-              <Typography.Text strong>配置按账号隔离</Typography.Text>
+              <Typography.Text strong>配置跟随当前企业</Typography.Text>
               <Typography.Text type="secondary">
-                密钥、地址与连接参数仅对当前登录账号生效
+                密钥、地址与连接参数按企业隔离，切换企业后自动加载对应配置
               </Typography.Text>
             </div>
           </div>

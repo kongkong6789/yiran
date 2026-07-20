@@ -301,6 +301,8 @@ TENCENT_COS_REGION = os.getenv("TENCENT_COS_REGION", "ap-guangzhou")
 TENCENT_COS_CUSTOM_DOMAIN = os.getenv("TENCENT_COS_CUSTOM_DOMAIN", "")
 TENCENT_COS_SCHEME = os.getenv("TENCENT_COS_SCHEME", "https")
 TENCENT_COS_LOCATION = os.getenv("TENCENT_COS_LOCATION", "media")
+TENCENT_COS_AVATAR_LOCATION = os.getenv("TENCENT_COS_AVATAR_LOCATION", "media/avatars")
+TENCENT_COS_AVATAR_ACL = os.getenv("TENCENT_COS_AVATAR_ACL", "private")
 TENCENT_COS_ACL = os.getenv("TENCENT_COS_ACL", "public-read")
 # Skill 专用:可单独建桶;未配置则复用主桶但使用独立路径前缀 skills/
 TENCENT_COS_SKILLS_BUCKET = os.getenv("TENCENT_COS_SKILLS_BUCKET", "")
