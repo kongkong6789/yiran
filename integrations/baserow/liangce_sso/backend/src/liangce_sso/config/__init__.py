@@ -1,0 +1,1 @@
+"""Baserow plugin configuration package."""

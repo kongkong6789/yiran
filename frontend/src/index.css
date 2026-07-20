@@ -4802,7 +4802,6 @@ body {
     padding: 16px;
   }
 }
-}
 .connectors-board {
   display: flex;
   flex-direction: column;
@@ -5573,7 +5572,6 @@ body {
   background: var(--lc-bg);
 }
 
-}
 :root[data-theme="dark"] .connectors-stats,
 :root[data-theme="dark"] .section-hub-card,
 :root[data-theme="dark"] .mcp-dock,

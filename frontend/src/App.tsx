@@ -15,7 +15,9 @@ import Loops from "./pages/Loops";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
+import SmartTable from "./pages/SmartTable";
 import SkillsPage from "./pages/SkillsPage";
+import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
 import WorkHub from "./pages/WorkHub";
@@ -40,6 +42,7 @@ export default function App() {
           <Route path="ontology" element={<OntologyGraph />} />
           <Route path="knowledge" element={<Knowledge />} />
           <Route path="skills" element={<SkillsPage />} />
+          <Route path="agent-memory" element={<AgentMemory />} />
           <Route path="council" element={<LegacyCouncilRedirect />} />
           <Route path="commerce" element={<CommerceHub />} />
           <Route path="commerce/bench" element={<CommerceFusion />} />
@@ -49,6 +52,8 @@ export default function App() {
           <Route path="console" element={<Navigate to="/work" replace />} />
           <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />
           <Route path="connectors" element={<Connectors />} />
+          <Route path="tables" element={<SmartTable />} />
+          <Route path="nocodb" element={<Navigate to="/tables" replace />} />
           <Route path="datalake" element={<DataLake />} />
           <Route path="my/knowledge" element={(
             <SectionHub

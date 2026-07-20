@@ -40,6 +40,12 @@ export default function XiaoceProcess({
 
   if (steps.length === 0) return null;
 
+  const statusTitle = status === "failed"
+    ? "执行失败"
+    : status === "cancelled"
+      ? "已暂停本次生成"
+      : "";
+
   return (
     <section
       className={`xiaoce-process is-${status}${live ? " is-live" : ""}`}
@@ -50,7 +56,14 @@ export default function XiaoceProcess({
           <LoadingOutlined spin />
           <span>正在处理</span>
         </div>
-      ) : (
+      ) : statusTitle ? (
+        <div className={`xiaoce-process-status is-${status}`}>
+          {status === "failed" ? <CloseCircleFilled /> : <PauseCircleFilled />}
+          <span>{statusTitle}</span>
+        </div>
+      ) : null}
+
+      {!live ? (
         <button
           type="button"
           className="xiaoce-process-toggle"
@@ -60,7 +73,7 @@ export default function XiaoceProcess({
           {expanded ? <DownOutlined /> : <RightOutlined />}
           <span>查看处理过程（{steps.length}步）</span>
         </button>
-      )}
+      ) : null}
 
       {expanded ? (
         <ol className="xiaoce-process-steps">

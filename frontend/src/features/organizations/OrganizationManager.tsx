@@ -348,7 +348,7 @@ export default function OrganizationManager({
           setSettingsOpen(false);
           setName(organization?.name || "");
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         <div className="organization-settings-modal">
           <section>
@@ -398,7 +398,7 @@ export default function OrganizationManager({
           assignForm.resetFields();
         }}
         width={620}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={assignForm} layout="vertical" preserve={false}>
           <Alert
@@ -471,7 +471,7 @@ export default function OrganizationManager({
           setCreateOpen(false);
           createForm.resetFields();
         }}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={createForm} layout="vertical" preserve={false}>
           <Form.Item

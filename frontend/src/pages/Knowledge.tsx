@@ -1076,7 +1076,7 @@ export default function Knowledge() {
         confirmLoading={editSaving}
         onOk={() => void handleSaveKnowledgeBaseEdit()}
         onCancel={() => setEditingKnowledgeBase(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={editForm} layout="vertical" requiredMark={false}>
           <Form.Item

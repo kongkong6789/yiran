@@ -742,6 +742,7 @@ def _run_xiaoce_reply_async(run_id) -> None:
                 user=run.user,
                 cancel_check=cancel_check,
                 progress_callback=progress_callback,
+                session_key=f"collab:room:{run.room_id}",
             )
             if result.get("ok"):
                 reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"

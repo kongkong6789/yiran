@@ -48,7 +48,6 @@ import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
-import CollabRoundTable from "../components/CollabRoundTable";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
@@ -121,10 +120,13 @@ type MentionState = {
 } | null;
 
 function detectMentionAt(text: string, caret: number): MentionState {
-  const before = text.slice(0, caret);
+  const pos = Number.isFinite(caret)
+    ? Math.max(0, Math.min(Math.floor(caret), text.length))
+    : text.length;
+  const before = text.slice(0, pos);
   const m = before.match(/@([^\s@]*)$/);
   if (!m) return null;
-  return { start: caret - m[0].length, end: caret, query: m[1] || "" };
+  return { start: pos - m[0].length, end: pos, query: m[1] || "" };
 }
 
 function memberLabel(u?: Pick<CollabUserBrief, "username" | "display_name" | "nickname"> | null) {
@@ -201,7 +203,7 @@ function renderMessageBody(content: string, room: CollabRoom | null, asMarkdown:
   if (!content) return null;
   if (asMarkdown || looksLikeMarkdown(content)) {
     return (
-      <div className="collab-md blocks">
+      <div className="collab-md blocks chat-md">
         <ChatMarkdown content={content} variant="blocks" />
       </div>
     );
@@ -452,7 +454,7 @@ function ProfileAvatarPopover({
         trigger="click"
         placement={placement}
         arrow
-        destroyTooltipOnHide
+        destroyOnHidden
         overlayClassName="collab-profile-popover"
       >
         <span
@@ -474,7 +476,7 @@ function ProfileAvatarPopover({
       trigger="click"
       placement={placement}
       arrow
-      destroyTooltipOnHide
+      destroyOnHidden
       overlayClassName="collab-profile-popover"
     >
       <button
@@ -640,6 +642,24 @@ export default function CollabRisk({
   const [draft, setDraft] = useState("");
   const draftRef = useRef("");
   draftRef.current = draft;
+  type RoomComposerCache = {
+    draft: string;
+    pendingFiles: { file: File; preview?: string }[];
+    replyingTo: CollabMessage | null;
+  };
+  type RoomViewCache = {
+    room: CollabRoom;
+    messages: CollabMessage[];
+    insights: CollabInsight[];
+    hasMoreBefore: boolean;
+    firstItemIndex: number;
+    xiaoceRun: XiaoceRun | null;
+    stats: CollabRoomStats | null;
+  };
+  const roomComposerCacheRef = useRef<Map<string, RoomComposerCache>>(new Map());
+  const roomViewCacheRef = useRef<Map<string, RoomViewCache>>(new Map());
+  const roomLoadSeqRef = useRef(0);
+  const prevActiveIdForComposerRef = useRef<string | null>(null);
   const [draftCoach, setDraftCoach] = useState<{
     level: string;
     tips: CollabDraftTip[];
@@ -677,6 +697,7 @@ export default function CollabRisk({
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
   const [mention, setMention] = useState<MentionState>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
@@ -791,11 +812,13 @@ export default function CollabRisk({
   }, [activeId, message]);
 
   const loadRoomDetail = useCallback(async (id: string) => {
+    const seq = ++roomLoadSeqRef.current;
     try {
       const [room, page] = await Promise.all([
         getCollabRoom(id),
         listCollabMessages(id, { limit: MSG_WINDOW, includeParticipants: false }),
       ]);
+      if (seq !== roomLoadSeqRef.current || activeIdRef.current !== id) return;
       const hydratedRoom = {
         ...room,
         ...page.room,
@@ -803,27 +826,123 @@ export default function CollabRisk({
         messages: page.results,
         has_more_before: page.has_more_before,
       } as CollabRoom;
+      const nextMessages = page.results || [];
+      const nextInsights = room.insights || [];
+      const nextHasMore = Boolean(page.has_more_before ?? room.has_more_before);
+      const nextXiaoce = isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null;
       setActiveRoom(hydratedRoom);
-      setActiveXiaoceRun(
-        isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null,
-      );
-      setMessages(page.results || []);
-      setHasMoreBefore(Boolean(page.has_more_before ?? room.has_more_before));
+      setActiveXiaoceRun(nextXiaoce);
+      setMessages(nextMessages);
+      setHasMoreBefore(nextHasMore);
       setFirstItemIndex(VIRT_BASE_INDEX);
-      setInsights(room.insights || []);
+      setInsights(nextInsights);
       stickBottomRef.current = true;
       forceStickUntilRef.current = Date.now() + 2000;
       window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
-      try {
-        const st = await getCollabRoomStats(id);
-        setRoomStats(st);
-      } catch {
-        setRoomStats(null);
-      }
+      // 统计看板异步加载，不挡切换体感
+      void getCollabRoomStats(id)
+        .then((st) => {
+          if (seq !== roomLoadSeqRef.current || activeIdRef.current !== id) return;
+          setRoomStats(st);
+          const cached = roomViewCacheRef.current.get(id);
+          if (cached) roomViewCacheRef.current.set(id, { ...cached, stats: st });
+        })
+        .catch(() => {
+          if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
+            setRoomStats(null);
+          }
+        });
+      roomViewCacheRef.current.set(id, {
+        room: hydratedRoom,
+        messages: nextMessages,
+        insights: nextInsights,
+        hasMoreBefore: nextHasMore,
+        firstItemIndex: VIRT_BASE_INDEX,
+        xiaoceRun: nextXiaoce,
+        stats: roomViewCacheRef.current.get(id)?.stats || null,
+      });
     } catch {
-      message.error("读取会话失败");
+      if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
+        message.error("读取会话失败");
+      }
     }
   }, [message, scrollMessagesToBottom]);
+
+  const selectRoom = useCallback((roomId: string) => {
+    if (roomId === activeIdRef.current) return;
+    // 先把当前会话的输入框状态存起来
+    const prevId = activeIdRef.current;
+    if (prevId) {
+      roomComposerCacheRef.current.set(prevId, {
+        draft: draftRef.current,
+        pendingFiles,
+        replyingTo,
+      });
+      if (activeRoom && activeRoom.id === prevId) {
+        roomViewCacheRef.current.set(prevId, {
+          room: activeRoom,
+          messages: messagesRef.current,
+          insights: insightsRef.current,
+          hasMoreBefore,
+          firstItemIndex,
+          xiaoceRun: activeXiaoceRun,
+          stats: roomStats,
+        });
+      }
+    }
+    // 立刻切 UI：恢复该会话草稿 / 缓存消息，避免共用输入框和白屏等待
+    const composer = roomComposerCacheRef.current.get(roomId);
+    setDraft(composer?.draft || "");
+    setPendingFiles(composer?.pendingFiles || []);
+    setReplyingTo(composer?.replyingTo || null);
+    setMention(null);
+    setMentionIndex(0);
+    setDraftCoach(null);
+    setDraftCoachLoading(false);
+    if (draftCoachTimer.current) {
+      window.clearTimeout(draftCoachTimer.current);
+      draftCoachTimer.current = null;
+    }
+    draftCoachSeq.current += 1;
+
+    const cached = roomViewCacheRef.current.get(roomId);
+    if (cached) {
+      setActiveRoom(cached.room);
+      setMessages(cached.messages);
+      setInsights(cached.insights);
+      setHasMoreBefore(cached.hasMoreBefore);
+      setFirstItemIndex(cached.firstItemIndex);
+      setActiveXiaoceRun(cached.xiaoceRun);
+      setRoomStats(cached.stats);
+      stickBottomRef.current = true;
+      forceStickUntilRef.current = Date.now() + 1200;
+      window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
+    } else {
+      // 用会话列表里的摘要立刻占位，避免切到空的「协作会话」引导页
+      const listRoom = rooms.find((r) => r.id === roomId) || null;
+      if (listRoom) setActiveRoom(listRoom);
+      setMessages([]);
+      setInsights([]);
+      setHasMoreBefore(false);
+      setFirstItemIndex(VIRT_BASE_INDEX);
+      setActiveXiaoceRun(null);
+      setRoomStats(null);
+    }
+    setCancellingRunId(null);
+    setHighlightId(null);
+    prevActiveIdForComposerRef.current = roomId;
+    setActiveId(roomId);
+  }, [
+    activeRoom,
+    activeXiaoceRun,
+    firstItemIndex,
+    hasMoreBefore,
+    pendingFiles,
+    replyingTo,
+    roomStats,
+    rooms,
+    scrollMessagesToBottom,
+  ]);
 
   const refreshStats = useCallback(async (id?: string | null) => {
     const rid = id || activeId;
@@ -853,10 +972,10 @@ export default function CollabRisk({
   useEffect(() => {
     const roomId = searchParams.get("room");
     if (!roomId) return;
-    setActiveId(roomId);
+    selectRoom(roomId);
     setSiderTab("chats");
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, selectRoom]);
 
   // 从「AI 问答」入口带 ?bot=xiaoce 进入时，直聊小策bot
   useEffect(() => {
@@ -876,9 +995,14 @@ export default function CollabRisk({
         const room = await roomRequest;
         if (cancelled) return;
         await loadRooms();
-        setActiveId(room.id);
+        selectRoom(room.id);
         setSiderTab("chats");
         if (nasPrompt) {
+          roomComposerCacheRef.current.set(room.id, {
+            draft: nasPrompt,
+            pendingFiles: [],
+            replyingTo: null,
+          });
           setDraft(nasPrompt);
           window.setTimeout(() => composerRef.current?.focus?.(), 0);
         }
@@ -1069,12 +1193,12 @@ export default function CollabRisk({
       setMessages([]);
       setInsights([]);
       setRoomStats(null);
+      prevActiveIdForComposerRef.current = null;
       return;
     }
-    setActiveXiaoceRun(null);
-    setCancellingRunId(null);
+    prevActiveIdForComposerRef.current = activeId;
     stickBottomRef.current = true;
-    loadRoomDetail(activeId);
+    void loadRoomDetail(activeId);
   }, [activeId, loadRoomDetail]);
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
@@ -1095,6 +1219,11 @@ export default function CollabRisk({
       }
       if (changed?.length) {
         next = mergeMessagePatches(next, changed);
+      }
+      const rid = activeIdRef.current;
+      if (rid) {
+        const cached = roomViewCacheRef.current.get(rid);
+        if (cached) roomViewCacheRef.current.set(rid, { ...cached, messages: next });
       }
       return next;
     });
@@ -1243,7 +1372,7 @@ export default function CollabRisk({
         room_kind: "dm",
       });
       await loadRooms();
-      setActiveId(room.id);
+      selectRoom(room.id);
       setSiderTab("chats");
       message.success(`已打开与 ${username} 的对话`);
     } catch (e: any) {
@@ -1269,7 +1398,7 @@ export default function CollabRisk({
       setGroupMembers([]);
       setGroupTitle("");
       await loadRooms();
-      setActiveId(room.id);
+      selectRoom(room.id);
       setSiderTab("chats");
       message.success("群聊已创建");
     } catch (e: any) {
@@ -1592,6 +1721,13 @@ export default function CollabRisk({
     setDraftCoachLoading(false);
     setPendingFiles([]);
     setReplyingTo(null);
+    if (activeId) {
+      roomComposerCacheRef.current.set(activeId, {
+        draft: "",
+        pendingFiles: [],
+        replyingTo: null,
+      });
+    }
     const ok = await sendPlainMessage(content, files, replyTarget);
     if (!ok) {
       setDraft(content);
@@ -1600,6 +1736,13 @@ export default function CollabRisk({
         file,
         preview: previews[i],
       })));
+      if (activeId) {
+        roomComposerCacheRef.current.set(activeId, {
+          draft: content,
+          pendingFiles: files.map((file, i) => ({ file, preview: previews[i] })),
+          replyingTo: replyTarget,
+        });
+      }
     } else {
       previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
     }
@@ -1687,9 +1830,14 @@ export default function CollabRisk({
     }
   }, []);
 
-  const onDraftChange = (value: string, caret: number) => {
+  const onDraftChange = (value: string, caret?: number | null) => {
     setDraft(value);
-    syncMentionFromCaret(value, caret);
+    // Ant Design TextArea 的 onChange 里 selectionStart 偶发仍是 0；追加输入时按末尾算
+    const resolved =
+      caret == null
+        ? value.length
+        : (caret === 0 && value.length > draft.length ? value.length : caret);
+    syncMentionFromCaret(value, resolved);
 
     if (draftCoachTimer.current) {
       window.clearTimeout(draftCoachTimer.current);
@@ -1802,8 +1950,13 @@ export default function CollabRisk({
     });
   };
 
-  const syncMentionFromCaret = (value: string, caret: number) => {
-    const next = detectMentionAt(value, caret);
+  const syncMentionFromCaret = (value: string, caret?: number | null) => {
+    const raw = caret == null ? value.length : caret;
+    // Ant Design TextArea 在 onChange 时 selectionStart 有时仍是 0，补一次末尾检测
+    let next = detectMentionAt(value, raw);
+    if (!next && raw !== value.length) {
+      next = detectMentionAt(value, value.length);
+    }
     setMention(next);
   };
 
@@ -2214,7 +2367,7 @@ export default function CollabRisk({
                   <button
                     type="button"
                     className="collab-room-main"
-                    onClick={() => setActiveId(room.id)}
+                    onClick={() => selectRoom(room.id)}
                   >
                     {peer ? (
                       <ProfileAvatarPopover user={peer} online={online} placement="rightTop">
@@ -2373,27 +2526,8 @@ export default function CollabRisk({
         className={`collab-main${isXiaoce ? " xiaoce-chat-shell" : ""}`}
       >
         {!activeRoom ? (
-          <div className="collab-empty">
-            <CollabRoundTable variant="empty" />
-            <Typography.Title level={4} style={{ margin: "4px 0 0", fontWeight: 600 }}>
-              协作会话
-            </Typography.Title>
-            <Typography.Text type="secondary" style={{ maxWidth: 360 }}>
-              中间是主场聊天；通讯录里的小策bot 可做知识问答；群聊可输入 @AI。
-            </Typography.Text>
-            <Space wrap style={{ marginTop: 12 }}>
-              <Button type="primary" onClick={() => setSiderTab("contacts")}>打开通讯录</Button>
-              <Button icon={<TeamOutlined />} onClick={() => setGroupOpen(true)}>发起群聊</Button>
-              {onStartRoundtable ? (
-                <Button
-                  className="collab-roundtable-action"
-                  icon={<TeamOutlined />}
-                  onClick={() => onStartRoundtable()}
-                >
-                  进入圆桌
-                </Button>
-              ) : null}
-            </Space>
+          <div className="collab-empty soft">
+            {activeId ? "正在打开会话…" : "从左侧选择会话，或打开通讯录发起聊天"}
           </div>
         ) : (
           <>
@@ -2911,7 +3045,35 @@ export default function CollabRisk({
                   e.target.value = "";
                 }}
               />
-              <div className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}`}>
+              <div
+                ref={composerBoxRef}
+                className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}${mention && mentionOptions.length > 0 ? " has-mention" : ""}`}
+              >
+                {mention && mentionOptions.length > 0 ? (
+                  <div className="collab-mention-menu" role="listbox">
+                    {mentionOptions.map((opt, idx) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="option"
+                        aria-selected={idx === mentionIndex}
+                        className={idx === mentionIndex ? "active" : ""}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applyMention(opt);
+                        }}
+                      >
+                        <span className="collab-mention-ico">
+                          {opt.type === "ai" ? <RobotOutlined /> : opt.type === "all" ? <TeamOutlined /> : <UserOutlined />}
+                        </span>
+                        <span>
+                          <strong>{opt.label}</strong>
+                          <em>{opt.desc}</em>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {(draftCoach || draftCoachLoading) && (
                   <div className={`collab-draft-examples level-${draftCoach?.level || "info"}`}>
                     <span className="collab-draft-examples-title">
@@ -2955,30 +3117,6 @@ export default function CollabRisk({
                     </div>
                   </div>
                 )}
-                {mention && mentionOptions.length > 0 && (
-                  <div className="collab-mention-menu" role="listbox">
-                    {mentionOptions.map((opt, idx) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        role="option"
-                        className={idx === mentionIndex ? "active" : ""}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          applyMention(opt);
-                        }}
-                      >
-                        <span className="collab-mention-ico">
-                          {opt.type === "ai" ? <RobotOutlined /> : opt.type === "all" ? <TeamOutlined /> : <UserOutlined />}
-                        </span>
-                        <span>
-                          <strong>{opt.label}</strong>
-                          <em>{opt.desc}</em>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <Input.TextArea
                   ref={composerRef}
                   className="agent-chat-composer-textarea"
@@ -2986,7 +3124,15 @@ export default function CollabRisk({
                   value={draft}
                   onChange={(e) => {
                     const value = e.target.value;
-                    onDraftChange(value, e.target.selectionStart ?? value.length);
+                    const el = e.target;
+                    // 下一帧再读一次光标，避免 selectionStart 滞后
+                    const immediate = el.selectionStart;
+                    onDraftChange(value, immediate);
+                    if (immediate === 0 && value.length > 0) {
+                      requestAnimationFrame(() => {
+                        syncMentionFromCaret(value, el.selectionStart ?? value.length);
+                      });
+                    }
                   }}
                   onClick={(e) => {
                     const el = e.target as HTMLTextAreaElement;
@@ -3086,7 +3232,9 @@ export default function CollabRisk({
                 <div className="agent-chat-composer-bar">
                   <div className="agent-chat-composer-left">
                     <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
-                    <span className="collab-composer-hint">@成员 · @AI · Skill</span>
+                    {!(mention && mentionOptions.length > 0) ? (
+                      <span className="collab-composer-hint">@成员 · @AI · Skill</span>
+                    ) : null}
                   </div>
                   <div className="agent-chat-composer-right">
                     <Tooltip title={`上传附件（最多 ${MAX_FILES} 个）`}>
@@ -3259,7 +3407,7 @@ export default function CollabRisk({
         onOk={() => void handleRenameGroup()}
         confirmLoading={renaming}
         okText="保存"
-        destroyOnClose
+        destroyOnHidden
       >
         <Input
           value={renameTitle}
@@ -3709,6 +3857,15 @@ const css = `
   min-width: 0;
   min-height: 0;
   background: #fff;
+  overflow: visible;
+  position: relative;
+  z-index: 1;
+}
+.collab-agent-input {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 40;
+  overflow: visible;
 }
 .collab-empty {
   flex: 1;
@@ -3987,15 +4144,99 @@ const css = `
 }
 .collab-msg.ai .collab-bubble:has(.collab-md.blocks),
 .collab-msg.peer .collab-bubble:has(.collab-md.blocks) {
-  background: transparent;
-  border: none;
-  padding: 0;
-  box-shadow: none;
+  background: #fff;
+  border: 1px solid #e8edf5;
+  padding: 12px 14px;
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(11, 33, 68, 0.04);
+}
+.collab-msg.ai .collab-bubble:has(.collab-md.blocks.chat-md),
+.collab-msg.peer .collab-bubble:has(.collab-md.blocks.chat-md) {
+  max-width: min(520px, 100%);
 }
 .collab-msg.mine .collab-bubble:has(.collab-md.blocks) {
   background: transparent;
   border: none;
   padding: 0;
+}
+.collab-md.blocks.chat-md .agent-report-card {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  overflow: visible;
+}
+.collab-md.blocks.chat-md .agent-md-section {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.collab-md.blocks.chat-md .agent-md-section.is-lead .agent-md-h1:first-child,
+.collab-md.blocks.chat-md .agent-md-section.is-lead .agent-md-h2:first-child {
+  margin: 0 0 10px;
+  padding: 0;
+  background: none;
+  border-bottom: none;
+  font-size: 15px;
+  font-weight: 700;
+}
+.collab-md.blocks.chat-md .agent-md-h3,
+.collab-md.blocks.chat-md .agent-md-h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 8px;
+  padding: 0 0 6px;
+  border-bottom: 1px solid rgba(49, 94, 251, 0.12);
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e3a5f;
+}
+.collab-md.blocks.chat-md .agent-md-h3::before,
+.collab-md.blocks.chat-md .agent-md-h4::before {
+  content: "";
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: #3370ff;
+  flex-shrink: 0;
+}
+.collab-md.blocks.chat-md .agent-md-code {
+  padding: 0 5px;
+  border: none;
+  background: rgba(51, 112, 255, 0.09);
+  color: #1d4ed8;
+  font-size: 0.92em;
+  font-weight: 600;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.collab-md.blocks.chat-md .agent-md-li {
+  margin: 5px 0;
+  line-height: 1.55;
+}
+.collab-md.blocks.chat-md .agent-md-list {
+  margin: 6px 0 12px;
+  padding-left: 1.2em;
+}
+.collab-md.blocks.chat-md .agent-md-p {
+  margin: 0 0 8px;
+}
+.collab-md.blocks.chat-md .agent-md-strong {
+  color: #334155;
+  font-weight: 600;
+}
+.collab-md.blocks.chat-md .agent-md-table-wrap {
+  margin: 8px 0 12px;
+  border-radius: 10px;
+  border: 1px solid #e8edf5;
+  overflow: auto;
+}
+.collab-md.blocks.chat-md .agent-md-table th {
+  background: #f6f8fc;
+  font-size: 12px;
+}
+.collab-md.blocks.chat-md .agent-md-table td {
+  font-size: 13px;
 }
 .collab-md .agent-md-blocks {
   max-width: min(560px, 78vw);
@@ -4025,6 +4266,9 @@ const css = `
 }
 .collab-agent-input {
   flex-shrink: 0;
+  position: relative;
+  z-index: 40;
+  overflow: visible;
 }
 .collab-reply-composer {
   display: flex;
@@ -4079,32 +4323,59 @@ const css = `
 }
 .collab-reply-composer button:active {
   transform: scale(0.9);
+}
 .xiaoce-live-process {
   flex-shrink: 0;
-  padding: 8px 14px 4px;
+  padding: 10px 16px 8px;
   border-top: 1px solid var(--lc-border-light, #edf1f7);
-  background: var(--lc-bg-elevated, #fff);
+  background: color-mix(in srgb, var(--lc-bg-elevated, #fff) 92%, #f3f7ff);
 }
 .xiaoce-live-process-label {
   display: block;
-  margin: 0 0 5px 2px;
+  margin: 0 0 6px 2px;
   color: var(--lc-text-muted, #5c6b84);
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .xiaoce-process {
-  width: min(520px, 100%);
-  margin-top: 9px;
+  width: min(420px, 100%);
+  margin-top: 8px;
   color: var(--lc-text, #31405b);
   font-size: 12px;
 }
 .xiaoce-process.is-live {
+  width: 100%;
+  max-width: 420px;
   margin-top: 0;
   padding: 10px 12px;
-  border: 1px solid var(--lc-border-light, #dbe7ff);
+  border: 1px solid color-mix(in srgb, var(--lc-accent-blue, #315efb) 22%, #dbe7ff);
   border-radius: 12px;
-  background: var(--lc-bg, #f7faff);
+  background: color-mix(in srgb, var(--lc-bg, #f7faff) 88%, #fff);
+  box-shadow: 0 4px 14px rgba(49, 94, 251, 0.06);
 }
+.xiaoce-process.is-failed,
+.xiaoce-process.is-cancelled {
+  padding: 10px 12px;
+  border: 1px solid #f0d5d5;
+  border-radius: 12px;
+  background: #fffafa;
+}
+.xiaoce-process.is-cancelled {
+  border-color: #f3e4c8;
+  background: #fffdf8;
+}
+.xiaoce-process-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.xiaoce-process-status.is-failed { color: #a8071a; }
+.xiaoce-process-status.is-cancelled { color: #ad6800; }
 .xiaoce-process-live-title,
 .xiaoce-process-toggle {
   display: inline-flex;
@@ -4126,36 +4397,51 @@ const css = `
 }
 .xiaoce-process-steps {
   display: grid;
-  gap: 7px;
-  margin: 9px 0 0;
-  padding: 0;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed rgba(49, 94, 251, 0.16);
   list-style: none;
+}
+.xiaoce-process.is-failed .xiaoce-process-steps,
+.xiaoce-process.is-cancelled .xiaoce-process-steps {
+  border-top-color: rgba(168, 7, 26, 0.12);
 }
 .xiaoce-process-steps li {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   min-height: 20px;
   color: var(--lc-text-muted, #6b7890);
+  line-height: 1.45;
 }
 .xiaoce-process-steps li.is-running {
   color: var(--lc-text, #172033);
   font-weight: 600;
 }
+.xiaoce-process-steps li.is-failed {
+  color: #a8071a;
+  font-weight: 600;
+}
+.xiaoce-process-steps li.is-cancelled {
+  color: #ad6800;
+}
 .xiaoce-process-icon {
   flex: 0 0 auto;
-  font-size: 14px;
+  margin-top: 2px;
+  font-size: 13px;
 }
 .xiaoce-process-icon.is-completed { color: #22a06b; }
 .xiaoce-process-icon.is-running { color: var(--lc-accent-blue, #315efb); }
 .xiaoce-process-icon.is-cancelled { color: #d48806; }
 .xiaoce-process-icon.is-failed { color: #cf1322; }
 .xiaoce-process-error {
-  margin-top: 9px;
+  margin-top: 8px;
   padding: 7px 9px;
   border-radius: 8px;
   background: #fff2f0;
   color: #a8071a;
+  font-size: 11.5px;
   line-height: 1.5;
 }
 .xiaoce-created-skill {
@@ -4194,6 +4480,11 @@ const css = `
 }
 .collab-agent-composer {
   position: relative;
+  overflow: visible;
+  z-index: 30;
+}
+.collab-agent-composer.has-mention {
+  z-index: 80;
 }
 .collab-agent-composer.has-coach {
   margin-top: 8px;
@@ -4278,16 +4569,18 @@ const css = `
 }
 .collab-mention-menu {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: 20;
-  max-height: 240px;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 8px);
+  z-index: 100;
+  max-height: min(280px, 42vh);
   overflow: auto;
   background: #fff;
   border: 1px solid #dbe3f0;
-  border-radius: 10px;
-  box-shadow: 0 10px 28px rgba(23, 32, 51, .12);
+  border-radius: 12px;
+  box-shadow:
+    0 14px 36px rgba(23, 32, 51, 0.16),
+    0 0 0 1px rgba(49, 94, 251, 0.05);
   padding: 4px;
 }
 .collab-mention-menu button {
@@ -4390,6 +4683,12 @@ const css = `
   position: sticky;
   z-index: 4;
   top: 0;
+  flex-shrink: 0;
+}
+.collab-ai.collab-intelligence {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .collab-intelligence-tabs {
   position: sticky;
@@ -4402,6 +4701,7 @@ const css = `
   background: rgba(251, 252, 254, 0.88);
   -webkit-backdrop-filter: blur(16px) saturate(150%);
   backdrop-filter: blur(16px) saturate(150%);
+  flex-shrink: 0;
 }
 .collab-intelligence-tabs button {
   display: inline-flex;
@@ -4499,7 +4799,8 @@ const css = `
 .collab-summary-nudge {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-rows: auto auto;
+  gap: 9px 9px;
   padding: 11px;
   border: 1px solid #e1e8f1;
   border-radius: 13px;
@@ -4538,9 +4839,11 @@ const css = `
   line-height: 1.5;
 }
 .collab-summary-nudge-action {
-  grid-column: 2;
-  justify-self: start;
-  min-height: 30px;
+  grid-column: 1 / -1;
+  justify-self: stretch;
+  width: 100%;
+  min-height: 32px;
+  margin-top: 2px;
   padding: 0 11px;
   border: 0;
   border-radius: 9px;
@@ -4564,12 +4867,15 @@ const css = `
 }
 .collab-summary-controls {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 7px;
+  grid-template-columns: 1fr;
+  gap: 8px;
   padding: 10px;
   border: 1px solid #e4eaf2;
   border-radius: 13px;
   background: rgba(247, 249, 253, 0.86);
+}
+.collab-summary-controls .ant-btn-primary {
+  width: 100%;
 }
 .collab-summary-controls label {
   grid-column: 1 / -1;
@@ -5205,7 +5511,6 @@ const css = `
 .collab-msg.peer .collab-bubble,
 .collab-kpi,
 .collab-alert-row,
-.collab-mention-menu,
 .collab-profile-popover .ant-popover-inner,
 .collab-md .agent-report-card,
 .collab-md .agent-md-section,
@@ -5218,6 +5523,15 @@ const css = `
   background: var(--lc-surface);
   border-color: var(--lc-line);
   box-shadow: none;
+}
+
+.collab-mention-menu {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+  box-shadow:
+    0 14px 36px rgba(23, 32, 51, 0.16),
+    0 0 0 1px rgba(49, 94, 251, 0.05);
 }
 
 .collab-msg.mine .collab-bubble {

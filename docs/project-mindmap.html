@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>良策标品 · 思维导图</title>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      themeVariables: {
+        primaryColor: "#e8f2ed",
+        primaryTextColor: "#1a2b24",
+        primaryBorderColor: "#3d9a78",
+        lineColor: "#6b8599",
+        secondaryColor: "#f3efe6",
+        tertiaryColor: "#eef3f8",
+        fontFamily: "Segoe UI, PingFang SC, Microsoft YaHei, sans-serif",
+        fontSize: "15px",
+      },
+      mindmap: { padding: 18, maxNodeWidth: 200 },
+    });
+
+    const tabs = document.querySelectorAll(".tab");
+    const panels = document.querySelectorAll("[data-panel]");
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const id = tab.dataset.tab;
+        tabs.forEach((t) => t.classList.toggle("on", t === tab));
+        panels.forEach((p) => p.hidden = p.dataset.panel !== id);
+      });
+    });
+  </script>
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --ink: #1c242c;
+      --muted: #5c6b78;
+      --line: #d5dde4;
+      --card: #fff;
+      --accent: #2f7d62;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 0% 0%, #e4efe9 0%, transparent 42%),
+        radial-gradient(circle at 100% 0%, #efe9dc 0%, transparent 40%),
+        var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    header {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 36px 24px 8px;
+    }
+    .brand {
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-size: clamp(1.55rem, 3vw, 1.95rem);
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .lead {
+      color: var(--muted);
+      max-width: 40em;
+      line-height: 1.6;
+      font-size: 15px;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .toolbar a, .toolbar button, .tab {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: var(--card);
+      color: var(--ink);
+      padding: 7px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      text-decoration: none;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .toolbar a:hover, .toolbar button:hover, .tab:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .tab.on {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .panel-wrap {
+      max-width: 1080px;
+      margin: 12px auto 40px;
+      padding: 0 16px 24px;
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 8px 14px;
+    }
+    .map-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 4px 24px;
+      overflow: auto;
+      box-shadow: 0 10px 40px rgba(28, 36, 44, 0.04);
+    }
+    .mermaid {
+      display: flex;
+      justify-content: center;
+      min-width: 680px;
+    }
+    .hint {
+      margin: 14px 8px 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .hint strong { color: var(--ink); }
+    .tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 7px;
+      border-radius: 4px;
+      margin-right: 2px;
+    }
+    .p0 { background: #f3e0dc; color: #a14a42; }
+    .p1 { background: #f3ead6; color: #8a6a2e; }
+    .p2 { background: #dde7f1; color: #3d5f7d; }
+    footer {
+      max-width: 1080px;
+      margin: 0 auto 36px;
+      padding: 0 24px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    @media print {
+      body { background: #fff; }
+      .toolbar, .tabs { display: none !important; }
+      [data-panel] { display: block !important; page-break-after: always; }
+      .map-card { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Liangce · Mind Map</div>
+    <h1>良策「标品」思维导图</h1>
+    <p class="lead">
+      三张图：总览 / 落地里程碑 / 技术栈。比长文更适合对齐；细节仍可看详细版。
+    </p>
+    <div class="toolbar">
+      <a href="./project-overview.html">详细版概览</a>
+      <button type="button" onclick="window.print()">打印 / PDF</button>
+    </div>
+  </header>
+
+  <div class="panel-wrap">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab on" data-tab="full">① 总览</button>
+      <button type="button" class="tab" data-tab="roadmap">② 落地里程碑</button>
+      <button type="button" class="tab" data-tab="stack">③ 技术栈</button>
+    </div>
+
+    <div data-panel="full">
+      <div class="map-card">
+        <pre class="mermaid">
+mindmap
+  root((良策标品))
+    做什么
+      电商零售运营Agent
+      问答协作开会
+      知识图谱检索
+      Skill脚本执行
+      闸机后执行业务动作
+    已有能力
+      对话Agent与小策
+      团队协作圆桌
+      知识库图谱技能
+      Context记忆
+      经营回路工作台
+      任务待办自动化
+      智能表格连接器
+    近期完成
+      agentctx记忆
+      Skill进程沙箱
+      回路与团队合并
+    下一步
+      M1可信对话
+      M2能执行SOP
+      M3检索与提质
+        </pre>
+      </div>
+      <p class="hint"><strong>读法：</strong>中心是产品，左用途、右现状，下是近期完成与下一步。</p>
+    </div>
+
+    <div data-panel="roadmap" hidden>
+      <div class="map-card">
+        <pre class="mermaid">
+mindmap
+  root((落地实施))
+    M1可信对话约1周
+      P0记忆可见可删
+        技术 agentctx加React标签
+        效果 用户可控跨会话记忆
+      P0黄金问答回归
+        技术 Django测试加CI
+        效果 改代码不静默掉点
+      P0run_chat耗时
+        技术 meta结构化日志
+        效果 定位慢在哪一层
+    M2能执行约2周
+      P0一条SOP端到端
+        技术 编排闸机Connector
+        效果 真能改业务数据
+      P1异步队列
+        技术 Redis加Celery
+        效果 长任务可扩展可取消
+      P1沙箱二期
+        技术 runner资源限额
+        效果 更安全仍免Docker
+    M3提质约2到3周
+      P1向量检索升级
+        技术 rag接口加pgvector
+        效果 少幻觉可测命中率
+      P1LLM记忆抽取
+        技术 快模型加确认写入
+        效果 偏好召回更高
+      P2组织级记忆
+        技术 organization字段
+        效果 同店共享经营事实
+      P2表格双向同步
+        技术 smarttable加Baserow
+        效果 减少双端拷贝
+        </pre>
+      </div>
+      <p class="hint">
+        <span class="tag p0">P0</span>先做
+        <span class="tag p1">P1</span>加固
+        <span class="tag p2">P2</span>扩面
+        · 每个叶子都是「技术栈 → 达成效果」
+      </p>
+    </div>
+
+    <div data-panel="stack" hidden>
+      <div class="map-card">
+        <pre class="mermaid">
+mindmap
+  root((技术栈))
+    后端
+      Django5
+      DRF与Token鉴权
+      Channels与Daphne
+      PostgreSQL
+      DuckDB数仓
+    前端
+      React18
+      Vite与TypeScript
+      Ant Design5
+      ForceGraph与Mermaid
+    AI检索
+      LLM封装
+      RAG骨架可替换
+      图谱检索
+      MCP企微与NAS
+    治理与执行
+      Harness闸机
+      Orchestration编排
+      Connectors执行器
+      Skill超时cwd白名单
+    横向模块
+      collab协作
+      council圆桌
+      agentctx记忆
+      skills技能库
+      commerce经营
+      smarttable表格
+        </pre>
+      </div>
+      <p class="hint"><strong>原则：</strong>落地模块优先复用现有栈，少造新轮子。</p>
+    </div>
+  </div>
+
+  <footer>
+    <code>docs/project-mindmap.html</code> · 互补 <code>project-overview.html</code> · 2026-07-20
+  </footer>
+</body>
+</html>

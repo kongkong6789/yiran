@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import {
+  closeWebSocketQuietly,
   getCollabRoomPresence,
   getCollabRoomStats,
   listCollabMessages,
@@ -159,7 +160,7 @@ export function useCollabRoomLive({
 
     const connect = () => {
       if (stopped) return;
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
       afterMsgRef.current = Math.max(
         afterMsgRef.current,
         messagesRef.current.reduce((max, m) => (m.id > 0 && m.id > max ? m.id : max), 0),
@@ -228,7 +229,7 @@ export function useCollabRoomLive({
       if (presenceTimer) window.clearInterval(presenceTimer);
       if (pollTimer) window.clearInterval(pollTimer);
       if (pingTimer) window.clearInterval(pingTimer);
-      try { ws?.close(); } catch { /* ignore */ }
+      closeWebSocketQuietly(ws);
     };
   }, [
     roomId,

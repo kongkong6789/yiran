@@ -16,6 +16,8 @@ from apps.skills.runner import (
     format_script_outputs,
     try_execute_skill_scripts,
 )
+from apps.agentctx.assembler import assemble_context
+from apps.agentctx.memory import maybe_update_memory
 from .attachments import format_attachment_context, vision_image_parts
 from .cancellation import raise_if_cancelled
 from .progress import emit_progress
@@ -95,7 +97,10 @@ def _selected_knowledge_context(
         if not ids:
             return "", []
         qs = qs.filter(id__in=ids)
-    bases = list(qs.order_by("-updated_at")[:8])
+    try:
+        bases = list(qs.order_by("-updated_at")[:8])
+    except Exception:
+        return "", []
     if not bases:
         return "", []
     refs: list[dict] = []
@@ -155,6 +160,7 @@ def run_chat(
     knowledge_mode: str = "auto",
     knowledge_base_ids: list[int] | None = None,
     progress_callback=None,
+    session_key: str | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -300,19 +306,18 @@ def run_chat(
             "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
         )
 
-    user_block = message or "(no text message)"
-    if reference_blocks:
-        reference_text = "\n\n".join(reference_blocks)
-        user_block = f"Reference material:\n{reference_text}\n\nUser question:\n{user_block}"
+    ctx_pack = assemble_context(
+        message=message,
+        history=history,
+        user=user,
+        session_key=session_key,
+        reference_blocks=reference_blocks,
+        history_limit=30,
+    )
+    user_block = ctx_pack.user_block
+    clean_history = ctx_pack.clean_history
+    reference_blocks = ctx_pack.reference_blocks
 
-
-    clean_history = [
-        {"role": item["role"], "content": str(item["content"])}
-        for item in history[-30:]
-        if isinstance(item, dict)
-        and item.get("role") in {"user", "assistant"}
-        and item.get("content")
-    ]
     image_parts = vision_image_parts(context_attachments)
     has_image = bool(image_parts)
     image_intent = image_svc.detect_image_intent(message, has_image)
@@ -490,12 +495,25 @@ def run_chat(
 
     raise_if_cancelled(cancel_check)
     emit_progress(progress_callback, "composing", "completed")
+    try:
+        maybe_update_memory(
+            user,
+            session_key=session_key,
+            message=message,
+            reply=reply,
+            history=history,
+        )
+    except Exception:
+        # 记忆更新失败不影响主回复
+        pass
     return {
         "ok": True,
         "reply": reply,
         "llm": llm.llm_available(user),
         "llm_error": llm_error,
         "llm_model": used_model or llm_result.get("model") or "",
+        "session_key": session_key or "",
+        "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
 "knowledge_hit": bool(
             selected_knowledge
             or knowledge
