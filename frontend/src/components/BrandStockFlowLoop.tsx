@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Button, Space, Tag, Typography } from "antd";
 import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 type StockId =
   | "promo"
@@ -153,6 +154,7 @@ function clampPos(x: number, y: number, w: number, h: number) {
 }
 
 export default function BrandStockFlowLoop() {
+  const visualTheme = useVisualizationTheme();
   const [playing, setPlaying] = useState(true);
   const [levels, setLevels] = useState<Levels>(INITIAL);
   const [positions, setPositions] = useState<PosMap>(initialPositions);
@@ -333,9 +335,9 @@ export default function BrandStockFlowLoop() {
         >
           <defs>
             <linearGradient id="sf-bg" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#f8fafc" />
-              <stop offset="55%" stopColor="#f3f6fb" />
-              <stop offset="100%" stopColor="#eef3f8" />
+              <stop offset="0%" stopColor={visualTheme.canvas} />
+              <stop offset="55%" stopColor={visualTheme.canvas} />
+              <stop offset="100%" stopColor={visualTheme.labelBg} />
             </linearGradient>
             <marker id="sf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M 0 1.2 L 8 5 L 0 8.8 Z" fill="#7d8aa0" />
@@ -373,7 +375,7 @@ export default function BrandStockFlowLoop() {
                       width={56}
                       height={18}
                       rx={9}
-                      fill={neg ? "rgba(254,242,242,0.95)" : "rgba(255,255,255,0.94)"}
+                      fill={neg ? semanticSoftColor("#c53d3d", visualTheme.mode, "#fef2f2") : visualTheme.labelBg}
                       stroke={neg ? "rgba(197,61,61,0.25)" : "rgba(61,111,168,0.2)"}
                     />
                     <text
@@ -424,7 +426,7 @@ export default function BrandStockFlowLoop() {
                   width={s.w}
                   height={s.h}
                   rx={isDriver ? 16 : 14}
-                  fill="#ffffff"
+                  fill={visualTheme.labelBg}
                   stroke={isDrag ? "#c4924a" : s.color}
                   strokeWidth={isDrag ? 2.2 : 1.5}
                 />
@@ -434,7 +436,7 @@ export default function BrandStockFlowLoop() {
                   width={s.w - 3}
                   height={fillH}
                   rx={isDriver ? 14 : 12}
-                  fill={s.soft}
+                  fill={semanticSoftColor(s.color, visualTheme.mode, s.soft)}
                   style={{ pointerEvents: "none" }}
                 />
                 <text
@@ -442,7 +444,7 @@ export default function BrandStockFlowLoop() {
                   y={s.y + (isDriver ? 22 : 24)}
                   textAnchor="middle"
                   className="brand-sfd-stock-title"
-                  fill="#172033"
+                  fill={visualTheme.labelText}
                   style={{ pointerEvents: "none" }}
                 >
                   {s.label}
@@ -452,7 +454,7 @@ export default function BrandStockFlowLoop() {
                   y={s.y + (isDriver ? 40 : 44)}
                   textAnchor="middle"
                   className="brand-sfd-stock-sub"
-                  fill="#8b96a8"
+                  fill={visualTheme.mutedText}
                   style={{ pointerEvents: "none" }}
                 >
                   {isDriver ? "Driver · 拖动" : "Stock · 拖动"}

@@ -15,6 +15,7 @@ import CompanyOperatingLoopCanvas, {
   type CompanyNodeDatum,
 } from "./CompanyOperatingLoopCanvas";
 import LoopCycleCanvas from "./LoopCycleCanvas";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 type LoopStatus = "all" | FeedbackLoop["status"];
 type LoopType = "all" | FeedbackLoop["loop_type"];
@@ -41,6 +42,7 @@ function formatTime(value?: string | null) {
 export default function RealLoopGraphWorkspace() {
   const { message } = App.useApp();
   const nav = useNavigate();
+  const visualTheme = useVisualizationTheme();
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const [loops, setLoops] = useState<FeedbackLoop[]>([]);
   const [graph, setGraph] = useState<OntGraph | null>(null);
@@ -390,7 +392,10 @@ export default function RealLoopGraphWorkspace() {
           {selectedNode && nodeDetail ? (
             <>
               <div className="real-loop-detail-title">
-                <span style={{ color: COMPANY_DOMAIN_META[selectedNode.key].color, background: COMPANY_DOMAIN_META[selectedNode.key].soft }}>
+                <span style={{
+                  color: COMPANY_DOMAIN_META[selectedNode.key].color,
+                  background: semanticSoftColor(COMPANY_DOMAIN_META[selectedNode.key].color, visualTheme.mode, COMPANY_DOMAIN_META[selectedNode.key].soft),
+                }}>
                   {COMPANY_DOMAIN_META[selectedNode.key].icon}
                 </span>
                 <div>
@@ -451,7 +456,10 @@ export default function RealLoopGraphWorkspace() {
           ) : viewMode === "company" ? (
             <div className="company-operating-overview">
               <div className="real-loop-detail-title">
-                <span style={{ color: COMPANY_DOMAIN_META.company.color, background: COMPANY_DOMAIN_META.company.soft }}>
+                <span style={{
+                  color: COMPANY_DOMAIN_META.company.color,
+                  background: semanticSoftColor(COMPANY_DOMAIN_META.company.color, visualTheme.mode, COMPANY_DOMAIN_META.company.soft),
+                }}>
                   {COMPANY_DOMAIN_META.company.icon}
                 </span>
                 <div>
@@ -472,7 +480,10 @@ export default function RealLoopGraphWorkspace() {
           ) : selectedLoop ? (
             <>
               <div className="real-loop-detail-title">
-                <span style={{ color: TYPE_META[selectedLoop.loop_type].color, background: TYPE_META[selectedLoop.loop_type].soft }}>
+                <span style={{
+                  color: TYPE_META[selectedLoop.loop_type].color,
+                  background: semanticSoftColor(TYPE_META[selectedLoop.loop_type].color, visualTheme.mode, TYPE_META[selectedLoop.loop_type].soft),
+                }}>
                   {selectedLoop.loop_type}
                 </span>
                 <div>

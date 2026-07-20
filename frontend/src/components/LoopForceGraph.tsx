@@ -33,6 +33,7 @@ import {
 import { LEVEL_LABEL, LEVEL_ORDER, type LoopLevel } from "../loopsHierarchy/types";
 import { LOOP_LEVEL_ONTOLOGY } from "../loopsHierarchy/commerceLevels";
 import { getCommerceFactsHealth, type FactTableHealth } from "../api/client";
+import { graphTooltipStyle, useVisualizationTheme } from "../theme/visualization";
 
 type FgData = { nodes: LoopGNode[]; links: LoopGLink[] };
 type EdgeMode = "all" | "causal" | "rollup";
@@ -107,6 +108,7 @@ function rollupChainOf(link: LoopGLink): RollupChain | null {
 
 export default function LoopForceGraph() {
   const { message, modal } = App.useApp();
+  const visualTheme = useVisualizationTheme();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const fgRef = useRef<FgApi | undefined>(undefined);
   const didFitRef = useRef(false);
@@ -628,11 +630,11 @@ export default function LoopForceGraph() {
       const fill = n.color;
       const grd = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, Math.max(0.2, r * 0.1), x, y, r);
       if (n.kind === "hub") {
-        grd.addColorStop(0, "#ffffff");
+        grd.addColorStop(0, visualTheme.nodeHover);
         grd.addColorStop(0.35, fill);
         grd.addColorStop(1, fill);
       } else if (n.dataKind === "fact") {
-        grd.addColorStop(0, "#ffffff");
+        grd.addColorStop(0, visualTheme.nodeHover);
         grd.addColorStop(0.45, shadeLevelColor(LEVEL_COLOR[n.level], 0.12));
         grd.addColorStop(1, fill);
       } else {
@@ -646,7 +648,7 @@ export default function LoopForceGraph() {
       ctx.fill();
       if (n.kind === "hub" || n.custom) {
         ctx.lineWidth = (n.custom ? 1.6 : 2.2) / Math.max(globalScale, 0.25);
-        ctx.strokeStyle = n.custom ? "#C4924A" : "#fff";
+        ctx.strokeStyle = n.custom ? "#C4924A" : visualTheme.nodeHover;
         ctx.stroke();
       }
       // 衍生节点外圈更深一圈提示（缩放时避免半径为负）
@@ -683,9 +685,9 @@ export default function LoopForceGraph() {
       const baseY = y + r + 3;
       lines.forEach((line, i) => {
         const w = ctx.measureText(line).width;
-        ctx.fillStyle = "rgba(245,247,251,0.9)";
+        ctx.fillStyle = visualTheme.labelBg;
         ctx.fillRect(x - w / 2 - 2, baseY + i * (fontSize + 2) - 1, w + 4, fontSize + 3);
-        ctx.fillStyle = muted ? "rgba(90,100,120,0.55)" : "#0B2144";
+        ctx.fillStyle = muted ? visualTheme.mutedText : visualTheme.labelText;
         ctx.fillText(line, x, baseY + i * (fontSize + 2));
       });
       if (factAvail && (factAvail.status === "missing" || factAvail.status === "empty" || factAvail.status === "partial")) {
@@ -694,7 +696,7 @@ export default function LoopForceGraph() {
         ctx.font = `600 ${badgeSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
         const bw = ctx.measureText(badge).width;
         const by = baseY + lines.length * (fontSize + 2) + 2;
-        ctx.fillStyle = "rgba(255,255,255,0.94)";
+        ctx.fillStyle = visualTheme.labelBg;
         ctx.fillRect(x - bw / 2 - 3, by - 1, bw + 6, badgeSize + 3);
         ctx.fillStyle = FACT_STATUS_META[factAvail.status].color;
         ctx.fillText(badge, x, by);
@@ -714,6 +716,7 @@ export default function LoopForceGraph() {
       focusChain,
       chainNodeIds,
       factStatusOf,
+      visualTheme,
     ],
   );
 
@@ -936,7 +939,7 @@ export default function LoopForceGraph() {
             width={size.w}
             height={size.h}
             graphData={fgData}
-            backgroundColor="transparent"
+            backgroundColor={visualTheme.canvas}
             enableNodeDrag
             nodeId="id"
             nodeVal={(n) => (n as LoopGNode).val}
@@ -944,9 +947,9 @@ export default function LoopForceGraph() {
               const node = n as LoopGNode;
               const title = node.kind === "hub" ? `层级 · ${node.name}` : `${node.code} · ${node.name}`;
               const kindLabel = node.kind === "hub" ? "层级壳" : node.dataKind === "fact" ? "基础数据" : "衍生数据";
-              return `<div style="padding:6px 10px;background:#fff;border:1px solid #d7e0ec;border-radius:8px;font-size:12px;color:#1a2740;max-width:280px;box-shadow:0 4px 16px rgba(26,39,64,0.12);">
-                <b style="color:#0b2144">${title}</b><br/>
-                <span style="color:#5c6b84">${node.levelLabel} · ${kindLabel}${node.sub ? ` · ${node.sub}` : ""}${node.custom ? " · 自定义" : ""}</span>
+              return `<div style="${graphTooltipStyle(visualTheme)}">
+                <b style="color:${visualTheme.tooltipText}">${title}</b><br/>
+                <span style="color:${visualTheme.mutedText}">${node.levelLabel} · ${kindLabel}${node.sub ? ` · ${node.sub}` : ""}${node.custom ? " · 自定义" : ""}</span>
               </div>`;
             }}
             nodeCanvasObjectMode={() => "replace"}
@@ -1025,7 +1028,7 @@ export default function LoopForceGraph() {
               ctx.textBaseline = "middle";
               const text = l.label;
               const w = ctx.measureText(text).width;
-              ctx.fillStyle = "rgba(255,255,255,0.92)";
+              ctx.fillStyle = visualTheme.labelBg;
               ctx.fillRect(x - w / 2 - 4, y - fontSize / 2 - 2, w + 8, fontSize + 4);
               ctx.fillStyle = "#8A6A35";
               ctx.fillText(text, x, y);

@@ -7,6 +7,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { AimOutlined, SyncOutlined } from "@ant-design/icons";
 import type { FeedbackLoop, LoopMember } from "../api/client";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 const TYPE_META: Record<FeedbackLoop["loop_type"], { label: string; color: string; soft: string }> = {
   R: { label: "增强回路", color: "#7c3aed", soft: "#f3efff" },
@@ -27,10 +28,14 @@ type StepData = {
 
 function StepNode({ data }: NodeProps) {
   const d = data as unknown as StepData;
+  const visualTheme = useVisualizationTheme();
   return (
     <div
       className={`loopcycle-node${d.isStart ? " is-start" : ""}`}
-      style={{ ["--lc-accent" as string]: d.accent, ["--lc-soft" as string]: d.soft }}
+      style={{
+        ["--lc-accent" as string]: d.accent,
+        ["--lc-soft" as string]: semanticSoftColor(d.accent, visualTheme.mode, d.soft),
+      }}
     >
       <Handle type="target" position={Position.Top} className="loopcycle-handle" />
       <span className="loopcycle-node-index">{d.order}</span>
@@ -45,8 +50,12 @@ function StepNode({ data }: NodeProps) {
 
 function CenterNode({ data }: NodeProps) {
   const d = data as unknown as { type: string; label: string; accent: string; soft: string; count: number };
+  const visualTheme = useVisualizationTheme();
   return (
-    <div className="loopcycle-center" style={{ ["--lc-accent" as string]: d.accent, ["--lc-soft" as string]: d.soft }}>
+    <div className="loopcycle-center" style={{
+      ["--lc-accent" as string]: d.accent,
+      ["--lc-soft" as string]: semanticSoftColor(d.accent, visualTheme.mode, d.soft),
+    }}>
       <SyncOutlined spin />
       <strong>{d.type}</strong>
       <span>{d.label}</span>
@@ -174,6 +183,7 @@ function buildCycle(loop: FeedbackLoop) {
 }
 
 function CycleInner({ loop }: { loop: FeedbackLoop }) {
+  const visualTheme = useVisualizationTheme();
   const { nodes, edges } = useMemo(() => buildCycle(loop), [loop]);
   return (
     <ReactFlow
@@ -190,7 +200,7 @@ function CycleInner({ loop }: { loop: FeedbackLoop }) {
       elementsSelectable={false}
       nodesDraggable
     >
-      <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="#e6e9f0" />
+      <Background variant={BackgroundVariant.Dots} gap={26} size={1} color={visualTheme.grid} />
       <Controls showInteractive={false} className="cflow-controls" />
       <Panel position="top-left" className="loopcycle-legend">
         <div className="loopcycle-legend-title"><AimOutlined /> 闭环因果</div>

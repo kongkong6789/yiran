@@ -12,6 +12,7 @@ import {
   RightOutlined,
 } from "@ant-design/icons";
 import { getAgeStats, listAgents, listMeetings, getAuditLogs } from "../api/client";
+import { useVisualizationTheme } from "../theme/visualization";
 
 type Domain = {
   name: string;
@@ -155,6 +156,9 @@ const LABEL_OFFSETS: [number, number][] = [
 
 export default function Home() {
   const nav = useNavigate();
+  const visualTheme = useVisualizationTheme();
+  const visualThemeRef = useRef(visualTheme);
+  visualThemeRef.current = visualTheme;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef(buildGraph());
@@ -208,6 +212,7 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const st = stateRef.current;
+    const visual = visualThemeRef.current;
     const { nodes, edges } = graphRef.current;
     const { width, height, offsetX, offsetY, scale, mode: m, hoveredId, selectedId, sparks, motionTime } = st;
     if (!width || !height) return;
@@ -217,17 +222,17 @@ export default function Home() {
     ctx.clearRect(0, 0, width, height);
 
     const backdrop = ctx.createLinearGradient(0, 0, width, height);
-    backdrop.addColorStop(0, "#fbfdff");
-    backdrop.addColorStop(0.48, "#f8faff");
-    backdrop.addColorStop(1, "#ffffff");
+    backdrop.addColorStop(0, visual.canvas);
+    backdrop.addColorStop(0.48, visual.canvas);
+    backdrop.addColorStop(1, visual.labelBg);
     ctx.fillStyle = backdrop;
     ctx.fillRect(0, 0, width, height);
 
     const dome = ctx.createRadialGradient(width * 0.48, height * 0.5, 30, width * 0.48, height * 0.5, width * 0.62);
-    dome.addColorStop(0, "rgba(255,255,255,.96)");
-    dome.addColorStop(0.45, "rgba(233,240,255,.32)");
-    dome.addColorStop(0.78, "rgba(238,232,255,.18)");
-    dome.addColorStop(1, "rgba(255,255,255,0)");
+    dome.addColorStop(0, visual.mode === "dark" ? "rgba(21,21,21,.96)" : "rgba(255,255,255,.96)");
+    dome.addColorStop(0.45, visual.mode === "dark" ? "rgba(61,111,168,.12)" : "rgba(233,240,255,.32)");
+    dome.addColorStop(0.78, visual.mode === "dark" ? "rgba(124,83,196,.08)" : "rgba(238,232,255,.18)");
+    dome.addColorStop(1, visual.mode === "dark" ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)");
     ctx.fillStyle = dome;
     ctx.fillRect(0, 0, width, height);
 
@@ -239,7 +244,7 @@ export default function Home() {
     ].forEach(([px, py, color]) => {
       const leak = ctx.createRadialGradient(width * Number(px), height * Number(py), 0, width * Number(px), height * Number(py), 180);
       leak.addColorStop(0, String(color));
-      leak.addColorStop(1, "rgba(255,255,255,0)");
+      leak.addColorStop(1, visual.mode === "dark" ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)");
       ctx.fillStyle = leak;
       ctx.fillRect(0, 0, width, height);
     });
@@ -281,10 +286,10 @@ export default function Home() {
       }
 
       const well = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, 126);
-      well.addColorStop(0, "rgba(255,255,255,.96)");
-      well.addColorStop(0.42, "rgba(225,233,252,.26)");
-      well.addColorStop(0.78, "rgba(190,204,238,.09)");
-      well.addColorStop(1, "rgba(255,255,255,0)");
+      well.addColorStop(0, visual.mode === "dark" ? "rgba(21,21,21,.96)" : "rgba(255,255,255,.96)");
+      well.addColorStop(0.42, visual.mode === "dark" ? "rgba(126,183,232,.12)" : "rgba(225,233,252,.26)");
+      well.addColorStop(0.78, visual.mode === "dark" ? "rgba(126,183,232,.04)" : "rgba(190,204,238,.09)");
+      well.addColorStop(1, visual.mode === "dark" ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)");
       ctx.fillStyle = well;
       ctx.beginPath();
       ctx.ellipse(center.x, center.y, 154, 74, -0.03, 0, Math.PI * 2);
@@ -359,7 +364,7 @@ export default function Home() {
         ctx.save();
         ctx.shadowBlur = 12;
         ctx.shadowColor = b.color;
-        ctx.fillStyle = "rgba(255,255,255,.96)";
+        ctx.fillStyle = visual.nodeHover;
         ctx.beginPath();
         ctx.arc(px, py, 2.5, 0, Math.PI * 2);
         ctx.fill();
@@ -379,7 +384,7 @@ export default function Home() {
       ctx.beginPath(); ctx.moveTo(-size * 2.1, 0); ctx.lineTo(size * 2.1, 0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, -size * 2.3); ctx.lineTo(0, size * 2.3); ctx.stroke();
       const g = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 2.4);
-      g.addColorStop(0, "rgba(255,255,255,.98)");
+      g.addColorStop(0, visual.nodeHover);
       g.addColorStop(0.24, hexToRgba(color, 0.9));
       g.addColorStop(1, hexToRgba(color, 0));
       ctx.beginPath();
@@ -424,7 +429,7 @@ export default function Home() {
         ctx.globalAlpha = dimmed ? 0.34 : 1;
         ctx.beginPath();
         ctx.arc(node.x, node.y, selectedN ? node.size + 1.2 : node.size, 0, Math.PI * 2);
-        ctx.fillStyle = hovered || selectedN ? "#ffffff" : node.color;
+        ctx.fillStyle = hovered || selectedN ? visual.nodeHover : node.color;
         ctx.fill();
         if (hovered || selectedN) {
           ctx.lineWidth = 2;
@@ -435,7 +440,7 @@ export default function Home() {
       }
 
       if (hovered || selectedN) {
-        ctx.fillStyle = "#56627a";
+        ctx.fillStyle = visual.mutedText;
         ctx.font = "600 12px PingFang SC, Microsoft YaHei, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(node.name, node.x, node.y - 15);
@@ -449,7 +454,7 @@ export default function Home() {
         const [dx, dy] = LABEL_OFFSETS[core.group || 0];
         ctx.fillStyle = core.color;
         ctx.fillText(core.name, core.x + dx, core.y + dy);
-        ctx.fillStyle = "#586781";
+        ctx.fillStyle = visual.mutedText;
         ctx.font = "600 11.5px Inter, PingFang SC, Microsoft YaHei, sans-serif";
         ctx.fillText(core.count || "", core.x + dx, core.y + dy + 18);
         ctx.font = "650 14px Inter, PingFang SC, Microsoft YaHei, sans-serif";

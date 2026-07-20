@@ -169,3 +169,29 @@ test("ontology graph consumes the shared visualization theme", () => {
   assert.doesNotMatch(source, /linear-gradient\(180deg, #f4f7fb/);
   assert.doesNotMatch(source, /background:#fff;border:1px solid #d7e0ec/);
 });
+
+test("all JavaScript-rendered graph modules consume visualization semantics", () => {
+  const files = [
+    "LoopForceGraph.tsx", "CommerceFlowCanvas.tsx", "CompanyOperatingLoopCanvas.tsx",
+    "LoopCycleCanvas.tsx", "FusedLoopCanvas.tsx", "BrandAgencyLoops.tsx",
+    "BrandStockFlowLoop.tsx", "HierarchyLoopDiagram.tsx", "LoopRingDiagram.tsx",
+  ];
+
+  for (const file of files) {
+    const source = readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8");
+    assert.match(source, /useVisualizationTheme|visualTheme/, `${file} must consume visualization semantics`);
+  }
+});
+
+test("graph modules no longer emit light-only tooltip or label backgrounds", () => {
+  const files = [
+    "LoopForceGraph.tsx", "CommerceFlowCanvas.tsx", "CompanyOperatingLoopCanvas.tsx",
+    "FusedLoopCanvas.tsx", "BrandAgencyLoops.tsx",
+  ];
+
+  for (const file of files) {
+    const source = readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /background:#fff;border:1px solid #d7e0ec/i, `${file} has a light-only tooltip`);
+    assert.doesNotMatch(source, /labelBgStyle:\s*\{\s*fill:\s*"#ffffff"/i, `${file} has a light-only edge label`);
+  }
+});

@@ -8,6 +8,7 @@ import {
   type FusedStock,
 } from "../loopsHierarchy/fusedLayout";
 import { LEVEL_LABEL, LEVEL_ORDER, type LoopLevel } from "../loopsHierarchy/types";
+import { useVisualizationTheme } from "../theme/visualization";
 
 type Props = {
   focusLevel: LoopLevel | "all";
@@ -71,6 +72,7 @@ function pointOnQuad(
 type Particle = { flowId: string; t: number; speed: number };
 
 export default function FusedLoopCanvas({ focusLevel, onFocusLevel }: Props) {
+  const visualTheme = useVisualizationTheme();
   const scene = useMemo(() => buildFusedScene(), []);
   const [playing, setPlaying] = useState(true);
   const [mode, setMode] = useState<"all" | "ROLLUP" | "layer">("all");
@@ -239,8 +241,8 @@ export default function FusedLoopCanvas({ focusLevel, onFocusLevel }: Props) {
                     width={scene.viewW - 24}
                     height={lane.h}
                     rx={14}
-                    fill={lane.color}
-                    stroke={focusLevel === lane.level ? "#C4924A" : "#e2e8f0"}
+                    fill={visualTheme.mode === "dark" ? visualTheme.labelBg : lane.color}
+                    stroke={focusLevel === lane.level ? "#C4924A" : visualTheme.grid}
                     strokeWidth={focusLevel === lane.level ? 2 : 1}
                   />
                   <text
@@ -248,13 +250,13 @@ export default function FusedLoopCanvas({ focusLevel, onFocusLevel }: Props) {
                     y={lane.y + 22}
                     fontSize="13"
                     fontWeight="700"
-                    fill="#0B2144"
+                    fill={visualTheme.labelText}
                     style={{ cursor: "pointer" }}
                     onClick={() => onFocusLevel(focusLevel === lane.level ? "all" : lane.level)}
                   >
                     {lane.label}
                   </text>
-                  <text x={76} y={lane.y + 22} fontSize="11" fill="#8b96a8">
+                  <text x={76} y={lane.y + 22} fontSize="11" fill={visualTheme.mutedText}>
                     {lane.level === "company" ? "多品牌聚合" : lane.level === "sku" ? "单规格经济" : "上卷至上层 · 下钻自下层"}
                   </text>
                 </g>
@@ -286,7 +288,7 @@ export default function FusedLoopCanvas({ focusLevel, onFocusLevel }: Props) {
                   />
                   {!flow.cross ? (
                     <>
-                      <circle cx={(cx + a.x + b.x) / 3} cy={(cy + a.y + b.y) / 3} r="8" fill="#fff" stroke={stroke} />
+                      <circle cx={(cx + a.x + b.x) / 3} cy={(cy + a.y + b.y) / 3} r="8" fill={visualTheme.labelBg} stroke={stroke} />
                       <text
                         x={(cx + a.x + b.x) / 3}
                         y={(cy + a.y + b.y) / 3 + 3}
@@ -355,12 +357,12 @@ export default function FusedLoopCanvas({ focusLevel, onFocusLevel }: Props) {
                     width={s.w}
                     height={s.h}
                     rx={9}
-                    fill="#fff"
+                    fill={visualTheme.labelBg}
                     stroke={isSel ? "#C4924A" : s.color}
                     strokeWidth={isSel ? 2.2 : 1.4}
                   />
                   <text x={8} y={18} fontSize="10" fontWeight="700" fill={s.color}>{s.code}</text>
-                  <text x={8} y={34} fontSize="11" fontWeight="650" fill="#172033">
+                  <text x={8} y={34} fontSize="11" fontWeight="650" fill={visualTheme.labelText}>
                     {s.label.length > 8 ? `${s.label.slice(0, 8)}…` : s.label}
                   </text>
                 </g>

@@ -9452,3 +9452,172 @@ body {
 :root[data-theme="dark"] .ontology-page .ant-typography {
   color: var(--lc-ink);
 }
+
+/* Graph and operating-loop compatibility: near-black shells, readable overlays, intact semantics. */
+:root[data-theme="dark"] .loops-graph-page,
+:root[data-theme="dark"] .real-loop-workspace,
+:root[data-theme="dark"] .commerce-hub,
+:root[data-theme="dark"] .commerce-fusion-page,
+:root[data-theme="dark"] .graph-demo-loops,
+:root[data-theme="dark"] .fused-root,
+:root[data-theme="dark"] .hl-diagram,
+:root[data-theme="dark"] .loop-ring {
+  color: var(--lc-ink);
+  background: var(--lc-canvas) !important;
+}
+
+:root[data-theme="dark"] .loop-kg-toolbar,
+:root[data-theme="dark"] .loop-kg-legend,
+:root[data-theme="dark"] .loop-kg-side,
+:root[data-theme="dark"] .loop-kg-chain-chip,
+:root[data-theme="dark"] .loop-kg-map-row.is-btn,
+:root[data-theme="dark"] .brand-sfd-legend > div,
+:root[data-theme="dark"] .brand-agency-catalog,
+:root[data-theme="dark"] .fused-toolbar,
+:root[data-theme="dark"] .fused-side,
+:root[data-theme="dark"] .fused-loop-item,
+:root[data-theme="dark"] .fused-stock-detail,
+:root[data-theme="dark"] .hl-diagram-head,
+:root[data-theme="dark"] .hl-diagram-toolbar,
+:root[data-theme="dark"] .hl-side,
+:root[data-theme="dark"] .hl-loop-item,
+:root[data-theme="dark"] .hl-stock-detail,
+:root[data-theme="dark"] .loop-ring-toolbar,
+:root[data-theme="dark"] .company-operating-legend,
+:root[data-theme="dark"] .company-operating-model-note {
+  color: var(--lc-text-secondary) !important;
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .loop-kg-canvas,
+:root[data-theme="dark"] .real-loop-canvas,
+:root[data-theme="dark"] .real-loop-canvas.is-company-canvas,
+:root[data-theme="dark"] .real-loop-canvas.is-flow-canvas,
+:root[data-theme="dark"] .real-loop-flow-canvas,
+:root[data-theme="dark"] .brand-sfd-canvas-wrap,
+:root[data-theme="dark"] .fused-scroll,
+:root[data-theme="dark"] .hl-canvas-wrap,
+:root[data-theme="dark"] .loop-ring-svg {
+  color: var(--lc-ink);
+  background-color: var(--lc-graph-canvas) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .loop-kg-canvas,
+:root[data-theme="dark"] .real-loop-canvas {
+  background-image:
+    linear-gradient(var(--lc-graph-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--lc-graph-grid) 1px, transparent 1px) !important;
+}
+:root[data-theme="dark"] .loop-kg-hint,
+:root[data-theme="dark"] .company-hierarchy-canvas-hint,
+:root[data-theme="dark"] .loopcycle-edge-label,
+:root[data-theme="dark"] .loopcycle-legend,
+:root[data-theme="dark"] .cflow-legend-panel {
+  color: var(--lc-text-secondary) !important;
+  background: color-mix(in srgb, var(--lc-surface-overlay) 94%, transparent) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="dark"] .real-loop-loading,
+:root[data-theme="dark"] .real-loop-main,
+:root[data-theme="dark"] .real-loop-control-panel,
+:root[data-theme="dark"] .real-loop-detail-panel,
+:root[data-theme="dark"] .real-loop-canvas-shell,
+:root[data-theme="dark"] .real-loop-canvas-toolbar,
+:root[data-theme="dark"] .real-loop-canvas-footer,
+:root[data-theme="dark"] .real-loop-detail-grid > div,
+:root[data-theme="dark"] .real-loop-attr,
+:root[data-theme="dark"] .real-loop-description,
+:root[data-theme="dark"] .real-loop-selected-node,
+:root[data-theme="dark"] .company-hierarchy-diagram,
+:root[data-theme="dark"] .company-hierarchy-zoom,
+:root[data-theme="dark"] .company-hierarchy-zoom button,
+:root[data-theme="dark"] .company-hierarchy-zoom span {
+  color: var(--lc-text-secondary) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .real-loop-panel-heading strong,
+:root[data-theme="dark"] .real-loop-detail-title h5,
+:root[data-theme="dark"] .real-loop-flow-heading h4,
+:root[data-theme="dark"] .real-loop-onboarding strong,
+:root[data-theme="dark"] .real-loop-detail-grid strong,
+:root[data-theme="dark"] .real-loop-subheading strong,
+:root[data-theme="dark"] .real-loop-relation strong,
+:root[data-theme="dark"] .real-loop-list > button strong,
+:root[data-theme="dark"] .real-loop-attr strong {
+  color: var(--lc-ink) !important;
+}
+:root[data-theme="dark"] .real-loop-list > button:hover,
+:root[data-theme="dark"] .real-loop-view-buttons button:hover,
+:root[data-theme="dark"] .loop-kg-map-row.is-btn:hover,
+:root[data-theme="dark"] .fused-loop-item:hover,
+:root[data-theme="dark"] .hl-loop-item:hover {
+  background: var(--lc-hover) !important;
+}
+:root[data-theme="dark"] .real-loop-list > button.is-active,
+:root[data-theme="dark"] .real-loop-view-buttons button.is-active,
+:root[data-theme="dark"] .loop-kg-map-row.is-btn.is-active,
+:root[data-theme="dark"] .fused-loop-item.is-active,
+:root[data-theme="dark"] .hl-loop-item.is-active {
+  background: var(--lc-selected) !important;
+}
+
+:root[data-theme="dark"] .cflow-node,
+:root[data-theme="dark"] .loopcycle-node,
+:root[data-theme="dark"] .loopcycle-center,
+:root[data-theme="dark"] .company-operating-node,
+:root[data-theme="dark"] .cflow-controls .react-flow__controls-button {
+  color: var(--lc-ink);
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .cflow-node-body b,
+:root[data-theme="dark"] .loopcycle-node-body b,
+:root[data-theme="dark"] .company-operating-node-copy b,
+:root[data-theme="dark"] .loopcycle-center span,
+:root[data-theme="dark"] .company-operating-legend strong {
+  color: var(--lc-ink) !important;
+}
+:root[data-theme="dark"] .cflow-node-body small,
+:root[data-theme="dark"] .loopcycle-node-body small,
+:root[data-theme="dark"] .company-operating-node-copy small,
+:root[data-theme="dark"] .cflow-legend-title,
+:root[data-theme="dark"] .cflow-legend-item,
+:root[data-theme="dark"] .loopcycle-legend-title,
+:root[data-theme="dark"] .loopcycle-legend-row {
+  color: var(--lc-text-secondary) !important;
+}
+:root[data-theme="dark"] .cflow-minimap,
+:root[data-theme="dark"] .react-flow__minimap {
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
+
+:root[data-theme="dark"] .commerce-hub-card,
+:root[data-theme="dark"] .commerce-hub-card .ant-card-body,
+:root[data-theme="dark"] .commerce-fusion-page .ant-card,
+:root[data-theme="dark"] .cf-sim-cell {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none !important;
+}
+:root[data-theme="dark"] .cf-sim-cell b,
+:root[data-theme="dark"] .commerce-hub h1,
+:root[data-theme="dark"] .commerce-hub h2,
+:root[data-theme="dark"] .commerce-hub h3,
+:root[data-theme="dark"] .commerce-hub h4,
+:root[data-theme="dark"] .commerce-hub h5,
+:root[data-theme="dark"] .commerce-fusion-page h1,
+:root[data-theme="dark"] .commerce-fusion-page h2,
+:root[data-theme="dark"] .commerce-fusion-page h3,
+:root[data-theme="dark"] .commerce-fusion-page h4,
+:root[data-theme="dark"] .commerce-fusion-page h5 {
+  color: var(--lc-ink) !important;
+}
