@@ -8,7 +8,7 @@ from apps.skills.models import SkillAsset
 from apps.skills.repository import save_skill_asset_from_bytes
 
 from .mentions import get_xiaoce_bot_user
-from .models import CollabMessage, XiaoceRun
+from .models import CollabMessage, CollabRoom, XiaoceRun
 from .xiaoce_progress import ERROR_MESSAGES, _upsert_step, xiaoce_run_payload
 
 PAUSED_REPLY = "已暂停本次生成。"
@@ -24,10 +24,12 @@ def create_xiaoce_run(run_id, room, user, trigger_message):
 
 
 def is_xiaoce_run_cancelled(run_id) -> bool:
-    return XiaoceRun.objects.filter(
-        id=run_id,
-        status=XiaoceRun.Status.CANCELLED,
-    ).exists()
+    status = (
+        XiaoceRun.objects.filter(id=run_id)
+        .values_list("status", flat=True)
+        .first()
+    )
+    return status is None or status == XiaoceRun.Status.CANCELLED
 
 
 def _message_meta(run: XiaoceRun, process_status: str, **extra) -> dict:
@@ -118,6 +120,22 @@ def cancel_xiaoce_run(run: XiaoceRun) -> XiaoceRun:
 
 
 @transaction.atomic
+def cancel_xiaoce_runs_for_room_deletion(room: CollabRoom) -> int:
+    now = timezone.now()
+    return XiaoceRun.objects.filter(
+        room=room,
+        status=XiaoceRun.Status.RUNNING,
+    ).update(
+        status=XiaoceRun.Status.CANCELLED,
+        error_code="cancelled",
+        error=ERROR_MESSAGES["cancelled"],
+        cancelled_at=now,
+        finished_at=now,
+        updated_at=now,
+    )
+
+
+@transaction.atomic
 def complete_xiaoce_run(
     run_id,
     reply: str,
@@ -126,9 +144,10 @@ def complete_xiaoce_run(
     locked = (
         XiaoceRun.objects.select_for_update()
         .select_related("room")
-        .get(id=run_id)
+        .filter(id=run_id)
+        .first()
     )
-    if locked.status != XiaoceRun.Status.RUNNING:
+    if locked is None or locked.status != XiaoceRun.Status.RUNNING:
         return None
     return _complete_locked_run(locked, reply, meta)
 
@@ -138,9 +157,10 @@ def complete_xiaoce_run_with_skill(run_id, prepared) -> CollabMessage | None:
     locked = (
         XiaoceRun.objects.select_for_update()
         .select_related("room", "user")
-        .get(id=run_id)
+        .filter(id=run_id)
+        .first()
     )
-    if locked.status != XiaoceRun.Status.RUNNING:
+    if locked is None or locked.status != XiaoceRun.Status.RUNNING:
         return None
     asset, personal = save_skill_asset_from_bytes(
         locked.user,
@@ -188,9 +208,10 @@ def fail_xiaoce_run(
     locked = (
         XiaoceRun.objects.select_for_update()
         .select_related("room")
-        .get(id=run_id)
+        .filter(id=run_id)
+        .first()
     )
-    if locked.status != XiaoceRun.Status.RUNNING:
+    if locked is None or locked.status != XiaoceRun.Status.RUNNING:
         return None
     del error
     if error_code not in ERROR_MESSAGES:
@@ -232,6 +253,7 @@ def fail_xiaoce_run(
 __all__ = [
     "PAUSED_REPLY",
     "cancel_xiaoce_run",
+    "cancel_xiaoce_runs_for_room_deletion",
     "complete_xiaoce_run",
     "complete_xiaoce_run_with_skill",
     "create_xiaoce_run",

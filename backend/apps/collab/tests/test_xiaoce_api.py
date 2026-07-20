@@ -166,6 +166,52 @@ class XiaoceApiTests(APITestCase):
         self.client.force_authenticate(self.other)
         self.assertEqual(self.client.post(url).status_code, 404)
 
+    @patch("apps.collab.views.threading.Thread")
+    @patch("apps.collab.views.ws_push.publish_sync")
+    def test_delete_running_xiaoce_task_prevents_late_worker_output(
+        self,
+        publish,
+        _thread_cls,
+    ):
+        run_id = uuid.uuid4()
+        self.client.post(
+            self.messages_url,
+            {"content": "长任务", "run_id": str(run_id)},
+            format="json",
+        )
+        publish.reset_mock()
+
+        response = self.client.delete(f"/api/collab/rooms/{self.room.id}/")
+        views._run_xiaoce_reply_async(run_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(CollabRoom.objects.filter(id=self.room.id).exists())
+        self.assertFalse(XiaoceRun.objects.filter(id=run_id).exists())
+        publish.assert_not_called()
+
+    def test_xiaoce_task_rename_rejects_blank_and_has_no_group_announcement(self):
+        before = CollabMessage.objects.filter(room=self.room, msg_type="system").count()
+
+        renamed = self.client.patch(
+            f"/api/collab/rooms/{self.room.id}/",
+            {"title": "  小策bot（GMV运算处理任务）  "},
+            format="json",
+        )
+        blank = self.client.patch(
+            f"/api/collab/rooms/{self.room.id}/",
+            {"title": "   "},
+            format="json",
+        )
+
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.data["title"], "小策bot（GMV运算处理任务）")
+        self.assertEqual(blank.status_code, 400)
+        self.assertEqual(blank.data["error"], "会话名称不能为空")
+        self.assertEqual(
+            CollabMessage.objects.filter(room=self.room, msg_type="system").count(),
+            before,
+        )
+
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_persists_final_process_snapshot(self, run_chat):
         trigger = CollabMessage.objects.create(

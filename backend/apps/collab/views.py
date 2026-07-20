@@ -62,6 +62,7 @@ from .summary import (
 from .xiaoce_progress import XiaoceProgressReporter, xiaoce_run_payload
 from .xiaoce_runs import (
     cancel_xiaoce_run,
+    cancel_xiaoce_runs_for_room_deletion,
     complete_xiaoce_run,
     complete_xiaoce_run_with_skill,
     create_xiaoce_run,
@@ -778,6 +779,8 @@ def _run_xiaoce_reply_async(run_id) -> None:
     except AgentRunCancelled:
         return
     except Exception as exc:
+        if not XiaoceRun.objects.filter(id=run_id).exists():
+            return
         current_stage = (
             XiaoceRun.objects.filter(id=run_id)
             .values_list("current_stage", flat=True)
@@ -1002,7 +1005,9 @@ def room_detail(request, room_id):
             if room.created_by_id != request.user.id:
                 return Response({"ok": False, "error": "仅群主或管理员可删除群聊"}, status=403)
         room_id_str = str(room.id)
-        room.delete()
+        with transaction.atomic():
+            cancel_xiaoce_runs_for_room_deletion(room)
+            room.delete()
         return Response({"ok": True, "deleted": room_id_str})
 
     if request.method == "PATCH":
@@ -1014,7 +1019,7 @@ def room_detail(request, room_id):
         if title is not None:
             new_title = str(title).strip()[:120]
             if not new_title:
-                return Response({"ok": False, "error": "群名不能为空"}, status=400)
+                return Response({"ok": False, "error": "会话名称不能为空"}, status=400)
             if new_title != room.title:
                 room.title = new_title
                 title_changed = True

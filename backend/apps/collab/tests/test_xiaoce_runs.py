@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 
 from apps.collab.mentions import get_xiaoce_bot_user
@@ -16,6 +17,7 @@ from apps.collab.xiaoce_runs import (
     complete_xiaoce_run,
     complete_xiaoce_run_with_skill,
     fail_xiaoce_run,
+    is_xiaoce_run_cancelled,
 )
 from apps.core.conversation_skill import PreparedConversationSkill
 from apps.skills.models import SkillAsset, UserSkill
@@ -149,3 +151,45 @@ class XiaoceRunLifecycleTests(TestCase):
 
         self.assertIsNone(message)
         save_asset.assert_not_called()
+
+    def test_same_user_can_run_in_two_rooms_but_not_twice_in_one_room(self):
+        room_b = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
+        CollabParticipant.objects.create(room=room_b, user=self.user)
+        CollabParticipant.objects.create(room=room_b, user=self.bot)
+        trigger_b = CollabMessage.objects.create(
+            room=room_b,
+            sender=self.user,
+            content="分析库存",
+            msg_type="user",
+        )
+
+        second_room_run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=room_b,
+            user=self.user,
+            trigger_message=trigger_b,
+        )
+        self.assertEqual(second_room_run.status, XiaoceRun.Status.RUNNING)
+
+        duplicate_trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="重复分析",
+            msg_type="user",
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            XiaoceRun.objects.create(
+                id=uuid.uuid4(),
+                room=self.room,
+                user=self.user,
+                trigger_message=duplicate_trigger,
+            )
+
+    def test_deleted_run_is_cancelled_and_late_writes_are_noops(self):
+        run_id = self.run.id
+        self.room.delete()
+
+        self.assertTrue(is_xiaoce_run_cancelled(run_id))
+        self.assertIsNone(complete_xiaoce_run(run_id, "迟到回答"))
+        self.assertIsNone(fail_xiaoce_run(run_id, RuntimeError("late")))
+        self.assertFalse(CollabMessage.objects.filter(content="迟到回答").exists())
