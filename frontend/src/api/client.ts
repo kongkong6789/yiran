@@ -606,6 +606,7 @@ export interface SkillAssetItem {
   package_file_count?: number;
   has_scripts?: boolean;
   storage: "cos" | "local";
+  uploader?: string;
   created_at: string;
   updated_at: string;
 }

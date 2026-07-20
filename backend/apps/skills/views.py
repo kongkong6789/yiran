@@ -26,7 +26,6 @@ def _skill_row_payload(row: UserSkill) -> dict:
     payload = {
         "id": row.id,
         "skill_id": row.skill_id,
-        "visibility": row.visibility,
         "name": row.name,
         "description": row.description,
         "enabled": row.enabled,
