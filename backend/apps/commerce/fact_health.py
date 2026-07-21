@@ -60,13 +60,21 @@ def _connector_summary() -> list[dict]:
         "status": "configured" if jy else "unconfigured",
         "note": "只读同步商品/订单 → DataLake（知行 Skill 对齐）" if jy else "未配置 JACKYUN_*，可走 MCP/连接页",
     })
-    kd = bool(__import__("os").getenv("MCP_KINGDEE_URL") or __import__("os").getenv("KINGDEE_ACCT_ID"))
+    kd = bool(
+        getattr(settings, "KINGDEE_ACCT_ID", None)
+        or __import__("os").getenv("KINGDEE_ACCT_ID")
+        or __import__("os").getenv("MCP_KINGDEE_URL")
+    )
     items.append({
         "id": "kingdee",
         "name": "金蝶",
         "kind": "connector",
         "status": "configured" if kd else "unconfigured",
-        "note": "只读 ERP 对齐知行 kingdee Skill" if kd else "未配置金蝶相关环境变量",
+        "note": (
+            "K3Cloud 只读（需 KINGDEE_USERNAME/PASSWORD）"
+            if kd
+            else "未配置 KINGDEE_*，可走 MCP/连接页"
+        ),
     })
     try:
         from apps.mcp.models import McpServerConfig

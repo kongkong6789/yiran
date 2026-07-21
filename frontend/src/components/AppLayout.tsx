@@ -5,7 +5,6 @@ import {
   AppstoreOutlined,
   BookOutlined,
   BulbOutlined,
-  DatabaseOutlined,
   FileSearchOutlined,
   FlagOutlined,
   HomeOutlined,
@@ -57,7 +56,6 @@ const WORK_NAV: NavItem[] = [
 
 const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
-  { key: "/tables", icon: <DatabaseOutlined />, label: "智能表格" },
   { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
 ];
 
@@ -135,7 +133,6 @@ const FULL_BLEED = new Set([
   "/work",
   "/ontology",
   "/connectors",
-  "/tables",
   "/commerce/loops",
 ]);
 

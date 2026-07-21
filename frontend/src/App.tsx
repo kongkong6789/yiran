@@ -16,7 +16,6 @@ import Loops from "./pages/Loops";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
-import SmartTable from "./pages/SmartTable";
 import SkillsPage from "./pages/SkillsPage";
 import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
@@ -53,9 +52,10 @@ export default function App() {
           <Route path="console" element={<Navigate to="/work" replace />} />
           <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />
           <Route path="connectors" element={<Connectors />} />
-          <Route path="tables" element={<SmartTable />} />
-          <Route path="nocodb" element={<Navigate to="/tables" replace />} />
-          <Route path="datalake" element={<DataLake />} />          <Route path="my/knowledge" element={(
+          <Route path="tables" element={<Navigate to="/knowledge" replace />} />
+          <Route path="nocodb" element={<Navigate to="/knowledge" replace />} />
+          <Route path="datalake" element={<DataLake />} />
+          <Route path="my/knowledge" element={(
             <SectionHub
               title="我的知识库"
               description="个人收藏与整理的知识条目(开发中)。当前可通过对话历史与技能管理个人资料。"

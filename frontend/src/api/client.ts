@@ -543,6 +543,22 @@ export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number;
 export const downloadKnowledgeFile = (fileId: number) =>
   api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);
 
+export const getKnowledgeFileContent = (fileId: number) =>
+  api.get<{ content: string; encoding?: string; file: KnowledgeFileItem }>(`/knowledge/files/${fileId}/content/`)
+    .then((r) => r.data);
+
+export const saveKnowledgeFileContent = (
+  fileId: number,
+  body: { content: string; title?: string; reingest?: boolean },
+) =>
+  api.put<{
+    ok: boolean;
+    content: string;
+    file: KnowledgeFileItem;
+    job?: KnowledgeIngestJobItem;
+    job_id?: number;
+  }>(`/knowledge/files/${fileId}/content/`, body).then((r) => r.data);
+
 export const deleteKnowledgeFile = (fileId: number) =>
   api.delete(`/knowledge/files/${fileId}/`);
 
@@ -963,6 +979,22 @@ export const syncJackyun = () =>
     error?: string;
   }>("/connectors/jackyun/sync/", {}, { timeout: 120_000 }).then((r) => r.data);
 
+export const queryJackyun = (body: {
+  question?: string;
+  capability?: string;
+  params?: Record<string, unknown>;
+}) =>
+  api
+    .post<{
+      ok: boolean;
+      plan?: Record<string, unknown>;
+      result?: Record<string, unknown>;
+      block?: string;
+      capabilities?: Array<Record<string, unknown>>;
+      error?: string;
+    }>("/connectors/jackyun/query/", body, { timeout: 60_000 })
+    .then((r) => r.data);
+
 export const getTables = () =>
   api.get("/datalake/tables/").then((r) => r.data);
 export const getMetrics = () =>
@@ -1031,14 +1063,25 @@ export interface McpServer {
   name: string;
   desc: string;
   layer: string;
-  transport: "streamable_http" | "sse" | "stdio";
-  declared_transport?: "streamable_http" | "sse" | "stdio";
+  transport: "streamable_http" | "sse" | "stdio" | "openapi";
+  declared_transport?: "streamable_http" | "sse" | "stdio" | "openapi";
   configured: boolean;
   enabled: boolean;
   url: string;
   command: string;
   args: string[];
   env?: Record<string, string>;
+  native?: {
+    native_type?: string;
+    app_key?: string;
+    app_secret_set?: boolean;
+    base_url?: string;
+    method_inventory?: string;
+    acct_id?: string;
+    username?: string;
+    password_set?: boolean;
+    lcid?: string;
+  };
   tools: string[];
   env_keys: string[];
   placeholders?: Record<string, string>;
@@ -1070,6 +1113,15 @@ export const saveMcpServer = (id: string, body: {
   env?: Record<string, string> | string;
   enabled?: boolean;
   import_json?: string;
+  native?: Record<string, unknown>;
+  app_key?: string;
+  app_secret?: string;
+  base_url?: string;
+  method_inventory?: string;
+  acct_id?: string;
+  username?: string;
+  password?: string;
+  lcid?: string;
 }) => api.put<McpServerDetail>(`/mcp/servers/${id}/`, body).then((r) => r.data);
 
 export const importMcpServer = (id: string, cursor_json: string) =>
@@ -2690,6 +2742,7 @@ export type SmartSheetListItem = {
   description: string;
   owner_name?: string;
   organization_id?: number | null;
+  knowledge_base?: number | null;
   can_manage?: boolean;
   is_mine?: boolean;
   column_count: number;
@@ -2704,6 +2757,7 @@ export type SmartSheetDetail = {
   description: string;
   owner_name?: string;
   organization_id?: number | null;
+  knowledge_base?: number | null;
   can_manage?: boolean;
   is_mine?: boolean;
   columns: SmartColumn[];
@@ -2737,10 +2791,14 @@ export type SmartAutomation = {
   updated_at: string;
 };
 
-export const listSmartSheets = () =>
-  api.get<{ results: SmartSheetListItem[] }>("/smarttable/sheets/").then((r) => r.data);
+export const listSmartSheets = (params?: { knowledge_base?: number }) =>
+  api.get<{ results: SmartSheetListItem[] }>("/smarttable/sheets/", { params }).then((r) => r.data);
 
-export const createSmartSheet = (body: { name?: string; description?: string }) =>
+export const createSmartSheet = (body: {
+  name?: string;
+  description?: string;
+  knowledge_base?: number;
+}) =>
   api.post<SmartSheetDetail>("/smarttable/sheets/", body).then((r) => r.data);
 
 export const getSmartSheet = (id: number) =>

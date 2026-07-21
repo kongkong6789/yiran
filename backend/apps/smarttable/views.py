@@ -219,16 +219,36 @@ def sheets(request):
     if request.method == "GET":
         _ensure_demo_sheet(request.user)
         qs = _accessible_sheets(request.user).select_related("owner", "organization")
+        kb_raw = request.query_params.get("knowledge_base")
+        if kb_raw not in (None, ""):
+            try:
+                kb_id = int(kb_raw)
+            except (TypeError, ValueError):
+                return Response({"ok": False, "detail": "knowledge_base 无效"}, status=400)
+            qs = qs.filter(knowledge_base_id=kb_id)
         return Response({"results": SmartSheetListSerializer(qs, many=True, context={"request": request}).data})
 
     name = str(request.data.get("name") or "").strip() or "未命名表格"
     description = str(request.data.get("description") or "").strip()
+    knowledge_base_id = None
+    kb_raw = request.data.get("knowledge_base")
+    if kb_raw not in (None, ""):
+        try:
+            kb_id = int(kb_raw)
+        except (TypeError, ValueError):
+            return Response({"ok": False, "detail": "knowledge_base 无效"}, status=400)
+        from apps.knowledge.models import KnowledgeBase
+
+        # knowledge 与账号库分离，只能软关联 ID，不能建跨库外键对象
+        get_object_or_404(KnowledgeBase.objects.all(), pk=kb_id)
+        knowledge_base_id = kb_id
     with transaction.atomic():
         sheet = SmartSheet.objects.create(
             name=name,
             description=description,
             owner=request.user,
             organization=current_organization(request.user),
+            knowledge_base_id=knowledge_base_id,
         )
         for idx, (key, title, field_type) in enumerate(DEFAULT_COLUMNS[:4]):
             options = []

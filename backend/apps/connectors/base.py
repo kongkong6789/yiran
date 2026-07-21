@@ -44,9 +44,10 @@ def _registry() -> dict[str, BaseConnector]:
     global _REGISTRY
     if _REGISTRY is None:
         from .jackyun import JackyunConnector
+        from .kingdee import KingdeeConnector
 
         _REGISTRY = {
-            "kingdee": MockConnector("kingdee", "金蝶"),
+            "kingdee": KingdeeConnector(),
             "jackyun": JackyunConnector(),
             "wecom_sheet": MockConnector("wecom_sheet", "企业微信智能表格"),
             "market_data": MockConnector("market_data", "飞瓜 / 蝉妈妈"),

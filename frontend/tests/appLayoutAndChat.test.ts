@@ -26,17 +26,14 @@ function sourceBetween(start: string, end: string) {
 test("navigation hides requested entries while routes remain available", () => {
   const work = sourceBetween("const WORK_NAV", "const KNOWLEDGE_NAV");
   const knowledge = sourceBetween("const KNOWLEDGE_NAV", "const COMMERCE_NAV");
-  const commerce = sourceBetween("const COMMERCE_NAV", "const CAPABILITY_NAV");
-  const capability = sourceBetween("const CAPABILITY_NAV", "const ADMIN_NAV");
+  const commerce = sourceBetween("const COMMERCE_NAV", "const ADMIN_NAV");
   const admin = sourceBetween("const ADMIN_NAV", "const SECTIONS");
 
   assert.doesNotMatch(work, /key:\s*"\/agent"/);
-  assert.match(knowledge, /key:\s*"\/tables"[\s\S]*label:\s*"智能表格"/);
-  assert.doesNotMatch(knowledge, /\/ontology|\/agent-memory|\/my\/recent/);
+  assert.match(knowledge, /key:\s*"\/knowledge"[\s\S]*label:\s*"知识库"/);
+  assert.doesNotMatch(knowledge, /\/tables|智能表格|\/ontology|\/agent-memory|\/my\/recent/);
   assert.match(commerce, /\/commerce\/loops/);
   assert.doesNotMatch(commerce, /\/commerce\/bench|label:\s*"经营首页"/);
-  assert.match(capability, /key:\s*"\/agent"[\s\S]*label:\s*"Agent"/);
-  assert.doesNotMatch(capability, /\/tables|\/datalake/);
   assert.doesNotMatch(admin, /\/audit/);
 
   for (const route of [
@@ -51,12 +48,14 @@ test("navigation hides requested entries while routes remain available", () => {
   ]) {
     assert.match(appSource, new RegExp(`path="${route.replace("/", "\\/")}"`));
   }
+  assert.match(appSource, /path="tables"\s+element=\{<Navigate to="\/knowledge"/);
 });
 
 test("workspace uses top-level modules and a fixed contextual sidebar", () => {
   assert.match(layoutSource, /className="app-module-nav"/);
   assert.match(layoutSource, /className="app-module-sidebar"/);
-  assert.match(layoutSource, /activeSection\.items\.map/);
+  assert.match(layoutSource, /activeSection\.items/);
+  assert.match(layoutSource, /\)\.map\(\(item\)\s*=>/);
   assert.doesNotMatch(layoutSource, /children:\s*WORK_NAV/);
 });
 

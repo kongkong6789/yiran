@@ -44,6 +44,7 @@ class SmartSheetListSerializer(serializers.ModelSerializer):
     row_count = serializers.IntegerField(source="rows.count", read_only=True)
     owner_name = serializers.SerializerMethodField()
     organization_id = serializers.IntegerField(read_only=True, allow_null=True)
+    knowledge_base = serializers.IntegerField(source="knowledge_base_id", allow_null=True, required=False)
     can_manage = serializers.SerializerMethodField()
     is_mine = serializers.SerializerMethodField()
 
@@ -55,6 +56,7 @@ class SmartSheetListSerializer(serializers.ModelSerializer):
             "description",
             "owner_name",
             "organization_id",
+            "knowledge_base",
             "can_manage",
             "is_mine",
             "column_count",

@@ -43,10 +43,12 @@ import {
   type CollabUserBrief,
   type UserSkillItem,
   type XiaoceRun,
+  type McpServer,
 } from "../api/client";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
+import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import { CollabWelcome } from "../components/CollabWelcome";
@@ -2221,6 +2223,15 @@ export default function CollabRisk({
     setTimeout(() => composerRef.current?.focus?.(), 0);
   };
 
+  const insertConnector = (server: McpServer) => {
+    const text = connectorPrompt(server);
+    setDraft((prev) => {
+      const base = prev.trimEnd();
+      return base ? `${base}\n${text}` : text;
+    });
+    setTimeout(() => composerRef.current?.focus?.(), 0);
+  };
+
   const toggleInterject = async () => {
     if (!activeId || !activeRoom) return;
     const next = !(activeRoom.interject_enabled !== false);
@@ -3371,8 +3382,9 @@ export default function CollabRisk({
                 <div className="agent-chat-composer-bar">
                   <div className="agent-chat-composer-left">
                     <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
+                    <ChatConnectorPicker onSelect={insertConnector} />
                     {!(mention && mentionOptions.length > 0) ? (
-                      <span className="collab-composer-hint">@成员 · @AI · Skill</span>
+                      <span className="collab-composer-hint">@成员 · @AI · Skill · 连接器</span>
                     ) : null}
                   </div>
                   <div className="agent-chat-composer-right">
