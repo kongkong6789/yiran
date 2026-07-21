@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.utils import timezone
 
 from apps.core.models import OrganizationMembership
@@ -85,7 +84,12 @@ def _event_payload(event: SkillUsageEvent) -> dict:
     }
 
 
-def build_skill_analytics(user) -> dict:
+def build_skill_analytics(
+    user,
+    *,
+    trend_start: date | None = None,
+    trend_end: date | None = None,
+) -> dict:
     can_manage, scope_label, scoped_user_ids = management_scope(user)
 
     assets = SkillAsset.objects.select_related("owner", "uploader").prefetch_related(
@@ -170,25 +174,100 @@ def build_skill_analytics(user) -> dict:
         })
 
     today = timezone.localdate()
-    trend_counter = Counter(
-        timezone.localtime(value).date()
-        for value in recent_events.filter(used_at__date__gte=today - timedelta(days=6))
-        .values_list("used_at", flat=True)
-    )
-    trend = [
-        {
-            "date": (today - timedelta(days=offset)).isoformat(),
-            "label": (today - timedelta(days=offset)).strftime("%m-%d"),
-            "count": trend_counter.get(today - timedelta(days=offset), 0),
+    trend_end = trend_end or today
+    trend_start = trend_start or (trend_end - timedelta(days=6))
+    trend_day_count = (trend_end - trend_start).days + 1
+    trend_dates = [trend_start + timedelta(days=offset) for offset in range(trend_day_count)]
+    trend_keys = ["all", *SkillAsset.Category.values]
+    category_by_asset = {asset.id: asset.category for asset in assets}
+    trend_buckets = {
+        key: {
+            day: {"count": 0, "users": set(), "skills": set()}
+            for day in trend_dates
         }
-        for offset in range(6, -1, -1)
-    ]
+        for key in trend_keys
+    }
+    trend_events = list(
+        events.filter(used_at__date__range=(trend_start, trend_end)).values(
+            "used_at", "user_id", "asset_id", "skill_id"
+        )
+    )
+    for event in trend_events:
+        day = timezone.localtime(event["used_at"]).date()
+        category = category_by_asset.get(event["asset_id"])
+        keys = ["all", *([category] if category in SkillAsset.Category.values else [])]
+        for key in keys:
+            bucket = trend_buckets[key][day]
+            bucket["count"] += 1
+            if event["user_id"]:
+                bucket["users"].add(event["user_id"])
+            bucket["skills"].add(event["skill_id"])
+
+    trend_by_category: dict[str, dict] = {}
+    for key in trend_keys:
+        points = [
+            {
+                "date": day.isoformat(),
+                "label": day.strftime("%m-%d"),
+                "count": trend_buckets[key][day]["count"],
+                "unique_users": len(trend_buckets[key][day]["users"]),
+                "active_skills": len(trend_buckets[key][day]["skills"]),
+            }
+            for day in trend_dates
+        ]
+        category_events = [
+            event
+            for event in trend_events
+            if key == "all" or category_by_asset.get(event["asset_id"]) == key
+        ]
+        unique_users = {event["user_id"] for event in category_events if event["user_id"]}
+        active_skills = {event["skill_id"] for event in category_events}
+        peak = max(points, key=lambda point: point["count"])
+        total = sum(point["count"] for point in points)
+        trend_by_category[key] = {
+            "points": points,
+            "total": total,
+            "unique_users": len(unique_users),
+            "active_skills": len(active_skills),
+            "daily_average": round(total / len(trend_dates), 1),
+            "peak_date": peak["date"] if peak["count"] else None,
+            "peak_label": peak["label"] if peak["count"] else "暂无峰值",
+            "peak_count": peak["count"],
+        }
+    trend = trend_by_category["all"]["points"]
 
     ranked = sorted(
         rows,
         key=lambda row: (row["usage_count_30d"], row["unique_users_30d"], row["adoption_count"]),
         reverse=True,
     )
+    people_usage = list(
+        recent_events.exclude(user_id__isnull=True)
+        .values("user_id")
+        .annotate(
+            usage_count=Count("id"),
+            skill_count=Count("skill_id", distinct=True),
+            last_used_at=Max("used_at"),
+        )
+        .order_by("-usage_count", "-skill_count", "-last_used_at")[:8]
+    )
+    people = {
+        person.id: person
+        for person in get_user_model().objects.filter(
+            id__in=[row["user_id"] for row in people_usage],
+        ).prefetch_related("team_memberships__team")
+    }
+    people_ranking = [
+        {
+            "user_id": row["user_id"],
+            "user": _user_label(people.get(row["user_id"])),
+            "team": _owner_team(people.get(row["user_id"])),
+            "usage_count_30d": row["usage_count"],
+            "skill_count_30d": row["skill_count"],
+            "last_used_at": row["last_used_at"].isoformat() if row["last_used_at"] else None,
+        }
+        for row in people_usage
+    ]
     total_skills = len(rows)
     active_skills = sum(1 for row in rows if row["usage_count_30d"] > 0)
     owner_covered = sum(1 for row in rows if row["owner_id"])
@@ -223,7 +302,14 @@ def build_skill_analytics(user) -> dict:
         },
         "skills": rows,
         "ranking": ranked[:5],
+        "people_ranking": people_ranking,
         "trend": trend,
+        "trend_range": {
+            "start": trend_start.isoformat(),
+            "end": trend_end.isoformat(),
+            "days": trend_day_count,
+        },
+        "trend_by_category": trend_by_category,
         "recent_usage": [
             _event_payload(event)
             for event in events.order_by("-used_at")[:12]
