@@ -173,30 +173,49 @@ PG_USER = _pg_env("POSTGRES_USER", "PG_USER", default="postgres")
 PG_PASSWORD = _pg_env("POSTGRES_PASSWORD", "PG_PASSWORD")
 PG_SCHEMA = _pg_env("POSTGRES_SCHEMA", "PG_SCHEMA", default="lake")
 
+# 知识库可单独指定库（KNOWLEDGE_POSTGRES_*）；未设时回退 POSTGRES_*
+KNOWLEDGE_PG_HOST = _pg_env("KNOWLEDGE_POSTGRES_HOST", "KNOWLEDGE_PG_HOST", default=PG_HOST)
+KNOWLEDGE_PG_PORT = int(_pg_env("KNOWLEDGE_POSTGRES_PORT", "KNOWLEDGE_PG_PORT", default=str(PG_PORT)))
+KNOWLEDGE_PG_DB = _pg_env("KNOWLEDGE_POSTGRES_DB", "KNOWLEDGE_PG_DB", default=PG_DB)
+KNOWLEDGE_PG_USER = _pg_env("KNOWLEDGE_POSTGRES_USER", "KNOWLEDGE_PG_USER", default=PG_USER)
+KNOWLEDGE_PG_PASSWORD = _pg_env("KNOWLEDGE_POSTGRES_PASSWORD", "KNOWLEDGE_PG_PASSWORD", default=PG_PASSWORD)
+
 # 主库选择（只在这里赋值一次，避免多处 DATABASES 互相覆盖）：
-# - 未设 DATABASE_ENGINE 且配置了 POSTGRES_* → PostgreSQL（账号/业务/knowledge 同库）
-# - DATABASE_ENGINE=sqlite → 显式本地 SQLite 回退（账号也在 SQLite，勿与生产账号混用）
+# - DATABASE_ENGINE=sqlite → 业务/账号走本地 SQLite（推荐本地开发）
+# - DATABASE_ENGINE=postgres → 业务也走 PostgreSQL
+# - 未设且配置了 POSTGRES_* → 兼容旧行为，业务走 PostgreSQL
+# 知识库始终优先走独立 knowledge 别名（可连另一台 PG）
 DATABASE_ENGINE = os.getenv("DATABASE_ENGINE", "").strip().lower()
 USE_POSTGRESQL = DATABASE_ENGINE in {"postgres", "postgresql"} or (
     DATABASE_ENGINE == "" and bool(PG_HOST and PG_DB)
 )
+
+
+def _postgres_db_config(*, name: str, user: str, password: str, host: str, port: int) -> dict:
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": name,
+        "USER": user,
+        "PASSWORD": password,
+        "HOST": host,
+        "PORT": port,
+        "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "0")),
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
+        },
+    }
+
+
 if USE_POSTGRESQL:
     DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": PG_DB,
-            "USER": PG_USER,
-            "PASSWORD": PG_PASSWORD,
-            "HOST": PG_HOST,
-            "PORT": PG_PORT,
-            # 本地 runserver 会为并发请求创建线程；默认不复用连接，避免低连接数
-            # PostgreSQL 在页面并发加载时出现 "too many clients"。生产环境可显式调大。
-            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "0")),
-            "CONN_HEALTH_CHECKS": True,
-            "OPTIONS": {
-                "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
-            },
-        }
+        "default": _postgres_db_config(
+            name=PG_DB,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            host=PG_HOST,
+            port=PG_PORT,
+        )
     }
 else:
     DATABASES = {
@@ -205,8 +224,19 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-# apps.knowledge 通过 KnowledgeDatabaseRouter 固定走 knowledge 别名（与 default 同实例）
-DATABASES["knowledge"] = DATABASES["default"]
+
+# apps.knowledge 经 KnowledgeDatabaseRouter 固定走 knowledge 别名
+USE_KNOWLEDGE_POSTGRES = bool(KNOWLEDGE_PG_HOST and KNOWLEDGE_PG_DB)
+if USE_KNOWLEDGE_POSTGRES:
+    DATABASES["knowledge"] = _postgres_db_config(
+        name=KNOWLEDGE_PG_DB,
+        user=KNOWLEDGE_PG_USER,
+        password=KNOWLEDGE_PG_PASSWORD,
+        host=KNOWLEDGE_PG_HOST,
+        port=KNOWLEDGE_PG_PORT,
+    )
+else:
+    DATABASES["knowledge"] = DATABASES["default"]
 DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 
 # LightRAG / AGE 图谱

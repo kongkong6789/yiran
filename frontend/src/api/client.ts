@@ -2688,6 +2688,10 @@ export type SmartSheetListItem = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   column_count: number;
   row_count: number;
   created_at: string;
@@ -2698,6 +2702,10 @@ export type SmartSheetDetail = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   columns: SmartColumn[];
   rows: SmartRow[];
   views: SmartView[];
@@ -2706,7 +2714,7 @@ export type SmartSheetDetail = {
   updated_at: string;
 };
 
-export type SmartViewType = "grid" | "kanban" | "form";
+export type SmartViewType = "grid" | "kanban" | "form" | "dashboard";
 
 export type SmartView = {
   id: number;
@@ -2809,4 +2817,27 @@ export const exportSmartSheetCsv = (sheetId: number) =>
   api.get<Blob>(`/smarttable/sheets/${sheetId}/export.csv`, { responseType: "blob" }).then((r) => r.data);
 
 export const importSmartSheetCsv = (sheetId: number, csvText: string) =>
-  api.post<{ ok: boolean; created: number }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+  api.post<{ ok: boolean; created: number; source?: string }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+
+export const importSmartSheetFile = (sheetId: number, file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post<{ ok: boolean; created: number; source?: string; error?: string }>(
+      `/smarttable/sheets/${sheetId}/import.csv`,
+      form,
+    )
+    .then((r) => r.data);
+};
+
+export const importSmartSheetNew = (file: File, name?: string) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (name?.trim()) form.append("name", name.trim());
+  return api
+    .post<SmartSheetDetail & { import_meta?: { source?: string; row_count?: number; column_count?: number } }>(
+      "/smarttable/sheets/import/",
+      form,
+    )
+    .then((r) => r.data);
+};

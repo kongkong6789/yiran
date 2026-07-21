@@ -55,8 +55,7 @@ export default function App() {
           <Route path="connectors" element={<Connectors />} />
           <Route path="tables" element={<SmartTable />} />
           <Route path="nocodb" element={<Navigate to="/tables" replace />} />
-          <Route path="datalake" element={<DataLake />} />
-          <Route path="my/knowledge" element={(
+          <Route path="datalake" element={<DataLake />} />          <Route path="my/knowledge" element={(
             <SectionHub
               title="我的知识库"
               description="个人收藏与整理的知识条目(开发中)。当前可通过对话历史与技能管理个人资料。"

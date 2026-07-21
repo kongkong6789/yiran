@@ -1,5 +1,5 @@
 class KnowledgeDatabaseRouter:
-    """Route the knowledge app to the `knowledge` DB alias (usually same as default)."""
+    """Route the knowledge app to the `knowledge` DB alias (often a dedicated PostgreSQL)."""
 
     knowledge_app_label = "knowledge"
     knowledge_db = "knowledge"

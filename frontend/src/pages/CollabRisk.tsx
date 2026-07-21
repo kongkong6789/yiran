@@ -59,6 +59,8 @@ import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
 const VIRT_BASE_INDEX = 100_000;
+/** 有缓存时切房先秒开，超过此时长才后台整窗刷新 */
+const ROOM_CACHE_FRESH_MS = 60_000;
 
 const RISK_META: Record<string, { color: string; label: string }> = {
   green: { color: "success", label: "正常" },
@@ -667,10 +669,12 @@ export default function CollabRisk({
     firstItemIndex: number;
     xiaoceRun: XiaoceRun | null;
     stats: CollabRoomStats | null;
+    fetchedAt: number;
   };
   const roomComposerCacheRef = useRef<Map<string, RoomComposerCache>>(new Map());
   const roomViewCacheRef = useRef<Map<string, RoomViewCache>>(new Map());
   const roomLoadSeqRef = useRef(0);
+  const roomPrefetchRef = useRef<Set<string>>(new Set());
   const prevActiveIdForComposerRef = useRef<string | null>(null);
   const [draftCoach, setDraftCoach] = useState<{
     level: string;
@@ -712,6 +716,7 @@ export default function CollabRisk({
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [roomDetailLoading, setRoomDetailLoading] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
   const forceStickUntilRef = useRef(0);
@@ -825,8 +830,11 @@ export default function CollabRisk({
     }
   }, [activeId, message]);
 
-  const loadRoomDetail = useCallback(async (id: string) => {
+  const loadRoomDetail = useCallback(async (id: string, opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
     const seq = ++roomLoadSeqRef.current;
+    const hadCache = roomViewCacheRef.current.has(id);
+    if (!soft && !hadCache) setRoomDetailLoading(true);
     try {
       const [room, page] = await Promise.all([
         getCollabRoom(id),
@@ -836,7 +844,6 @@ export default function CollabRisk({
       const hydratedRoom = {
         ...room,
         ...page.room,
-        // 首屏消息用分页窗口，避免一次拉全量历史
         messages: page.results,
         has_more_before: page.has_more_before,
       } as CollabRoom;
@@ -844,16 +851,32 @@ export default function CollabRisk({
       const nextInsights = room.insights || [];
       const nextHasMore = Boolean(page.has_more_before ?? room.has_more_before);
       const nextXiaoce = isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null;
+      const prevCache = roomViewCacheRef.current.get(id);
+
       setActiveRoom(hydratedRoom);
       setActiveXiaoceRun(nextXiaoce);
-      setMessages(nextMessages);
-      setHasMoreBefore(nextHasMore);
-      setFirstItemIndex(VIRT_BASE_INDEX);
       setInsights(nextInsights);
-      stickBottomRef.current = true;
-      forceStickUntilRef.current = Date.now() + 2000;
-      window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
-      // 统计看板异步加载，不挡切换体感
+
+      if (soft && prevCache?.messages?.length) {
+        // 后台静默同步：合并新消息，保留已加载的更早历史，避免整表重置闪一下
+        setMessages((prev) => {
+          const byId = new Map<number, CollabMessage>();
+          for (const m of prev) byId.set(m.id, m);
+          for (const m of nextMessages) byId.set(m.id, m);
+          return [...byId.values()].sort(
+            (a, b) => a.id - b.id || a.created_at.localeCompare(b.created_at),
+          );
+        });
+        setHasMoreBefore(nextHasMore || prevCache.hasMoreBefore);
+      } else {
+        setMessages(nextMessages);
+        setHasMoreBefore(nextHasMore);
+        setFirstItemIndex(VIRT_BASE_INDEX);
+        stickBottomRef.current = true;
+        forceStickUntilRef.current = Date.now() + 2000;
+        window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
+      }
+
       void getCollabRoomStats(id)
         .then((st) => {
           if (seq !== roomLoadSeqRef.current || activeIdRef.current !== id) return;
@@ -866,25 +889,76 @@ export default function CollabRisk({
             setRoomStats(null);
           }
         });
+
+      const mergedForCache = soft && prevCache?.messages?.length
+        ? (() => {
+            const byId = new Map<number, CollabMessage>();
+            for (const m of prevCache.messages) byId.set(m.id, m);
+            for (const m of nextMessages) byId.set(m.id, m);
+            return [...byId.values()].sort(
+              (a, b) => a.id - b.id || a.created_at.localeCompare(b.created_at),
+            );
+          })()
+        : nextMessages;
+
       roomViewCacheRef.current.set(id, {
         room: hydratedRoom,
-        messages: nextMessages,
+        messages: mergedForCache,
         insights: nextInsights,
-        hasMoreBefore: nextHasMore,
-        firstItemIndex: VIRT_BASE_INDEX,
+        hasMoreBefore: soft && prevCache ? (nextHasMore || prevCache.hasMoreBefore) : nextHasMore,
+        firstItemIndex: soft && prevCache ? prevCache.firstItemIndex : VIRT_BASE_INDEX,
         xiaoceRun: nextXiaoce,
         stats: roomViewCacheRef.current.get(id)?.stats || null,
+        fetchedAt: Date.now(),
       });
     } catch {
       if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
         message.error("读取会话失败");
       }
+    } finally {
+      if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
+        setRoomDetailLoading(false);
+      }
     }
   }, [message, scrollMessagesToBottom]);
 
+  const prefetchRoom = useCallback((roomId: string) => {
+    if (!roomId || roomId === activeIdRef.current) return;
+    if (roomViewCacheRef.current.has(roomId)) return;
+    if (roomPrefetchRef.current.has(roomId)) return;
+    roomPrefetchRef.current.add(roomId);
+    void Promise.all([
+      getCollabRoom(roomId),
+      listCollabMessages(roomId, { limit: MSG_WINDOW, includeParticipants: false }),
+    ])
+      .then(([room, page]) => {
+        if (roomViewCacheRef.current.has(roomId)) return;
+        const hydratedRoom = {
+          ...room,
+          ...page.room,
+          messages: page.results,
+          has_more_before: page.has_more_before,
+        } as CollabRoom;
+        const nextXiaoce = isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null;
+        roomViewCacheRef.current.set(roomId, {
+          room: hydratedRoom,
+          messages: page.results || [],
+          insights: room.insights || [],
+          hasMoreBefore: Boolean(page.has_more_before ?? room.has_more_before),
+          firstItemIndex: VIRT_BASE_INDEX,
+          xiaoceRun: nextXiaoce,
+          stats: null,
+          fetchedAt: Date.now(),
+        });
+      })
+      .catch(() => { /* 预取失败忽略 */ })
+      .finally(() => {
+        roomPrefetchRef.current.delete(roomId);
+      });
+  }, []);
+
   const selectRoom = useCallback((roomId: string) => {
     if (roomId === activeIdRef.current) return;
-    // 先把当前会话的输入框状态存起来
     const prevId = activeIdRef.current;
     if (prevId) {
       roomComposerCacheRef.current.set(prevId, {
@@ -901,10 +975,10 @@ export default function CollabRisk({
           firstItemIndex,
           xiaoceRun: activeXiaoceRun,
           stats: roomStats,
+          fetchedAt: roomViewCacheRef.current.get(prevId)?.fetchedAt || Date.now(),
         });
       }
     }
-    // 立刻切 UI：恢复该会话草稿 / 缓存消息，避免共用输入框和白屏等待
     const composer = roomComposerCacheRef.current.get(roomId);
     setDraft(composer?.draft || "");
     setPendingFiles(composer?.pendingFiles || []);
@@ -928,11 +1002,11 @@ export default function CollabRisk({
       setFirstItemIndex(cached.firstItemIndex);
       setActiveXiaoceRun(cached.xiaoceRun);
       setRoomStats(cached.stats);
+      setRoomDetailLoading(false);
       stickBottomRef.current = true;
-      forceStickUntilRef.current = Date.now() + 1200;
+      forceStickUntilRef.current = Date.now() + 800;
       window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
     } else {
-      // 用会话列表里的摘要立刻占位，避免切到空的「协作会话」引导页
       const listRoom = rooms.find((r) => r.id === roomId) || null;
       if (listRoom) setActiveRoom(listRoom);
       setMessages([]);
@@ -941,6 +1015,7 @@ export default function CollabRisk({
       setFirstItemIndex(VIRT_BASE_INDEX);
       setActiveXiaoceRun(null);
       setRoomStats(null);
+      setRoomDetailLoading(true);
     }
     setCancellingRunId(null);
     setHighlightId(null);
@@ -1213,12 +1288,18 @@ export default function CollabRisk({
       setMessages([]);
       setInsights([]);
       setRoomStats(null);
+      setRoomDetailLoading(false);
       prevActiveIdForComposerRef.current = null;
       return;
     }
     prevActiveIdForComposerRef.current = activeId;
     stickBottomRef.current = true;
-    void loadRoomDetail(activeId);
+    const cached = roomViewCacheRef.current.get(activeId);
+    const fresh = Boolean(
+      cached && Date.now() - (cached.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
+    );
+    // 有缓存：秒开后后台 soft 同步；无缓存：hard 拉取。避免每次切房整页重绘等待。
+    void loadRoomDetail(activeId, { soft: Boolean(cached) || fresh });
   }, [activeId, loadRoomDetail]);
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
@@ -2404,6 +2485,7 @@ export default function CollabRisk({
                 <div
                   key={room.id}
                   className={`collab-room-item ${activeId === room.id ? "active" : ""} risk-${room.risk_level}`}
+                  onPointerEnter={() => prefetchRoom(room.id)}
                 >
                   <button
                     type="button"
@@ -2765,7 +2847,9 @@ export default function CollabRisk({
             <div className="collab-messages">
               {visibleMessages.length === 0 ? (
                 <div className="collab-empty soft">
-                  开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。
+                  {roomDetailLoading
+                    ? "正在加载消息…"
+                    : "开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。"}
                 </div>
               ) : (
               <Virtuoso

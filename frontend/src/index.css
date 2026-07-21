@@ -10732,6 +10732,24 @@ body {
   background: var(--lc-surface-raised) !important;
   border-color: var(--lc-border-light) !important;
 }
+:root[data-theme="dark"] .st-dash {
+  background: var(--lc-canvas) !important;
+}
+:root[data-theme="dark"] .st-dash-entry,
+:root[data-theme="dark"] .st-dash-kpi,
+:root[data-theme="dark"] .st-dash-card,
+:root[data-theme="dark"] .st-dash-num-grid > div {
+  color: var(--lc-ink) !important;
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+}
+:root[data-theme="dark"] .st-dash-bar-track {
+  background: var(--lc-surface-input) !important;
+}
+:root[data-theme="dark"] .st-chart-axis { stroke: rgba(228, 233, 241, 0.18) !important; }
+:root[data-theme="dark"] .st-chart-area { fill: rgba(91, 143, 191, 0.18) !important; }
+:root[data-theme="dark"] .st-chart-pie-total { fill: var(--lc-ink) !important; }
+:root[data-theme="dark"] .st-chart-pie-sub { fill: var(--lc-muted) !important; }
 
 :root[data-theme="dark"] .kgv3-workspace,
 :root[data-theme="dark"] .kgv3-graph-card,

@@ -12,7 +12,6 @@ import {
   LeftOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  MessageOutlined,
   MoonOutlined,
   QuestionCircleOutlined,
   RightOutlined,
@@ -38,7 +37,7 @@ import { clearAuthToken, getAuthToken, getMe, logout, type AuthUser } from "../a
 const { Header, Content, Sider } = Layout;
 
 type NavItem = { key: string; icon: ReactNode; label: string };
-type SectionKey = "work" | "knowledge" | "commerce" | "capability" | "admin";
+type SectionKey = "work" | "knowledge" | "commerce" | "admin";
 type NavSection = {
   key: SectionKey;
   label: string;
@@ -53,21 +52,17 @@ const WORK_NAV: NavItem[] = [
   { key: "/home", icon: <HomeOutlined />, label: "工作台" },
   { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
   { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
+  { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
 ];
 
 const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
-  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
   { key: "/tables", icon: <DatabaseOutlined />, label: "智能表格" },
+  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
 ];
 
 const COMMERCE_NAV: NavItem[] = [
   { key: "/commerce/loops", icon: <SyncOutlined />, label: "经营回路" },
-];
-
-const CAPABILITY_NAV: NavItem[] = [
-  { key: "/agent", icon: <MessageOutlined />, label: "Agent" },
-  { key: "/connectors", icon: <ApiOutlined />, label: "连接能力" },
 ];
 
 const ADMIN_NAV: NavItem[] = [
@@ -81,7 +76,7 @@ const LOGS_NAV: NavItem = { key: "/logs", icon: <FileSearchOutlined />, label: "
 const SECTIONS: NavSection[] = [
   {
     key: "work",
-    label: "工作",
+    label: "工作区",
     eyebrow: "WORK",
     icon: <HomeOutlined />,
     defaultPath: "/home",
@@ -104,14 +99,6 @@ const SECTIONS: NavSection[] = [
     items: COMMERCE_NAV,
   },
   {
-    key: "capability",
-    label: "能力",
-    eyebrow: "CAPABILITY",
-    icon: <BulbOutlined />,
-    defaultPath: "/agent",
-    items: CAPABILITY_NAV,
-  },
-  {
     key: "admin",
     label: "管理",
     eyebrow: "ADMIN",
@@ -128,6 +115,7 @@ const ALL_VISIBLE_NAV = SECTIONS.flatMap((section) => section.items);
  * 这让隐藏项可以在后续需求中零成本恢复。
  */
 const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
+  ["/agent", "work"],
   ["/ontology", "knowledge"],
   ["/agent-memory", "knowledge"],
   ["/my/recent", "knowledge"],
@@ -135,7 +123,7 @@ const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
   ["/my/favorites", "knowledge"],
   ["/commerce/bench", "commerce"],
   ["/commerce", "commerce"],
-  ["/datalake", "capability"],
+  ["/datalake", "work"],
   ["/audit", "admin"],
   ["/logs", "admin"],
 ];
