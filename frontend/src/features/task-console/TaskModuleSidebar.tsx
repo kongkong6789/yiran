@@ -26,7 +26,7 @@ export default function TaskModuleSidebar({
 }) {
   const navigate = useNavigate();
   const linkedItems = [
-    { key: "templates", label: "模板中心", icon: <FileTextOutlined />, path: "/skills" },
+    { key: "templates", label: "模板中心", icon: <FileTextOutlined />, path: "/skills?context=tasks" },
     { key: "automation", label: "自动化", icon: <PlayCircleOutlined />, path: "/work?tab=automation" },
   ];
 

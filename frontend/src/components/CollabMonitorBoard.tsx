@@ -5,6 +5,7 @@ import {
   BulbOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
+  CloseOutlined,
   FileTextOutlined,
   ReloadOutlined,
   RobotOutlined,
@@ -28,6 +29,7 @@ type Props = {
   onRefresh?: () => void;
   onSummarize?: (windowMode: SummaryWindow) => void;
   onJumpEvidence?: (messageId: number) => void;
+  onClose?: () => void;
 };
 
 function MiniBars({ hourly }: { hourly: CollabRoomStats["hourly"] }) {
@@ -94,6 +96,7 @@ export default function CollabMonitorBoard({
   onRefresh,
   onSummarize,
   onJumpEvidence,
+  onClose,
 }: Props) {
   const [panel, setPanel] = useState<"summary" | "data">("summary");
   const [summaryWindow, setSummaryWindow] = useState<SummaryWindow>("auto");
@@ -113,6 +116,11 @@ export default function CollabMonitorBoard({
             </Typography.Text>
             <div className="collab-ai-sub">选择会话后，AI 会判断总结范围</div>
           </div>
+          {onClose ? (
+            <Tooltip title="隐藏智能纪要">
+              <Button type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="隐藏智能纪要" />
+            </Tooltip>
+          ) : null}
         </div>
         <div className="collab-summary-empty-state">
           <span className="collab-summary-empty-icon" aria-hidden="true">
@@ -154,16 +162,24 @@ export default function CollabMonitorBoard({
             {panel === "summary" ? "按上下文智能取段，不必总结全部历史" : "发言、已读与阅读耗时"}
           </div>
         </div>
-        {panel === "data" ? (
-          <Tooltip title="重新分析风险">
-            <Button
-              type="text"
-              icon={<ReloadOutlined />}
-              loading={loading}
-              onClick={onRefresh}
-            />
-          </Tooltip>
-        ) : null}
+        <div className="collab-intelligence-head-actions">
+          {panel === "data" ? (
+            <Tooltip title="重新分析风险">
+              <Button
+                type="text"
+                icon={<ReloadOutlined />}
+                loading={loading}
+                onClick={onRefresh}
+                aria-label="重新分析风险"
+              />
+            </Tooltip>
+          ) : null}
+          {onClose ? (
+            <Tooltip title="隐藏智能纪要">
+              <Button type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="隐藏智能纪要" />
+            </Tooltip>
+          ) : null}
+        </div>
       </div>
 
       <div className="collab-intelligence-tabs" role="tablist" aria-label="右侧工作区">

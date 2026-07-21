@@ -36,7 +36,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<RequireAuth />}>
         <Route element={<AppLayout />}>
-          <Route index element={<Navigate to="/home" replace />} />
+          <Route index element={<Navigate to="/collab" replace />} />
           <Route path="home" element={<Home />} />
           <Route path="agent" element={<AgentChat />} />
           <Route path="collab" element={<TeamCollaboration />} />

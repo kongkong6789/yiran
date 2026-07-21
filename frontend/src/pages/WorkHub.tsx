@@ -43,9 +43,6 @@ export default function WorkHub() {
 
   return (
     <div className="task-workspace">
-      <div className="task-workspace-desktop-nav">
-        <TaskModuleSidebar active={active} onChange={changeSection} />
-      </div>
       <Drawer
         open={mobileNavOpen}
         onClose={() => setMobileNavOpen(false)}
@@ -91,7 +88,7 @@ export default function WorkHub() {
                 </Button>
               ) : (
                 <>
-                  <Button icon={<FileTextOutlined />} onClick={() => navigate("/skills")}>模板中心</Button>
+                  <Button icon={<FileTextOutlined />} onClick={() => navigate("/skills?context=tasks")}>模板中心</Button>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => changeSection("create")}>新建任务</Button>
                 </>
               )}
