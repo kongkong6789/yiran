@@ -19,8 +19,10 @@ export interface PublishedTask {
   title: string;
   sopId: string;
   sender: string;
+  senderAvatar?: string;
   senderId?: number;
   assignees: string[];
+  assigneeMembers?: Array<{ id: number; name: string; avatarUrl: string }>;
   agentName?: string;
   deadline?: string | null;
   priority: "urgent" | "high" | "normal";

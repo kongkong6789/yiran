@@ -10,6 +10,7 @@ from apps.council.knowledge import gather_knowledge
 from apps.council.graph_knowledge import search_graph
 from apps.mcp.client import find_document_url_in_thread, is_document_followup, read_wecom_document
 from apps.mcp.nas_files import read_nas_for_agent
+from apps.skills.analytics import record_skill_usage
 from apps.skills.service import build_skill_system_block, resolve_skills, skills_payload
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -161,6 +162,7 @@ def run_chat(
     knowledge_base_ids: list[int] | None = None,
     progress_callback=None,
     session_key: str | None = None,
+    usage_source: str = "agent",
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -174,6 +176,7 @@ def run_chat(
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
+    record_skill_usage(active_skills, user, source=usage_source)
     emit_progress(progress_callback, "understanding", "completed")
     if active_skills:
         emit_progress(progress_callback, "skill", "running")
@@ -514,7 +517,7 @@ def run_chat(
         "llm_model": used_model or llm_result.get("model") or "",
         "session_key": session_key or "",
         "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
-"knowledge_hit": bool(
+        "knowledge_hit": bool(
             selected_knowledge
             or knowledge
             or mcp.get("content")

@@ -53,6 +53,8 @@ def server_import(request, server_id: str):
         )
     except ValueError as exc:
         return Response({"ok": False, "error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except PermissionError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
     return Response({"ok": True, **_detail_payload(defn, cfg)})
 
 
@@ -77,6 +79,8 @@ def server_detail(request, server_id: str):
             cfg = save_config(server_id, request.data, user=request.user)
         except ValueError as exc:
             return Response({"ok": False, "error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as exc:
+            return Response({"ok": False, "error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         return Response({"ok": True, **_detail_payload(defn, cfg)})
 
     cfg = resolve_config(defn, user=request.user)
@@ -113,7 +117,7 @@ def server_probe(request, server_id: str):
         return Response({
             "ok": False,
             "status": "unconfigured",
-            "message": "未配置,请填写个人 MCP 配置后保存",
+            "message": "当前企业尚未配置该 MCP 服务，请联系企业管理员完成配置",
         })
 
     transport = cfg.get("transport") or defn.transport

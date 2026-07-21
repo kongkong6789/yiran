@@ -98,8 +98,11 @@ def graph(request):
     """返回图谱;默认 scope=age 仅当前 AGE workspace 子图(轻量)。"""
     scope = (request.query_params.get("scope") or "age").strip().lower()
     sid = settings.LIGHTRAG_SOURCE_ID
-    src = age_svc.resolve_source(sid) if sid else None
-    stats = age_svc.graph_stats(sid) if sid else {}
+    # The company panorama uses the local ontology (scope=all). AGE statistics
+    # require a separate graph-database round trip and used to delay every page
+    # visit even though this view does not render those statistics.
+    src = age_svc.resolve_source(sid) if sid and scope == "age" else None
+    stats = age_svc.graph_stats(sid) if sid and scope == "age" else {}
     objs, rels, meta = _filter_graph_objects(scope)
     return Response({
         "objects": [_obj(o) for o in objs],

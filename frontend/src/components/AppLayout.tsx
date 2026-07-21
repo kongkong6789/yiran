@@ -1,25 +1,27 @@
-import { Layout, Menu, Grid, Space, Typography, Avatar, Dropdown } from "antd";
+import { Avatar, Button, Dropdown, Grid, Input, Layout, Menu, Space, Tooltip, Typography } from "antd";
 import {
-  SafetyCertificateOutlined,
-  TeamOutlined,
-  ShareAltOutlined,
-  HomeOutlined,
-  SyncOutlined,
-  BookOutlined,
-  ThunderboltOutlined,
-  BulbOutlined,
-  ApiOutlined,
-  BarChartOutlined,
-  ClockCircleOutlined,
-  FlagOutlined,
-  DownOutlined,
-  UserOutlined,
   ApartmentOutlined,
-  ShopOutlined,
-  MoonOutlined,
-  SunOutlined,
-  MessageOutlined,
+  ApiOutlined,
+  AppstoreOutlined,
+  BookOutlined,
+  BulbOutlined,
   DatabaseOutlined,
+  FileSearchOutlined,
+  FlagOutlined,
+  HomeOutlined,
+  LeftOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  MoonOutlined,
+  QuestionCircleOutlined,
+  RightOutlined,
+  SearchOutlined,
+  SettingOutlined,
+  ShopOutlined,
+  SyncOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -32,51 +34,123 @@ import { brand } from "../theme/brand";
 import { useThemeMode } from "../theme/mode";
 import { clearAuthToken, getAuthToken, getMe, logout, type AuthUser } from "../api/client";
 
-const { Header, Content } = Layout;
+const { Header, Content, Sider } = Layout;
 
 type NavItem = { key: string; icon: ReactNode; label: string };
+type SectionKey = "work" | "knowledge" | "commerce" | "admin";
+type NavSection = {
+  key: SectionKey;
+  label: string;
+  eyebrow: string;
+  icon: ReactNode;
+  defaultPath: string;
+  items: NavItem[];
+};
 
-/** 日常高频：先做事 */
+/** 仅控制菜单可见性；所有路由和功能仍在 App.tsx 中保留。 */
 const WORK_NAV: NavItem[] = [
-  { key: "/home", icon: <HomeOutlined />, label: "总览" },
-  { key: "/agent", icon: <MessageOutlined />, label: "对话" },
-  { key: "/collab", icon: <TeamOutlined />, label: "协作" },
+  { key: "/home", icon: <HomeOutlined />, label: "工作台" },
+  { key: "/collab", icon: <TeamOutlined />, label: "团队协作" },
   { key: "/work", icon: <FlagOutlined />, label: "任务与待办" },
+  { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
 ];
 
-/** 沉淀与复用 */
 const KNOWLEDGE_NAV: NavItem[] = [
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
-  { key: "/ontology", icon: <ShareAltOutlined />, label: "图谱" },
-  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
-  { key: "/agent-memory", icon: <BulbOutlined />, label: "记忆" },
-  { key: "/my/recent", icon: <ClockCircleOutlined />, label: "最近" },
-];
-
-/** 经营（知行迁入 · 统一分类） */
-const COMMERCE_NAV: NavItem[] = [
-  { key: "/commerce", icon: <ShopOutlined />, label: "经营首页" },
-  { key: "/commerce/loops", icon: <SyncOutlined />, label: "回路图谱" },
-  { key: "/commerce/bench", icon: <BarChartOutlined />, label: "经营工作台" },
-];
-
-/** 业务能力与外部系统 */
-const CAPABILITY_NAV: NavItem[] = [
-  { key: "/connectors", icon: <ApiOutlined />, label: "连接" },
   { key: "/tables", icon: <DatabaseOutlined />, label: "智能表格" },
-  { key: "/datalake", icon: <BarChartOutlined />, label: "数据" },
+  { key: "/skills", icon: <ThunderboltOutlined />, label: "技能" },
 ];
 
-/** 低频管理 */
+const COMMERCE_NAV: NavItem[] = [
+  { key: "/commerce/loops", icon: <SyncOutlined />, label: "经营回路" },
+];
+
 const ADMIN_NAV: NavItem[] = [
-  { key: "/accounts", icon: <UserOutlined />, label: "账号" },
-  { key: "/agents", icon: <ApartmentOutlined />, label: "对象" },
-  { key: "/audit", icon: <SafetyCertificateOutlined />, label: "审计" },
+  { key: "/accounts", icon: <UserOutlined />, label: "账号管理" },
+  { key: "/agents", icon: <ApartmentOutlined />, label: "对象管理" },
 ];
 
-const ALL_NAV = [...WORK_NAV, ...KNOWLEDGE_NAV, ...COMMERCE_NAV, ...CAPABILITY_NAV, ...ADMIN_NAV];
+/** 仅超级管理员可见 */
+const LOGS_NAV: NavItem = { key: "/logs", icon: <FileSearchOutlined />, label: "日志" };
 
-const FULL_BLEED = new Set(["/home", "/agent", "/collab", "/work", "/ontology", "/connectors", "/tables", "/commerce/loops"]);
+const SECTIONS: NavSection[] = [
+  {
+    key: "work",
+    label: "工作区",
+    eyebrow: "WORK",
+    icon: <HomeOutlined />,
+    defaultPath: "/home",
+    items: WORK_NAV,
+  },
+  {
+    key: "knowledge",
+    label: "知识",
+    eyebrow: "KNOWLEDGE",
+    icon: <BookOutlined />,
+    defaultPath: "/knowledge",
+    items: KNOWLEDGE_NAV,
+  },
+  {
+    key: "commerce",
+    label: "经营",
+    eyebrow: "OPERATIONS",
+    icon: <ShopOutlined />,
+    defaultPath: "/commerce/loops",
+    items: COMMERCE_NAV,
+  },
+  {
+    key: "admin",
+    label: "管理",
+    eyebrow: "ADMIN",
+    icon: <SettingOutlined />,
+    defaultPath: "/accounts",
+    items: ADMIN_NAV,
+  },
+];
+
+const ALL_VISIBLE_NAV = SECTIONS.flatMap((section) => section.items);
+
+/**
+ * 被隐藏入口的路由归属仍保留，直接访问时顶部模块会正确高亮。
+ * 这让隐藏项可以在后续需求中零成本恢复。
+ */
+const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
+  ["/agent", "work"],
+  ["/ontology", "knowledge"],
+  ["/agent-memory", "knowledge"],
+  ["/my/recent", "knowledge"],
+  ["/my/knowledge", "knowledge"],
+  ["/my/favorites", "knowledge"],
+  ["/commerce/bench", "commerce"],
+  ["/commerce", "commerce"],
+  ["/datalake", "work"],
+  ["/audit", "admin"],
+  ["/logs", "admin"],
+];
+
+const FULL_BLEED = new Set([
+  "/home",
+  "/agent",
+  "/collab",
+  "/work",
+  "/ontology",
+  "/connectors",
+  "/tables",
+  "/commerce/loops",
+]);
+
+function routeMatches(pathname: string, route: string) {
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
+
+function sectionForPath(pathname: string): SectionKey {
+  const visibleHit = SECTIONS.find((section) => (
+    section.items.some((item) => routeMatches(pathname, item.key))
+  ));
+  if (visibleHit) return visibleHit.key;
+  const hiddenHit = HIDDEN_ROUTE_SECTION.find(([route]) => routeMatches(pathname, route));
+  return hiddenHit?.[1] || "work";
+}
 
 export default function AppLayout() {
   const nav = useNavigate();
@@ -85,6 +159,8 @@ export default function AppLayout() {
   const { mode, toggle } = useThemeMode();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
 
   useEffect(() => {
     getMe().then((res) => setUser(res.user)).catch(() => setUser(null));
@@ -96,42 +172,17 @@ export default function AppLayout() {
     nav("/login", { replace: true });
   };
 
+  const activeSectionKey = sectionForPath(loc.pathname);
+  const activeSection = SECTIONS.find((section) => section.key === activeSectionKey) || SECTIONS[0];
+  const compactSidebar = screens.lg === false || navCollapsed;
   const isFullBleed = FULL_BLEED.has(loc.pathname);
 
   const selectedKeys = useMemo(() => {
-    // 更长路径优先，避免 /commerce 抢走 /commerce/loops、/commerce/bench
-    const ordered = [...ALL_NAV].sort((a, b) => b.key.length - a.key.length);
-    const hit = ordered.find((n) => loc.pathname === n.key || loc.pathname.startsWith(`${n.key}/`));
-    return hit ? [hit.key] : [loc.pathname];
-  }, [loc.pathname]);
-
-  const menuItems = useMemo(() => [
-    {
-      key: "work",
-      label: "工作",
-      children: WORK_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
-    },
-    {
-      key: "knowledge",
-      label: "知识",
-      children: KNOWLEDGE_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
-    },
-    {
-      key: "commerce",
-      label: "经营",
-      children: COMMERCE_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
-    },
-    {
-      key: "capability",
-      label: "能力",
-      children: CAPABILITY_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
-    },
-    {
-      key: "admin",
-      label: "管理",
-      children: ADMIN_NAV.map((n) => ({ key: n.key, icon: n.icon, label: n.label })),
-    },
-  ], []);
+    const navItems = user?.is_superuser ? [...ALL_VISIBLE_NAV, LOGS_NAV] : ALL_VISIBLE_NAV;
+    const ordered = [...navItems].sort((a, b) => b.key.length - a.key.length);
+    const hit = ordered.find((item) => routeMatches(loc.pathname, item.key));
+    return hit ? [hit.key] : [];
+  }, [loc.pathname, user?.is_superuser]);
 
   const userMenu = {
     items: [
@@ -139,7 +190,7 @@ export default function AppLayout() {
       {
         key: "theme",
         label: mode === "dark" ? "浅色模式" : "深色模式",
-        icon: mode === "dark" ? <SunOutlined /> : <MoonOutlined />,
+        icon: mode === "dark" ? <BulbOutlined /> : <MoonOutlined />,
       },
       { type: "divider" as const },
       { key: "logout", label: "退出登录", danger: true },
@@ -152,41 +203,103 @@ export default function AppLayout() {
   };
 
   const displayName = user?.display_name || user?.username || "未登录";
+  const organizationName = user?.organization?.name || "良策科技有限公司";
+
+  const submitSearch = () => {
+    const query = searchValue.trim().toLowerCase();
+    if (!query) return;
+    const target = ALL_VISIBLE_NAV.find((item) => (
+      item.label.toLowerCase().includes(query)
+      || item.key.toLowerCase().includes(query)
+    ));
+    if (target) {
+      nav(target.key);
+      setSearchValue("");
+    }
+  };
 
   return (
-    <Layout className="app-shell-topnav" style={{ minHeight: "100vh" }}>
+    <Layout className="app-shell-topnav">
       <Header className="app-topnav">
         <div
           className="app-brand app-topnav-brand"
           onClick={() => nav("/home")}
           role="link"
           tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") nav("/home");
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") nav("/home");
           }}
-          title="回到首页"
+          title="回到工作台"
         >
           <BrandLogo size={40} className="app-brand-logo" />
-          {screens.md !== false && (
+          {screens.md !== false ? (
             <span className="app-brand-text">
               良策
               <small>智能协作工作台</small>
             </span>
-          )}
+          ) : null}
         </div>
 
-        <Menu
-          className="app-topnav-menu"
-          theme="light"
-          mode="horizontal"
-          selectedKeys={selectedKeys}
-          items={menuItems}
-          onClick={(e) => {
-            if (String(e.key).startsWith("/")) nav(e.key);
-          }}
-        />
+        {screens.xl !== false ? (
+          <button
+            type="button"
+            className="app-organization-switcher"
+            title={organizationName}
+            onClick={() => nav("/accounts")}
+          >
+            <AppstoreOutlined />
+            <span>{organizationName}</span>
+            <RightOutlined />
+          </button>
+        ) : null}
 
-        <Space className="app-topnav-actions" size={8}>
+        <nav className="app-module-nav" aria-label="一级模块">
+          {SECTIONS.map((section) => (
+            <button
+              key={section.key}
+              type="button"
+              className={section.key === activeSectionKey ? "is-active" : ""}
+              aria-current={section.key === activeSectionKey ? "page" : undefined}
+              onClick={() => nav(section.defaultPath)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+
+        {screens.xl !== false ? (
+          <Input
+            className="app-global-search"
+            value={searchValue}
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="搜索功能、知识、应用…"
+            onChange={(event) => setSearchValue(event.target.value)}
+            onPressEnter={submitSearch}
+            aria-label="全局功能搜索"
+          />
+        ) : null}
+
+        <Space className="app-topnav-actions" size={4}>
+          {screens.md !== false ? (
+            <Tooltip title="帮助中心">
+              <Button
+                type="text"
+                className="app-topnav-icon"
+                icon={<QuestionCircleOutlined />}
+                aria-label="帮助中心"
+              />
+            </Tooltip>
+          ) : null}
+          <Tooltip title="个人设置">
+            <Button
+              type="text"
+              className="app-topnav-icon"
+              icon={<SettingOutlined />}
+              aria-label="个人设置"
+              onClick={() => setSettingsOpen(true)}
+            />
+          </Tooltip>
           {user ? <CollabUnreadBell enabled /> : null}
           <Dropdown menu={userMenu} placement="bottomRight" trigger={["click"]}>
             <button type="button" className="app-topnav-user" aria-label="打开账户菜单">
@@ -201,12 +314,12 @@ export default function AppLayout() {
               >
                 {displayName[0]?.toUpperCase()}
               </Avatar>
-              {screens.sm !== false && (
-                <Typography.Text className="app-topnav-username">
-                  {displayName}
-                </Typography.Text>
-              )}
-              <DownOutlined style={{ fontSize: 10, opacity: 0.7 }} />
+              {screens.sm !== false ? (
+                <span className="app-topnav-user-copy">
+                  <Typography.Text className="app-topnav-username">{displayName}</Typography.Text>
+                  <small>{user?.organization?.roleLabel || "成员"}</small>
+                </span>
+              ) : null}
             </button>
           </Dropdown>
         </Space>
@@ -217,12 +330,64 @@ export default function AppLayout() {
       <UserSettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        onSaved={(u) => setUser(u)}
+        onSaved={(nextUser) => setUser(nextUser)}
       />
 
-      <Content className={isFullBleed ? "app-content-bleed" : "app-content-padded"}>
-        <Outlet />
-      </Content>
+      <Layout className="app-layout-body">
+        <Sider
+          className="app-module-sidebar"
+          width={216}
+          collapsedWidth={72}
+          collapsed={compactSidebar}
+          theme="light"
+          trigger={null}
+        >
+          <div className="app-module-sidebar-head">
+            <span className="app-module-sidebar-icon">{activeSection.icon}</span>
+            {!compactSidebar ? (
+              <span>
+                <small>{activeSection.eyebrow}</small>
+                <strong>{activeSection.label}模块</strong>
+              </span>
+            ) : null}
+          </div>
+
+          <Menu
+            className="app-module-sidebar-menu"
+            mode="inline"
+            inlineCollapsed={compactSidebar}
+            selectedKeys={selectedKeys}
+            items={(
+              activeSection.key === "admin" && user?.is_superuser
+                ? [...activeSection.items, LOGS_NAV]
+                : activeSection.items
+            ).map((item) => ({
+              key: item.key,
+              icon: item.icon,
+              label: item.label,
+              title: item.label,
+            }))}
+            onClick={({ key }) => nav(String(key))}
+          />
+
+          {screens.lg !== false ? (
+            <button
+              type="button"
+              className="app-module-sidebar-collapse"
+              onClick={() => setNavCollapsed((value) => !value)}
+              aria-label={navCollapsed ? "展开导航" : "收起导航"}
+            >
+              {navCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              {!navCollapsed ? <span>收起导航</span> : null}
+              {!navCollapsed ? <LeftOutlined /> : null}
+            </button>
+          ) : null}
+        </Sider>
+
+        <Content className={isFullBleed ? "app-content-bleed" : "app-content-padded"}>
+          <Outlet />
+        </Content>
+      </Layout>
     </Layout>
   );
 }

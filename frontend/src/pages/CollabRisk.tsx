@@ -37,6 +37,7 @@ import {
   type AuthUser,
   type CollabInsight,
   type CollabMessage,
+  type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
   type CollabDraftTip,
@@ -50,6 +51,7 @@ import ChatSkillPicker from "../components/ChatSkillPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
+import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
@@ -72,10 +74,13 @@ import {
   xiaoceDeleteContent,
   type RoomMutation,
 } from "./xiaoceChat";
+import type { NasResourceHandoff } from "../features/agent-handoff/resourceHandoff";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
 const VIRT_BASE_INDEX = 100_000;
+/** 有缓存时切房先秒开，超过此时长才后台整窗刷新 */
+const ROOM_CACHE_FRESH_MS = 60_000;
 
 const RISK_META: Record<string, { color: string; label: string }> = {
   green: { color: "success", label: "正常" },
@@ -363,10 +368,12 @@ function UserProfileCardContent({
   user,
   online,
   roleHint,
+  sentAt,
 }: {
   user: CollabUserBrief;
   online?: boolean;
   roleHint?: string;
+  sentAt?: string;
 }) {
   const label = memberLabel(user) || user.username;
   const src = authAvatarSrc(user.avatar_url);
@@ -391,6 +398,7 @@ function UserProfileCardContent({
         <span className={`collab-profile-online ${isOnline ? "on" : "off"}`}>
           {isOnline ? "在线" : "离线"}
         </span>
+        {sentAt ? <span className="collab-profile-sent-at">发送于 {formatChatTimeSep(sentAt)}</span> : null}
       </div>
     </div>
   );
@@ -399,9 +407,11 @@ function UserProfileCardContent({
 function AiProfileCardContent({
   interject = false,
   suggest = false,
+  sentAt,
 }: {
   interject?: boolean;
   suggest?: boolean;
+  sentAt?: string;
 }) {
   const tone = suggest ? "suggest" : interject ? "interject" : "reply";
   return (
@@ -425,6 +435,7 @@ function AiProfileCardContent({
               : "被 @AI 或 Skill 召唤后才会回复；不会对每条消息自动答题。"}
         </p>
         <span className="collab-profile-online on">在线</span>
+        {sentAt ? <span className="collab-profile-sent-at">发送于 {formatChatTimeSep(sentAt)}</span> : null}
       </div>
     </div>
   );
@@ -438,6 +449,7 @@ function ProfileAvatarPopover({
   ai,
   interject,
   suggest,
+  sentAt,
   placement = "rightTop",
   size = 32,
 }: {
@@ -448,13 +460,14 @@ function ProfileAvatarPopover({
   ai?: boolean;
   interject?: boolean;
   suggest?: boolean;
+  sentAt?: string;
   placement?: TooltipPlacement;
   size?: number;
 }) {
   const content = ai
-    ? <AiProfileCardContent interject={interject} suggest={suggest} />
+    ? <AiProfileCardContent interject={interject} suggest={suggest} sentAt={sentAt} />
     : (user ? (
-      <UserProfileCardContent user={user} online={online} roleHint={roleHint} />
+      <UserProfileCardContent user={user} online={online} roleHint={roleHint} sentAt={sentAt} />
     ) : null);
 
   const label = user
@@ -471,7 +484,7 @@ function ProfileAvatarPopover({
     return (
       <Popover
         content={content}
-        trigger="click"
+        trigger={["hover", "click"]}
         placement={placement}
         arrow
         destroyOnHidden
@@ -493,7 +506,7 @@ function ProfileAvatarPopover({
   return (
     <Popover
       content={content}
-      trigger="click"
+      trigger={["hover", "click"]}
       placement={placement}
       arrow
       destroyOnHidden
@@ -540,6 +553,7 @@ function participantsPresenceEqual(
       || (a[i].display_name || "") !== (b[i].display_name || "")
       || (a[i].nickname || "") !== (b[i].nickname || "")
       || (a[i].avatar_url || "") !== (b[i].avatar_url || "")
+      || (a[i].last_read_message_id || 0) !== (b[i].last_read_message_id || 0)
     ) {
       return false;
     }
@@ -675,11 +689,13 @@ export default function CollabRisk({
     firstItemIndex: number;
     xiaoceRun: XiaoceRun | null;
     stats: CollabRoomStats | null;
+    fetchedAt: number;
   };
   const roomComposerCacheRef = useRef<Map<string, RoomComposerCache>>(new Map());
   const roomViewCacheRef = useRef<Map<string, RoomViewCache>>(new Map());
   const roomDataRevisionRef = useRef<Map<string, number>>(new Map());
   const roomLoadSeqRef = useRef(0);
+  const roomPrefetchRef = useRef<Set<string>>(new Set());
   const prevActiveIdForComposerRef = useRef<string | null>(null);
   const [draftCoach, setDraftCoach] = useState<{
     level: string;
@@ -723,6 +739,7 @@ export default function CollabRisk({
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [roomDetailLoading, setRoomDetailLoading] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
   const forceStickUntilRef = useRef(0);
@@ -809,6 +826,7 @@ export default function CollabRisk({
         firstItemIndex: firstItemIndexRef.current,
         xiaoceRun: activeXiaoceRunRef.current,
         stats: roomStatsRef.current,
+        fetchedAt: Date.now(),
       });
     }
     const next = applyRoomMutation({
@@ -860,8 +878,10 @@ export default function CollabRisk({
   }, [me, activeRoom, isParticipant]);
 
   const bannerInsight = useMemo(() => {
-    const hot = insights.find((i) => i.risk_level === "red" || i.risk_level === "yellow");
-    return hot || null;
+    const latest = insights[insights.length - 1];
+    return latest && (latest.risk_level === "red" || latest.risk_level === "yellow")
+      ? latest
+      : null;
   }, [insights]);
 
   const chatAlertByMsgId = useMemo(
@@ -935,12 +955,15 @@ export default function CollabRisk({
     }
   }, [activeId, getRoomDataRevision, message]);
 
-  const loadRoomDetail = useCallback(async (id: string) => {
+  const loadRoomDetail = useCallback(async (id: string, opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
     const seq = ++roomLoadSeqRef.current;
     const requestRevision = getRoomDataRevision(id);
     const requestStartMessageIds = activeIdRef.current === id
       ? messagesRef.current.map((row) => row.id)
       : roomViewCacheRef.current.get(id)?.messages.map((row) => row.id) || [];
+    const hadCache = roomViewCacheRef.current.has(id);
+    if (!soft && !hadCache) setRoomDetailLoading(true);
     try {
       const [room, page] = await Promise.all([
         getCollabRoom(id),
@@ -950,7 +973,6 @@ export default function CollabRisk({
       const hydratedRoom = {
         ...room,
         ...page.room,
-        // 首屏消息用分页窗口，避免一次拉全量历史
         messages: page.results,
         has_more_before: page.has_more_before,
       } as CollabRoom;
@@ -981,14 +1003,36 @@ export default function CollabRisk({
       activeXiaoceRunRef.current = nextXiaoce;
       setActiveRoom(reconciledRoom);
       setActiveXiaoceRun(nextXiaoce);
-      setMessages(nextMessages);
-      setHasMoreBefore(nextHasMore);
-      setFirstItemIndex(VIRT_BASE_INDEX);
       setInsights(nextInsights);
-      stickBottomRef.current = true;
-      forceStickUntilRef.current = Date.now() + 2000;
-      window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
-      // 统计看板异步加载，不挡切换体感
+
+      const mergedForCache = soft && cachedAtResolution?.messages?.length
+        ? (() => {
+            const byId = new Map<number, CollabMessage>();
+            for (const m of cachedAtResolution.messages) byId.set(m.id, m);
+            for (const m of nextMessages) byId.set(m.id, m);
+            return [...byId.values()].sort(
+              (a, b) => a.id - b.id || a.created_at.localeCompare(b.created_at),
+            );
+          })()
+        : nextMessages;
+      const resolvedHasMore = soft && cachedAtResolution
+        ? nextHasMore || cachedAtResolution.hasMoreBefore
+        : nextHasMore;
+      const resolvedFirstItemIndex = soft && cachedAtResolution
+        ? cachedAtResolution.firstItemIndex
+        : VIRT_BASE_INDEX;
+
+      activeRoomRef.current = reconciledRoom;
+      messagesRef.current = mergedForCache;
+      setMessages(mergedForCache);
+      setHasMoreBefore(resolvedHasMore);
+      if (!soft || !cachedAtResolution) {
+        setFirstItemIndex(VIRT_BASE_INDEX);
+        stickBottomRef.current = true;
+        forceStickUntilRef.current = Date.now() + 2000;
+        window.setTimeout(() => scrollMessagesToBottom("auto"), 80);
+      }
+
       void getCollabRoomStats(id)
         .then((st) => {
           if (seq !== roomLoadSeqRef.current || activeIdRef.current !== id) return;
@@ -1001,21 +1045,62 @@ export default function CollabRisk({
             setRoomStats(null);
           }
         });
+
       roomViewCacheRef.current.set(id, {
         room: reconciledRoom,
-        messages: nextMessages,
+        messages: mergedForCache,
         insights: nextInsights,
-        hasMoreBefore: nextHasMore,
-        firstItemIndex: VIRT_BASE_INDEX,
+        hasMoreBefore: resolvedHasMore,
+        firstItemIndex: resolvedFirstItemIndex,
         xiaoceRun: nextXiaoce,
         stats: roomViewCacheRef.current.get(id)?.stats || null,
+        fetchedAt: Date.now(),
       });
     } catch {
       if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
         message.error("读取会话失败");
       }
+    } finally {
+      if (seq === roomLoadSeqRef.current && activeIdRef.current === id) {
+        setRoomDetailLoading(false);
+      }
     }
   }, [getRoomDataRevision, message, scrollMessagesToBottom]);
+
+  const prefetchRoom = useCallback((roomId: string) => {
+    if (!roomId || roomId === activeIdRef.current) return;
+    if (roomViewCacheRef.current.has(roomId)) return;
+    if (roomPrefetchRef.current.has(roomId)) return;
+    roomPrefetchRef.current.add(roomId);
+    void Promise.all([
+      getCollabRoom(roomId),
+      listCollabMessages(roomId, { limit: MSG_WINDOW, includeParticipants: false }),
+    ])
+      .then(([room, page]) => {
+        if (roomViewCacheRef.current.has(roomId)) return;
+        const hydratedRoom = {
+          ...room,
+          ...page.room,
+          messages: page.results,
+          has_more_before: page.has_more_before,
+        } as CollabRoom;
+        const nextXiaoce = isXiaoceRoom(hydratedRoom) ? (hydratedRoom.active_xiaoce_run || null) : null;
+        roomViewCacheRef.current.set(roomId, {
+          room: hydratedRoom,
+          messages: page.results || [],
+          insights: room.insights || [],
+          hasMoreBefore: Boolean(page.has_more_before ?? room.has_more_before),
+          firstItemIndex: VIRT_BASE_INDEX,
+          xiaoceRun: nextXiaoce,
+          stats: null,
+          fetchedAt: Date.now(),
+        });
+      })
+      .catch(() => { /* 预取失败忽略 */ })
+      .finally(() => {
+        roomPrefetchRef.current.delete(roomId);
+      });
+  }, []);
 
   const selectRoom = useCallback((roomId: string) => {
     if (roomId === activeIdRef.current) return;
@@ -1047,6 +1132,7 @@ export default function CollabRisk({
           firstItemIndex: firstItemIndexRef.current,
           xiaoceRun: activeXiaoceRunRef.current,
           stats: roomStatsRef.current,
+          fetchedAt: roomViewCacheRef.current.get(prevId)?.fetchedAt || Date.now(),
         });
       }
     }
@@ -1074,8 +1160,9 @@ export default function CollabRisk({
       setFirstItemIndex(cached.firstItemIndex);
       setActiveXiaoceRun(cached.xiaoceRun);
       setRoomStats(cached.stats);
+      setRoomDetailLoading(false);
       stickBottomRef.current = true;
-      forceStickUntilRef.current = Date.now() + 1200;
+      forceStickUntilRef.current = Date.now() + 800;
       window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
     } else {
       // 用会话列表里的摘要立刻占位，避免切到空的「协作会话」引导页
@@ -1087,6 +1174,7 @@ export default function CollabRisk({
       setFirstItemIndex(VIRT_BASE_INDEX);
       setActiveXiaoceRun(null);
       setRoomStats(null);
+      setRoomDetailLoading(true);
     }
     setCancellingRunId(null);
     setHighlightId(null);
@@ -1129,15 +1217,21 @@ export default function CollabRisk({
     setSearchParams({}, { replace: true });
   }, [searchParams, setSearchParams, selectRoom]);
 
-  // 从「AI 问答」入口带 ?bot=xiaoce 进入时，直聊小策bot
+  // 从资源交接入口进入时，按稳定 bot_id 创建/复用目标单聊。
   useEffect(() => {
-    const bot = searchParams.get("bot");
-    if (bot !== "xiaoce" && bot !== "小策bot") return;
-    const nasPrompt = (location.state as { nasPrompt?: string } | null)?.nasPrompt?.trim() || "";
+    const botId = searchParams.get("bot");
+    if (!botId) return;
+    const navigationState = location.state as {
+      resourceHandoff?: NasResourceHandoff;
+      nasPrompt?: string;
+    } | null;
+    const handoffPrompt = navigationState?.resourceHandoff?.prompt?.trim()
+      || navigationState?.nasPrompt?.trim()
+      || "";
     setSiderTab("contacts");
     let cancelled = false;
     const roomRequest = botRoomRequestRef.current || createCollabRoom({
-      peer_username: "小策bot",
+      peer_bot_id: botId,
       room_kind: "dm",
     });
     botRoomRequestRef.current = roomRequest;
@@ -1149,13 +1243,13 @@ export default function CollabRisk({
         await loadRooms();
         selectRoom(room.id);
         setSiderTab("chats");
-        if (nasPrompt) {
+        if (handoffPrompt) {
           roomComposerCacheRef.current.set(room.id, {
-            draft: nasPrompt,
+            draft: handoffPrompt,
             pendingFiles: [],
             replyingTo: null,
           });
-          setDraft(nasPrompt);
+          setDraft(handoffPrompt);
           window.setTimeout(() => composerRef.current?.focus?.(), 0);
         }
         const nextParams = new URLSearchParams(searchParams);
@@ -1166,7 +1260,7 @@ export default function CollabRisk({
           state: null,
         });
       } catch (e: any) {
-        if (!cancelled) message.error(e?.response?.data?.error || "打开小策bot 失败");
+        if (!cancelled) message.error(e?.response?.data?.error || "打开目标智能体失败");
       } finally {
         if (botRoomRequestRef.current === roomRequest) botRoomRequestRef.current = null;
         if (!cancelled) setCreating(false);
@@ -1370,12 +1464,18 @@ export default function CollabRisk({
       setMessages([]);
       setInsights([]);
       setRoomStats(null);
+      setRoomDetailLoading(false);
       prevActiveIdForComposerRef.current = null;
       return;
     }
     prevActiveIdForComposerRef.current = activeId;
     stickBottomRef.current = true;
-    void loadRoomDetail(activeId);
+    const cached = roomViewCacheRef.current.get(activeId);
+    const fresh = Boolean(
+      cached && Date.now() - (cached.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
+    );
+    // 有缓存：秒开后后台 soft 同步；无缓存：hard 拉取。避免每次切房整页重绘等待。
+    void loadRoomDetail(activeId, { soft: Boolean(cached) || fresh });
   }, [activeId, loadRoomDetail]);
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
@@ -1439,6 +1539,26 @@ export default function CollabRisk({
       });
     }
   }, [getRoomDataRevision, mutateRoomData]);
+
+  const mergeLiveReadReceipts = useCallback((receipts: CollabReadReceipt[]) => {
+    if (!receipts.length) return;
+    const byUser = new Map(
+      receipts.map((receipt) => [receipt.user_id, receipt.last_read_message_id]),
+    );
+    setActiveRoom((prev) => {
+      if (!prev) return prev;
+      let changed = false;
+      const participants = prev.participants.map((participant) => {
+        const cursor = byUser.get(participant.id);
+        if (cursor === undefined || cursor <= (participant.last_read_message_id || 0)) {
+          return participant;
+        }
+        changed = true;
+        return { ...participant, last_read_message_id: cursor };
+      });
+      return changed ? { ...prev, participants } : prev;
+    });
+  }, []);
 
   const patchRoomMeta = useCallback((meta: Partial<CollabRoom>) => {
     setActiveRoom((prev) => {
@@ -1527,6 +1647,7 @@ export default function CollabRisk({
     onXiaoceRuns: mergeLiveXiaoceRuns,
     isRoomCurrent: isLiveRoomCurrent,
     getRoomRevision: getRoomDataRevision,
+    onReadReceipts: mergeLiveReadReceipts,
     setRoomStats,
     participantsEqual: participantsPresenceEqual,
   });
@@ -1552,6 +1673,7 @@ export default function CollabRisk({
       firstItemIndex: firstItemIndexRef.current,
       xiaoceRun: activeXiaoceRunRef.current,
       stats: roomStatsRef.current,
+      fetchedAt: roomViewCacheRef.current.get(targetRoomId)?.fetchedAt || Date.now(),
     };
     loadingOlderRequestRef.current.set(targetRoomId, targetGeneration);
     setLoadingOlder(true);
@@ -1635,6 +1757,7 @@ export default function CollabRisk({
         firstItemIndex: VIRT_BASE_INDEX,
         xiaoceRun: room.active_xiaoce_run || null,
         stats: null,
+        fetchedAt: Date.now(),
       });
       setRooms((current) => [room, ...current.filter((item) => item.id !== room.id)]);
       setSiderTab("chats");
@@ -2776,6 +2899,7 @@ export default function CollabRisk({
                 <div
                   key={room.id}
                   className={`collab-room-item ${activeId === room.id ? "active" : ""} risk-${room.risk_level}`}
+                  onPointerEnter={() => prefetchRoom(room.id)}
                 >
                   <button
                     type="button"
@@ -2939,9 +3063,16 @@ export default function CollabRisk({
         className={`collab-main${isXiaoce ? " xiaoce-chat-shell" : ""}`}
       >
         {!activeRoom ? (
-          <div className="collab-empty soft">
-            {activeId ? "正在打开会话…" : "从左侧选择会话，或打开通讯录发起聊天"}
-          </div>
+          activeId ? (
+            <div className="collab-empty soft">正在打开会话…</div>
+          ) : (
+            <div className="collab-welcome-stage">
+              <CollabWelcome
+                onOpenContacts={() => setSiderTab("contacts")}
+                onCreateGroup={() => setGroupOpen(true)}
+              />
+            </div>
+          )
         ) : (
           <>
             <header className="collab-main-head">
@@ -3134,7 +3265,9 @@ export default function CollabRisk({
             <div className="collab-messages">
               {visibleMessages.length === 0 ? (
                 <div className="collab-empty soft">
-                  开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。
+                  {roomDetailLoading
+                    ? "正在加载消息…"
+                    : "开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。"}
                 </div>
               ) : (
               <Virtuoso
@@ -3198,9 +3331,9 @@ export default function CollabRisk({
                   : "";
                 const isSystem = m.msg_type === "system" || m.status === "recalled";
                 const mine = !isAi && !isSystem && me && m.sender.id === me.id;
-                const receiptMembers = activeRoom.room_kind === "group"
-                  ? activeRoom.participants.filter((participant) => participant.id !== m.sender.id)
-                  : [];
+                const receiptMembers = activeRoom.participants.filter(
+                  (participant) => participant.id !== m.sender.id,
+                );
                 const receiptRead = receiptMembers.filter(
                   (participant) => (participant.last_read_message_id || 0) >= m.id,
                 );
@@ -3210,6 +3343,9 @@ export default function CollabRisk({
                 const readNames = receiptRead.map((participant) => memberLabel(participant));
                 const unreadNames = receiptUnread.map((participant) => memberLabel(participant));
                 const unreadReceiptCount = receiptUnread.length;
+                const readStateLabel = activeRoom.room_kind === "group"
+                  ? (unreadReceiptCount === 0 ? "全部已读" : `${unreadReceiptCount} 人未读`)
+                  : (unreadReceiptCount === 0 ? "已读" : "未读");
                 // 消息自带旗标，或洞察/告警挂到证据消息上 → 显示红/黄连线
                 const chatAlert = !isSystem ? chatAlertByMsgId.get(m.id) : undefined;
                 const flagLevel = (
@@ -3248,15 +3384,18 @@ export default function CollabRisk({
                       className={`collab-msg ${mine ? "mine" : "peer"} ${isAi ? "ai" : ""} ${isInterject ? "interject" : ""} ${isCollabSuggest ? "suggest" : ""} ${flagged ? "flagged" : ""} ${highlightId === m.id ? "highlight" : ""}`}
                     >
                       <div className="collab-msg-aside">
-                        <span className="collab-msg-name">
-                          {isAi ? aiLabel : memberLabel(m.sender)}
-                          {isCollabSuggest ? <em className="collab-suggest-tag">建议</em> : null}
-                          {isInterject ? <em className="collab-interject-tag">警告</em> : null}
-                        </span>
+                        <Tooltip title={`发送于 ${formatChatTimeSep(m.created_at)}`}>
+                          <span className="collab-msg-name">
+                            {isAi ? aiLabel : memberLabel(m.sender)}
+                            {isCollabSuggest ? <em className="collab-suggest-tag">建议</em> : null}
+                            {isInterject ? <em className="collab-interject-tag">警告</em> : null}
+                          </span>
+                        </Tooltip>
                         <ProfileAvatarPopover
                           ai={isAi}
                           interject={isInterject}
                           suggest={isCollabSuggest}
+                          sentAt={m.created_at}
                           placement={mine ? "leftTop" : "rightTop"}
                           online={!isAi
                             ? activeRoom?.participants.find((p) => p.id === m.sender.id)?.online
@@ -3361,15 +3500,16 @@ export default function CollabRisk({
                           </div>
                         ) : null}
                       </div>
-                      {mine && activeRoom.room_kind === "group" && m.id > 0 ? (
+                      {mine && receiptMembers.length > 0 && m.id > 0 ? (
                         <Popover
                           trigger="click"
                           placement="bottomRight"
                           content={(
                             <div className="collab-read-popover">
-                              <strong>消息回执</strong>
-                              <span>已读：{readNames.length ? readNames.join("、") : "暂无"}</span>
-                              <span>未读：{unreadNames.length ? unreadNames.join("、") : "全部已读"}</span>
+                            <strong>{activeRoom.room_kind === "group" ? "群消息回执" : "消息状态"}</strong>
+                            <span>已读：{readNames.length ? readNames.join("、") : "暂无"}</span>
+                            <span>未读：{unreadNames.length ? unreadNames.join("、") : "全部已读"}</span>
+                            <span>发送时间：{formatChatTimeSep(m.created_at)}</span>
                             </div>
                           )}
                         >
@@ -3377,7 +3517,7 @@ export default function CollabRisk({
                             type="button"
                             className={`collab-read-state${unreadReceiptCount === 0 ? " is-all-read" : ""}`}
                           >
-                            {unreadReceiptCount === 0 ? "全部已读" : `${unreadReceiptCount} 人未读`}
+                            {readStateLabel}
                           </button>
                         </Popover>
                       ) : null}
@@ -3921,7 +4061,7 @@ const css = `
 .collab-ai {
   border-left: 1px solid #e8edf5;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 .collab-sider-head, .collab-ai-head, .collab-main-head {
   display: flex;
@@ -4249,6 +4389,14 @@ const css = `
 }
 .collab-profile-online.on { color: #2f9e6c; }
 .collab-profile-online.off { color: #93a0b4; }
+.collab-profile-sent-at {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #edf0f5;
+  color: #7d899c;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .collab-online-dot {
   position: absolute;
   right: 1px;
@@ -5092,9 +5240,11 @@ const css = `
 .collab-monitor {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px;
+  padding: 12px 12px 24px;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -5519,9 +5669,8 @@ const css = `
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: min(36vh, 280px);
-  overflow: auto;
-  overscroll-behavior: contain;
+  max-height: none;
+  overflow: visible;
   padding-right: 2px;
 }
 .collab-mini-bars {

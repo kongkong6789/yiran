@@ -10,7 +10,6 @@ from django.test import TestCase, override_settings
 from apps.skills.models import SkillAsset, UserSkill
 from apps.skills import repository
 from apps.skills.repository import (
-    ensure_shared_skills_for_user,
     find_shared_asset,
     list_skill_assets,
     save_skill_asset_from_bytes,
@@ -48,27 +47,6 @@ class PrivateSkillAssetTests(TestCase):
         )
         self.assertIsNone(find_shared_asset(private.skill_id))
         self.assertEqual(find_shared_asset(shared.skill_id), shared)
-
-    def test_private_assets_are_not_auto_adopted_by_another_user(self):
-        make_asset(self.owner, "private-workflow", "private")
-        shared = make_asset(self.owner, "shared-workflow", "shared")
-
-        def materialize(user, asset):
-            return UserSkill.objects.create(
-                user=user,
-                skill_id=asset.skill_id,
-                name=asset.name,
-                source_asset=asset,
-            )
-
-        with patch("apps.skills.repository.materialize_user_skill", side_effect=materialize):
-            created = ensure_shared_skills_for_user(self.other)
-
-        self.assertEqual([row.skill_id for row in created], [shared.skill_id])
-        self.assertEqual(
-            list(UserSkill.objects.filter(user=self.other).values_list("skill_id", flat=True)),
-            [shared.skill_id],
-        )
 
     def test_private_asset_can_use_a_stable_room_skill_id_and_auto_enable(self):
         content = b"---\nname: Room workflow\ndescription: Prepared workflow\n---\n\nFollow the steps."

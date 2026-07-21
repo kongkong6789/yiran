@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("sheets/", views.sheets, name="smarttable-sheets"),
+    path("sheets/import/", views.import_sheet, name="smarttable-import-sheet"),
     path("sheets/<int:sheet_id>/", views.sheet_detail, name="smarttable-sheet-detail"),
     path("sheets/<int:sheet_id>/columns/", views.create_column, name="smarttable-create-column"),
     path(

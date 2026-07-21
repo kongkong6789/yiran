@@ -362,9 +362,15 @@ def analyze_room_messages(messages: list[dict], *, llm_user=None) -> dict[str, A
 
     hard_risk = _has_hard_risk(messages)
     solve_intent = detect_solve_intent(messages)
-    user_blob = _recent_user_blob(messages, 8)
-    # 用户侧无风险字眼时，禁止因 AI 复述/模型误判维持 yellow
-    if level == "yellow" and not hard_risk and not _user_text_has_risk_hint(user_blob):
+    latest_user_text = next((
+        str(message.get("content") or "")
+        for message in reversed(messages)
+        if (message.get("msg_type") or "user") == "user"
+    ), "")
+    latest_user_has_risk = _user_text_has_risk_hint(latest_user_text)
+    # 风险主动提醒必须由「本轮最新用户消息」触发。
+    # 旧风险仍保留在历史洞察/告警中，但后续普通消息不会反复触发同一条提醒。
+    if level in ("yellow", "red") and not latest_user_has_risk:
         level = "green"
         should_speak = False
         data["message_flags"] = []

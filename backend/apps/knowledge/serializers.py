@@ -1,4 +1,5 @@
-﻿from rest_framework import serializers
+﻿from django.contrib.auth import get_user_model
+from rest_framework import serializers
 
 from .models import (
     KnowledgeAuditLog,
@@ -20,21 +21,35 @@ class KnowledgeTemplateSerializer(serializers.ModelSerializer):
 
 class KnowledgeBaseSerializer(serializers.ModelSerializer):
     owner_username = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     def get_owner_username(self, obj):
-        return None
+        if not obj.owner_user_id:
+            return None
+        user = get_user_model().objects.filter(id=obj.owner_user_id).only("username").first()
+        return user.username if user else None
+
+    def get_can_edit(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not getattr(user, "is_authenticated", False):
+            return False
+        return bool(user.is_staff or user.is_superuser or obj.owner_user_id == user.id)
 
     class Meta:
         model = KnowledgeBase
         fields = "__all__"
         read_only_fields = ["file_count", "app_count", "recall_count", "created_at", "updated_at", "archived_at"]
 
-
 class KnowledgeFileSerializer(serializers.ModelSerializer):
     uploaded_by_username = serializers.SerializerMethodField()
+    download_url = serializers.SerializerMethodField()
 
     def get_uploaded_by_username(self, obj):
         return None
+
+    def get_download_url(self, obj):
+        return f"/api/knowledge/files/{obj.id}/download/"
 
     class Meta:
         model = KnowledgeFile

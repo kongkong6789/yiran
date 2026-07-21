@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import hashlib
 import json
@@ -23,6 +24,8 @@ from django.db import close_old_connections, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.skills.cos_storage import cos_enabled, fetch_object_bytes, upload_media_bytes
+
 from .models import KnowledgeBase, KnowledgeChunkRef, KnowledgeEmbedding, KnowledgeFile, KnowledgeIngestJob
 
 
@@ -39,7 +42,9 @@ EXTENSION_TO_FILE_TYPE = {
 }
 
 TEXT_FILE_TYPES = {"docx", "html", "json", "markdown", "txt"}
-TABLE_FILE_TYPES = {"csv", "xlsx"}
+TABLE_FILE_TYPES = {"csv", "xlsx", "csv_markdown", "xlsx_markdown"}
+TABLE_SOURCE_FILE_SUFFIXES = {".csv", ".xls", ".xlsx"}
+TABLE_SOURCE_TYPES = {"csv", "xls", "xlsx"}
 
 KEYWORD_STOPWORDS = {
     "and",
@@ -89,8 +94,8 @@ def extract_chunk_keywords(text: str, *, limit: int = 12) -> list[str]:
         scores[normalized] = scores.get(normalized, 0) + 1 + length_bonus - digit_penalty
     ordered = sorted(scores, key=lambda item: (-scores[item], first_seen[item], item))
     return ordered[:limit]
-DEFAULT_CHUNK_SIZE = 1200
-DEFAULT_CHUNK_OVERLAP = 160
+DEFAULT_CHUNK_SIZE = 1024
+DEFAULT_CHUNK_OVERLAP = 50
 MAX_TABLE_ROWS = 5000
 
 
@@ -153,24 +158,49 @@ def resolve_storage_path(path: str) -> Path:
     return storage_root().joinpath(*parts)
 
 
-def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes]:
-    storage_path = relative_storage_path(knowledge_base_id, file_id, filename)
-    destination = resolve_storage_path(storage_path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
+def cos_storage_path(bucket: str, key: str) -> str:
+    return f"cos://{bucket}/{key.lstrip('/')}"
+
+
+def parse_cos_storage_path(storage_path: str) -> tuple[str, str] | None:
+    if not storage_path.startswith("cos://"):
+        return None
+    bucket_and_key = storage_path.removeprefix("cos://")
+    bucket, _, key = bucket_and_key.partition("/")
+    if not bucket or not key:
+        raise TraditionalRagError("Invalid COS storage path.", "storage_error")
+    return bucket, key
+
+
+def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes, dict]:
+    relative_path = relative_storage_path(knowledge_base_id, file_id, filename)
     content = bytearray()
-    with destination.open("wb") as handle:
-        for chunk in upload.chunks():
-            handle.write(chunk)
-            digest.update(chunk)
-            content.extend(chunk)
+    for chunk in upload.chunks():
+        content.extend(chunk)
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
-    return storage_path, bytes(content)
+    data = bytes(content)
+    if cos_enabled():
+        media = upload_media_bytes(relative_path, data, content_type=getattr(upload, "content_type", "") or None)
+        return cos_storage_path(media["bucket"], media["cos_key"]), data, {
+            "storage_backend": "cos",
+            "cos_bucket": media["bucket"],
+            "cos_key": media["cos_key"],
+            "cos_url": media["cos_url"],
+        }
+
+    destination = resolve_storage_path(relative_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return relative_path, data, {"storage_backend": "local"}
 
 
 def read_stored_file(storage_path: str) -> bytes:
-    content = resolve_storage_path(storage_path).read_bytes()
+    cos_ref = parse_cos_storage_path(storage_path)
+    if cos_ref:
+        content = fetch_object_bytes(*cos_ref)
+    else:
+        content = resolve_storage_path(storage_path).read_bytes()
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
     return content
@@ -203,10 +233,8 @@ class _TextHTMLParser(HTMLParser):
     def text(self) -> str:
         return unescape(" ".join(self._parts))
 
-
 def normalize_text(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
-
 
 def segments_from_text(text: str, *, parser: str) -> ParsedDocument:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -230,6 +258,332 @@ def segments_from_text(text: str, *, parser: str) -> ParsedDocument:
 def parse_text_bytes(content: bytes, *, parser: str) -> ParsedDocument:
     return segments_from_text(content.decode("utf-8", errors="replace"), parser=parser)
 
+def parse_frontmatter_scalar(value: str) -> object:
+    stripped = value.strip()
+    if stripped.startswith(("'", '"')) and stripped.endswith(("'", '"')) and len(stripped) >= 2:
+        return stripped[1:-1]
+    lowered = stripped.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if re.fullmatch(r"[-+]?\d+", stripped):
+        try:
+            return int(stripped)
+        except ValueError:
+            return stripped
+    return stripped
+
+
+def split_markdown_frontmatter(text: str) -> tuple[dict, str]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.startswith("---\n"):
+        return {}, normalized
+    end_match = re.search(r"\n---\s*(?:\n|$)", normalized[4:])
+    if not end_match:
+        return {}, normalized
+    frontmatter_text = normalized[4 : 4 + end_match.start()]
+    body = normalized[4 + end_match.end() :]
+    metadata: dict[str, object] = {}
+    current_list_key: str | None = None
+    for raw_line in frontmatter_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        list_match = re.match(r"^-\s*(.+)$", line)
+        if list_match and current_list_key:
+            metadata.setdefault(current_list_key, []).append(parse_frontmatter_scalar(list_match.group(1)))
+            continue
+        key_match = re.match(r"^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$", line)
+        if not key_match:
+            current_list_key = None
+            continue
+        key, value = key_match.group(1), key_match.group(2)
+        if value == "":
+            metadata[key] = []
+            current_list_key = key
+        else:
+            metadata[key] = parse_frontmatter_scalar(value)
+            current_list_key = None
+    return metadata, body
+
+
+def markdown_frontmatter_table_type(metadata: dict) -> str | None:
+    source_type = str(metadata.get("source_type") or "").strip().lower()
+    if source_type in TABLE_SOURCE_TYPES:
+        return "csv" if source_type == "csv" else "xlsx"
+    source_file = str(metadata.get("source_file") or "").strip()
+    suffix = PurePath(source_file).suffix.lower()
+    if suffix in TABLE_SOURCE_FILE_SUFFIXES:
+        return "csv" if suffix == ".csv" else "xlsx"
+    return None
+
+
+def parse_markdown_table_bytes(content: bytes) -> ParsedDocument:
+    text = content.decode("utf-8", errors="replace")
+    frontmatter, body = split_markdown_frontmatter(text)
+    table_type = markdown_frontmatter_table_type(frontmatter)
+    if not table_type:
+        return segments_from_text(text, parser="markdown")
+    rows, table_metadata = markdown_table_rows(body, frontmatter, table_type)
+    if not rows:
+        return segments_from_text(body, parser="markdown")
+    joined = "\n\n".join(segment.text for segment in rows)
+    parser = f"{table_type}_markdown"
+    return ParsedDocument(
+        text=joined,
+        segments=rows,
+        metadata={
+            "parser": parser,
+            "source_parser": "markdown",
+            "table_source_type": table_type,
+            "frontmatter": frontmatter,
+            "table_count": len(table_metadata),
+            "row_count": len(rows),
+            "char_count": len(joined),
+            "tables": table_metadata,
+        },
+    )
+
+
+def markdown_table_rows(body: str, frontmatter: dict, table_type: str) -> tuple[list[ParsedSegment], list[dict]]:
+    pipe_rows = markdown_pipe_table_rows(body)
+    if pipe_rows:
+        return markdown_raw_rows_to_segments(pipe_rows, frontmatter, table_type, "markdown_pipe_table")
+    vertical_rows, vertical_metadata = markdown_vertical_table_rows(body, frontmatter)
+    if vertical_rows:
+        return markdown_raw_rows_to_segments(vertical_rows, frontmatter, table_type, "markdown_vertical_table", vertical_metadata)
+    flattened_rows = markdown_flattened_table_rows(body, frontmatter)
+    if flattened_rows:
+        return markdown_raw_rows_to_segments(flattened_rows, frontmatter, table_type, "markdown_flattened_table")
+    block_rows = markdown_block_table_rows(body, frontmatter)
+    if block_rows:
+        return markdown_raw_rows_to_segments(block_rows, frontmatter, table_type, "markdown_block_table")
+    return [], []
+
+
+def markdown_raw_rows_to_segments(raw_rows: list[list[object]], frontmatter: dict, table_type: str, extraction_method: str, extra_metadata: dict | None = None) -> tuple[list[ParsedSegment], list[dict]]:
+    parser = f"{table_type}_markdown"
+    rows, metadata = table_rows_to_segments(
+        str(frontmatter.get("worksheets") or frontmatter.get("title") or "Markdown"),
+        raw_rows,
+        {
+            "parser": parser,
+            "source_parser": "markdown",
+            "table_source_type": table_type,
+            "table_extraction_method": extraction_method,
+            "source_file": frontmatter.get("source_file"),
+            "source_type": frontmatter.get("source_type"),
+            **(extra_metadata or {}),
+        },
+    )
+    return rows, metadata
+
+
+def markdown_pipe_table_rows(body: str) -> list[list[object]]:
+    rows: list[list[object]] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if "|" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            continue
+        rows.append(cells)
+    return rows if len(rows) >= 2 else []
+
+
+
+def markdown_vertical_table_rows(body: str, frontmatter: dict) -> tuple[list[list[object]], dict]:
+    lines = markdown_data_lines(body, frontmatter, keep_empty=True)
+    first_data_index = next((index for index, line in enumerate(lines) if looks_like_date(line)), None)
+    diagnostics: dict[str, object] = {
+        "table_parser": "single_pass_state_machine",
+        "source_line_count": len(lines),
+        "anomaly_count": 0,
+        "anomalies": [],
+    }
+    if first_data_index is None or first_data_index < 1:
+        return [], diagnostics
+    headers = [line for line in lines[:first_data_index] if line]
+    headers = trim_table_title(headers, frontmatter)
+    diagnostics["expected_columns"] = len(headers)
+    diagnostics["headers"] = headers
+    if len(headers) < 2 or len(headers) > 80 or not looks_like_date_header(headers[0]):
+        add_table_anomaly(diagnostics, "invalid_header", 1, f"Unable to identify vertical table headers before first data row at line {first_data_index + 1}.")
+        return [], diagnostics
+
+    rows: list[list[object]] = [headers]
+    current_values: list[str] = []
+    current_start_line: int | None = None
+
+    def flush_current(end_line: int) -> None:
+        nonlocal current_values, current_start_line
+        if not current_values:
+            return
+        values = trim_trailing_empty_cells(current_values)
+        if not values:
+            current_values = []
+            current_start_line = None
+            return
+        if len(values) < len(headers):
+            add_table_anomaly(
+                diagnostics,
+                "missing_cells",
+                current_start_line or end_line,
+                f"Expected {len(headers)} cells, got {len(values)} cells; padded missing trailing cells.",
+                {"expected": len(headers), "actual": len(values)},
+            )
+            values.extend([""] * (len(headers) - len(values)))
+        elif len(values) > len(headers):
+            extra_values = values[len(headers) - 1 :]
+            add_table_anomaly(
+                diagnostics,
+                "extra_cells",
+                current_start_line or end_line,
+                f"Expected {len(headers)} cells, got {len(values)} cells; merged overflow into the last column.",
+                {"expected": len(headers), "actual": len(values), "overflow_count": len(values) - len(headers)},
+            )
+            values = values[: len(headers) - 1] + [" / ".join(value for value in extra_values if value)]
+        rows.append(values)
+        current_values = []
+        current_start_line = None
+
+    for index, line in enumerate(lines[first_data_index:], start=first_data_index):
+        line_number = index + 1
+        if looks_like_date(line):
+            flush_current(line_number - 1)
+            current_values = [line]
+            current_start_line = line_number
+            continue
+        if current_start_line is None:
+            if line:
+                add_table_anomaly(diagnostics, "stray_value", line_number, "Ignored non-empty value before the first data row.", {"value": line[:120]})
+            continue
+        current_values.append(line)
+    flush_current(len(lines))
+
+    diagnostics["parsed_rows"] = max(len(rows) - 1, 0)
+    return (rows if len(rows) >= 2 else []), diagnostics
+
+
+
+def add_table_anomaly(diagnostics: dict, kind: str, line: int, message: str, extra: dict | None = None) -> None:
+    diagnostics["anomaly_count"] = int(diagnostics.get("anomaly_count") or 0) + 1
+    anomalies = diagnostics.setdefault("anomalies", [])
+    if isinstance(anomalies, list) and len(anomalies) < 50:
+        item = {"kind": kind, "line": line, "message": message}
+        if extra:
+            item.update(extra)
+        anomalies.append(item)
+
+def trim_table_title(headers: list[str], frontmatter: dict) -> list[str]:
+    if not headers:
+        return headers
+    title = str(frontmatter.get("title") or "").strip()
+    source_file_stem = PurePath(str(frontmatter.get("source_file") or "")).stem
+    if len(headers) > 1 and headers[0] in {title, source_file_stem}:
+        return headers[1:]
+    if len(headers) > 1 and not looks_like_date_header(headers[0]) and looks_like_date_header(headers[1]):
+        return headers[1:]
+    return headers
+
+
+def trim_trailing_empty_cells(values: list[str]) -> list[str]:
+    result = list(values)
+    while result and result[-1] == "":
+        result.pop()
+    return result
+
+
+def looks_like_date_header(value: str) -> bool:
+    normalized = normalize_text(value).lower()
+    return normalized in {"日期", "date", "成交日期", "时间", "datetime"} or "日期" in normalized
+
+def markdown_flattened_table_rows(body: str, frontmatter: dict) -> list[list[object]]:
+    lines = markdown_data_lines(body, frontmatter)
+    if len(lines) < 4:
+        return []
+    data_start = infer_flattened_data_start(lines)
+    if data_start is None or data_start < 1:
+        return []
+    headers = lines[:data_start]
+    if len(headers) > 80:
+        return []
+    data_lines = lines[data_start:]
+    row_count = len(data_lines) // len(headers)
+    if row_count < 1:
+        return []
+    usable = row_count * len(headers)
+    if usable < len(data_lines) * 0.85:
+        return []
+    rows = [headers]
+    rows.extend(data_lines[index : index + len(headers)] for index in range(0, usable, len(headers)))
+    return rows
+
+
+def markdown_block_table_rows(body: str, frontmatter: dict) -> list[list[object]]:
+    blocks = [
+        normalize_text(block)
+        for block in re.split(r"\n\s*\n", body.replace("\r\n", "\n").replace("\r", "\n"))
+        if normalize_text(block)
+    ]
+    title = str(frontmatter.get("title") or "").strip()
+    if title and blocks and blocks[0] == title:
+        blocks = blocks[1:]
+    if len(blocks) < 2:
+        return []
+    return [["content"], *[[block] for block in blocks]]
+
+
+def markdown_data_lines(body: str, frontmatter: dict, *, keep_empty: bool = False) -> list[str]:
+    lines: list[str] = []
+    for raw_line in body.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        line = normalize_text(raw_line.strip().strip("|"))
+        if line.startswith("#"):
+            continue
+        if line and re.fullmatch(r":?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*", line):
+            continue
+        if line or keep_empty:
+            lines.append(line)
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def infer_flattened_data_start(lines: list[str]) -> int | None:
+    best_index: int | None = None
+    best_score = -1.0
+    for index in range(1, min(len(lines), 80)):
+        remaining = len(lines) - index
+        if remaining < index:
+            continue
+        first = lines[index]
+        second = lines[index + 1] if index + 1 < len(lines) else ""
+        row_count = remaining / index
+        remainder_ratio = (remaining % index) / index
+        score = 0.0
+        if looks_like_table_data_start(first):
+            score += 2.0
+        if looks_like_date(second):
+            score += 1.5
+        if row_count >= 2:
+            score += 1.0
+        score -= remainder_ratio
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index if best_score >= 2.0 else None
+
+
+def looks_like_table_data_start(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{1,12}", value) or looks_like_date(value))
+
+
+def looks_like_date(value: str) -> bool:
+    return bool(re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", value))
 
 def parse_html_bytes(content: bytes) -> ParsedDocument:
     parser = _TextHTMLParser()
@@ -380,20 +734,18 @@ def table_rows_to_segments(sheet_name: str, raw_rows: list[list[object]], metada
         if not present:
             continue
         text = " | ".join(f"{key}: {value}" for key, value in present.items())
-        segments.append(
-            ParsedSegment(
-                text,
-                {
-                    "parser": metadata.get("parser"),
-                    "kind": "table_row",
-                    "sheet_name": sheet_name,
-                    "row_index": row_index,
-                    "values": present,
-                },
-            )
-        )
-    if len(segments) > MAX_TABLE_ROWS:
-        raise TraditionalRagError(f"Table row count exceeds {MAX_TABLE_ROWS}.", "table_error")
+        segment_metadata = {
+            "parser": metadata.get("parser"),
+            "kind": "table_row",
+            "sheet_name": sheet_name,
+            "row_index": row_index,
+            "values": present,
+            "columns": headers,
+        }
+        for key in ("source_parser", "table_source_type", "table_extraction_method", "source_file", "source_type"):
+            if metadata.get(key) is not None:
+                segment_metadata[key] = metadata[key]
+        segments.append(ParsedSegment(text, segment_metadata))
     return segments, [{"sheet_name": sheet_name, "columns": headers, "row_count": len(segments), **metadata}]
 
 
@@ -531,7 +883,7 @@ def parse_document(content: bytes, file_type: str) -> ParsedDocument:
     if file_type == "json":
         return parse_json_bytes(content)
     if file_type == "markdown":
-        return parse_text_bytes(content, parser="markdown")
+        return parse_markdown_table_bytes(content)
     if file_type == "txt":
         return parse_text_bytes(content, parser="txt")
     if file_type in TABLE_FILE_TYPES:
@@ -556,10 +908,129 @@ def reference_kinds(references: list[dict]) -> list[str]:
     return kinds
 
 
+def table_segment_headers(segment: ParsedSegment) -> list[str]:
+    columns = segment.metadata.get("columns")
+    if isinstance(columns, list):
+        return [str(column) for column in columns if str(column)]
+    values = segment.metadata.get("values")
+    if isinstance(values, dict):
+        return [str(key) for key in values.keys()]
+    return []
+
+
+def compact_table_segment_text(segment: ParsedSegment, headers: list[str]) -> str:
+    values = segment.metadata.get("values")
+    if not isinstance(values, dict) or not headers:
+        return segment.text.strip()
+    row_values = [str(values.get(header, "")) for header in headers]
+    while row_values and row_values[-1] == "":
+        row_values.pop()
+    return " | ".join(row_values).strip()
+
+
+def split_table_into_compact_chunks(parsed: ParsedDocument, *, max_chars: int) -> list[tuple[str, dict]]:
+    chunks: list[tuple[str, dict]] = []
+    current_parts: list[str] = []
+    current_references: list[dict] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_chars = 0
+    current_headers: list[str] = []
+    current_sheet_name: str | None = None
+
+    def header_text(headers: list[str]) -> str:
+        return "字段: " + " | ".join(headers) if headers else ""
+
+    def flush() -> None:
+        nonlocal current_parts, current_references, current_start, current_end, current_chars, current_headers, current_sheet_name
+        if not current_parts:
+            return
+        prefix = header_text(current_headers)
+        text = "\n".join(([prefix] if prefix else []) + current_parts).strip()
+        if text:
+            chunks.append(
+                (
+                    text,
+                    {
+                        "segment_start": current_start,
+                        "segment_end": current_end,
+                        "segments": current_references,
+                        "reference_kinds": reference_kinds(current_references),
+                        "char_count": len(text),
+                        "chunking_strategy": "table_compact_chars",
+                        "columns": current_headers,
+                        "sheet_name": current_sheet_name,
+                    },
+                )
+            )
+        current_parts = []
+        current_references = []
+        current_start = None
+        current_end = None
+        current_chars = 0
+        current_headers = []
+        current_sheet_name = None
+
+    for segment_index, segment in enumerate(parsed.segments):
+        if segment.metadata.get("kind") != "table_row":
+            flush()
+            text = segment.text.strip()
+            if text:
+                references = [segment_reference(segment_index, segment.metadata)]
+                chunks.append((text[:max_chars], {"segment_start": segment_index, "segment_end": segment_index, "segments": references, "reference_kinds": reference_kinds(references), "char_count": min(len(text), max_chars)}))
+            continue
+        headers = table_segment_headers(segment)
+        sheet_name = str(segment.metadata.get("sheet_name") or "") or None
+        row_text = compact_table_segment_text(segment, headers)
+        if not row_text:
+            continue
+        prefix_len = len(header_text(headers)) + 1 if headers else 0
+        projected = current_chars + len(row_text) + (1 if current_parts else prefix_len)
+        if current_parts and (headers != current_headers or sheet_name != current_sheet_name or projected > max_chars):
+            flush()
+        if current_start is None:
+            current_start = segment_index
+            current_headers = headers
+            current_sheet_name = sheet_name
+            current_chars = prefix_len
+        current_end = segment_index
+        current_parts.append(row_text)
+        current_references.append(segment_reference(segment_index, segment.metadata))
+        current_chars += len(row_text) + (1 if len(current_parts) > 1 else 0)
+    flush()
+    if not chunks:
+        raise TraditionalRagError("No chunks generated from file.", "empty_chunks")
+    return chunks
+
+
 def split_into_chunks(parsed: ParsedDocument, *, max_chars: int = DEFAULT_CHUNK_SIZE, overlap_chars: int = DEFAULT_CHUNK_OVERLAP) -> list[tuple[str, dict]]:
     max_chars = max(1, max_chars)
     overlap_chars = max(0, min(overlap_chars, max_chars - 1))
     chunks: list[tuple[str, dict]] = []
+    parser = parsed.metadata.get("parser")
+    if parser in TABLE_FILE_TYPES and not bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)):
+        return split_table_into_compact_chunks(parsed, max_chars=max_chars)
+    if parser in TABLE_FILE_TYPES and bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)):
+        for segment_index, segment in enumerate(parsed.segments):
+            text = segment.text.strip()
+            if not text:
+                continue
+            references = [segment_reference(segment_index, segment.metadata)]
+            metadata = dict(segment.metadata)
+            metadata.update(
+                {
+                    "segment_start": segment_index,
+                    "segment_end": segment_index,
+                    "segments": references,
+                    "reference_kinds": reference_kinds(references),
+                    "char_count": len(text),
+                    "chunking_strategy": "table_row",
+                }
+            )
+            chunks.append((text, metadata))
+        if not chunks:
+            raise TraditionalRagError("No chunks generated from file.", "empty_chunks")
+        return chunks
     current_parts: list[str] = []
     current_references: list[dict] = []
     current_start: int | None = None
@@ -642,6 +1113,9 @@ def embedding_settings() -> dict | None:
     api_format = (getattr(settings, "EMBEDDING_API_FORMAT", "local-inputs") or "local-inputs").strip().lower()
     normalize = bool(getattr(settings, "EMBEDDING_NORMALIZE", True))
     pooling = (getattr(settings, "EMBEDDING_POOLING", "mean") or "mean").strip()
+    dimensions = max(0, int(getattr(settings, "EMBEDDING_DIMENSIONS", 0) or 0))
+    document_instruction = (getattr(settings, "EMBEDDING_DOCUMENT_INSTRUCTION", "") or "").strip()
+    query_instruction = (getattr(settings, "EMBEDDING_QUERY_INSTRUCTION", "") or "").strip()
     if not base_url:
         return None
     if api_format == "openai" and (not api_key or not model):
@@ -656,6 +1130,9 @@ def embedding_settings() -> dict | None:
         "api_format": api_format,
         "normalize": normalize,
         "pooling": pooling,
+        "dimensions": dimensions,
+        "document_instruction": document_instruction,
+        "query_instruction": query_instruction,
     }
 
 
@@ -672,13 +1149,55 @@ def embedding_endpoint(base_url: str) -> str:
 
 def build_embedding_payload(config: dict, texts: list[str]) -> dict:
     if config["api_format"] == "openai":
-        return {"model": config["model"], "input": texts}
-    return {
+        payload = {"model": config["model"], "input": texts}
+        if config.get("dimensions"):
+            payload["dimensions"] = config["dimensions"]
+        return payload
+    payload = {
         "inputs": [{"text": text} for text in texts],
         "normalize": config["normalize"],
         "pooling": config["pooling"],
     }
+    if config.get("dimensions"):
+        payload["dimensions"] = config["dimensions"]
+    return payload
 
+
+def prepare_embedding_texts(texts: list[str], config: dict, *, input_type: str, max_text_chars: int) -> tuple[list[str], dict]:
+    instruction = config.get("query_instruction") if input_type == "query" else config.get("document_instruction")
+    prefix = f"{instruction}\n" if instruction else ""
+    prepared: list[str] = []
+    truncated_count = 0
+    max_original_chars = 0
+    max_prepared_chars = 0
+    for text in texts:
+        raw = text or ""
+        max_original_chars = max(max_original_chars, len(raw))
+        budget = max_text_chars - len(prefix) if max_text_chars > 0 else 0
+        if max_text_chars > 0 and budget <= 0:
+            clipped = ""
+            truncated = bool(raw)
+        elif max_text_chars > 0 and len(raw) > budget:
+            clipped = raw[:budget]
+            truncated = True
+        else:
+            clipped = raw
+            truncated = False
+        value = f"{prefix}{clipped}" if prefix else clipped
+        if max_text_chars > 0 and len(value) > max_text_chars:
+            value = value[:max_text_chars]
+            truncated = True
+        if truncated:
+            truncated_count += 1
+        max_prepared_chars = max(max_prepared_chars, len(value))
+        prepared.append(value)
+    return prepared, {
+        "input_type": input_type,
+        "instruction_applied": bool(prefix),
+        "truncated_count": truncated_count,
+        "max_original_chars": max_original_chars,
+        "max_prepared_chars": max_prepared_chars,
+    }
 
 def extract_embedding_vectors(result: object, expected_count: int) -> list[list[float]]:
     data: object
@@ -704,7 +1223,26 @@ def extract_embedding_vectors(result: object, expected_count: int) -> list[list[
     return vectors
 
 
-def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[list[float]], dict]:
+def iter_embedding_batches(texts: list[str], *, batch_size: int, max_batch_chars: int) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    for text in texts:
+        text_chars = len(text or "")
+        would_exceed_count = len(current) >= batch_size
+        would_exceed_chars = bool(current) and max_batch_chars > 0 and current_chars + text_chars > max_batch_chars
+        if would_exceed_count or would_exceed_chars:
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(text)
+        current_chars += text_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def embed_texts(texts: list[str], *, fail_on_error: bool = True, input_type: str = "document") -> tuple[list[list[float]], dict]:
     config = embedding_settings()
     if config is None:
         return [], {"status": "not_configured"}
@@ -725,16 +1263,24 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
         "EMBEDDING_TIMEOUT_SECONDS" if fail_on_error else "EMBEDDING_OPTIONAL_TIMEOUT_SECONDS",
         30 if fail_on_error else 90,
     )))
-    batch_size = max(1, int(getattr(settings, "EMBEDDING_BATCH_SIZE", 4)))
-    max_text_chars = max(1, int(getattr(settings, "EMBEDDING_MAX_TEXT_CHARS", 300)))
-    normalized_texts = [(text or "")[:max_text_chars] for text in texts]
+    batch_size = max(1, int(getattr(settings, "EMBEDDING_BATCH_SIZE", 64)))
+    max_text_chars = max(0, int(getattr(settings, "EMBEDDING_MAX_TEXT_CHARS", 8192)))
+    max_batch_chars = max(0, int(getattr(settings, "EMBEDDING_MAX_BATCH_CHARS", 60000)))
+    request_concurrency = max(1, int(getattr(settings, "EMBEDDING_REQUEST_CONCURRENCY", 4)))
+    normalized_texts, input_metadata = prepare_embedding_texts(
+        texts,
+        config,
+        input_type=input_type,
+        max_text_chars=max_text_chars,
+    )
     endpoint = embedding_endpoint(config["base_url"])
     all_vectors: list[list[float]] = []
     last_error: Exception | None = None
+    batches = iter_embedding_batches(normalized_texts, batch_size=batch_size, max_batch_chars=max_batch_chars)
 
-    for start_index in range(0, len(normalized_texts), batch_size):
-        batch = normalized_texts[start_index:start_index + batch_size]
+    def request_batch(batch: list[str]) -> list[list[float]]:
         payload = json.dumps(build_embedding_payload(config, batch), ensure_ascii=False).encode("utf-8")
+        batch_last_error: Exception | None = None
         for attempt in range(attempts):
             request = urllib.request.Request(
                 endpoint,
@@ -745,33 +1291,54 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
             try:
                 with opener.open(request, timeout=timeout_seconds) as response:
                     result = json.loads(response.read().decode("utf-8"))
-                all_vectors.extend(extract_embedding_vectors(result, len(batch)))
-                last_error = None
-                break
+                return extract_embedding_vectors(result, len(batch))
             except urllib.error.HTTPError as error:
                 detail = error.read().decode("utf-8", errors="replace")
                 raise TraditionalRagError(f"Embedding API HTTP {error.code}: {detail}", "embedding_error") from error
             except (urllib.error.URLError, TimeoutError, OSError) as error:
-                last_error = error
+                batch_last_error = error
                 if attempt < attempts - 1:
                     time.sleep(min(1.0 * (attempt + 1), 3.0))
                     continue
             except json.JSONDecodeError as error:
                 raise TraditionalRagError("Embedding API returned invalid JSON.", "embedding_error") from error
-        if last_error is not None:
-            message = f"Embedding API network error: {last_error}"
-            if fail_on_error:
-                raise TraditionalRagError(message, "embedding_error")
-            return [], {
-                "status": "unavailable",
-                "error": "embedding_error",
-                "message": message,
-                "provider": config["api_format"],
-                "model": config["model"],
-                "endpoint": endpoint,
-                "batch_size": batch_size,
-                "max_text_chars": max_text_chars,
-            }
+        raise TraditionalRagError(f"Embedding API network error: {batch_last_error}", "embedding_error")
+
+    try:
+        if request_concurrency == 1 or len(batches) <= 1:
+            batch_vectors = [request_batch(batch) for batch in batches]
+        else:
+            workers = min(request_concurrency, len(batches))
+            batch_vectors = [None] * len(batches)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_index = {executor.submit(request_batch, batch): index for index, batch in enumerate(batches)}
+                for future in concurrent.futures.as_completed(future_to_index):
+                    batch_vectors[future_to_index[future]] = future.result()
+        for vectors in batch_vectors:
+            all_vectors.extend(vectors or [])
+        last_error = None
+    except TraditionalRagError as error:
+        last_error = error
+
+    if last_error is not None:
+        message = last_error.message if isinstance(last_error, TraditionalRagError) else f"Embedding API network error: {last_error}"
+        if fail_on_error:
+            raise last_error if isinstance(last_error, TraditionalRagError) else TraditionalRagError(message, "embedding_error")
+        return [], {
+            "status": "unavailable",
+            "error": "embedding_error",
+            "message": message,
+            "provider": config["api_format"],
+            "model": config["model"],
+            "endpoint": endpoint,
+            "batch_size": batch_size,
+            "max_text_chars": max_text_chars,
+            "max_batch_chars": max_batch_chars,
+            "batch_count": len(batches),
+            "request_concurrency": request_concurrency,
+            "dimensions_requested": config.get("dimensions") or None,
+            **input_metadata,
+        }
 
     if len(all_vectors) != len(texts):
         raise TraditionalRagError("Embedding API returned an unexpected number of vectors.", "embedding_error")
@@ -784,6 +1351,11 @@ def embed_texts(texts: list[str], *, fail_on_error: bool = True) -> tuple[list[l
         "endpoint": endpoint,
         "batch_size": batch_size,
         "max_text_chars": max_text_chars,
+        "max_batch_chars": max_batch_chars,
+        "batch_count": len(batches),
+        "request_concurrency": request_concurrency,
+        "dimensions_requested": config.get("dimensions") or None,
+        **input_metadata,
     }
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -796,7 +1368,7 @@ def semantic_search(*, query: str, knowledge_base_id: int | None = None, limit: 
     normalized = query.strip()
     if not normalized:
         raise TraditionalRagError("Search query cannot be empty.", "invalid_input")
-    vectors, metadata = embed_texts([normalized])
+    vectors, metadata = embed_texts([normalized], input_type="query")
     if metadata.get("status") != "ready" or not vectors:
         raise TraditionalRagError("Embedding is not configured, semantic search is unavailable.", "config_error")
     embeddings = KnowledgeEmbedding.objects.select_related("chunk", "chunk__file", "chunk__file__knowledge_base").filter(
@@ -848,7 +1420,7 @@ def _run_ingest_pipeline(
     job.progress = 80
     job.save(update_fields=["status", "stage", "progress", "updated_at"])
 
-    vectors, embedding_metadata = embed_texts([text for text, _ in chunk_items], fail_on_error=False)
+    vectors, embedding_metadata = embed_texts([text for text, _ in chunk_items], fail_on_error=False, input_type="document")
     knowledge_db = file._state.db or "knowledge"
     with transaction.atomic(using=knowledge_db):
         file.file_type = file_type
@@ -864,6 +1436,7 @@ def _run_ingest_pipeline(
             "chunk_config": {
                 "max_chars": chunk_size or DEFAULT_CHUNK_SIZE,
                 "overlap_chars": chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+                "table_row_chunking": bool(getattr(settings, "KNOWLEDGE_TABLE_ROW_CHUNKING", True)),
             },
             "embedding": embedding_metadata,
         }
@@ -1000,7 +1573,7 @@ def enqueue_ingest_upload(
         created_by=None,
     )
     try:
-        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
         file.storage_path = storage_path
@@ -1009,6 +1582,7 @@ def enqueue_ingest_upload(
         file.metadata = {
             **(file.metadata or {}),
             "content_hash": digest,
+            **storage_metadata,
             "content_type": getattr(upload, "content_type", ""),
             "file_size": getattr(upload, "size", len(content)),
             "chunk_config": {
@@ -1058,7 +1632,7 @@ def ingest_upload(
         started_at=timezone.now(),
     )
     try:
-        storage_path, content = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
         file.storage_path = storage_path
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
@@ -1070,6 +1644,7 @@ def ingest_upload(
             digest=digest,
             content_metadata={
                 "content_type": getattr(upload, "content_type", ""),
+                **storage_metadata,
                 "file_size": getattr(upload, "size", len(content)),
                 "ingest_mode": "traditional-rag",
             },

@@ -188,7 +188,10 @@ def todo_members(request):
             "id": membership.user_id,
             "name": contact.name if contact else _display_name(membership.user),
             "department": contact.department if contact else "",
-            "avatar": contact.avatar_url if contact else "",
+            # This endpoint represents platform members. Their platform profile
+            # avatar is authoritative; WeCom-only contacts are returned by the
+            # separate contacts endpoint with their WeCom avatar.
+            "avatar": getattr(getattr(membership.user, "settings", None), "avatar_url", "") or "",
             "bound": bool(binding),
         })
     return Response({"ok": True, "results": results})

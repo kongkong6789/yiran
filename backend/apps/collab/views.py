@@ -26,7 +26,7 @@ from apps.core.attachments import (
     resolve_attachment_path_any,
 )
 
-from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk, _HARD_RISK_RE
+from .analyze import analyze_room_messages, apply_message_risk_flags, _HARD_RISK_RE
 from .draft_coach import analyze_draft
 from .interject import maybe_interject
 from .mentions import (
@@ -34,6 +34,7 @@ from .mentions import (
     XIAOCE_BOT_USERNAME,
     collab_skill_hits,
     get_collab_ai_user,
+    get_collab_bot_user,
     get_xiaoce_bot_user,
     has_ai_mention,
     is_xiaoce_bot_user,
@@ -622,7 +623,9 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
         draft_reply=data.get("draft_reply") or "",
     )
     apply_message_risk_flags(room, data, fallback_messages=rows)
-    room.risk_level = max_risk(room.risk_level, data["risk_level"])
+    # room.risk_level 表示「当前」风险，不是历史最高风险。
+    # 历史告警仍由 CollabInsight 保留；正常新消息应让会话恢复为绿色。
+    room.risk_level = data["risk_level"]
     if data.get("analysis"):
         room.summary = data["analysis"][:500]
     room.save(update_fields=["risk_level", "summary", "updated_at"])
@@ -929,10 +932,16 @@ def room_list(request):
     if request.method == "POST":
         # 兼容：peer_username 单聊；peer_usernames 群聊；room_kind 可显式指定
         peer_username = str(request.data.get("peer_username") or "").strip()
+        peer_bot_id = str(request.data.get("peer_bot_id") or "").strip()
         raw_peers = request.data.get("peer_usernames") or []
         if isinstance(raw_peers, str):
             raw_peers = [x.strip() for x in raw_peers.split(",") if x.strip()]
         peer_usernames = [str(x).strip() for x in raw_peers if str(x).strip()]
+        if peer_bot_id:
+            try:
+                peer_username = get_collab_bot_user(peer_bot_id).username
+            except ValueError as exc:
+                return Response({"ok": False, "error": str(exc)}, status=404)
         if peer_username and peer_username not in peer_usernames:
             peer_usernames = [peer_username, *peer_usernames]
 
@@ -1095,10 +1104,14 @@ def room_mark_read(request, room_id):
     """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
-    if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
+    participant = CollabParticipant.objects.filter(room=room, user=request.user).only(
+        "last_read_message_id",
+    ).first()
+    if participant is None:
         if not _is_admin(request.user):
             return Response({"ok": False, "error": "无权访问该会话"}, status=403)
         return Response({"ok": True, "unread_count": 0, "last_read_message_id": 0})
+    previous_id = int(participant.last_read_message_id or 0)
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
     last_id = _mark_room_read(request.user, room, up_to_id=up_to)
@@ -1132,6 +1145,15 @@ def room_mark_read(request, room_id):
             "active_duration_ms": session.active_duration_ms,
             "ended": bool(session.ended_at),
         }
+    if int(last_id or 0) > previous_id:
+        ws_push.publish_sync(
+            room.id,
+            read_receipts=[{
+                "user_id": request.user.id,
+                "last_read_message_id": int(last_id or 0),
+                "read_at": timezone.now().isoformat(),
+            }],
+        )
     return Response({
         "ok": True,
         "last_read_message_id": last_id,

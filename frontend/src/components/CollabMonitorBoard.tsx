@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Empty, Select, Tag, Tooltip, Typography } from "antd";
+import { Button, Select, Tag, Tooltip, Typography } from "antd";
 import {
   BarChartOutlined,
   BulbOutlined,
@@ -105,16 +105,29 @@ export default function CollabMonitorBoard({
 
   if (!room) {
     return (
-      <aside className="collab-ai">
+      <aside className="collab-ai collab-ai--empty">
         <div className="collab-ai-head">
           <div>
             <Typography.Text strong>
               <FileTextOutlined /> 智能纪要
             </Typography.Text>
-            <div className="collab-ai-sub">选择会话后，可智能判断总结范围</div>
+            <div className="collab-ai-sub">选择会话后，AI 会判断总结范围</div>
           </div>
         </div>
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择会话后查看总结" />
+        <div className="collab-summary-empty-state">
+          <span className="collab-summary-empty-icon" aria-hidden="true">
+            <RobotOutlined />
+          </span>
+          <strong>让 AI 帮你收拢重点</strong>
+          <p>
+            选择左侧会话后，这里会结合最近话题、消息间隔和时间范围生成纪要。
+          </p>
+          <ul>
+            <li><BulbOutlined /> 智能提醒总结时机</li>
+            <li><ClockCircleOutlined /> 自动选取连续讨论</li>
+            <li><CheckCircleOutlined /> 提取结论与待办</li>
+          </ul>
+        </div>
       </aside>
     );
   }

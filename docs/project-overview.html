@@ -415,10 +415,10 @@
       <h2>3. 已有能力模块（前端入口）</h2>
       <div class="grid">
         <div class="card">
-          <h4>工作面</h4>
+          <h4>工作区</h4>
           <ul>
-            <li>首页 · 团队协作 · 办流程 · 待办</li>
-            <li>对话 Agent · 小策 bot</li>
+            <li>总览 · 对话 · 协作 · 任务与待办</li>
+            <li>连接 · 智能表格（已从工具并入）</li>
           </ul>
         </div>
         <div class="card">
@@ -429,10 +429,10 @@
           </ul>
         </div>
         <div class="card">
-          <h4>经营与数据</h4>
+          <h4>经营</h4>
           <ul>
             <li>经营首页 / 回路图谱 / 工作台</li>
-            <li>连接器 · 智能表格 · 数据湖</li>
+            <li>直播数据看板（原工具入口）已下线</li>
           </ul>
         </div>
         <div class="card">
@@ -527,202 +527,238 @@ Skill 脚本
     </section>
 
     <section id="roadmap">
-      <h2>6. 可落地实施模块</h2>
+      <h2>6. 可落地实施模块（待做清单）</h2>
       <p>
-        下列模块均可在现有仓库内独立开分支交付：写清<strong>优先级</strong>、<strong>技术栈</strong>（沿用现有栈、少造新轮子）、
-        <strong>达成效果</strong>与建议工期。按序做即可形成可见里程碑。
+        下列均为可独立开分支交付的任务：<strong>优先级</strong>、<strong>技术栈</strong>、<strong>达成效果</strong>。
+        建议严格按 P0 → P1 → P2 推进；每项交付对照文末「验证清单」。
       </p>
 
+      <h3>已完成（可复用，勿重复造）</h3>
       <table>
         <thead>
-          <tr>
-            <th style="width:4.5em">优先级</th>
-            <th>模块</th>
-            <th>技术栈</th>
-            <th>达成效果</th>
-            <th style="width:5em">工期</th>
-          </tr>
+          <tr><th>状态</th><th>模块</th><th>技术栈</th><th>达成效果</th></tr>
         </thead>
         <tbody>
           <tr>
-            <td><span class="prio p-high">P0</span></td>
-            <td>
-              <strong>对话侧记忆可见与可删</strong><br />
-              <span style="font-size:12px;color:var(--muted)">打通 <code>/agent-memory</code> ↔ Agent / 小策</span>
-            </td>
-            <td>
-              现有 <code>apps.agentctx</code> API<br />
-              React + Ant Design（回复 meta / Tag）<br />
-              <code>run_chat</code> 返回 <code>memory_injected</code> 扩展 refs
-            </td>
-            <td>
-              用户能看到本轮用了哪些记忆；一键「忘记」写入删除 API；<br />
-              减少「黑盒记住隐私」顾虑，提升 Memory MVP 可用性
-            </td>
-            <td>2–3 天</td>
+            <td><span class="prio p-done">Done</span></td>
+            <td>Context + Memory MVP</td>
+            <td><code>apps.agentctx</code> + <code>run_chat</code></td>
+            <td>跨会话记忆注入与滚动摘要</td>
           </tr>
           <tr>
-            <td><span class="prio p-high">P0</span></td>
-            <td>
-              <strong>黄金问答回归集</strong><br />
-              <span style="font-size:12px;color:var(--muted)">防 Context / 模型改动静默退化</span>
-            </td>
-            <td>
-              Django <code>manage.py test</code> / pytest<br />
-              固定 JSON fixture + 可选 LLM judge<br />
-              CI（GitHub Actions 或本地脚本）
-            </td>
-            <td>
-              20+ 条覆盖：知识命中、无知识拒答、Skill 沙箱拒绝、记忆注入；<br />
-              每次改 <code>agent_chat</code> / 检索必跑，失败即阻断合并
-            </td>
-            <td>3–5 天</td>
+            <td><span class="prio p-done">Done</span></td>
+            <td>Skill 沙箱 2A</td>
+            <td><code>skills/runner</code> 白名单 / env / cwd / 超时</td>
+            <td>非法命令拒绝，密钥不进脚本环境</td>
           </tr>
           <tr>
-            <td><span class="prio p-high">P0</span></td>
-            <td>
-              <strong>一条经营 SOP 端到端</strong><br />
-              <span style="font-size:12px;color:var(--muted)">编排 → 闸机 → 单一 Connector</span>
-            </td>
-            <td>
-              <code>apps.orchestration</code> + <code>apps.harness</code><br />
-              一个真实 Connector（优先企微表格或已有连接）<br />
-              前端「办流程」回放状态
-            </td>
-            <td>
-              运营从控制台发起意图后，可走完校验 / 审批 / 执行并落审计日志；<br />
-              证明七层架构「能干活」，而非仅演示 UI
-            </td>
-            <td>1–2 周</td>
+            <td><span class="prio p-done">Done</span></td>
+            <td>工作自动化 API</td>
+            <td><code>work_automations</code> 视图</td>
+            <td>前端自动化页可列表 / 创建 / 启停</td>
           </tr>
           <tr>
-            <td><span class="prio p-mid">P1</span></td>
-            <td>
-              <strong>异步任务队列</strong><br />
-              <span style="font-size:12px;color:var(--muted)">小策回复 · Skill 长跑 · 记忆压缩</span>
-            </td>
-            <td>
-              Redis + Celery 或 Django-Q / RQ<br />
-              现有 Channels 推送进度不变<br />
-              <code>cancel_check</code> 与任务 revoke 对齐
-            </td>
-            <td>
-              runserver 线程不再堵死；可水平扩展 worker；<br />
-              取消任务真正停止子进程与 LLM 请求
-            </td>
-            <td>1 周</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-mid">P1</span></td>
-            <td>
-              <strong>可选 LLM 记忆抽取</strong><br />
-              <span style="font-size:12px;color:var(--muted)">在启发式之上加确认写入</span>
-            </td>
-            <td>
-              <code>apps.council.llm</code> 快模型<br />
-              JSON schema 输出 fact/preference<br />
-              用户确认弹窗（前端）或自动写入+可撤回
-            </td>
-            <td>
-              「希望以后用表格」类偏好召回率明显提升；<br />
-              误记可撤回，不污染跨会话上下文
-            </td>
-            <td>3–5 天</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-mid">P1</span></td>
-            <td>
-              <strong>Skill 沙箱加固二期</strong><br />
-              <span style="font-size:12px;color:var(--muted)">在 2A 进程沙箱上增强</span>
-            </td>
-            <td>
-              现有 <code>skills/runner.py</code><br />
-              Windows Job Object / Linux <code>resource</code> 限额<br />
-              可选禁网（空代理 / 防火墙规则文档）
-            </td>
-            <td>
-              CPU/内存失控脚本可杀；敏感主机网络默认不可达；<br />
-              仍不引入 Docker，运维成本可控
-            </td>
-            <td>1 周</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-mid">P1</span></td>
-            <td>
-              <strong>run_chat 可观测性</strong><br />
-              <span style="font-size:12px;color:var(--muted)">召回 / 沙箱 / token / 记忆</span>
-            </td>
-            <td>
-              结构化 logging + 可选 OpenTelemetry<br />
-              或先写 <code>ChatMessage.meta</code> 耗时字段<br />
-              管理页简易耗时表
-            </td>
-            <td>
-              慢请求能定位是 RAG、MCP 还是 LLM；<br />
-              为成本与 SLA 提供数据，支撑模型分流
-            </td>
-            <td>3–4 天</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-mid">P1</span></td>
-            <td>
-              <strong>检索质量升级（轻量可替换）</strong><br />
-              <span style="font-size:12px;color:var(--muted)">对齐 LightRAG 接口后换真引擎</span>
-            </td>
-            <td>
-              保持 <code>apps.rag</code> 接口<br />
-              pgvector / 现有 embedding 表<br />
-              或接入成熟向量库（二选一）
-            </td>
-            <td>
-              Top-k 命中率可测；制度/SKU 问答减少幻觉；<br />
-              不改前端，仅换检索实现
-            </td>
-            <td>1–2 周</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-low">P2</span></td>
-            <td>
-              <strong>组织级共享记忆</strong>
-            </td>
-            <td>
-              <code>AgentMemoryItem</code> 扩 <code>organization</code><br />
-              现有组织/成员模型（core）<br />
-              权限：读共享 / 写需角色
-            </td>
-            <td>
-              同店运营共享「旺季备货规则」等事实；<br />
-              个人偏好仍私有，审计可追溯
-            </td>
-            <td>1 周</td>
-          </tr>
-          <tr>
-            <td><span class="prio p-low">P2</span></td>
-            <td>
-              <strong>智能表格 ↔ Baserow 稳态同步</strong>
-            </td>
-            <td>
-              现有 <code>smarttable</code> + integrations/baserow<br />
-              定时任务 / Webhook<br />
-              冲突字段策略配置
-            </td>
-            <td>
-              运营在外部表格改数后平台可见；<br />
-              SSO 一次登录，减少双端拷贝
-            </td>
-            <td>1–2 周</td>
+            <td><span class="prio p-done">Done</span></td>
+            <td>回路 / 团队合并</td>
+            <td>loops-7-20 + XYFlow</td>
+            <td>回路画布与团队管理可用</td>
           </tr>
         </tbody>
       </table>
 
-      <h3>推荐实施顺序（里程碑）</h3>
+      <h3>P0 · 必须先做（约 1–2 周）</h3>
+      <table>
+        <thead>
+          <tr><th>优先级</th><th>待做</th><th>技术栈</th><th>达成效果</th><th>工期</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>对话侧展示已引用记忆 + 一键忘记</td>
+            <td>agentctx API + Agent/小策气泡 Tags</td>
+            <td>用户看得见、控得住记忆</td>
+            <td>2–3 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>黄金问答回归集 20+ 条 + CI</td>
+            <td>Django test / fixture / CI</td>
+            <td>改 agent_chat / 检索不静默掉点</td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>一条经营 SOP 端到端</td>
+            <td>orchestration + harness + 1 Connector</td>
+            <td>意图→执行→审计可演示闭环</td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>run_chat 分段耗时写入 meta</td>
+            <td>ChatMessage.meta + 简易耗时表</td>
+            <td>区分 RAG / MCP / Skill / LLM 谁慢</td>
+            <td>2–3 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>知识库 PG knowledge 别名稳态</td>
+            <td>settings DATABASES + knowledge</td>
+            <td>小策检索不再因别名丢失而挂</td>
+            <td>1 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-high">P0</span></td>
+            <td>自动化调度进程上线说明</td>
+            <td><code>run_automation_scheduler</code> + 运维文档</td>
+            <td>启用的规则能按时跑出 run</td>
+            <td>2 天</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>P1 · 体验与工程加固（约 2–3 周）</h3>
+      <table>
+        <thead>
+          <tr><th>优先级</th><th>待做</th><th>技术栈</th><th>达成效果</th><th>工期</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>小策 / Skill 改异步队列</td>
+            <td>Redis + Celery/RQ + Channels</td>
+            <td>长任务不堵 runserver，可真正取消</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>可选 LLM 记忆抽取 + 用户确认</td>
+            <td>council.llm 快模型 + 确认弹窗</td>
+            <td>偏好召回更高，误记可撤回</td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>Skill 沙箱二期（CPU/内存限额）</td>
+            <td>runner + OS Job/resource</td>
+            <td>失控脚本可杀，仍免 Docker</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>向量检索替换 RAG 骨架</td>
+            <td>apps.rag 接口 + pgvector</td>
+            <td>少幻觉，命中率可测</td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>回复引用面板（知识/Skill/MCP/记忆）</td>
+            <td>refs 结构化 + 前端侧栏</td>
+            <td>答案可溯源，运营敢用</td>
+            <td>3–4 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>协作大房间性能</td>
+            <td>virtuoso + 按房缓存草稿</td>
+            <td>切房不卡、长会话可滚</td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>闸机审批 UI 与写操作打通</td>
+            <td>harness approvals + 办流程</td>
+            <td>高风险动作有人审再执行</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>至少一个 Connector 生产级</td>
+            <td>鉴权刷新 / 幂等 / 重试 + 审计</td>
+            <td>失败可恢复，不重复下发</td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-mid">P1</span></td>
+            <td>前端错误边界与空态统一</td>
+            <td>ErrorBoundary + Empty</td>
+            <td>白屏变可读错误</td>
+            <td>2 天</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>P2 · 扩面（按需）</h3>
+      <table>
+        <thead>
+          <tr><th>优先级</th><th>待做</th><th>技术栈</th><th>达成效果</th><th>工期</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>组织级共享记忆</td>
+            <td>MemoryItem.organization + 权限</td>
+            <td>同店共享经营事实，偏好仍私有</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>智能表格 ↔ Baserow 双向同步</td>
+            <td>smarttable + integrations/baserow</td>
+            <td>外部改数平台可见</td>
+            <td>1–2 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>多租户配额（token / Skill 并发）</td>
+            <td>组织计数 + 限流</td>
+            <td>成本可控</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>模型按意图分流</td>
+            <td>intent 路由 + 用户模型设置</td>
+            <td>成本与效果平衡</td>
+            <td>3–5 天</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>NocoDB/Baserow SSO 稳态</td>
+            <td>现有 SSO 插件 + 运维脚本</td>
+            <td>一次登录进表格</td>
+            <td>1 周</td>
+          </tr>
+          <tr>
+            <td><span class="prio p-low">P2</span></td>
+            <td>提示注入防护</td>
+            <td>不可信标签 + 系统规则优先级</td>
+            <td>附件/Skill 输出难覆盖系统策略</td>
+            <td>3–5 天</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>验证清单（每项交付必过）</h3>
+      <ul style="margin:10px 0 0 1.2em;color:var(--muted)">
+        <li>Agent 多轮能记住偏好，刷新后仍在</li>
+        <li>小策同房间续聊带会话摘要</li>
+        <li>非法 Skill 命令被沙箱拒绝并回显原因</li>
+        <li>自动化启用后调度器能跑出 run 记录</li>
+        <li>SOP 演示：允许 / 拒绝 / 需审批三条路径</li>
+        <li>黄金集 CI 全绿再合并</li>
+      </ul>
+
+      <h3>推荐里程碑</h3>
       <div class="grid">
         <div class="card">
           <h4>M1 · 可信对话（约 1 周）</h4>
           <ul>
             <li>记忆可见可删</li>
-            <li>黄金问答 20 条 + CI</li>
-            <li>run_chat 耗时写入 meta</li>
+            <li>黄金问答 + CI</li>
+            <li>run_chat 耗时 meta</li>
+            <li>知识库别名稳态</li>
           </ul>
           <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>Agent/小策「可解释、可回归」。</p>
         </div>
@@ -730,8 +766,9 @@ Skill 脚本
           <h4>M2 · 能执行（约 2 周）</h4>
           <ul>
             <li>一条 SOP 端到端 + 审计</li>
-            <li>异步队列替换线程跑 LLM</li>
-            <li>Skill 沙箱二期（限额）</li>
+            <li>自动化调度上线</li>
+            <li>异步队列 + 沙箱二期</li>
+            <li>闸机审批 UI</li>
           </ul>
           <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>从「会聊」到「能改业务数据」。</p>
         </div>
@@ -739,49 +776,15 @@ Skill 脚本
           <h4>M3 · 提质扩面（约 2–3 周）</h4>
           <ul>
             <li>向量检索替换骨架</li>
-            <li>LLM 记忆抽取 + 确认</li>
+            <li>LLM 记忆抽取 + 引用面板</li>
             <li>组织记忆 / 表格同步（选做）</li>
           </ul>
-          <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>回答更准、协作更可规模化。</p>
-        </div>
-      </div>
-
-      <h3>模块卡片速览</h3>
-      <div class="grid">
-        <div class="card">
-          <h4><span class="prio p-high">P0</span> 记忆可见可删</h4>
-          <p><strong>栈：</strong>agentctx + React Tags</p>
-          <p><strong>效果：</strong>用户可控的跨会话记忆</p>
-        </div>
-        <div class="card">
-          <h4><span class="prio p-high">P0</span> 黄金回归集</h4>
-          <p><strong>栈：</strong>Django test + fixture + CI</p>
-          <p><strong>效果：</strong>改代码不静默掉点</p>
-        </div>
-        <div class="card">
-          <h4><span class="prio p-high">P0</span> SOP 端到端</h4>
-          <p><strong>栈：</strong>orchestration + harness + connector</p>
-          <p><strong>效果：</strong>证明闸机能落地执行</p>
-        </div>
-        <div class="card">
-          <h4><span class="prio p-mid">P1</span> 异步队列</h4>
-          <p><strong>栈：</strong>Redis + Celery/RQ + Channels</p>
-          <p><strong>效果：</strong>长任务可扩展、可取消</p>
-        </div>
-        <div class="card">
-          <h4><span class="prio p-mid">P1</span> 检索升级</h4>
-          <p><strong>栈：</strong>apps.rag 接口 + pgvector</p>
-          <p><strong>效果：</strong>少幻觉、可测命中率</p>
-        </div>
-        <div class="card">
-          <h4><span class="prio p-mid">P1</span> 沙箱二期</h4>
-          <p><strong>栈：</strong>runner + OS 资源限额</p>
-          <p><strong>效果：</strong>脚本更安全，仍免 Docker</p>
+          <p style="margin-top:8px;margin-bottom:0"><strong>效果：</strong>回答更准、协作可规模化。</p>
         </div>
       </div>
     </section>
 
-    <section id="optimize">
+<section id="optimize">
       <h2>7. 怎么优化（工程与体验）</h2>
 
       <h3>可靠性</h3>

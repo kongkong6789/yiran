@@ -34,10 +34,14 @@ import {
 import {
   createAdminUser,
   deleteAdminUser,
+  getAuthToken,
   getMe,
   listAdminUsers,
+  listOrganizations,
+  switchCurrentOrganization,
   updateAdminUser,
   type AdminUserRow,
+  type OrganizationSummary,
 } from "../api/client";
 import WeComBindingManager from "../features/wecom-bindings/WeComBindingManager";
 import WeComNotificationManager from "../features/wecom-bindings/WeComNotificationManager";
@@ -74,6 +78,13 @@ const compareText = (left?: string | null, right?: string | null) =>
 
 const organizationRoleOrder = { owner: 3, admin: 2, member: 1, "": 0 } as const;
 
+const authenticatedAvatarUrl = (url?: string) => {
+  if (!url) return undefined;
+  const token = getAuthToken();
+  if (!token) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+};
+
 export default function Accounts() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<AdminUserRow[]>([]);
@@ -94,11 +105,42 @@ export default function Accounts() {
   const [currentOrgName, setCurrentOrgName] = useState("");
   const [selfUserId, setSelfUserId] = useState<number>();
   const [activeTab, setActiveTab] = useState("accounts");
+  const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
+  const [accountOrganizationId, setAccountOrganizationId] = useState(0);
+  const [managementOrganizationId, setManagementOrganizationId] = useState<number>();
 
-  const load = async (q = keyword) => {
+  const handleManagementOrganizationChange = async (organizationId: number) => {
+    setManagementOrganizationId(organizationId);
+    const selected = organizations.find((item) => item.id === organizationId);
+    if (!selected?.canSwitch || selected.isCurrent) return;
+    try {
+      await switchCurrentOrganization(organizationId);
+      message.success(`已切换至${selected.name}`);
+      // 企业上下文会影响连接器、企业微信和任务数据，刷新可避免保留上一企业的缓存状态。
+      window.location.reload();
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "切换企业失败");
+    }
+  };
+
+  const handleAccountOrganizationChange = async (organizationId: number) => {
+    setAccountOrganizationId(organizationId);
+    if (!organizationId) {
+      await load(keyword, 0);
+      return;
+    }
+    const selected = organizations.find((item) => item.id === organizationId);
+    if (selected?.canSwitch && !selected.isCurrent) {
+      await handleManagementOrganizationChange(organizationId);
+      return;
+    }
+    await load(keyword, organizationId);
+  };
+
+  const load = async (q = keyword, organizationId = accountOrganizationId) => {
     setLoading(true);
     try {
-      const data = await listAdminUsers(q.trim() || undefined);
+      const data = await listAdminUsers(q.trim() || undefined, organizationId || undefined);
       setRows(data.results || []);
     } catch (e: any) {
       message.error(e?.response?.data?.error || "加载账号失败（需管理员）");
@@ -110,7 +152,7 @@ export default function Accounts() {
 
   useEffect(() => {
     getMe()
-      .then((res) => {
+      .then(async (res) => {
         const canManage = !!(res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage);
         setIsStaffSelf(canManage);
         setIsSuperuserSelf(!!res.user.is_superuser);
@@ -118,7 +160,18 @@ export default function Accounts() {
         setCanManageOrgSelf(!!res.user.organization?.canManage);
         setCurrentOrgName(res.user.organization?.name || "");
         setSelfUserId(res.user.id);
-        if (canManage) void load();
+        if (canManage) {
+          const organizationResponse = await listOrganizations();
+          const available = organizationResponse.results || [];
+          setOrganizations(available);
+          const currentOrganizationId = res.user.organization?.id
+            || available.find((item) => item.isCurrent)?.id
+            || available[0]?.id
+            || 0;
+          setAccountOrganizationId(currentOrganizationId);
+          setManagementOrganizationId(currentOrganizationId || undefined);
+          await load("", currentOrganizationId);
+        }
       })
       .catch(() => setIsStaffSelf(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -151,6 +204,7 @@ export default function Accounts() {
         phone: values.phone || "",
         is_staff: !!values.is_staff,
         organization_role: values.organization_role || "member",
+        organization_id: values.organization_id || managementOrganizationId,
       });
       message.success("账号已创建");
       setCreateOpen(false);
@@ -256,7 +310,10 @@ export default function Accounts() {
             <Typography.Text>管理本企业的平台账号、成员角色和企业微信绑定关系</Typography.Text>
           </div>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建成员账号</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+          createForm.setFieldValue("organization_id", managementOrganizationId || organizations[0]?.id);
+          setCreateOpen(true);
+        }}>新建成员账号</Button>
       </header>
 
       <Card className="account-admin-workspace" styles={{ body: { padding: 0 } }}>
@@ -285,10 +342,17 @@ export default function Accounts() {
                 />
               )
               : activeTab === "organization" ? (
-                <OrganizationManager
-                  isSuperuser={isSuperuserSelf}
-                  platformUsers={rows}
-                  onOrganizationCreated={() => load()}
+                  <OrganizationManager
+                    isSuperuser={isSuperuserSelf}
+                    platformUsers={rows}
+                    organizationId={managementOrganizationId}
+                    availableOrganizations={organizations}
+                    onOrganizationChange={(organizationId) => void handleManagementOrganizationChange(organizationId)}
+                    onOrganizationCreated={async () => {
+                      const response = await listOrganizations();
+                      setOrganizations(response.results || []);
+                      await load();
+                    }}
                 />
               )
                 : <>
@@ -305,6 +369,15 @@ export default function Accounts() {
                       <Typography.Text type="secondary">平台权限和企业角色分别管理，密码不会在页面回显。</Typography.Text>
                     </div>
                     <Space wrap>
+                      <Select
+                        className="account-organization-filter"
+                        value={accountOrganizationId}
+                        onChange={(value) => void handleAccountOrganizationChange(Number(value))}
+                        options={[
+                          { value: 0, label: "全部企业" },
+                          ...organizations.map((item) => ({ value: item.id, label: item.name })),
+                        ]}
+                      />
                       <Input
                         allowClear
                         prefix={<SearchOutlined />}
@@ -346,7 +419,12 @@ export default function Accounts() {
                         render: (_: unknown, row) => {
                           const displayName = row.display_name || row.username;
                           return <div className="account-member-cell">
-                            <Avatar>{displayName.slice(0, 1).toUpperCase()}</Avatar>
+                            <Avatar
+                              src={authenticatedAvatarUrl(row.avatar_url)}
+                              alt={`${displayName}的头像`}
+                            >
+                              {displayName.slice(0, 1).toUpperCase()}
+                            </Avatar>
                             <span>
                               <strong>{displayName}</strong>
                               <small>@{row.username}</small>
@@ -374,10 +452,12 @@ export default function Accounts() {
                           || organizationRoleOrder[left.organization_role] - organizationRoleOrder[right.organization_role]
                         ),
                         render: (_: unknown, row) => <div className="account-role-cell">
-                          <span>{row.organization_name || "未分配企业"}</span>
-                          {row.organization_role
-                            ? <Tag color={organizationRoleColor[row.organization_role]}>{organizationRoleLabel[row.organization_role]}</Tag>
-                            : <Tag>未分配</Tag>}
+                          {row.organizations?.length ? row.organizations.map((item) => (
+                            <span key={item.id}>
+                              <span>{item.name}</span>
+                              <Tag color={organizationRoleColor[item.role]}>{organizationRoleLabel[item.role]}</Tag>
+                            </span>
+                          )) : <Tag>未分配</Tag>}
                         </div>,
                       },
                       {
@@ -498,6 +578,14 @@ export default function Accounts() {
             <Input.Password prefix={<LockOutlined />} placeholder="至少 8 位，创建后仅展示一次" autoComplete="new-password" />
           </Form.Item>
           <div className="account-form-grid">
+            {isSuperuserSelf && <Form.Item label="所属企业" name="organization_id" rules={[{ required: true, message: "请选择所属企业" }]}>
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择账号加入的企业"
+                options={organizations.map((item) => ({ value: item.id, label: item.name }))}
+              />
+            </Form.Item>}
             <Form.Item label="企业角色" name="organization_role" extra="企业管理员可管理本企业成员和连接授权">
               <Select options={[
                 { value: "member", label: "企业成员" },

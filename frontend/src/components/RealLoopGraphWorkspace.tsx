@@ -8,7 +8,7 @@ import {
   App, Button, Empty, Input, Segmented, Skeleton, Space, Tag, Typography,
 } from "antd";
 import {
-  confirmLoop, getGraph, getLoop, listLoops, type FeedbackLoop, type LoopMember, type OntGraph,
+  confirmLoop, getGraph, listLoops, type FeedbackLoop, type LoopMember, type OntGraph,
 } from "../api/client";
 import CompanyOperatingLoopCanvas, {
   COMPANY_DOMAIN_META, COMPANY_STATUS_META, summarizeCompanyOperatingGraph,
@@ -44,6 +44,7 @@ export default function RealLoopGraphWorkspace() {
   const nav = useNavigate();
   const visualTheme = useVisualizationTheme();
   const canvasShellRef = useRef<HTMLElement | null>(null);
+  const initialLoadStartedRef = useRef(false);
   const [loops, setLoops] = useState<FeedbackLoop[]>([]);
   const [graph, setGraph] = useState<OntGraph | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,7 +63,7 @@ export default function RealLoopGraphWorkspace() {
   const loadGraph = useCallback(async () => {
     setGraphLoading(true);
     try {
-      const g = await getGraph({ scope: "all" }).catch(() => getGraph({ scope: "all" }).catch(() => null));
+      const g = await getGraph({ scope: "all" }).catch(() => null);
       setGraph(g);
     } finally {
       setGraphLoading(false);
@@ -70,28 +71,39 @@ export default function RealLoopGraphWorkspace() {
   }, []);
 
   const load = useCallback(async (silent = false) => {
-    if (silent) setRefreshing(true);
-    else setLoading(true);
+    if (!silent) setLoading(true);
     try {
-      const result = await listLoops();
+      const result = await listLoops({ includeMembers: true });
       const active = result.results.filter((loop) => loop.status !== "archived" && loop.member_count > 0);
-      const detailed = await Promise.all(active.map((loop) => getLoop(loop.id)));
-      setLoops(detailed);
+      setLoops(active);
       setSelectedLoopId((current) => (
-        detailed.some((loop) => loop.id === current) ? current : detailed[0]?.id || null
+        active.some((loop) => loop.id === current) ? current : active[0]?.id || null
       ));
     } catch (error: any) {
       setLoops([]);
       message.error(error?.response?.data?.error || "回路库数据加载失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+    }
+  }, [message]);
+
+  useEffect(() => {
+    if (initialLoadStartedRef.current) return;
+    initialLoadStartedRef.current = true;
+    // The loop library and company graph are independent. Starting them in
+    // parallel avoids making the graph wait for loop-detail requests.
+    void load();
+    void loadGraph();
+  }, [load, loadGraph]);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([load(true), loadGraph()]);
+    } finally {
       setRefreshing(false);
     }
-    // 图谱数据较大且偶发较慢：独立加载，不再阻塞骨架屏
-    void loadGraph();
-  }, [message, loadGraph]);
-
-  useEffect(() => { void load(); }, [load]);
+  }, [load, loadGraph]);
   useEffect(() => { setSelectedNode(null); }, [viewMode]);
   useEffect(() => {
     const onFullscreenChange = () => setFullscreen(document.fullscreenElement === canvasShellRef.current);
@@ -290,7 +302,7 @@ export default function RealLoopGraphWorkspace() {
               <Button icon={fullscreen ? <CompressOutlined /> : <FullscreenOutlined />} onClick={() => void toggleFullscreen()}>
                 {fullscreen ? "退出全屏" : "全屏图谱"}
               </Button>
-              <Button icon={<ReloadOutlined />} loading={refreshing} onClick={() => void load(true)}>
+              <Button icon={<ReloadOutlined />} loading={refreshing} onClick={() => void refreshAll()}>
                 刷新数据
               </Button>
               <Button type="primary" icon={<AppstoreOutlined />} onClick={() => nav("/commerce/bench")}>
