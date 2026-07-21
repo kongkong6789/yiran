@@ -39,32 +39,27 @@ const DOMAINS: Domain[] = [
   {
     name: "圆桌会议", sub: "Council", desc: "多个专家一起研讨方案",
     color: "#5bd5f2", route: "/collab?view=roundtable", countLabel: "128 个节点",
-    samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 14,
-  },
-  {
-    name: "AI 问答", sub: "Chat", desc: "直接提问、读文档、调工具",
-    color: "#315efb", route: "/agent", countLabel: "核心入口",
-    samples: ["问答会话", "文档解读", "Skill 调度", "MCP 调用"], share: 12,
+    samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 16,
   },
   {
     name: "连接", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
     color: "#ef5ba5", route: "/connectors", countLabel: "64 个节点",
-    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 8,
+    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
   },
   {
-    name: "数据", sub: "Data", desc: "指标 · 维度 · 汇总",
-    color: "#31caa1", route: "/datalake", countLabel: "256 个节点",
-    samples: ["订单明细", "用户标签", "GMV 指标", "退款率"], share: 10,
+    name: "智能表格", sub: "Tables", desc: "多维表 · 视图 · 仪表盘",
+    color: "#31caa1", route: "/tables", countLabel: "多维表入口",
+    samples: ["表格视图", "看板视图", "表单收集", "仪表盘"], share: 12,
   },
   {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
-    samples: ["审批流", "编排任务", "执行记录", "审计"], share: 7,
+    samples: ["审批流", "编排任务", "执行记录", "审计"], share: 9,
   },
   {
     name: "图谱", sub: "Graph", desc: "实体关系 · 因果推理",
     color: "#8b63ff", route: "/ontology", countLabel: "关系中枢",
-    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 5,
+    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 7,
   },
 ];
 

@@ -82,9 +82,9 @@ class WeComApiConfig(models.Model):
         SELECTED = "selected", "指定成员"
         OWNER = "owner", "仅配置者"
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        related_name="wecom_api_config",
+        related_name="wecom_api_configs",
         on_delete=models.CASCADE,
         verbose_name="用户",
     )
@@ -127,6 +127,12 @@ class WeComApiConfig(models.Model):
     class Meta:
         verbose_name = "企业微信 API 配置"
         verbose_name_plural = "企业微信 API 配置"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "organization"],
+                name="uniq_wecom_api_config_per_user_org",
+            ),
+        ]
 
     @property
     def secret(self) -> str:

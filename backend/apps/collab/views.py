@@ -27,7 +27,7 @@ from apps.core.attachments import (
     resolve_attachment_path_any,
 )
 
-from .analyze import analyze_room_messages, apply_message_risk_flags, max_risk, _HARD_RISK_RE
+from .analyze import analyze_room_messages, apply_message_risk_flags, _HARD_RISK_RE
 from .draft_coach import analyze_draft
 from .interject import maybe_interject
 from .mentions import (
@@ -35,6 +35,7 @@ from .mentions import (
     XIAOCE_BOT_USERNAME,
     collab_skill_hits,
     get_collab_ai_user,
+    get_collab_bot_user,
     get_xiaoce_bot_user,
     has_ai_mention,
     is_xiaoce_bot_user,
@@ -63,6 +64,7 @@ from .summary import (
 from .xiaoce_progress import XiaoceProgressReporter, xiaoce_run_payload
 from .xiaoce_runs import (
     cancel_xiaoce_run,
+    cancel_xiaoce_runs_for_room_deletion,
     complete_xiaoce_run,
     complete_xiaoce_run_with_skill,
     create_xiaoce_run,
@@ -155,15 +157,13 @@ def _can_access_room(user, room: CollabRoom) -> bool:
 def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
     if viewer is None or not getattr(viewer, "is_authenticated", False):
         return None
-    run = (
-        XiaoceRun.objects.filter(
-            room=room,
-            user=viewer,
-            status=XiaoceRun.Status.RUNNING,
-        )
-        .order_by("-created_at")
-        .first()
+    query = XiaoceRun.objects.filter(
+        room=room,
+        status=XiaoceRun.Status.RUNNING,
     )
+    if not _is_admin(viewer):
+        query = query.filter(user=viewer)
+    run = query.order_by("-created_at").first()
     return xiaoce_run_payload(run)
 
 
@@ -269,8 +269,13 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         )
         for p in participant_rows
     ]
+    xiaoce_dm = room.room_kind == "dm" and any(
+        member.get("bot_id") == "xiaoce"
+        or member.get("username") == XIAOCE_BOT_USERNAME
+        for member in members
+    )
     display_title = room.title
-    if room.room_kind == "dm" and viewer is not None:
+    if room.room_kind == "dm" and viewer is not None and not xiaoce_dm:
         others = [m["display_name"] for m in members if m["id"] != viewer.id]
         if others:
             display_title = others[0]
@@ -405,6 +410,26 @@ def _create_room(*, creator, peers: list, room_kind: str, title: str) -> CollabR
     for peer in peers:
         CollabParticipant.objects.get_or_create(room=room, user=peer)
     return room
+
+
+XIAOCE_TASK_DEFAULT_TITLE = "小策bot（新任务）"
+XIAOCE_WELCOME = (
+    "你好，我是小策bot。\n"
+    "可以直接问我经营指标、知识库、图谱或业务问题；"
+    "我会结合平台知识与数据作答。"
+)
+
+
+def _create_xiaoce_welcome(room: CollabRoom, bot) -> CollabMessage:
+    return CollabMessage.objects.create(
+        room=room,
+        sender=bot,
+        content=XIAOCE_WELCOME,
+        attachments=[],
+        mentions=[],
+        msg_type="ai",
+        ai_kind="xiaoce",
+    )
 
 
 def _message_read_state_map(
@@ -604,7 +629,9 @@ def _run_analysis(room: CollabRoom, *, llm_user=None) -> CollabInsight | None:
         draft_reply=data.get("draft_reply") or "",
     )
     apply_message_risk_flags(room, data, fallback_messages=rows)
-    room.risk_level = max_risk(room.risk_level, data["risk_level"])
+    # room.risk_level 表示「当前」风险，不是历史最高风险。
+    # 历史告警仍由 CollabInsight 保留；正常新消息应让会话恢复为绿色。
+    room.risk_level = data["risk_level"]
     if data.get("analysis"):
         room.summary = data["analysis"][:500]
     room.save(update_fields=["risk_level", "summary", "updated_at"])
@@ -845,20 +872,43 @@ def _xiaoce_history_before(room: CollabRoom, trigger_message_id: int) -> list[di
 def _publish_xiaoce_message(run: XiaoceRun, message: CollabMessage | None) -> None:
     if message is None:
         return
-    run.room.refresh_from_db(fields=["status", "risk_level", "updated_at"])
-    run.refresh_from_db()
-    ws_push.publish_sync(
-        run.room_id,
-        messages=[_message_payload(message)],
-        xiaoce_runs=[xiaoce_run_payload(run)],
-        room={
-            "id": str(run.room_id),
-            "status": run.room.status,
-            "risk_level": run.room.risk_level,
-            "updated_at": run.room.updated_at.isoformat(),
-            "active_xiaoce_run": None,
-        },
-    )
+    with transaction.atomic():
+        room = (
+            CollabRoom.objects.select_for_update()
+            .filter(id=run.room_id)
+            .first()
+        )
+        if room is None:
+            return
+        locked_run = (
+            XiaoceRun.objects.select_for_update()
+            .filter(id=run.id, room=room)
+            .first()
+        )
+        if locked_run is None:
+            return
+        current_message = (
+            CollabMessage.objects.select_related("sender", "reply_to", "reply_to__sender")
+            .filter(id=message.id, room=room)
+            .first()
+        )
+        if current_message is None or message.id not in {
+            locked_run.result_message_id,
+            locked_run.cancel_message_id,
+        }:
+            return
+        ws_push.publish_sync(
+            room.id,
+            messages=[_message_payload(current_message)],
+            xiaoce_runs=[xiaoce_run_payload(locked_run)],
+            room={
+                "id": str(room.id),
+                "status": room.status,
+                "risk_level": room.risk_level,
+                "updated_at": room.updated_at.isoformat(),
+                "active_xiaoce_run": None,
+            },
+        )
 
 
 def _progress_callback(reporter: XiaoceProgressReporter):
@@ -936,6 +986,7 @@ def _run_xiaoce_reply_async(run_id) -> None:
                 cancel_check=cancel_check,
                 progress_callback=progress_callback,
                 session_key=f"collab:room:{run.room_id}",
+                usage_source="agent",
                 extra_reference_blocks=context_blocks,
             )
             if result.get("ok"):
@@ -947,6 +998,8 @@ def _run_xiaoce_reply_async(run_id) -> None:
     except AgentRunCancelled:
         return
     except Exception as exc:
+        if not XiaoceRun.objects.filter(id=run_id).exists():
+            return
         current_stage = (
             XiaoceRun.objects.filter(id=run_id)
             .values_list("current_stage", flat=True)
@@ -1042,6 +1095,31 @@ def _run_ai_reply_async(
         _run_analysis_async(room_id, user_id, had_ai_reply=ai_ok)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def xiaoce_task_list(request):
+    touch_presence(request.user)
+    title = str(request.data.get("title") or "").strip()[:120]
+    if not title:
+        title = XIAOCE_TASK_DEFAULT_TITLE
+    bot = get_xiaoce_bot_user()
+    room = _create_room(
+        creator=request.user,
+        peers=[bot],
+        room_kind="dm",
+        title=title,
+    )
+    welcome = _create_xiaoce_welcome(room, bot)
+    transaction.on_commit(
+        lambda: ws_push.publish_sync(room.id, messages=[_message_payload(welcome)]),
+    )
+    return Response(
+        _room_payload(room, include_messages=True, viewer=request.user),
+        status=201,
+    )
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def room_list(request):
@@ -1049,10 +1127,16 @@ def room_list(request):
     if request.method == "POST":
         # 兼容：peer_username 单聊；peer_usernames 群聊；room_kind 可显式指定
         peer_username = str(request.data.get("peer_username") or "").strip()
+        peer_bot_id = str(request.data.get("peer_bot_id") or "").strip()
         raw_peers = request.data.get("peer_usernames") or []
         if isinstance(raw_peers, str):
             raw_peers = [x.strip() for x in raw_peers.split(",") if x.strip()]
         peer_usernames = [str(x).strip() for x in raw_peers if str(x).strip()]
+        if peer_bot_id:
+            try:
+                peer_username = get_collab_bot_user(peer_bot_id).username
+            except ValueError as exc:
+                return Response({"ok": False, "error": str(exc)}, status=404)
         if peer_username and peer_username not in peer_usernames:
             peer_usernames = [peer_username, *peer_usernames]
 
@@ -1091,22 +1175,10 @@ def room_list(request):
             peer = peers[0]
             title = str(request.data.get("title") or "").strip()
             if not title:
-                title = XIAOCE_BOT_DISPLAY if is_xiaoce_bot_user(peer) else peer.username
+                title = XIAOCE_TASK_DEFAULT_TITLE if is_xiaoce_bot_user(peer) else peer.username
             room = _create_room(creator=request.user, peers=peers, room_kind="dm", title=title)
             if is_xiaoce_bot_user(peer):
-                welcome = CollabMessage.objects.create(
-                    room=room,
-                    sender=peer,
-                    content=(
-                        "你好，我是小策bot。\n"
-                        "可以直接问我经营指标、知识库、图谱或业务问题；"
-                        "我会结合平台知识与数据作答。"
-                    ),
-                    attachments=[],
-                    mentions=[],
-                    msg_type="ai",
-                    ai_kind="xiaoce",
-                )
+                welcome = _create_xiaoce_welcome(room, peer)
                 ws_push.publish_sync(room.id, messages=[_message_payload(welcome)])
             return Response(
                 _room_payload(room, include_messages=True, viewer=request.user),
@@ -1158,7 +1230,15 @@ def room_detail(request, room_id):
             if room.created_by_id != request.user.id:
                 return Response({"ok": False, "error": "仅群主或管理员可删除群聊"}, status=403)
         room_id_str = str(room.id)
-        room.delete()
+        with transaction.atomic():
+            locked_room = (
+                CollabRoom.objects.select_for_update()
+                .filter(id=room.id)
+                .first()
+            )
+            if locked_room is not None:
+                cancel_xiaoce_runs_for_room_deletion(locked_room)
+                locked_room.delete()
         return Response({"ok": True, "deleted": room_id_str})
 
     if request.method == "PATCH":
@@ -1170,7 +1250,7 @@ def room_detail(request, room_id):
         if title is not None:
             new_title = str(title).strip()[:120]
             if not new_title:
-                return Response({"ok": False, "error": "群名不能为空"}, status=400)
+                return Response({"ok": False, "error": "会话名称不能为空"}, status=400)
             if new_title != room.title:
                 room.title = new_title
                 title_changed = True
@@ -1219,10 +1299,14 @@ def room_mark_read(request, room_id):
     """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
-    if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
+    participant = CollabParticipant.objects.filter(room=room, user=request.user).only(
+        "last_read_message_id",
+    ).first()
+    if participant is None:
         if not _is_admin(request.user):
             return Response({"ok": False, "error": "无权访问该会话"}, status=403)
         return Response({"ok": True, "unread_count": 0, "last_read_message_id": 0})
+    previous_id = int(participant.last_read_message_id or 0)
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
     last_id = _mark_room_read(request.user, room, up_to_id=up_to)
@@ -1256,6 +1340,15 @@ def room_mark_read(request, room_id):
             "active_duration_ms": session.active_duration_ms,
             "ended": bool(session.ended_at),
         }
+    if int(last_id or 0) > previous_id:
+        ws_push.publish_sync(
+            room.id,
+            read_receipts=[{
+                "user_id": request.user.id,
+                "last_read_message_id": int(last_id or 0),
+                "read_at": timezone.now().isoformat(),
+            }],
+        )
     return Response({
         "ok": True,
         "last_read_message_id": last_id,
@@ -1842,12 +1935,7 @@ def xiaoce_run_cancel(request, room_id, run_id):
     message_payload = _message_payload(message)
     room_payload = _room_payload_lite(room, viewer=request.user)
     if not was_cancelled:
-        ws_push.publish_sync(
-            room.id,
-            messages=[message_payload],
-            xiaoce_runs=[xiaoce_run_payload(cancelled)],
-            room=room_payload,
-        )
+        _publish_xiaoce_message(cancelled, message)
     return Response({
         "ok": True,
         "xiaoce_run": xiaoce_run_payload(cancelled),

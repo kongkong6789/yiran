@@ -93,12 +93,28 @@ def assign_user_to_organization(
     organization: Organization,
     *,
     role: str = OrganizationMembership.Role.MEMBER,
+    make_primary: bool = True,
 ) -> OrganizationMembership:
-    OrganizationMembership.objects.filter(user=user, is_primary=True).update(is_primary=False)
+    existing = OrganizationMembership.objects.select_for_update().filter(
+        organization=organization,
+        user=user,
+    ).first()
+    if make_primary:
+        OrganizationMembership.objects.filter(user=user, is_primary=True).exclude(
+            pk=existing.pk if existing else None,
+        ).update(is_primary=False)
+        is_primary = True
+    else:
+        has_primary = OrganizationMembership.objects.filter(
+            user=user,
+            is_active=True,
+            is_primary=True,
+        ).exclude(pk=existing.pk if existing else None).exists()
+        is_primary = bool(existing and existing.is_primary) or not has_primary
     membership, _ = OrganizationMembership.objects.update_or_create(
         organization=organization,
         user=user,
-        defaults={"role": role, "is_active": True, "is_primary": True},
+        defaults={"role": role, "is_active": True, "is_primary": is_primary},
     )
     return membership
 

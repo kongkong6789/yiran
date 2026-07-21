@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 
 from apps.council import llm
 from apps.core.agent_chat import _selected_knowledge_context
+from apps.skills.analytics import record_skill_usage
 from apps.skills.service import build_skill_system_block, resolve_skills
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -82,6 +83,14 @@ def get_xiaoce_bot_user():
     except Exception:
         logger.exception("ensure xiaoce bot profile failed")
     return user
+
+
+def get_collab_bot_user(bot_id: str):
+    """用稳定 bot_id 解析协作智能体，避免业务入口依赖可变的用户名。"""
+    normalized = str(bot_id or "").strip().casefold()
+    if normalized == "xiaoce":
+        return get_xiaoce_bot_user()
+    raise ValueError("目标 bot 不存在或未启用")
 
 
 def is_xiaoce_bot_user(user) -> bool:
@@ -280,6 +289,7 @@ def reply_ai_mention(
         try:
             active_skills = resolve_skills(trigger_content, llm_user)
             if active_skills:
+                record_skill_usage(active_skills, llm_user, source="collab")
                 history_for_skill = [
                     {
                         "role": "user" if (m.get("msg_type") or "user") == "user" else "assistant",

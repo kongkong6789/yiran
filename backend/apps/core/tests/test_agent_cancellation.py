@@ -30,7 +30,13 @@ class AgentCancellationTests(TestCase):
 
     def test_skill_process_is_terminated(self):
         with tempfile.TemporaryDirectory() as tmp:
-            command = f'{sys.executable} -c "import time; time.sleep(30)"'
+            scripts_dir = Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "sleep.py").write_text(
+                "import time\ntime.sleep(30)\n",
+                encoding="utf-8",
+            )
+            command = f'"{sys.executable}" scripts/sleep.py'
             with self.assertRaises(AgentRunCancelled):
                 run_shell_command(
                     Path(tmp),
@@ -61,6 +67,44 @@ class AgentCancellationTests(TestCase):
                     allow_images=True,
                     cancel_check=lambda: next(checks),
                 )
+
+    def test_agent_preserves_reference_blocks_and_usage_source(self):
+        active_skills = [mock.MagicMock()]
+        llm_reply = {
+            "content": "完成",
+            "error": "",
+            "configured": True,
+            "model": "test-model",
+        }
+        with (
+            mock.patch("apps.core.agent_chat.resolve_skills", return_value=active_skills),
+            mock.patch("apps.core.agent_chat.record_skill_usage") as record_usage,
+            mock.patch("apps.core.agent_chat.try_execute_skill_scripts", return_value=[]),
+            mock.patch("apps.core.agent_chat.format_script_outputs", return_value=""),
+            mock.patch("apps.core.agent_chat.diagnose_skill_execution", return_value=""),
+            mock.patch("apps.core.agent_chat.skills_payload", return_value=[]),
+            mock.patch("apps.core.agent_chat.build_skill_system_block", return_value=""),
+            mock.patch("apps.core.agent_chat.gather_knowledge", return_value=""),
+            mock.patch("apps.core.agent_chat.search_graph", return_value={"refs": []}),
+            mock.patch(
+                "apps.core.agent_chat.read_wecom_document",
+                return_value={"attempted": False, "content": "", "error": ""},
+            ),
+            mock.patch("apps.core.agent_chat.vision_image_parts", return_value=[]),
+            mock.patch("apps.core.agent_chat.image_svc.detect_image_intent", return_value="none"),
+            mock.patch("apps.core.agent_chat.llm.chat_messages_result", return_value=llm_reply) as chat,
+            mock.patch("apps.core.agent_chat.llm.llm_available", return_value=True),
+        ):
+            result = run_chat(
+                "继续任务",
+                usage_source="direct",
+                extra_reference_blocks=["历史任务事实：预算 20 万"],
+            )
+
+        self.assertTrue(result["ok"])
+        record_usage.assert_called_once_with(active_skills, None, source="direct")
+        messages = chat.call_args.args[1]
+        self.assertIn("历史任务事实：预算 20 万", messages[-1]["content"])
 
     @mock.patch("apps.core.agent_chat.llm.llm_available", return_value=True)
     @mock.patch("apps.core.agent_chat.llm.chat_messages_result")

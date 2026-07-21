@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosProgressEvent } from "axios";
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
 
@@ -92,6 +93,7 @@ export interface AdminUserRow {
   username: string;
   email: string;
   display_name: string;
+  avatar_url: string;
   is_active: boolean;
   is_staff: boolean;
   is_superuser: boolean;
@@ -102,12 +104,20 @@ export interface AdminUserRow {
   organization_id: number | null;
   organization_name: string;
   organization_role: "owner" | "admin" | "member" | "";
+  organizations: Array<{
+    id: number;
+    name: string;
+    role: "owner" | "admin" | "member";
+    roleLabel: string;
+    isCurrent: boolean;
+  }>;
 }
 
 export interface OrganizationMember {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "owner" | "admin" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -122,32 +132,40 @@ export interface OrganizationSummary {
   memberCount: number;
   role: "owner" | "admin" | "member" | "";
   canManage: boolean;
+  isCurrent: boolean;
+  canSwitch: boolean;
   createdAt: string | null;
 }
 
-export const getCurrentOrganization = () =>
+export const getCurrentOrganization = (organizationId?: number) =>
   api.get<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
+    { params: organizationId ? { organizationId } : {} },
   ).then((r) => r.data);
-export const updateCurrentOrganization = (name: string) =>
+export const switchCurrentOrganization = (organizationId: number) =>
+  api.post<{ ok: boolean; organization: OrganizationSummary; user: AuthUser }>(
+    "/auth/organization/switch/",
+    { organizationId },
+  ).then((r) => r.data);
+export const updateCurrentOrganization = (name: string, organizationId?: number) =>
   api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
-    { name },
+    { name, organizationId },
   ).then((r) => r.data);
-export const transferOrganizationOwnership = (targetUserId: number) =>
+export const transferOrganizationOwnership = (targetUserId: number, organizationId?: number) =>
   api.post<{
     ok: boolean;
     organization: OrganizationSummary;
     previousOwner: { id: number; username: string; role: "admin" };
     newOwner: { id: number; username: string; role: "owner" };
     transferredAt: string;
-  }>("/auth/organization/transfer-ownership/", { targetUserId }).then((r) => r.data);
-export const removeOrganizationMember = (userId: number) =>
+  }>("/auth/organization/transfer-ownership/", { targetUserId, organizationId }).then((r) => r.data);
+export const removeOrganizationMember = (userId: number, organizationId?: number) =>
   api.delete<{
     ok: boolean;
     organization: OrganizationSummary;
     removedUser: { id: number; username: string };
-  }>(`/auth/organization/members/${userId}/`).then((r) => r.data);
+  }>(`/auth/organization/members/${userId}/`, { params: organizationId ? { organizationId } : {} }).then((r) => r.data);
 export const createOrganization = (body: { name: string; ownerUserId: number }) =>
   api.post<{
     ok: boolean;
@@ -167,7 +185,9 @@ export const assignUsersToOrganization = (body: {
     ok: boolean;
     organization: OrganizationSummary;
     assignedCount: number;
-    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
+    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member"; isCurrent: boolean }>;
+    skippedCount: number;
+    skippedUsers: Array<{ id: number; username: string }>;
   }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
 export type TeamKind = "platform" | "enterprise";
@@ -176,6 +196,7 @@ export interface TeamMemberRow {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "lead" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -202,6 +223,7 @@ export interface TeamUserOption {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   wecomBound: boolean;
 }
 
@@ -239,9 +261,9 @@ export const listTeamUserOptions = (params: { kind: TeamKind; organizationId?: n
     params: params.organizationId ? { kind: params.kind, organizationId: params.organizationId } : { kind: params.kind },
   }).then((r) => r.data);
 
-export const listAdminUsers = (q?: string) =>
-  api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
-    params: q ? { q } : {},
+export const listAdminUsers = (q?: string, organizationId?: number) =>
+  api.get<{ ok: boolean; count: number; organization?: OrganizationSummary | null; results: AdminUserRow[] }>("/auth/admin/users/", {
+    params: { ...(q ? { q } : {}), ...(organizationId ? { organizationId } : {}) },
   }).then((r) => r.data);
 
 export const createAdminUser = (body: {
@@ -291,6 +313,7 @@ export interface UserWeComBindingSummary {
   weComUserId: string;
   weComMember: string;
   failureReason: string;
+  statusHint?: string;
 }
 
 export interface UserProfileSettings {
@@ -311,6 +334,7 @@ export interface WeComBindingRow {
   id: number;
   platformUserId: number;
   platformUser: string;
+  platformAvatar: string;
   phoneMasked: string;
   weComUserId: string;
   weComMember: string;
@@ -404,6 +428,8 @@ export interface KnowledgeBaseItem {
   id: number;
   template: number | null;
   owner_username?: string;
+  owner_user_id?: number | null;
+  can_edit?: boolean;
   name: string;
   description: string;
   category: string;
@@ -488,7 +514,7 @@ export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: strin
 export const uploadKnowledgeFile = (
   knowledgeBaseId: number,
   file: File,
-  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number; onUploadProgress?: (event: AxiosProgressEvent) => void },
 ) => {
   const form = new FormData();
   form.append("file", file);
@@ -504,14 +530,18 @@ export const uploadKnowledgeFile = (
   }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
     headers: { "Content-Type": "multipart/form-data" },
     timeout: 60_000,
+    onUploadProgress: body?.onUploadProgress,
   }).then((r) => r.data);
 };
 
 export const getKnowledgeJob = (jobId: number) =>
   api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
-export const getKnowledgeFileChunks = (fileId: number) =>
-  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number; page_size?: number }) =>
+  api.get<{ file: KnowledgeFileItem; count: number; page: number; page_size: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`, { params })
     .then((r) => r.data);
+
+export const downloadKnowledgeFile = (fileId: number) =>
+  api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);
 
 export const deleteKnowledgeFile = (fileId: number) =>
   api.delete(`/knowledge/files/${fileId}/`);
@@ -546,9 +576,34 @@ export const uploadSkillAsset = (file: File, adopt = true) => {
   }).then((r) => r.data);
 };
 
+export const uploadSkillAssetFolder = (files: File[], adopt = true) => {
+  const form = new FormData();
+  files.forEach((file) => {
+    form.append("files", file, file.name);
+    form.append("paths", file.webkitRelativePath || file.name);
+  });
+  if (adopt) form.append("adopt", "1");
+  return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  }).then((r) => r.data);
+};
+
 export const getSkillAssets = () =>
   api.get<{ count: number; results: SkillAssetItem[]; cos_enabled: boolean }>("/skills/assets/")
     .then((r) => r.data);
+
+export const getSkillAnalytics = () =>
+  api.get<SkillAnalyticsResponse>("/skills/analytics/").then((r) => r.data);
+
+export const updateSkillAssetOwner = (assetId: number, ownerId: number | null) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/owner/`, {
+    owner_id: ownerId,
+  }).then((r) => r.data);
+
+export const updateSkillAssetVisibility = (assetId: number, visibility: "shared" | "private") =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem; revoked_count: number }>(`/skills/assets/id/${assetId}/visibility/`, {
+    visibility,
+  }).then((r) => r.data);
 
 export const adoptSkillAsset = (skillId: string) =>
   api.post<{ ok: boolean; personal: UserSkillItem; asset: SkillAssetItem }>(`/skills/assets/${skillId}/adopt/`)
@@ -717,11 +772,14 @@ export interface UserSkillItem {
   updated_at: string;
   raw_content?: string;
   instructions?: string;
+  owner_id?: number | null;
+  owner?: string;
 }
 
 export interface SkillAssetItem {
   id: number;
   skill_id: string;
+  visibility: "shared" | "private";
   name: string;
   description: string;
   original_filename: string;
@@ -734,8 +792,68 @@ export interface SkillAssetItem {
   package_file_count?: number;
   has_scripts?: boolean;
   storage: "cos" | "local";
+  uploader?: string;
+  is_uploader?: boolean;
+  owner_id?: number | null;
+  owner?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface SkillAnalyticsSummary {
+  total_skills: number;
+  total_invocations: number;
+  invocations_30d: number;
+  active_skills_30d: number;
+  utilization_rate: number;
+  shared_skills: number;
+  shared_adoptions: number;
+  owner_count: number;
+  responsibility_coverage: number;
+}
+
+export interface SkillAnalyticsRow {
+  asset_id: number;
+  skill_id: string;
+  name: string;
+  description: string;
+  visibility: "shared" | "private";
+  owner_id: number | null;
+  owner: string;
+  owner_team: string;
+  uploader: string;
+  is_uploader: boolean;
+  adoption_count: number;
+  enabled_count: number;
+  usage_count_30d: number;
+  unique_users_30d: number;
+  last_used_at: string | null;
+  last_used_by: string;
+  last_source: string;
+  recent_usage: SkillUsageEventItem[];
+  updated_at: string;
+}
+
+export interface SkillUsageEventItem {
+  id: number;
+  skill_id: string;
+  skill_name: string;
+  user_id: number | null;
+  user: string;
+  source: "agent" | "collab" | "direct";
+  source_label: string;
+  used_at: string;
+}
+
+export interface SkillAnalyticsResponse {
+  scope_label: string;
+  can_manage: boolean;
+  summary: SkillAnalyticsSummary;
+  skills: SkillAnalyticsRow[];
+  ranking: SkillAnalyticsRow[];
+  trend: Array<{ date: string; label: string; count: number }>;
+  recent_usage: SkillUsageEventItem[];
+  owner_options: Array<{ id: number; name: string; username: string }>;
 }
 
 export interface SopStep {
@@ -855,6 +973,58 @@ export const getAnomalies = () =>
 export const getAuditLogs = () =>
   api.get("/audit-logs/").then((r) => r.data);
 
+export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
+export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
+export interface AuditTrendPoint { date: string; count: number }
+export interface AuditDistribution { key: string; label: string; count: number; pct: number }
+export interface AuditTopUser { name: string; roleLabel: string; avatarUrl?: string; actor: string; count: number }
+export interface AuditRow {
+  id: number;
+  time: string;
+  user: { name: string; roleLabel: string; avatarUrl?: string };
+  operationType: { key: string; label: string };
+  content: string;
+  detail: string;
+  resourceType: string;
+  resourceName: string;
+  ip: string;
+  status: { key: string; label: string };
+  traceId: string;
+}
+export interface AuditOverview {
+  ok: boolean;
+  range: { start: string; end: string };
+  kpis: {
+    totalOps: AuditKpi;
+    totalUsers: AuditKpi;
+    errorOps: AuditKpi;
+    sensitiveOps: AuditKpi;
+    activeUsers: AuditKpi;
+  };
+  trend: AuditTrendPoint[];
+  distribution: AuditDistribution[];
+  topUsers: AuditTopUser[];
+  rows: AuditRow[];
+  pagination: { page: number; pageSize: number; total: number };
+  filters: {
+    operationTypes: { value: string; label: string }[];
+    statuses: { value: string; label: string }[];
+    users: { value: string; label: string }[];
+  };
+}
+export const getAuditOverview = (params: {
+  category?: AuditLogCategory;
+  start?: string;
+  end?: string;
+  type?: string;
+  status?: string;
+  user?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) =>
+  api.get<AuditOverview>("/audit/overview/", { params }).then((r) => r.data);
+
 // ================= MCP ?????? =================
 export interface McpServer {
   id: string;
@@ -873,7 +1043,10 @@ export interface McpServer {
   env_keys: string[];
   placeholders?: Record<string, string>;
   hints?: string[];
-  config_source: "none" | "ui" | "env" | "personal";
+  config_source: "none" | "ui" | "env" | "personal" | "organization";
+  organization_id?: number | null;
+  organization_name?: string;
+  can_manage?: boolean;
   updated_at?: string | null;
   status: "unconfigured" | "configured" | "reachable" | "unreachable" | "error" | "disabled";
 }
@@ -1618,8 +1791,13 @@ export interface LoopDetectDiagnostics {
   }[];
 }
 
-export const listLoops = (status?: string) =>
-  api.get<{ results: FeedbackLoop[] }>("/loops/", { params: status ? { status } : {} }).then((r) => r.data);
+export const listLoops = (params?: { status?: string; includeMembers?: boolean }) =>
+  api.get<{ results: FeedbackLoop[] }>("/loops/", {
+    params: {
+      ...(params?.status ? { status: params.status } : {}),
+      ...(params?.includeMembers ? { include_members: 1 } : {}),
+    },
+  }).then((r) => r.data);
 export const getLoop = (id: number) =>
   api.get<FeedbackLoop>(`/loops/${id}/`).then((r) => r.data);
 export const createLoop = (body: {
@@ -1898,10 +2076,14 @@ export const listCollabRooms = (params?: { status?: string }) =>
 export const createCollabRoom = (body: {
   title?: string;
   peer_username?: string;
+  peer_bot_id?: string;
   peer_usernames?: string[];
   room_kind?: "dm" | "group";
 }) =>
   api.post<CollabRoom>("/collab/rooms/", body).then((r) => r.data);
+
+export const createXiaoceTask = (body: { title?: string } = {}) =>
+  api.post<CollabRoom>("/collab/xiaoce-tasks/", body).then((response) => response.data);
 
 export const getCollabRoom = (id: string) =>
   api.get<CollabRoom>(`/collab/rooms/${id}/`).then((r) => r.data);
@@ -2022,8 +2204,15 @@ export type CollabSyncEvent = {
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
   xiaoce_runs?: XiaoceRun[];
+  read_receipts?: CollabReadReceipt[];
   after_id?: number;
   after_insight_id?: number;
+};
+
+export type CollabReadReceipt = {
+  user_id: number;
+  last_read_message_id: number;
+  read_at: string;
 };
 
 /** ???? WebSocket??????? :8000? */
@@ -2513,6 +2702,10 @@ export type SmartSheetListItem = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   column_count: number;
   row_count: number;
   created_at: string;
@@ -2523,6 +2716,10 @@ export type SmartSheetDetail = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   columns: SmartColumn[];
   rows: SmartRow[];
   views: SmartView[];
@@ -2531,7 +2728,7 @@ export type SmartSheetDetail = {
   updated_at: string;
 };
 
-export type SmartViewType = "grid" | "kanban" | "form";
+export type SmartViewType = "grid" | "kanban" | "form" | "dashboard";
 
 export type SmartView = {
   id: number;
@@ -2634,4 +2831,27 @@ export const exportSmartSheetCsv = (sheetId: number) =>
   api.get<Blob>(`/smarttable/sheets/${sheetId}/export.csv`, { responseType: "blob" }).then((r) => r.data);
 
 export const importSmartSheetCsv = (sheetId: number, csvText: string) =>
-  api.post<{ ok: boolean; created: number }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+  api.post<{ ok: boolean; created: number; source?: string }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+
+export const importSmartSheetFile = (sheetId: number, file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post<{ ok: boolean; created: number; source?: string; error?: string }>(
+      `/smarttable/sheets/${sheetId}/import.csv`,
+      form,
+    )
+    .then((r) => r.data);
+};
+
+export const importSmartSheetNew = (file: File, name?: string) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (name?.trim()) form.append("name", name.trim());
+  return api
+    .post<SmartSheetDetail & { import_meta?: { source?: string; row_count?: number; column_count?: number } }>(
+      "/smarttable/sheets/import/",
+      form,
+    )
+    .then((r) => r.data);
+};

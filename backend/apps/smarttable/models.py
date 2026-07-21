@@ -3,7 +3,7 @@ from django.db import models
 
 
 class SmartSheet(models.Model):
-    """一张多维表格（数据表）。"""
+    """一张多维表格（数据表）。同组织成员可读可写，删除仅创建者。"""
 
     name = models.CharField("名称", max_length=120)
     description = models.CharField("说明", max_length=500, blank=True, default="")
@@ -13,6 +13,15 @@ class SmartSheet(models.Model):
         related_name="smart_sheets",
         verbose_name="创建者",
     )
+    organization = models.ForeignKey(
+        "core.Organization",
+        on_delete=models.CASCADE,
+        related_name="smart_sheets",
+        verbose_name="所属组织",
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -20,6 +29,9 @@ class SmartSheet(models.Model):
         verbose_name = "智能表格"
         verbose_name_plural = "智能表格"
         ordering = ["-updated_at", "-id"]
+        indexes = [
+            models.Index(fields=["organization", "-updated_at"], name="smartsheet_org_updated"),
+        ]
 
     def __str__(self):
         return self.name
@@ -88,6 +100,7 @@ class SmartView(models.Model):
         GRID = "grid", "表格"
         KANBAN = "kanban", "看板"
         FORM = "form", "表单"
+        DASHBOARD = "dashboard", "仪表盘"
 
     sheet = models.ForeignKey(
         SmartSheet,

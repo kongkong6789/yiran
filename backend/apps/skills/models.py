@@ -53,12 +53,20 @@ class SkillAsset(models.Model):
         on_delete=models.CASCADE,
         verbose_name="上传者",
     )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="owned_skill_assets",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="责任人",
+    )
     skill_id = models.CharField("Skill ID", max_length=64, db_index=True)
     visibility = models.CharField(
         "可见范围",
         max_length=16,
         choices=Visibility.choices,
-        default=Visibility.SHARED,
+        default=Visibility.PRIVATE,
         db_index=True,
     )
     name = models.CharField("名称", max_length=128)
@@ -90,3 +98,45 @@ class SkillAsset(models.Model):
 
     def __str__(self):
         return f"asset:{self.uploader_id}:{self.skill_id}"
+
+
+class SkillUsageEvent(models.Model):
+    """Skill 被实际加载执行时写入的轻量审计事件。"""
+
+    class Source(models.TextChoices):
+        AGENT = "agent", "Agent 对话"
+        COLLAB = "collab", "协作会话"
+        DIRECT = "direct", "直接调用"
+
+    skill_id = models.CharField("Skill ID", max_length=64, db_index=True)
+    skill_name = models.CharField("技能名称", max_length=128, blank=True, default="")
+    asset = models.ForeignKey(
+        SkillAsset,
+        related_name="usage_events",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="来源技能",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="skill_usage_events",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="调用人",
+    )
+    source = models.CharField("调用方式", max_length=16, choices=Source.choices, default=Source.AGENT)
+    used_at = models.DateTimeField("调用时间", auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "Skill 使用事件"
+        verbose_name_plural = "Skill 使用事件"
+        ordering = ["-used_at", "-id"]
+        indexes = [
+            models.Index(fields=["skill_id", "used_at"], name="skill_usage_skill_time"),
+            models.Index(fields=["user", "used_at"], name="skill_usage_user_time"),
+        ]
+
+    def __str__(self):
+        return f"{self.skill_id}:{self.user_id}:{self.used_at.isoformat()}"

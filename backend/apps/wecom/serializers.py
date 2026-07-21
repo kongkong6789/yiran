@@ -125,6 +125,7 @@ class WeComManagedContactSerializer(WeComContactSerializer):
 class UserWeComBindingSerializer(serializers.ModelSerializer):
     platformUserId = serializers.IntegerField(source="platform_user_id", read_only=True)
     platformUser = serializers.SerializerMethodField()
+    platformAvatar = serializers.SerializerMethodField()
     phoneMasked = serializers.SerializerMethodField()
     weComUserId = serializers.CharField(source="wecom_userid", read_only=True)
     weComMember = serializers.SerializerMethodField()
@@ -142,7 +143,7 @@ class UserWeComBindingSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserWeComBinding
         fields = [
-            "id", "platformUserId", "platformUser", "phoneMasked", "weComUserId",
+            "id", "platformUserId", "platformUser", "platformAvatar", "phoneMasked", "weComUserId",
             "weComMember", "weComAvatar", "weComDepartment", "weComPosition", "weComAvailable",
             "status", "statusLabel", "source", "sourceLabel",
             "matchedAt", "verifiedAt", "nextRetryAt", "failureReason", "retry_count",
@@ -151,6 +152,10 @@ class UserWeComBindingSerializer(serializers.ModelSerializer):
     def get_platformUser(self, obj):
         profile = getattr(obj.platform_user, "settings", None)
         return (getattr(profile, "display_name", "") or obj.platform_user.username).strip()
+
+    def get_platformAvatar(self, obj):
+        profile = getattr(obj.platform_user, "settings", None)
+        return getattr(profile, "avatar_url", "") or ""
 
     def get_phoneMasked(self, obj):
         profile = getattr(obj.platform_user, "settings", None)

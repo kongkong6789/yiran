@@ -1,6 +1,7 @@
 """Loops API:回路 CRUD、闭环检测、人工确认。"""
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.db.models import Count, Prefetch
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -27,7 +28,20 @@ def _rel_brief(r: OntRelation) -> dict:
 
 
 def _loop_dict(loop: FeedbackLoop, *, detail: bool = False) -> dict:
-    members = list(loop.members.select_related("relation__source", "relation__target").order_by("sequence"))
+    prefetched_members = getattr(loop, "_api_members", None)
+    if prefetched_members is not None:
+        members = prefetched_members
+        member_count = len(members)
+    elif detail:
+        members = list(loop.members.select_related("relation__source", "relation__target").order_by("sequence"))
+        member_count = len(members)
+    else:
+        members = []
+        member_count = (
+            loop._api_member_count
+            if hasattr(loop, "_api_member_count")
+            else loop.members.count()
+        )
     data = {
         "id": loop.id,
         "code": loop.code,
@@ -38,7 +52,7 @@ def _loop_dict(loop: FeedbackLoop, *, detail: bool = False) -> dict:
         "status": loop.status,
         "confirmed_by": loop.confirmed_by,
         "confirmed_at": loop.confirmed_at.isoformat() if loop.confirmed_at else None,
-        "member_count": len(members),
+        "member_count": member_count,
         "created_at": loop.created_at.isoformat(),
         "updated_at": loop.updated_at.isoformat(),
     }
@@ -66,10 +80,20 @@ def _apply_members(loop: FeedbackLoop, relation_ids: list[int]) -> None:
 def loops(request):
     if request.method == "GET":
         status_filter = request.query_params.get("status")
-        qs = FeedbackLoop.objects.all()
+        include_members = request.query_params.get("include_members") in {"1", "true", "yes"}
+        qs = FeedbackLoop.objects.annotate(_api_member_count=Count("members"))
         if status_filter:
             qs = qs.filter(status=status_filter)
-        return Response({"results": [_loop_dict(x) for x in qs[:200]]})
+        if include_members:
+            qs = qs.prefetch_related(Prefetch(
+                "members",
+                queryset=LoopMember.objects.select_related(
+                    "relation__source", "relation__target"
+                ).order_by("sequence"),
+                to_attr="_api_members",
+            ))
+        rows = list(qs[:200])
+        return Response({"results": [_loop_dict(x, detail=include_members) for x in rows]})
 
     d = request.data
     name = (d.get("name") or "").strip()

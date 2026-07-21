@@ -91,32 +91,46 @@ def upload_skill_package(
 
     client = _client()
     manifest: list[dict[str, Any]] = []
-    for rel_path, payload in files:
-        key = build_skill_key(user_id, skill_id, rel_path)
-        content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=payload,
-            ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
-            ContentType=content_type,
-        )
-        manifest.append({
-            "path": rel_path,
-            "cos_key": key,
-            "cos_url": public_url(bucket, key),
-            "size": len(payload),
-        })
+    try:
+        for rel_path, payload in files:
+            key = build_skill_key(user_id, skill_id, rel_path)
+            content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=payload,
+                ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
+                ContentType=content_type,
+            )
+            manifest.append({
+                "path": rel_path,
+                "cos_key": key,
+                "cos_url": public_url(bucket, key),
+                "size": len(payload),
+            })
+    except Exception:
+        try:
+            delete_skill_package(bucket, manifest)
+        except Exception:
+            pass
+        raise
     return {"bucket": bucket, "manifest": manifest}
 
 
 def delete_skill_package(bucket: str, manifest: list[dict]) -> None:
     if not cos_enabled() or not bucket:
         return
+    first_error = None
     for item in manifest or []:
         key = item.get("cos_key") or ""
         if key:
-            delete_object(bucket, key)
+            try:
+                delete_object(bucket, key)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def upload_skill_bytes(
@@ -161,6 +175,40 @@ def delete_object(bucket: str, key: str) -> None:
 
 
 def fetch_skill_bytes(bucket: str, key: str) -> bytes:
+    client = _client()
+    resp = client.get_object(Bucket=bucket, Key=key)
+    return resp["Body"].get_raw_stream().read()
+
+
+def upload_media_bytes(key: str, data: bytes, *, content_type: str | None = None) -> dict[str, Any]:
+    if not cos_enabled():
+        raise RuntimeError("Tencent COS is not enabled; configure USE_TENCENT_COS and credentials")
+
+    bucket = (getattr(settings, "TENCENT_COS_BUCKET", "") or "").strip()
+    if not bucket:
+        raise RuntimeError("TENCENT_COS_BUCKET is not configured")
+
+    normalized_key = "/".join(part for part in key.replace("\\", "/").split("/") if part)
+    prefix = _media_prefix()
+    if prefix and not normalized_key.startswith(f"{prefix}/"):
+        normalized_key = f"{prefix}/{normalized_key}"
+    resolved_content_type = content_type or mimetypes.guess_type(normalized_key)[0] or "application/octet-stream"
+    _client().put_object(
+        Bucket=bucket,
+        Key=normalized_key,
+        Body=data,
+        ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
+        ContentType=resolved_content_type,
+    )
+    return {
+        "bucket": bucket,
+        "cos_key": normalized_key,
+        "cos_url": public_url(bucket, normalized_key),
+        "storage": "cos",
+    }
+
+
+def fetch_object_bytes(bucket: str, key: str) -> bytes:
     client = _client()
     resp = client.get_object(Bucket=bucket, Key=key)
     return resp["Body"].get_raw_stream().read()

@@ -22,6 +22,8 @@ class XiaoceApiTests(APITestCase):
         self.addCleanup(realtime_patcher.stop)
         self.user = User.objects.create_user("api-owner", password="pw")
         self.other = User.objects.create_user("api-other", password="pw")
+        self.colleague = User.objects.create_user("api-colleague", password="pw")
+        self.staff = User.objects.create_user("api-staff", password="pw", is_staff=True)
         bot = get_xiaoce_bot_user()
         self.bot = bot
         self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
@@ -43,6 +45,102 @@ class XiaoceApiTests(APITestCase):
     @property
     def messages_url(self):
         return f"/api/collab/rooms/{self.room.id}/messages/"
+
+    @property
+    def tasks_url(self):
+        return "/api/collab/xiaoce-tasks/"
+
+    def test_create_xiaoce_task_always_creates_an_independent_room(self):
+        first = self.client.post(self.tasks_url, {}, format="json")
+        second = self.client.post(self.tasks_url, {}, format="json")
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.data["id"], second.data["id"])
+        self.assertEqual(first.data["title"], "小策bot（新任务）")
+        self.assertEqual(second.data["title"], "小策bot（新任务）")
+        for payload in (first.data, second.data):
+            self.assertEqual(payload["room_kind"], "dm")
+            self.assertEqual(payload["display_title"], "小策bot（新任务）")
+            self.assertEqual(len(payload["messages"]), 1)
+            self.assertEqual(payload["messages"][0]["ai_kind"], "xiaoce")
+
+    def test_create_xiaoce_task_trims_and_limits_custom_title(self):
+        response = self.client.post(
+            self.tasks_url,
+            {"title": f"  {'GMV' * 60}  "},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.data["title"]), 120)
+        self.assertTrue(response.data["title"].startswith("GMV"))
+
+    def test_room_list_uses_task_title_only_for_xiaoce_direct_messages(self):
+        task = self.client.post(
+            self.tasks_url,
+            {"title": "小策bot（GMV运算处理任务）"},
+            format="json",
+        ).data
+        normal = self.client.post(
+            "/api/collab/rooms/",
+            {"peer_username": self.colleague.username, "room_kind": "dm", "title": "内部标题"},
+            format="json",
+        ).data
+
+        listed = self.client.get("/api/collab/rooms/").data["results"]
+        by_id = {row["id"]: row for row in listed}
+        self.assertEqual(by_id[task["id"]]["display_title"], "小策bot（GMV运算处理任务）")
+        self.assertEqual(by_id[normal["id"]]["display_title"], self.colleague.username)
+
+    def test_staff_observer_sees_active_room_run_while_ordinary_outsider_is_isolated(self):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="long running task",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        self.client.force_authenticate(self.staff)
+        detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
+        listed = self.client.get("/api/collab/rooms/")
+        listed_room = next(row for row in listed.data["results"] if row["id"] == str(self.room.id))
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertIsNotNone(detail.data["active_xiaoce_run"])
+        self.assertEqual(detail.data["active_xiaoce_run"]["id"], str(run.id))
+        self.assertEqual(detail.data["active_xiaoce_run"]["status"], "running")
+        self.assertEqual(listed_room["active_xiaoce_run"]["id"], str(run.id))
+
+        self.client.force_authenticate(self.other)
+        self.assertEqual(
+            self.client.get(f"/api/collab/rooms/{self.room.id}/").status_code,
+            403,
+        )
+        ordinary_ids = {
+            row["id"] for row in self.client.get("/api/collab/rooms/").data["results"]
+        }
+        self.assertNotIn(str(self.room.id), ordinary_ids)
+
+    def test_existing_room_endpoint_reuses_the_latest_xiaoce_task(self):
+        first = self.client.post(self.tasks_url, {"title": "任务一"}, format="json").data
+        second = self.client.post(self.tasks_url, {"title": "任务二"}, format="json").data
+
+        opened = self.client.post(
+            "/api/collab/rooms/",
+            {"peer_username": "小策bot", "room_kind": "dm"},
+            format="json",
+        )
+
+        self.assertEqual(opened.status_code, 200)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(opened.data["id"], second["id"])
 
     @patch("apps.collab.views.threading.Thread")
     def test_send_returns_progress_run_and_room_detail_recovers_it(self, thread_cls):
@@ -202,6 +300,52 @@ class XiaoceApiTests(APITestCase):
         self.client.force_authenticate(self.other)
         self.assertEqual(self.client.post(url).status_code, 404)
 
+    @patch("apps.collab.views.threading.Thread")
+    @patch("apps.collab.views.ws_push.publish_sync")
+    def test_delete_running_xiaoce_task_prevents_late_worker_output(
+        self,
+        publish,
+        _thread_cls,
+    ):
+        run_id = uuid.uuid4()
+        self.client.post(
+            self.messages_url,
+            {"content": "长任务", "run_id": str(run_id)},
+            format="json",
+        )
+        publish.reset_mock()
+
+        response = self.client.delete(f"/api/collab/rooms/{self.room.id}/")
+        views._run_xiaoce_reply_async(run_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(CollabRoom.objects.filter(id=self.room.id).exists())
+        self.assertFalse(XiaoceRun.objects.filter(id=run_id).exists())
+        publish.assert_not_called()
+
+    def test_xiaoce_task_rename_rejects_blank_and_has_no_group_announcement(self):
+        before = CollabMessage.objects.filter(room=self.room, msg_type="system").count()
+
+        renamed = self.client.patch(
+            f"/api/collab/rooms/{self.room.id}/",
+            {"title": "  小策bot（GMV运算处理任务）  "},
+            format="json",
+        )
+        blank = self.client.patch(
+            f"/api/collab/rooms/{self.room.id}/",
+            {"title": "   "},
+            format="json",
+        )
+
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.data["title"], "小策bot（GMV运算处理任务）")
+        self.assertEqual(blank.status_code, 400)
+        self.assertEqual(blank.data["error"], "会话名称不能为空")
+        self.assertEqual(
+            CollabMessage.objects.filter(room=self.room, msg_type="system").count(),
+            before,
+        )
+
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_persists_final_process_snapshot(self, run_chat):
         trigger = CollabMessage.objects.create(
@@ -244,7 +388,7 @@ class XiaoceApiTests(APITestCase):
             content="方案代号是 Aurora，预算 20 万",
             msg_type="user",
         )
-        CollabMessage.objects.create(
+        snapshot_tail = CollabMessage.objects.create(
             room=context_room,
             sender=self.bot,
             content="下一步是确认供应商档期",
@@ -261,8 +405,15 @@ class XiaoceApiTests(APITestCase):
                     "id": str(context_room.id),
                     "title": context_room.title,
                     "message_count": 2,
+                    "last_message_id": snapshot_tail.id,
                 }],
             },
+        )
+        CollabMessage.objects.create(
+            room=context_room,
+            sender=self.user,
+            content="引用后新增的内容不应读取",
+            msg_type="user",
         )
         run = XiaoceRun.objects.create(
             id=uuid.uuid4(),
@@ -274,10 +425,12 @@ class XiaoceApiTests(APITestCase):
 
         views._run_xiaoce_reply_async(run.id)
 
+        self.assertEqual(run_chat.call_args.kwargs["usage_source"], "agent")
         block = run_chat.call_args.kwargs["extra_reference_blocks"][0]
         self.assertIn("方案代号是 Aurora", block)
         self.assertIn("下一步是确认供应商档期", block)
         self.assertIn(context_room.title, block)
+        self.assertNotIn("引用后新增的内容不应读取", block)
 
         run_chat.reset_mock()
         followup = CollabMessage.objects.create(

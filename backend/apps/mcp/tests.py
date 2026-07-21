@@ -6,7 +6,10 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
+from rest_framework.test import APIClient
 
+from apps.core.models import OrganizationMembership
+from apps.core.organizations import assign_user_to_organization, create_personal_organization
 from .models import McpServerConfig
 from .nas_files import (
     NasFileError,
@@ -129,8 +132,13 @@ class NasDownloadEndpointTests(TestCase):
         self.file = self.root / "下载测试.txt"
         self.file.write_text("download works", encoding="utf-8")
         self.user = get_user_model().objects.create_user(username="nas-test-user")
+        self.organization = create_personal_organization(
+            self.user,
+            name="NAS 测试企业",
+        ).organization
         McpServerConfig.objects.create(
             user=self.user,
+            organization=self.organization,
             server_id="nas",
             command="npx",
             args=["-y", "@modelcontextprotocol/server-filesystem", str(self.root)],
@@ -150,3 +158,73 @@ class NasDownloadEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(b"".join(response.streaming_content), b"download works")
         self.assertIn("attachment", response["Content-Disposition"])
+
+
+class McpEnterpriseIsolationTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.owner = User.objects.create_user(username="mcp-org-owner")
+        self.member = User.objects.create_user(username="mcp-org-member")
+        self.other_owner = User.objects.create_user(username="mcp-other-owner")
+        self.organization = create_personal_organization(
+            self.owner,
+            name="连接器企业 A",
+        ).organization
+        assign_user_to_organization(
+            self.member,
+            self.organization,
+            role=OrganizationMembership.Role.MEMBER,
+        )
+        self.other_organization = create_personal_organization(
+            self.other_owner,
+            name="连接器企业 B",
+        ).organization
+        McpServerConfig.objects.create(
+            organization=self.organization,
+            user=self.owner,
+            server_id="jackyun",
+            url="https://enterprise-a.example/mcp",
+        )
+        McpServerConfig.objects.create(
+            organization=self.other_organization,
+            user=self.other_owner,
+            server_id="jackyun",
+            url="https://enterprise-b.example/mcp",
+        )
+        self.client = APIClient()
+
+    def test_member_reads_enterprise_config_but_cannot_modify_it(self):
+        self.client.force_authenticate(self.member)
+        response = self.client.get("/api/mcp/servers/jackyun/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["url"], "https://enterprise-a.example/mcp")
+        self.assertEqual(response.data["organization_id"], self.organization.id)
+        self.assertFalse(response.data["can_manage"])
+
+        update = self.client.patch(
+            "/api/mcp/servers/jackyun/",
+            {"url": "https://forbidden.example/mcp"},
+            format="json",
+        )
+        self.assertEqual(update.status_code, 403)
+        self.assertEqual(
+            McpServerConfig.objects.get(organization=self.organization, server_id="jackyun").url,
+            "https://enterprise-a.example/mcp",
+        )
+
+    def test_owner_update_does_not_modify_another_enterprise(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            "/api/mcp/servers/jackyun/",
+            {"url": "https://enterprise-a-new.example/mcp", "enabled": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            McpServerConfig.objects.get(organization=self.organization, server_id="jackyun").url,
+            "https://enterprise-a-new.example/mcp",
+        )
+        self.assertEqual(
+            McpServerConfig.objects.get(organization=self.other_organization, server_id="jackyun").url,
+            "https://enterprise-b.example/mcp",
+        )
