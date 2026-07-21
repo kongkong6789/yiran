@@ -14,6 +14,10 @@ const chatSource = readFileSync(
   new URL("../src/pages/CollabRisk.tsx", import.meta.url),
   "utf8",
 );
+const liveSource = readFileSync(
+  new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
+  "utf8",
+);
 const monitorStyles = chatSource.slice(chatSource.indexOf("const css = `"));
 
 function sourceBetween(start: string, end: string) {
@@ -93,6 +97,18 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
   assert.doesNotMatch(chatSource, /EyeOutlined|旁观模式|管理员旁观|旁观者/);
   assert.match(chatSource, /className="collab-avatar-preview-modal"/);
   assert.match(chatSource, /消息会在这里直接打开，不再加载中转卡片/);
+});
+
+test("chat identity, feedback, and background activity stay polished", () => {
+  assert.match(monitorStyles, /\.collab-msg-aside\s*\{[\s\S]*?align-items:\s*flex-start;/);
+  assert.match(monitorStyles, /\.collab-msg\.ai \.collab-msg-name,[\s\S]*?justify-content:\s*flex-start;[\s\S]*?text-align:\s*left;/);
+  assert.match(monitorStyles, /\.collab-msg:not\(\.system\):hover \.collab-bubble/);
+  assert.match(monitorStyles, /@media \(prefers-reduced-motion:\s*reduce\)/);
+  assert.match(monitorStyles, /\.collab-summary-controls \.ant-btn-primary[\s\S]*?linear-gradient\(135deg, #6d5eea, #5145c7\)/);
+  assert.match(chatSource, /if \(document\.visibilityState !== "visible"\) return;/);
+  assert.match(liveSource, /const pageIsVisible = \(\) => document\.visibilityState === "visible"/);
+  assert.match(liveSource, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
+  assert.match(liveSource, /closeWebSocketQuietly\(ws\);[\s\S]*?ws = null;/);
 });
 
 test("monitor owns a single complete scroll surface", () => {

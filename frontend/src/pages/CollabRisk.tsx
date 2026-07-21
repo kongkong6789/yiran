@@ -1265,7 +1265,9 @@ export default function CollabRisk({
         ended,
       }).catch(() => undefined);
     };
-    const timer = window.setInterval(() => report(false), 15_000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") report(false);
+    }, 15_000);
     const onVisibility = () => {
       if (document.visibilityState === "hidden") report(false);
       else readActiveSinceRef.current = Date.now();
@@ -1282,6 +1284,7 @@ export default function CollabRisk({
   useEffect(() => {
     let stopped = false;
     const beat = async () => {
+      if (document.visibilityState !== "visible") return;
       try {
         await collabPresenceHeartbeat();
         if (stopped) return;
@@ -4000,6 +4003,11 @@ const css = `
   display: flex;
   align-items: center;
   gap: 10px;
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
 }
 .collab-room-item {
   padding: 4px 4px 4px 10px;
@@ -4063,6 +4071,19 @@ const css = `
   background: #edf3ff;
   border-color: #d9e4ff;
 }
+.collab-room-item.active {
+  box-shadow: 0 5px 16px rgba(49, 94, 251, 0.08);
+}
+.collab-room-item:active,
+.collab-contact-item:active {
+  transform: scale(0.988);
+}
+.collab-room-main:focus-visible,
+.collab-contact-item:focus-visible,
+.collab-room-del:focus-visible {
+  outline: 2px solid rgba(49, 94, 251, 0.62);
+  outline-offset: 2px;
+}
 .collab-room-body { flex: 1; min-width: 0; }
 .collab-room-top {
   display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 2px;
@@ -4117,6 +4138,18 @@ const css = `
   cursor: pointer;
   line-height: 0;
   flex-shrink: 0 !important;
+  transition:
+    transform 160ms cubic-bezier(.2, .8, .2, 1),
+    box-shadow 180ms ease;
+}
+.collab-msg-avatar:hover,
+.collab-avatar-hit:hover {
+  transform: translateY(-1px) scale(1.035);
+  box-shadow: 0 7px 16px rgba(25, 43, 74, 0.14);
+}
+.collab-msg-avatar:active,
+.collab-avatar-hit:active {
+  transform: scale(0.96);
 }
 .collab-msg-avatar-face {
   display: flex;
@@ -4149,6 +4182,9 @@ const css = `
   border-radius: 50%;
   line-height: 0;
   align-self: flex-start;
+  transition:
+    transform 160ms cubic-bezier(.2, .8, .2, 1),
+    box-shadow 180ms ease;
 }
 .collab-avatar-hit .ant-avatar {
   flex: none !important;
@@ -4322,32 +4358,36 @@ const css = `
 .collab-msg-aside {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   flex: 0 0 auto;
   max-width: 72px;
   align-self: flex-start;
 }
 .collab-msg.mine .collab-msg-aside {
-  align-items: center;
+  align-items: flex-end;
+  max-width: 92px;
 }
 .collab-msg-name {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 4px;
   max-width: 72px;
   font-size: 11px;
   font-weight: 600;
   color: #5c6b84;
   line-height: 1.2;
-  text-align: center;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .collab-msg.mine .collab-msg-name {
   color: #31405b;
+  justify-content: flex-end;
+  max-width: 92px;
+  text-align: right;
 }
 .collab-msg-name .collab-suggest-tag,
 .collab-msg-name .collab-interject-tag {
@@ -4370,6 +4410,10 @@ const css = `
   width: fit-content;
   max-width: 100%;
   box-shadow: 0 1px 3px rgba(11, 33, 68, 0.05);
+  transition:
+    transform 180ms cubic-bezier(.2, .8, .2, 1),
+    border-color 180ms ease,
+    box-shadow 180ms ease;
 }
 .collab-bubble-wrap {
   position: relative;
@@ -4915,11 +4959,16 @@ const css = `
   margin-top: 8px;
 }
 .collab-draft-examples {
-  margin: 0 0 10px;
-  padding: 10px 12px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
   border-radius: 12px;
   background: #f4f7fb;
   border: 1px solid #e4ebf4;
+  animation: collabCoachReveal 180ms cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes collabCoachReveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .collab-draft-examples.level-yellow {
   background: #fff8e8;
@@ -4940,12 +4989,12 @@ const css = `
   font-size: 12px;
   font-weight: 600;
   color: #5c6b84;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .collab-draft-examples-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .collab-draft-example-chip {
   display: flex;
@@ -4954,17 +5003,24 @@ const css = `
   gap: 2px;
   width: 100%;
   text-align: left;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border-radius: 10px;
   border: 1px solid #d7e2ef;
   background: #fff;
   cursor: pointer;
-  transition: border-color .15s, box-shadow .15s, background .15s;
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    border-color .16s,
+    box-shadow .16s,
+    background .16s;
 }
 .collab-draft-example-chip:hover {
   border-color: #C4924A;
   box-shadow: 0 4px 12px rgba(11, 33, 68, 0.06);
   background: #fffdf8;
+}
+.collab-draft-example-chip:active {
+  transform: scale(0.988);
 }
 .collab-draft-example-chip em {
   font-style: normal;
@@ -5064,12 +5120,16 @@ const css = `
   border-radius: 999px;
 }
 .collab-msg.ai .collab-bubble {
-  background: #ecfdf8;
-  border-color: #99f6e4;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(45, 185, 156, 0.11), transparent 78%),
+    rgba(245, 254, 251, 0.96);
+  border-color: rgba(50, 178, 151, 0.27);
 }
 .collab-msg.interject .collab-bubble {
-  background: #fffbeb;
-  border-color: #fcd34d;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(230, 160, 51, 0.13), transparent 78%),
+    rgba(255, 252, 242, 0.97);
+  border-color: rgba(217, 119, 6, 0.3);
   border-left: 3px solid #d97706;
 }
 .collab-msg.suggest .collab-bubble {
@@ -5303,6 +5363,20 @@ const css = `
 }
 .collab-summary-controls .ant-btn-primary {
   width: 100%;
+  border-color: #5b50d6 !important;
+  background: linear-gradient(135deg, #6d5eea, #5145c7) !important;
+  box-shadow: 0 7px 18px rgba(81, 69, 199, 0.2);
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    filter 160ms ease,
+    box-shadow 180ms ease;
+}
+.collab-summary-controls .ant-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: 0 9px 22px rgba(81, 69, 199, 0.26);
+}
+.collab-summary-controls .ant-btn-primary:active:not(:disabled) {
+  transform: scale(0.982);
 }
 .collab-summary-controls label {
   grid-column: 1 / -1;
@@ -6101,6 +6175,7 @@ const css = `
 .collab-msg.interject .collab-msg-aside {
   width: 92px;
   max-width: 92px;
+  align-items: flex-start;
 }
 .collab-msg.ai .collab-msg-name,
 .collab-msg.interject .collab-msg-name {
@@ -6108,6 +6183,32 @@ const css = `
   max-width: 92px;
   overflow: visible;
   text-overflow: clip;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .collab-msg:not(.system):hover .collab-bubble {
+    transform: translateY(-1px);
+    border-color: rgba(92, 110, 151, 0.24);
+    box-shadow:
+      0 10px 24px rgba(31, 45, 75, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collab-room-item,
+  .collab-contact-item,
+  .collab-msg-avatar,
+  .collab-avatar-hit,
+  .collab-bubble,
+  .collab-draft-examples,
+  .collab-draft-example-chip,
+  .collab-summary-controls .ant-btn-primary {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* 自己发送的消息使用更轻盈的蓝紫玻璃气泡，和他人消息形成稳定层级。 */
@@ -6129,6 +6230,20 @@ const css = `
   box-shadow:
     0 6px 18px rgba(31, 45, 75, 0.075),
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+:root[data-theme="dark"] .collab-msg.ai .collab-bubble {
+  border-color: rgba(76, 207, 180, 0.28);
+  color: var(--lc-ink);
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(45, 185, 156, 0.16), transparent 78%),
+    rgba(24, 48, 48, 0.96);
+}
+:root[data-theme="dark"] .collab-msg.interject .collab-bubble {
+  border-color: rgba(226, 161, 74, 0.34);
+  border-left-color: #d99132;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(230, 160, 51, 0.18), transparent 78%),
+    rgba(54, 42, 25, 0.96);
 }
 .collab-msg.mine .collab-bubble:not(:has(.collab-md.blocks)) p,
 .collab-msg.mine .collab-bubble:not(:has(.collab-md.blocks)) .collab-md {
