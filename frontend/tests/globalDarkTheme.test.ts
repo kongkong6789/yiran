@@ -151,6 +151,15 @@ test("every standard formal route has an explicit dark-mode root hook", () => {
   }
 });
 
+test("work, knowledge, and smart table avoid light-only islands in dark mode", () => {
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+
+  assert.match(css, /:root\[data-theme="dark"\] \.task-center-toolbar\s*\{[^}]*background:\s*var\(--lc-surface-raised\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.knowledge-console \.kb-dify-home,[^}]*\{[^}]*background:\s*var\(--lc-canvas\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.knowledge-console \.dify-kb-card\s*\{[^}]*background:\s*var\(--lc-surface\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.st-grid th,[^}]*\{[^}]*background:\s*var\(--lc-surface-raised\)/);
+});
+
 test("visualization theme supplies dark canvas, grid, labels, and tooltip", () => {
   const visual = getVisualizationTheme("dark");
 

@@ -9294,6 +9294,11 @@ body {
   background: var(--lc-selected) !important;
   box-shadow: inset 0 0 0 1px var(--lc-border-strong);
 }
+:root[data-theme="dark"] .task-center-toolbar {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
 
 :root[data-theme="dark"] .work-automation-notice,
 :root[data-theme="dark"] .work-automation-stats > div,
@@ -9326,6 +9331,11 @@ body {
 :root[data-theme="dark"] .knowledge-console::before {
   background: none !important;
 }
+:root[data-theme="dark"] .knowledge-console .kb-dify-home,
+:root[data-theme="dark"] .knowledge-console .kb-create-page {
+  color: var(--lc-ink);
+  background: var(--lc-canvas) !important;
+}
 :root[data-theme="dark"] .knowledge-console .create-topbar,
 :root[data-theme="dark"] .knowledge-console .create-body,
 :root[data-theme="dark"] .knowledge-console .knowledge-doc-window,
@@ -9340,6 +9350,42 @@ body {
   background: var(--lc-surface) !important;
   border-color: var(--lc-border-light) !important;
   box-shadow: none !important;
+}
+:root[data-theme="dark"] .knowledge-console .dify-kb-card {
+  color: var(--lc-ink);
+  background: var(--lc-surface) !important;
+  border-color: var(--lc-border-light) !important;
+  box-shadow: none;
+}
+:root[data-theme="dark"] .knowledge-console .dify-kb-card:hover,
+:root[data-theme="dark"] .knowledge-console .dify-kb-card.active {
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-strong) !important;
+  box-shadow: none;
+}
+:root[data-theme="dark"] .knowledge-console .dify-card-more {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-overlay) !important;
+  box-shadow: none;
+}
+:root[data-theme="dark"] .knowledge-console .dify-kb-icon {
+  color: var(--lc-status-info);
+  background: var(--lc-status-info-bg) !important;
+}
+:root[data-theme="dark"] .knowledge-console .dify-kb-icon::after {
+  border-color: var(--lc-surface);
+  background: var(--lc-status-success);
+}
+:root[data-theme="dark"] .knowledge-console .dify-title-block h3 {
+  color: var(--lc-ink) !important;
+}
+:root[data-theme="dark"] .knowledge-console .api-status,
+:root[data-theme="dark"] .knowledge-console .all-kb-check,
+:root[data-theme="dark"] .knowledge-console .dify-subline,
+:root[data-theme="dark"] .knowledge-console .dify-desc,
+:root[data-theme="dark"] .knowledge-console .add-tag,
+:root[data-theme="dark"] .knowledge-console .dify-card-footer {
+  color: var(--lc-muted) !important;
 }
 :root[data-theme="dark"] .knowledge-console .ant-tabs-tab-active,
 :root[data-theme="dark"] .knowledge-console .ant-segmented-item-selected,
@@ -9360,6 +9406,17 @@ body {
   border-color: var(--lc-border-light) !important;
   box-shadow: none !important;
 }
+:root[data-theme="dark"] .st-root {
+  --st-border: var(--lc-border-light);
+  --st-border-strong: var(--lc-border-strong);
+  --st-bg: var(--lc-canvas);
+  --st-elev: var(--lc-surface-raised);
+  --st-text: var(--lc-ink);
+  --st-muted: var(--lc-muted);
+  --st-accent: var(--lc-status-info);
+  --st-accent-soft: var(--lc-status-info-bg);
+  --st-row-hover: var(--lc-hover);
+}
 :root[data-theme="dark"] .st-tabs,
 :root[data-theme="dark"] .st-crumb,
 :root[data-theme="dark"] .st-kanban-head,
@@ -9367,6 +9424,28 @@ body {
 :root[data-theme="dark"] .st-side-foot,
 :root[data-theme="dark"] .st-col-head-inner {
   color: var(--lc-text-secondary) !important;
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
+:root[data-theme="dark"] .st-grid th,
+:root[data-theme="dark"] .st-grid thead .st-idx {
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-raised) !important;
+  border-color: var(--lc-border-light) !important;
+}
+:root[data-theme="dark"] .st-grid td,
+:root[data-theme="dark"] .st-grid tbody .st-idx {
+  color: var(--lc-ink);
+  background: var(--lc-canvas) !important;
+  border-color: var(--lc-border-light) !important;
+}
+:root[data-theme="dark"] .st-grid tbody tr:hover td,
+:root[data-theme="dark"] .st-grid tbody tr:hover .st-idx {
+  background: var(--lc-hover) !important;
+}
+:root[data-theme="dark"] .st-kanban,
+:root[data-theme="dark"] .st-auto-row {
+  color: var(--lc-ink);
   background: var(--lc-surface-raised) !important;
   border-color: var(--lc-border-light) !important;
 }
