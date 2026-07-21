@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { AxiosProgressEvent } from "axios";
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
 
@@ -427,6 +428,8 @@ export interface KnowledgeBaseItem {
   id: number;
   template: number | null;
   owner_username?: string;
+  owner_user_id?: number | null;
+  can_edit?: boolean;
   name: string;
   description: string;
   category: string;
@@ -511,7 +514,7 @@ export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: strin
 export const uploadKnowledgeFile = (
   knowledgeBaseId: number,
   file: File,
-  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number },
+  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number; onUploadProgress?: (event: AxiosProgressEvent) => void },
 ) => {
   const form = new FormData();
   form.append("file", file);
@@ -527,14 +530,18 @@ export const uploadKnowledgeFile = (
   }>(`/knowledge/bases/${knowledgeBaseId}/upload/`, form, {
     headers: { "Content-Type": "multipart/form-data" },
     timeout: 60_000,
+    onUploadProgress: body?.onUploadProgress,
   }).then((r) => r.data);
 };
 
 export const getKnowledgeJob = (jobId: number) =>
   api.get<KnowledgeIngestJobItem>(`/knowledge/jobs/${jobId}/`).then((r) => r.data);
-export const getKnowledgeFileChunks = (fileId: number) =>
-  api.get<{ file: KnowledgeFileItem; count: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`)
+export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number; page_size?: number }) =>
+  api.get<{ file: KnowledgeFileItem; count: number; page: number; page_size: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`, { params })
     .then((r) => r.data);
+
+export const downloadKnowledgeFile = (fileId: number) =>
+  api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);
 
 export const deleteKnowledgeFile = (fileId: number) =>
   api.delete(`/knowledge/files/${fileId}/`);

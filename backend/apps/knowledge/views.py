@@ -1,6 +1,11 @@
+from io import BytesIO
+
+from django.db import transaction
 from django.db.models import Q
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -11,6 +16,7 @@ from .models import (
     KnowledgeBase,
     KnowledgeChunkRef,
     KnowledgeFile,
+    KnowledgeEmbedding,
     KnowledgeIngestJob,
     KnowledgePermission,
     KnowledgeSourceBinding,
@@ -26,9 +32,21 @@ from .serializers import (
     KnowledgeSourceBindingSerializer,
     KnowledgeTemplateSerializer,
 )
-from .traditional_rag import TraditionalRagError, enqueue_ingest_upload, keyword_search, semantic_search
+from .traditional_rag import TraditionalRagError, enqueue_ingest_upload, keyword_search, read_stored_file, semantic_search
 
 
+
+def _purge_knowledge_base_vectors(kb: KnowledgeBase) -> dict:
+    file_ids = list(kb.files.values_list("id", flat=True))
+    embedding_count, _ = KnowledgeEmbedding.objects.filter(chunk__file_id__in=file_ids).delete()
+    chunk_count, _ = KnowledgeChunkRef.objects.filter(file_id__in=file_ids).delete()
+    return {"file_ids": file_ids, "embedding_rows": embedding_count, "chunk_rows": chunk_count}
+
+
+def _purge_knowledge_file_vectors(file: KnowledgeFile) -> dict:
+    embedding_count, _ = KnowledgeEmbedding.objects.filter(chunk__file=file).delete()
+    chunk_count, _ = KnowledgeChunkRef.objects.filter(file=file).delete()
+    return {"embedding_rows": embedding_count, "chunk_rows": chunk_count}
 def _log(user, knowledge_base, action: str, target_type: str = "", target_id: str = "", payload: dict | None = None):
     KnowledgeAuditLog.objects.create(
         actor=None,
@@ -38,6 +56,12 @@ def _log(user, knowledge_base, action: str, target_type: str = "", target_id: st
         target_id=str(target_id or ""),
         payload=payload or {},
     )
+
+
+def _can_manage_knowledge_base(user, kb: KnowledgeBase) -> bool:
+    if not getattr(user, "is_authenticated", False):
+        return False
+    return bool(user.is_staff or user.is_superuser or kb.owner_user_id == user.id)
 
 
 def _visible_knowledge_bases(user):
@@ -88,15 +112,27 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         _log(self.request.user, kb, "knowledge_base.created", "knowledge_base", kb.id)
 
     def perform_update(self, serializer):
+        kb = self.get_object()
+        if not _can_manage_knowledge_base(self.request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can edit it")
         kb = serializer.save()
         _log(self.request.user, kb, "knowledge_base.updated", "knowledge_base", kb.id)
 
     def destroy(self, request, *args, **kwargs):
         kb = self.get_object()
-        kb.status = KnowledgeBase.Status.ARCHIVED
-        kb.archived_at = timezone.now()
-        kb.save(update_fields=["status", "archived_at", "updated_at"])
-        _log(request.user, kb, "knowledge_base.archived", "knowledge_base", kb.id)
+        if not _can_manage_knowledge_base(request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can delete it")
+        with transaction.atomic():
+            purge = _purge_knowledge_base_vectors(kb)
+            kb.status = KnowledgeBase.Status.ARCHIVED
+            kb.archived_at = timezone.now()
+            kb.save(update_fields=["status", "archived_at", "updated_at"])
+            kb.files.filter(archived_at__isnull=True).update(
+                status=KnowledgeFile.Status.ARCHIVED,
+                archived_at=kb.archived_at,
+                updated_at=kb.archived_at,
+            )
+            _log(request.user, kb, "knowledge_base.archived", "knowledge_base", kb.id, purge)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
@@ -118,6 +154,8 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
     def upload(self, request, pk=None):
         kb = self.get_object()
+        if not _can_manage_knowledge_base(request.user, kb):
+            raise PermissionDenied("Only the knowledge base owner can upload files")
         upload = request.FILES.get("file")
         if upload is None:
             return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -203,23 +241,52 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         file = self.get_object()
-        file.status = KnowledgeFile.Status.ARCHIVED
-        file.archived_at = timezone.now()
-        file.save(update_fields=["status", "archived_at", "updated_at"])
-        KnowledgeBase.objects.filter(id=file.knowledge_base_id).update(file_count=file.knowledge_base.files.filter(archived_at__isnull=True).count())
-        _log(request.user, file.knowledge_base, "file.archived", "knowledge_file", file.id, {"filename": file.original_filename})
+        with transaction.atomic():
+            purge = _purge_knowledge_file_vectors(file)
+            file.status = KnowledgeFile.Status.ARCHIVED
+            file.archived_at = timezone.now()
+            file.save(update_fields=["status", "archived_at", "updated_at"])
+            KnowledgeBase.objects.filter(id=file.knowledge_base_id).update(file_count=file.knowledge_base.files.filter(archived_at__isnull=True).count())
+            _log(request.user, file.knowledge_base, "file.archived", "knowledge_file", file.id, {"filename": file.original_filename, **purge})
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        file = self.get_object()
+        if not file.storage_path:
+            return Response({"error": "file_not_stored", "message": "File storage path is missing."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            content = read_stored_file(file.storage_path)
+        except Exception as error:
+            return Response({"error": "download_failed", "message": str(error)}, status=status.HTTP_404_NOT_FOUND)
+        response = FileResponse(BytesIO(content), as_attachment=True, filename=file.original_filename)
+        content_type = file.metadata.get("content_type") if isinstance(file.metadata, dict) else None
+        if content_type:
+            response["Content-Type"] = content_type
+        return response
+    @action(detail=True, methods=["get"])
     def chunks(self, request, pk=None):
         file = self.get_object()
-        rows = file.chunk_refs.all()
+        rows = file.chunk_refs.all().order_by("chunk_index", "id")
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size", "20"))
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = min(max(page_size, 1), 100)
+        total = rows.count()
+        offset = (page - 1) * page_size
+        page_rows = rows[offset : offset + page_size]
         return Response({
             "file": KnowledgeFileSerializer(file).data,
-            "count": rows.count(),
-            "results": KnowledgeChunkRefSerializer(rows, many=True).data,
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "results": KnowledgeChunkRefSerializer(page_rows, many=True).data,
         })
-
     @action(detail=True, methods=["delete"], url_path=r"chunks/(?P<chunk_id>[^/.]+)")
     def delete_chunk(self, request, pk=None, chunk_id=None):
         file = self.get_object()
@@ -331,3 +398,4 @@ class KnowledgeAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         if kb_id:
             qs = qs.filter(knowledge_base_id=kb_id)
         return qs
+

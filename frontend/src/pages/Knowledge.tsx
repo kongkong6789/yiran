@@ -10,9 +10,11 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   List,
   Modal,
   Popconfirm,
+  Progress,
   Row,
   Segmented,
   Select,
@@ -32,10 +34,12 @@ import {
   FileExcelOutlined,
   FileSearchOutlined,
   InboxOutlined,
+  LeftOutlined,
   NodeIndexOutlined,
   MoreOutlined,
   PlusOutlined,
   SearchOutlined,
+  RightOutlined,
   SettingOutlined,
   SortAscendingOutlined,
 } from "@ant-design/icons";
@@ -43,6 +47,7 @@ import {
   createKnowledgeBase,
   deleteKnowledgeBase,
   deleteKnowledgeFile,
+  downloadKnowledgeFile,
   getKnowledgeFileChunks,
   getKnowledgeJob,
   listKnowledgeBases,
@@ -52,6 +57,7 @@ import {
   type KnowledgeBaseItem,
   type KnowledgeChunkItem,
   type KnowledgeFileItem,
+  type KnowledgeIngestJobItem,
 } from "../api/client";
 
 const { Title, Text, Paragraph } = Typography;
@@ -62,7 +68,25 @@ type Visibility = "private" | "team" | "company";
 type Engine = "naive-rag" | "graph-rag" | "hybrid-rag";
 type ReviewPolicy = "none" | "sample" | "required";
 
-type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; };
+type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; downloadUrl?: string; };
+
+type CreateUploadProgress = {
+  percent: number;
+  title: string;
+  detail: string;
+  status?: "normal" | "active" | "success" | "exception";
+};
+
+type IngestProgressItem = {
+  jobId: number;
+  fileName: string;
+  percent: number;
+  stage: string;
+  status: KnowledgeIngestJobItem["status"];
+  detail: string;
+};
+
+type IngestJobRef = { id: number; fileName?: string };
 
 const keywordStopwords = new Set([
   "and", "or", "the", "for", "with", "from", "this", "that", "http", "https", "www", "com", "cn",
@@ -70,7 +94,7 @@ const keywordStopwords = new Set([
 ]);
 
 function fallbackKeywords(text: string, limit = 10) {
-  const tokens = text.match(/[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}|\d{4,}/g) ?? [];
+  const tokens: string[] = text.match(/[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}|\d{4,}/g) ?? [];
   const counts = new Map<string, { count: number; index: number }>();
   tokens.forEach((token, index) => {
     const normalized = token.trim().toLowerCase();
@@ -93,6 +117,35 @@ function apiErrorMessage(error: unknown, fallback: string) {
   const responseData = (error as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
   return responseData?.message || responseData?.error || fallback;
 }
+
+function ingestStageLabel(stage?: string, status?: KnowledgeIngestJobItem["status"]) {
+  const key = (stage || status || "pending").toLowerCase();
+  if (key === "pending") return "等待入库";
+  if (key === "parsing") return "解析文件";
+  if (key === "chunking") return "切片分段";
+  if (key === "embedding") return "向量入库";
+  if (key === "graphing") return "图谱抽取";
+  if (key === "ready") return "入库完成";
+  if (key === "failed") return "入库失败";
+  return stage || status || "处理中";
+}
+
+function ingestProgressStatus(status: KnowledgeIngestJobItem["status"]): "normal" | "active" | "success" | "exception" {
+  if (status === "ready") return "success";
+  if (status === "failed") return "exception";
+  if (status === "pending") return "normal";
+  return "active";
+}
+
+function ingestProgressDetail(job: KnowledgeIngestJobItem) {
+  const label = ingestStageLabel(job.stage, job.status);
+  if (job.status === "failed") {
+    const message = typeof job.error?.message === "string" ? job.error.message : "文件入库失败";
+    return `${label}：${message}`;
+  }
+  if (job.status === "ready") return "解析、切片和向量化已完成";
+  return `${label}中，后端正在处理文件内容`;
+}
 type KnowledgeTemplate = {
   id: string;
   name: string;
@@ -111,6 +164,7 @@ type KnowledgeTemplate = {
   readiness: number;
   limitations: string[];
   sampleQuestion: string;
+  canEdit?: boolean;
 };
 
 type KnowledgeSource = {
@@ -286,6 +340,18 @@ const visibilityLabels: Record<Visibility, string> = {
   company: "公司",
 };
 
+const visibilityDescriptions: Record<Visibility, string> = {
+  private: "仅自己可见",
+  team: "所有成员可见",
+  company: "公司范围可见",
+};
+
+const visibilityColors: Record<Visibility, string> = {
+  private: "blue",
+  team: "green",
+  company: "purple",
+};
+
 const engineLabels: Record<Engine, string> = {
   "naive-rag": "证据优先 RAG",
   "graph-rag": "关系图谱 RAG",
@@ -337,6 +403,7 @@ function mapKnowledgeBase(base: KnowledgeBaseItem): KnowledgeTemplate {
     readiness: base.status === "ready" ? 90 : base.status === "processing" ? 65 : 45,
     limitations: ["PDF/PPT parser is not connected yet", "Semantic search requires local embedding service"],
     sampleQuestion: `Search key facts in ${base.name}`,
+    canEdit: base.can_edit ?? true,
   };
 }
 
@@ -391,13 +458,15 @@ export default function Knowledge() {
   const [editForm] = Form.useForm<{ name: string; description: string; visibility: Visibility }>();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
+  const [scopeFilter, setScopeFilter] = useState<Visibility | "all">("all");
   const [templateId, setTemplateId] = useState("customer-360");
   const [visibility, setVisibility] = useState<Visibility>("team");
   const [engine, setEngine] = useState<Engine>("hybrid-rag");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
   const [requireCitation, setRequireCitation] = useState(true);
   const [extractGraph, setExtractGraph] = useState(true);
-  const [chunkSize] = useState(900);
+  const [chunkSize, setChunkSize] = useState(1024);
+  const [chunkOverlap, setChunkOverlap] = useState(50);
   const [topK] = useState(8);
   const [selectedSources] = useState<string[]>(["policy", "graph", "crm"]);
   const [projectName] = useState("UNOVE 经营知识中台");
@@ -406,11 +475,14 @@ export default function Knowledge() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [createMode, setCreateMode] = useState(false);
   const [createSource, setCreateSource] = useState<"file" | "wecom" | "web">("file");
+  const [createName, setCreateName] = useState("");
+  const [createDescription, setCreateDescription] = useState("");
   const [detailTemplateId, setDetailTemplateId] = useState<string | null>(null);
   const [detailSearch, setDetailSearch] = useState("");
   const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
   const [detailPageSize, setDetailPageSize] = useState(10);
   const [processedFile, setProcessedFile] = useState<KnowledgeTemplateFile | null>(null);
+  const [chunkPageFile, setChunkPageFile] = useState<KnowledgeTemplateFile | null>(null);
   const [deletedTemplateFiles, setDeletedTemplateFiles] = useState<Record<string, string[]>>({});
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploadPurpose, setUploadPurpose] = useState("作为当前知识应用的补充资料，进入解析、切块、向量化和权限标注流程。");
@@ -419,11 +491,35 @@ export default function Knowledge() {
   const [detailFilesByBase, setDetailFilesByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [createUploadProgress, setCreateUploadProgress] = useState<CreateUploadProgress | null>(null);
+  const [ingestProgressItems, setIngestProgressItems] = useState<IngestProgressItem[]>([]);
   const [processedChunks, setProcessedChunks] = useState<KnowledgeChunkItem[]>([]);
+  const [chunkCurrentPage, setChunkCurrentPage] = useState(1);
+  const [chunkPageSize, setChunkPageSize] = useState(10);
+  const [chunkTotalCount, setChunkTotalCount] = useState(0);
   const [chunkLoading, setChunkLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeTemplate | null>(null);
   const [editSaving, setEditSaving] = useState(false);
 
+  const chunkTotalPages = Math.max(1, Math.ceil((chunkTotalCount || 0) / chunkPageSize));
+  const chunkPageNumbers = useMemo(() => {
+    const total = Math.max(1, Math.ceil((chunkTotalCount || 0) / chunkPageSize));
+    const start = Math.max(1, Math.min(chunkCurrentPage - 1, total - 2));
+    return Array.from({ length: Math.min(3, total) }, (_, index) => start + index).filter((page) => page <= total);
+  }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
+
+  function changeChunkPage(page: number, pageSize = chunkPageSize) {
+    const nextPage = Math.min(Math.max(page, 1), Math.max(1, Math.ceil((chunkTotalCount || 0) / pageSize)));
+    setChunkCurrentPage(nextPage);
+    setChunkPageSize(pageSize);
+    if (chunkPageFile) void loadFileChunks(chunkPageFile, nextPage, pageSize);
+  }
+
+  function changeChunkPageSize(pageSize: number) {
+    setChunkPageSize(pageSize);
+    setChunkCurrentPage(1);
+    if (chunkPageFile) void loadFileChunks(chunkPageFile, 1, pageSize);
+  }
   const baseTemplates = useMemo(() => knowledgeBases.length ? knowledgeBases.map(mapKnowledgeBase) : templates, [knowledgeBases]);
   const categories = useMemo(() => ["全部", ...Array.from(new Set(baseTemplates.map((item) => item.category)))], [baseTemplates]);
   const visibleTemplates = useMemo(() => {
@@ -431,9 +527,10 @@ export default function Knowledge() {
     return baseTemplates.filter((item) => {
       const categoryOk = category === "全部" || item.category === category;
       const queryOk = !keyword || `${item.name} ${item.headline} ${item.bestFor.join(" ")} ${item.outputs.join(" ")}`.toLowerCase().includes(keyword);
-      return categoryOk && queryOk;
+      const scopeOk = scopeFilter === "all" || item.visibility === scopeFilter;
+      return categoryOk && queryOk && scopeOk;
     });
-  }, [baseTemplates, category, query]);
+  }, [baseTemplates, category, query, scopeFilter]);
   const selectedTemplate = baseTemplates.find((item) => item.id === templateId) ?? baseTemplates[0] ?? templates[0];
   const detailTemplate = baseTemplates.find((item) => item.id === detailTemplateId) ?? null;
   const deletedNames = detailTemplate ? deletedTemplateFiles[detailTemplate.id] ?? [] : [];
@@ -488,53 +585,123 @@ export default function Knowledge() {
     }
   }
 
-  async function pollIngestJobs(baseId: string, jobIds: number[]) {
-    const pending = new Set(jobIds.filter((id) => Number.isFinite(id)));
+  function upsertIngestProgress(items: IngestProgressItem[]) {
+    if (!items.length) return;
+    setIngestProgressItems((prev) => {
+      const byId = new Map(prev.map((item) => [item.jobId, item]));
+      items.forEach((item) => byId.set(item.jobId, { ...(byId.get(item.jobId) || {}), ...item }));
+      return Array.from(byId.values()).sort((a, b) => a.jobId - b.jobId);
+    });
+  }
+
+  function renderIngestProgressPanel() {
+    if (!ingestProgressItems.length) return null;
+    return (
+      <div className="ingest-progress-panel">
+        <div className="ingest-progress-title">
+          <b>切片入库进度</b>
+          <span>{ingestProgressItems.filter((item) => item.status === "ready").length}/{ingestProgressItems.length}</span>
+        </div>
+        <List
+          size="small"
+          dataSource={ingestProgressItems}
+          renderItem={(item) => (
+            <List.Item>
+              <div className="ingest-progress-item">
+                <div className="ingest-progress-row">
+                  <Text ellipsis title={item.fileName}>{item.fileName}</Text>
+                  <span>{Math.max(0, Math.min(100, item.percent || 0))}%</span>
+                </div>
+                <Progress percent={Math.max(0, Math.min(100, item.percent || 0))} status={ingestProgressStatus(item.status)} showInfo={false} />
+                <p>{item.detail}</p>
+              </div>
+            </List.Item>
+          )}
+        />
+      </div>
+    );
+  }
+
+  async function pollIngestJobs(baseId: string, jobRefs: IngestJobRef[]) {
+    const refs = jobRefs.filter((item) => Number.isFinite(item.id));
+    const pending = new Set(refs.map((item) => item.id));
+    const nameById = new Map(refs.map((item) => [item.id, item.fileName || `Job #${item.id}`]));
     if (!pending.size) return;
-    for (let attempt = 0; attempt < 80 && pending.size; attempt += 1) {
+    upsertIngestProgress(refs.map((item) => ({
+      jobId: item.id,
+      fileName: item.fileName || `Job #${item.id}`,
+      percent: 5,
+      stage: "pending",
+      status: "pending",
+      detail: "等待后端开始解析、切片和向量化",
+    })));
+    for (let attempt = 0; attempt < 160 && pending.size; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 600 : 1500));
       const jobs = await Promise.allSettled(Array.from(pending).map((id) => getKnowledgeJob(id)));
+      const progressItems: IngestProgressItem[] = [];
       jobs.forEach((result) => {
         if (result.status !== "fulfilled") return;
         const job = result.value;
+        progressItems.push({
+          jobId: job.id,
+          fileName: nameById.get(job.id) || `Job #${job.id}`,
+          percent: Math.max(0, Math.min(100, Math.round(job.progress || 0))),
+          stage: job.stage || job.status,
+          status: job.status,
+          detail: ingestProgressDetail(job),
+        });
         if (job.status === "ready") {
           pending.delete(job.id);
         } else if (job.status === "failed") {
           pending.delete(job.id);
-          const detail = typeof job.error?.message === "string" ? job.error.message : "\u6587\u4ef6\u5165\u5e93\u5931\u8d25";
+          const detail = typeof job.error?.message === "string" ? job.error.message : "文件入库失败";
           message.error(detail);
         }
       });
+      upsertIngestProgress(progressItems);
       await refreshKnowledgeFiles(baseId);
     }
     if (pending.size) {
-      message.info("\u6587\u4ef6\u4ecd\u5728\u540e\u53f0\u5904\u7406\u4e2d\uff0c\u53ef\u4ee5\u7a0d\u540e\u5237\u65b0\u67e5\u770b");
+      message.info("文件仍在后台处理中，可以稍后刷新查看");
     } else {
       await refreshKnowledgeBases();
-      message.success("\u540e\u53f0\u5165\u5e93\u5b8c\u6210");
+      await refreshKnowledgeFiles(baseId);
+      message.success("后台入库完成");
     }
   }
-
   function handleCreateKnowledgeBase() {
     setUploadFiles([]);
+    setCreateUploadProgress(null);
     setCreateSource("file");
+    setCreateName("");
+    setCreateDescription("");
+    setVisibility("team");
     setCreateMode(true);
+  }
+
+  function validateCreateKnowledgeBaseMeta() {
+    if (!createName.trim()) {
+      message.warning("请输入知识库名称");
+      return false;
+    }
+    return true;
   }
 
   async function createKnowledgeBaseRecord() {
     return createKnowledgeBase({
-      name: "New knowledge base",
-      description: objective,
+      name: createName.trim(),
+      description: createDescription.trim(),
       category: "Custom",
       visibility,
       retrieval_mode: engine,
       review_policy: reviewPolicy,
       status: "draft",
-      config: { kind: "custom", chunk_size: chunkSize, top_k: topK, source: createSource },
+      config: { kind: "custom", chunk_size: chunkSize, chunk_overlap: chunkOverlap, top_k: topK, source: createSource },
     });
   }
 
   async function handleCreateEmptyKnowledgeBase() {
+    if (!validateCreateKnowledgeBaseMeta()) return;
     setBaseLoading(true);
     try {
       const created = await createKnowledgeBaseRecord();
@@ -553,6 +720,7 @@ export default function Knowledge() {
 
   async function handleCreateWizardNext() {
     const rawFiles = uploadFiles.map((item) => item.originFileObj).filter(Boolean) as File[];
+    if (!validateCreateKnowledgeBaseMeta()) return;
     if (createSource !== "file") {
       message.info("This source type is not connected yet");
       return;
@@ -562,29 +730,67 @@ export default function Knowledge() {
       return;
     }
     setUploading(true);
+    setIngestProgressItems([]);
+    setCreateUploadProgress({ percent: 3, title: "创建知识库", detail: "正在生成知识库记录...", status: "active" });
+    const totalBytes = rawFiles.reduce((sum, file) => sum + Math.max(file.size || 0, 1), 0);
+    const uploadedBytesByIndex = new Map<number, number>();
+    const updateFileProgress = (fileIndex: number, loaded: number, total: number) => {
+      uploadedBytesByIndex.set(fileIndex, Math.min(loaded, total));
+      const uploadedBytes = Array.from(uploadedBytesByIndex.values()).reduce((sum, value) => sum + value, 0);
+      const uploadPercent = totalBytes ? uploadedBytes / totalBytes : (fileIndex + 1) / rawFiles.length;
+      const percent = Math.max(12, Math.min(88, Math.round(10 + uploadPercent * 78)));
+      setCreateUploadProgress({
+        percent,
+        title: "上传文件",
+        detail: `正在上传 ${fileIndex + 1}/${rawFiles.length}：${rawFiles[fileIndex].name}`,
+        status: "active",
+      });
+    };
     try {
       const created = await createKnowledgeBaseRecord();
-      const jobIds: number[] = [];
-      for (const file of rawFiles) {
-        const result = await uploadKnowledgeFile(created.id, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: 160 });
-        if (result.job_id) jobIds.push(result.job_id);
+      setCreateUploadProgress({ percent: 10, title: "上传文件", detail: "知识库已创建，开始上传文件...", status: "active" });
+      const jobRefs: IngestJobRef[] = [];
+      for (const [index, file] of rawFiles.entries()) {
+        updateFileProgress(index, 0, Math.max(file.size || 0, 1));
+        const result = await uploadKnowledgeFile(created.id, file, {
+          segment_mode: "general",
+          chunk_size: chunkSize,
+          chunk_overlap: chunkOverlap,
+          onUploadProgress: (event) => updateFileProgress(index, event.loaded, event.total || Math.max(file.size || 0, 1)),
+        });
+        uploadedBytesByIndex.set(index, Math.max(file.size || 0, 1));
+        if (result.job_id) {
+          jobRefs.push({ id: result.job_id, fileName: file.name });
+          upsertIngestProgress([{
+            jobId: result.job_id,
+            fileName: file.name,
+            percent: result.job?.progress ?? 5,
+            stage: result.job?.stage || "pending",
+            status: result.job?.status || "pending",
+            detail: "文件已上传，等待后端切片入库",
+          }]);
+        }
       }
+      setCreateUploadProgress({ percent: 92, title: "切片入库", detail: "文件已上传，正在等待后端解析、切片和向量化...", status: "active" });
       setUploadFiles([]);
       await refreshKnowledgeBases();
       await refreshKnowledgeFiles(String(created.id));
       setTemplateId(String(created.id));
       setDetailTemplateId(String(created.id));
+      await pollIngestJobs(String(created.id), jobRefs);
+      setCreateUploadProgress({ percent: 100, title: "入库完成", detail: "文件已完成解析、切片和向量化。", status: "success" });
       setCreateMode(false);
-      message.success(`\u5df2\u4e0a\u4f20 ${rawFiles.length} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u6b63\u5728\u5165\u5e93`);
-      void pollIngestJobs(String(created.id), jobIds);
+      setIngestProgressItems([]);
+      message.success(`已上传 ${rawFiles.length} 个文件，切片入库完成`);
     } catch (error) {
       console.error(error);
-      message.error(apiErrorMessage(error, "Create or upload failed"));
+      const detail = apiErrorMessage(error, "Create or upload failed");
+      setCreateUploadProgress({ percent: 100, title: "上传失败", detail, status: "exception" });
+      message.error(detail);
     } finally {
       setUploading(false);
     }
   }
-
   function openEditKnowledgeBase(template: KnowledgeTemplate) {
     const id = Number(template.id);
     if (!Number.isFinite(id)) {
@@ -608,6 +814,7 @@ export default function Knowledge() {
       await updateKnowledgeBase(id, {
         name: values.name.trim(),
         description: values.description?.trim() || "",
+        visibility: values.visibility,
       });
       await refreshKnowledgeBases();
       setEditingKnowledgeBase(null);
@@ -660,19 +867,31 @@ export default function Knowledge() {
       return;
     }
     setUploading(true);
+    setIngestProgressItems([]);
     try {
-      const jobIds: number[] = [];
+      const jobRefs: IngestJobRef[] = [];
       for (const file of rawFiles) {
-        const result = await uploadKnowledgeFile(targetId, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: 160 });
-        if (result.job_id) jobIds.push(result.job_id);
+        const result = await uploadKnowledgeFile(targetId, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: chunkOverlap });
+        if (result.job_id) {
+          jobRefs.push({ id: result.job_id, fileName: file.name });
+          upsertIngestProgress([{
+            jobId: result.job_id,
+            fileName: file.name,
+            percent: result.job?.progress ?? 5,
+            stage: result.job?.stage || "pending",
+            status: result.job?.status || "pending",
+            detail: "文件已上传，等待后端切片入库",
+          }]);
+        }
       }
       setUploadFiles([]);
-      setUploadOpen(false);
       await refreshKnowledgeBases();
       await refreshKnowledgeFiles(String(targetId));
       setDetailTemplateId(String(targetId));
-      message.success(`\u5df2\u4e0a\u4f20 ${rawFiles.length} \u4e2a\u6587\u4ef6\uff0c\u540e\u53f0\u6b63\u5728\u5165\u5e93`);
-      void pollIngestJobs(String(targetId), jobIds);
+      await pollIngestJobs(String(targetId), jobRefs);
+      setUploadOpen(false);
+      setIngestProgressItems([]);
+      message.success(`已上传 ${rawFiles.length} 个文件，切片入库完成`);
     } catch (error) {
       console.error(error);
       message.error(apiErrorMessage(error, "Upload or ingest failed"));
@@ -680,15 +899,40 @@ export default function Knowledge() {
       setUploading(false);
     }
   }
+  async function downloadOriginalFile(file: KnowledgeTemplateFile) {
+    if (!file.id) {
+      message.info("Template sample files are not stored in the backend yet");
+      return;
+    }
+    try {
+      const blob = await downloadKnowledgeFile(file.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(error);
+      message.error("File download failed");
+    }
+  }
 
-  async function openProcessedFile(file: KnowledgeTemplateFile) {
-    setProcessedFile(file);
+  async function loadFileChunks(file: KnowledgeTemplateFile, page = 1, pageSize = chunkPageSize) {
     setProcessedChunks([]);
-    if (!file.id) return;
+    if (!file.id) {
+      setChunkTotalCount(0);
+      return;
+    }
     setChunkLoading(true);
     try {
-      const data = await getKnowledgeFileChunks(file.id);
+      const data = await getKnowledgeFileChunks(file.id, { page, page_size: pageSize });
       setProcessedChunks(data.results);
+      setChunkTotalCount(data.count);
+      setChunkCurrentPage(data.page || page);
+      setChunkPageSize(data.page_size || pageSize);
     } catch (error) {
       console.error(error);
       message.error("Failed to load chunks");
@@ -697,12 +941,25 @@ export default function Knowledge() {
     }
   }
 
+  async function openProcessedFile(file: KnowledgeTemplateFile) {
+    setProcessedFile(file);
+    await loadFileChunks(file);
+  }
+
+  async function openChunkPage(file: KnowledgeTemplateFile) {
+    setProcessedFile(null);
+    setChunkCurrentPage(1);
+    setChunkPageFile(file);
+    await loadFileChunks(file, 1, chunkPageSize);
+  }
+
   async function removeKnowledgeFile(file: KnowledgeTemplateFile) {
     if (file.id) {
       try {
         await deleteKnowledgeFile(file.id);
         if (detailTemplate) await refreshKnowledgeFiles(detailTemplate.id);
         if (processedFile?.id === file.id) setProcessedFile(null);
+        if (chunkPageFile?.id === file.id) setChunkPageFile(null);
         message.success("File deleted");
       } catch (error) {
         console.error(error);
@@ -722,6 +979,7 @@ export default function Knowledge() {
       [detailTemplate.id]: [...(prev[detailTemplate.id] ?? []), file.name],
     }));
     if (processedFile?.name === file.name) setProcessedFile(null);
+    if (chunkPageFile?.name === file.name) setChunkPageFile(null);
     message.success("File removed");
   }
 
@@ -731,8 +989,19 @@ export default function Knowledge() {
 
   useEffect(() => {
     if (detailTemplateId) void refreshKnowledgeFiles(detailTemplateId);
+    setChunkPageFile(null);
+    setChunkCurrentPage(1);
+    setChunkTotalCount(0);
   }, [detailTemplateId]);
 
+
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(chunkTotalCount / chunkPageSize));
+    if (chunkCurrentPage > maxPage) setChunkCurrentPage(maxPage);
+  }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
+  useEffect(() => {
+    if (chunkOverlap >= chunkSize) setChunkOverlap(Math.max(0, chunkSize - 1));
+  }, [chunkOverlap, chunkSize]);
   const configDraft = useMemo(() => ({
     project_name: projectName,
     objective,
@@ -743,6 +1012,7 @@ export default function Knowledge() {
       engine,
       top_k: topK,
       chunk_size: chunkSize,
+      chunk_overlap: chunkOverlap,
       require_citation: requireCitation,
       graph_extraction: extractGraph,
       rerank: true,
@@ -770,13 +1040,14 @@ export default function Knowledge() {
       ingest_plan: {
         parse: true,
         chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap,
         vectorize: true,
         extract_graph: extractGraph,
       },
     })),
     outputs: selectedTemplate.outputs,
     sample_question: selectedTemplate.sampleQuestion,
-  }), [chunkSize, deletedTemplateFiles, engine, extractGraph, objective, projectName, requireCitation, reviewPolicy, selectedSourceObjects, selectedTemplate, topK, uploadFiles, uploadPurpose, visibility]);
+  }), [chunkOverlap, chunkSize, deletedTemplateFiles, engine, extractGraph, objective, projectName, requireCitation, reviewPolicy, selectedSourceObjects, selectedTemplate, topK, uploadFiles, uploadPurpose, visibility]);
 
   function applyTemplate(nextId: string) {
     const next = baseTemplates.find((item) => item.id === nextId) ?? templates.find((item) => item.id === nextId) ?? baseTemplates[0] ?? templates[0];
@@ -799,76 +1070,277 @@ export default function Knowledge() {
         <section className="kb-create-page">
           <div className="create-topbar">
             <button className="create-back" onClick={() => setCreateMode(false)}><ArrowLeftOutlined /></button>
-            <b>知识库</b>
-            <div className="create-steps">
-              <span className="active"><b>STEP 1</b> 选择数据源</span>
-              <i />
-              <span><b>2</b> 文本分段与清洗</span>
-              <i />
-              <span><b>3</b> 处理并完成</span>
-            </div>
+            <b>新建知识库</b>
           </div>
 
           <div className="create-body">
             <div className="create-main">
-              <h3>选择数据源</h3>
-              <div className="source-choice-row">
-                <button className={createSource === "file" ? "active" : ""} onClick={() => setCreateSource("file")}>
-                  <FileSearchOutlined />
-                  <span>导入已有文本</span>
-                </button>
-                <button className={createSource === "wecom" ? "active" : ""} onClick={() => setCreateSource("wecom")}>
-                  <DatabaseOutlined />
-                  <span>同步自企微内容</span>
-                </button>
-                <button className={createSource === "web" ? "active" : ""} onClick={() => setCreateSource("web")}>
-                  <NodeIndexOutlined />
-                  <span>同步自 Web 站点</span>
-                </button>
+              <div className="create-hero">
+                <div>
+                  <Text type="secondary">知识库配置</Text>
+                  <h2>先定义知识库，再导入文件</h2>
+                  <p>名称会显示在知识库列表和文件管理页，描述用于帮助团队理解这个知识库的用途。</p>
+                </div>
               </div>
 
-              {createSource === "file" ? (
-                <>
-                  <h3 className="upload-heading">上传文本文件</h3>
-                  <Dragger
-                    className="create-upload"
-                    multiple
-                    fileList={uploadFiles}
-                    beforeUpload={() => false}
-                    onChange={(info) => setUploadFiles(info.fileList)}
-                    accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
-                  >
-                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                    <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
-                    <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
-                  </Dragger>
+              <div className="create-grid">
+                <section className="create-panel create-info-panel">
+                  <div className="create-panel-title">
+                    <span>基础信息</span>
+                    <small>必填</small>
+                  </div>
+                  <div className="create-form-stack">
+                    <label className="create-scope-field">
+                      <span>权限标签</span>
+                      <Segmented
+                        block
+                        value={visibility}
+                        onChange={(value) => setVisibility(value as Visibility)}
+                        options={[
+                          { label: "个人", value: "private" },
+                          { label: "团队", value: "team" },
+                          { label: "公司", value: "company" },
+                        ]}
+                      />
+                      <small className="create-scope-hint">{visibilityDescriptions[visibility]}</small>
+                    </label>
+                    <label>
+                      <span>知识库名称</span>
+                      <Input
+                        value={createName}
+                        onChange={(event) => setCreateName(event.target.value)}
+                        placeholder="例如：测试知识库"
+                        maxLength={80}
+                        showCount
+                      />
+                    </label>
+                    <label>
+                      <span>知识库描述</span>
+                      <Input.TextArea
+                        value={createDescription}
+                        onChange={(event) => setCreateDescription(event.target.value)}
+                        placeholder="描述这个知识库收录哪些资料、服务哪些场景"
+                        autoSize={{ minRows: 5, maxRows: 8 }}
+                        maxLength={500}
+                        showCount
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <section className="create-panel create-source-panel">
+                  <div className="create-panel-title">
+                    <span>数据源</span>
+                    <small>可先创建空知识库</small>
+                  </div>
+                  <div className="source-choice-row">
+                    <button className={createSource === "file" ? "active" : ""} onClick={() => setCreateSource("file")}>
+                      <FileSearchOutlined />
+                      <span>导入已有文本</span>
+                    </button>
+                    <button className={createSource === "wecom" ? "active" : ""} onClick={() => setCreateSource("wecom")}>
+                      <DatabaseOutlined />
+                      <span>同步自企微内容</span>
+                    </button>
+                    <button className={createSource === "web" ? "active" : ""} onClick={() => setCreateSource("web")}>
+                      <NodeIndexOutlined />
+                      <span>同步自 Web 站点</span>
+                    </button>
+                  </div>
+
+                  {createSource === "file" ? (
+                    <>
+                      <h3 className="upload-heading">上传文本文件</h3>
+                      <Dragger
+                        className="create-upload"
+                        multiple
+                        fileList={uploadFiles}
+                        beforeUpload={() => false}
+                        onChange={(info) => {
+                          setUploadFiles(info.fileList);
+                          setCreateUploadProgress(null);
+                        }}
+                        accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
+                      >
+                        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                        <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
+                        <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
+                      </Dragger>
+                      <div className="chunk-settings-grid">
+                        <label>
+                          <span>分段最大长度</span>
+                          <InputNumber min={200} max={8192} step={64} value={chunkSize} onChange={(value) => setChunkSize(Number(value) || 1024)} addonAfter="字符" />
+                        </label>
+                        <label>
+                          <span>分段重叠长度</span>
+                          <InputNumber min={0} max={Math.max(0, chunkSize - 1)} step={10} value={chunkOverlap} onChange={(value) => setChunkOverlap(Math.min(Number(value) || 0, Math.max(0, chunkSize - 1)))} addonAfter="字符" />
+                        </label>
+                      </div>
+                    </>
+                  ) : createSource === "wecom" ? (
+                    <div className="source-connect-card">
+                      <div className="source-connect-icon"><DatabaseOutlined /></div>
+                      <h3>企微未绑定</h3>
+                      <p>同步企微内容前，须先绑定企业微信</p>
+                      <Button type="primary" onClick={() => message.info("后续接入企业微信授权绑定")}>去绑定</Button>
+                    </div>
+                  ) : (
+                    <div className="source-connect-card">
+                      <div className="source-connect-icon"><NodeIndexOutlined /></div>
+                      <h3>Web 站点未配置</h3>
+                      <p>同步 Web 站点内容前，须先配置站点地址和抓取规则</p>
+                      <Button type="primary" onClick={() => message.info("后续接入 Web 站点同步配置")}>去配置</Button>
+                    </div>
+                  )}
 
                   <div className="create-actions">
-                    <Button type="primary" disabled={!uploadFiles.length} loading={uploading} onClick={() => void handleCreateWizardNext()}>
-                      下一步 →
+                    <Button onClick={() => { setCreateUploadProgress(null); setCreateMode(false); }}>取消</Button>
+                    <Button icon={<DatabaseOutlined />} loading={baseLoading} onClick={() => void handleCreateEmptyKnowledgeBase()}>
+                      创建空知识库
+                    </Button>
+                    <Button type="primary" disabled={createSource !== "file" || !uploadFiles.length} loading={uploading} onClick={() => void handleCreateWizardNext()}>
+                      创建并上传
                     </Button>
                   </div>
-                </>
-              ) : createSource === "wecom" ? (
-                <div className="source-connect-card">
-                  <div className="source-connect-icon"><DatabaseOutlined /></div>
-                  <h3>企微未绑定</h3>
-                  <p>同步企微内容前，须先绑定企业微信</p>
-                  <Button type="primary" onClick={() => message.info("后续接入企业微信授权绑定")}>去绑定</Button>
-                </div>
-              ) : (
-                <div className="source-connect-card">
-                  <div className="source-connect-icon"><NodeIndexOutlined /></div>
-                  <h3>Web 站点未配置</h3>
-                  <p>同步 Web 站点内容前，须先配置站点地址和抓取规则</p>
-                  <Button type="primary" onClick={() => message.info("后续接入 Web 站点同步配置")}>去配置</Button>
-                </div>
-              )}
+                  {createUploadProgress ? (
+                    <div className="create-upload-progress">
+                      <div className="create-upload-progress-head">
+                        <b>{createUploadProgress.title}</b>
+                        <span>{createUploadProgress.percent}%</span>
+                      </div>
+                      <Progress percent={createUploadProgress.percent} status={createUploadProgress.status} showInfo={false} />
+                      <p>{createUploadProgress.detail}</p>
+                    </div>
+                  ) : null}
+                  {renderIngestProgressPanel()}
+                </section>
+              </div>
             </div>
+          </div>
+        </section>
+      ) : detailTemplate && chunkPageFile ? (
+        <section className="knowledge-chunk-window">
+          <div className="doc-window-topbar">
+            <Button icon={<ArrowLeftOutlined />} onClick={() => { setChunkPageFile(null); setProcessedChunks([]); }}>返回文档列表</Button>
+            <Space wrap>
+              <Tag color={chunkPageFile.status === "ready" ? "green" : chunkPageFile.status === "failed" ? "red" : "blue"}>{displayStatus(chunkPageFile.status)}</Tag>
+              <Tag>{chunkPageFile.kind || "file"}</Tag>
+              <Tag>{chunkPageFile.chunks || processedChunks.length} chunks</Tag>
+            </Space>
+          </div>
 
-            <button className="create-empty" onClick={() => void handleCreateEmptyKnowledgeBase()} disabled={baseLoading}>
-              <DatabaseOutlined /> 创建一个空知识库
-            </button>
+          <div className="chunk-window-header">
+            <div>
+              <Title level={3}>{chunkPageFile.name}</Title>
+              <Paragraph>{chunkPageFile.source}</Paragraph>
+            </div>
+            <Space>
+              <Button icon={<EyeOutlined />} onClick={() => void openProcessedFile(chunkPageFile)}>处理详情</Button>
+              <Button icon={<FileSearchOutlined />} onClick={() => void downloadOriginalFile(chunkPageFile)}>下载原文件</Button>
+            </Space>
+          </div>
+
+          <div className="chunk-page-layout">
+            <section className="chunk-list-panel">
+              <div className="chunk-list-topbar">
+                <b>{chunkLoading ? "正在加载切片" : `${chunkTotalCount || chunkPageFile.chunks || processedChunks.length || 0} 个切片`}</b>
+                <span>一行成交明细对应一个 chunk</span>
+              </div>
+              <div className="chunk-scroll-area">
+                <List
+                  loading={chunkLoading}
+                  dataSource={processedChunks}
+                  locale={{ emptyText: chunkPageFile.id ? "暂无切片，可能仍在后台入库" : "示例文件暂无后端切片" }}
+                  renderItem={(chunk) => {
+                  const text = chunk.text_preview || chunk.chunk_ref;
+                  const keywords = chunkKeywords(chunk, text);
+                  return (
+                    <List.Item className="chunk-row">
+                      <div className="chunk-row-main">
+                        <div className="chunk-row-title">
+                          <span>分段-{String(chunk.chunk_index + 1).padStart(2, "0")}</span>
+                          <small>{text.length.toLocaleString()} 字符</small>
+                        </div>
+                        <Paragraph className="chunk-preview-text">{text}</Paragraph>
+                        {keywords.length ? (
+                          <Space size={[6, 6]} wrap>
+                            {keywords.map((keyword) => <Tag key={keyword}>{keyword}</Tag>)}
+                          </Space>
+                        ) : null}
+                      </div>
+                    </List.Item>
+                  );
+                }}
+                />
+              </div>
+              {chunkTotalCount > 10 ? (
+                <div className="chunk-pagination-bar">
+                  <div className="chunk-pagination-stepper">
+                    <Button
+                      aria-label="Previous page"
+                      className="chunk-page-nav-button"
+                      icon={<LeftOutlined />}
+                      disabled={chunkCurrentPage <= 1 || chunkLoading}
+                      onClick={() => changeChunkPage(chunkCurrentPage - 1)}
+                    />
+                    <span>{chunkCurrentPage} / {chunkTotalPages}</span>
+                    <Button
+                      aria-label="Next page"
+                      className="chunk-page-nav-button"
+                      icon={<RightOutlined />}
+                      disabled={chunkCurrentPage >= chunkTotalPages || chunkLoading}
+                      onClick={() => changeChunkPage(chunkCurrentPage + 1)}
+                    />
+                  </div>
+                  <div className="chunk-pagination-pages">
+                    {chunkPageNumbers.map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === chunkCurrentPage ? "is-active" : ""}
+                        disabled={chunkLoading}
+                        onClick={() => changeChunkPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="chunk-page-size-switch">
+                    {[10, 25, 50].map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        className={size === chunkPageSize ? "is-active" : ""}
+                        disabled={chunkLoading}
+                        onClick={() => changeChunkPageSize(size)}
+                      >
+                        {size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+
+            <aside className="chunk-meta-panel">
+              <Card title="文档信息">
+                <List
+                  size="small"
+                  dataSource={[
+                    `原始文件名称：${chunkPageFile.name}`,
+                    `文件类型：${chunkPageFile.kind || "file"}`,
+                    `上传时间：${formatDateTime(chunkPageFile.uploadedAt)}`,
+                    `字符数：${(chunkPageFile.charCount ?? 0).toLocaleString()}`,
+                    `切片数量：${chunkTotalCount || chunkPageFile.chunks || processedChunks.length || 0}`,
+                    `召回次数：${chunkPageFile.recallCount ?? 0}`,
+                  ]}
+                  renderItem={(item) => <List.Item>{item}</List.Item>}
+                />
+              </Card>
+              <Card title="切分方式">
+                <p className="chunk-meta-copy">XLSX/CSV 明细表按行切分，一条表格数据生成一个 chunk；普通文档仍按段落和字符长度合并切分。</p>
+              </Card>
+            </aside>
           </div>
         </section>
       ) : detailTemplate ? (
@@ -933,7 +1405,7 @@ export default function Knowledge() {
                       <td className="check-col"><input type="checkbox" aria-label={`选择 ${file.name}`} /></td>
                       <td className="index-col">{index + 1}</td>
                       <td>
-                        <button className="doc-name" onClick={() => void openProcessedFile(file)}>
+                        <button className="doc-name" onClick={() => void openChunkPage(file)}>
                           <span className="file-type-icon"><FileExcelOutlined /></span>
                           <span>{file.name}</span>
                         </button>
@@ -996,11 +1468,16 @@ export default function Knowledge() {
                 className="tag-filter"
               />
               <Input prefix={<SearchOutlined />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" allowClear className="dify-search" />
-              <label className="all-kb-check">
-                <input type="checkbox" />
-                <span>所有知识库</span>
-                <small>?</small>
-              </label>
+              <Segmented
+                value={scopeFilter}
+                onChange={(value) => setScopeFilter(value as Visibility | "all")}
+                options={[
+                  { label: "全部", value: "all" },
+                  { label: "个人", value: "private" },
+                  { label: "团队", value: "team" },
+                  { label: "公司", value: "company" },
+                ]}
+              />
               <span className="toolbar-spacer" />
               <Button type="primary" icon={<PlusOutlined />} loading={baseLoading} onClick={() => void handleCreateKnowledgeBase()}>创建</Button>
             </div>
@@ -1019,35 +1496,38 @@ export default function Knowledge() {
                     onDoubleClick={() => setDetailTemplateId(template.id)}
                     title="双击打开知识库文档"
                   >
-                    <Dropdown
-                      trigger={["click"]}
-                      menu={{
-                        items: [
-                          { key: "edit", label: "编辑" },
-                          { key: "delete", label: "删除", danger: true },
-                        ],
-                        onClick: ({ key, domEvent }) => {
-                          domEvent.stopPropagation();
-                          if (key === "edit") openEditKnowledgeBase(template);
-                          if (key === "delete") confirmDeleteKnowledgeBase(template);
-                        },
-                      }}
-                    >
-                      <Button
-                        className="dify-card-more"
-                        type="text"
-                        shape="circle"
-                        icon={<MoreOutlined />}
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                    </Dropdown>
+                    {template.canEdit === false ? null : (
+                      <Dropdown
+                        trigger={["click"]}
+                        menu={{
+                          items: [
+                            { key: "edit", label: "编辑" },
+                            { key: "delete", label: "删除", danger: true },
+                          ],
+                          onClick: ({ key, domEvent }) => {
+                            domEvent.stopPropagation();
+                            if (key === "edit") openEditKnowledgeBase(template);
+                            if (key === "delete") confirmDeleteKnowledgeBase(template);
+                          },
+                        }}
+                      >
+                        <Button
+                          className="dify-card-more"
+                          type="text"
+                          shape="circle"
+                          icon={<MoreOutlined />}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      </Dropdown>
+                    )}
                     <div className="dify-card-mainrow">
                       <div className="dify-kb-icon"><DatabaseOutlined /></div>
                       <div className="dify-title-block">
                         <h3>{template.name}</h3>
                         <div className="dify-subline">
                           <span>通用</span>
-                          <span>{visibilityLabels[template.visibility]}可见</span>
+                          <Tag color={visibilityColors[template.visibility]}>{visibilityLabels[template.visibility]}</Tag>
+                          <span>{visibilityDescriptions[template.visibility]}</span>
                         </div>
                       </div>
                     </div>
@@ -1197,7 +1677,7 @@ export default function Knowledge() {
                 items={[
                   { children: "原文件保存与格式识别" },
                   { children: processedFile.chunks ? `文本解析完成，生成 ${processedFile.chunks} 个 chunks` : "等待解析文本并生成 chunks" },
-                  { children: `按 ${chunkSize} 字符切块并写入向量索引` },
+                  { children: `按 ${chunkSize} 字符切块，重叠 ${chunkOverlap} 字符，并写入向量索引` },
                   { children: extractGraph ? "实体与关系抽取已纳入图谱处理计划" : "当前未开启图谱抽取" },
                   { children: requireCitation ? "回答时必须返回引用证据" : "回答可使用摘要模式" },
                 ]}
@@ -1258,7 +1738,14 @@ export default function Knowledge() {
             <Form.Item label="资料用途">
               <Input.TextArea rows={3} value={uploadPurpose} onChange={(event) => setUploadPurpose(event.target.value)} />
             </Form.Item>
-            <Form.Item label="继承权限">
+                        <div className="chunk-settings-grid drawer-chunk-settings">
+              <Form.Item label="分段最大长度">
+                <InputNumber min={200} max={8192} step={64} value={chunkSize} onChange={(value) => setChunkSize(Number(value) || 1024)} addonAfter="字符" style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item label="分段重叠长度">
+                <InputNumber min={0} max={Math.max(0, chunkSize - 1)} step={10} value={chunkOverlap} onChange={(value) => setChunkOverlap(Math.min(Number(value) || 0, Math.max(0, chunkSize - 1)))} addonAfter="字符" style={{ width: "100%" }} />
+              </Form.Item>
+            </div><Form.Item label="继承权限">
               <Segmented value={visibility} onChange={(value) => setVisibility(value as Visibility)} options={[{ label: "个人", value: "private" }, { label: "团队", value: "team" }, { label: "公司", value: "company" }]} />
             </Form.Item>
           </Form>
@@ -1273,6 +1760,7 @@ export default function Knowledge() {
             <p className="ant-upload-text">拖拽知识文件到这里，或点击选择文件</p>
             <p className="ant-upload-hint">支持 PDF、Word、Markdown、TXT、表格、JSON、HTML、PPT。选择后点击上传并入库，会提交到后端解析、切块和向量化。</p>
           </Dragger>
+          {renderIngestProgressPanel()}
           {uploadFiles.length ? (
             <List
               className="upload-file-list"
@@ -1306,13 +1794,15 @@ const styles = `
 .kb-create-page {
   min-height: calc(100vh - 96px);
   margin: 0;
-  background: #ffffff;
+  background: #f7f8fb;
   color: #101828;
 }
 .create-topbar {
   position: relative;
-  display: block;
-  border-bottom: 1px solid #eef0f4;
+  display: flex;
+  height: 60px;
+  align-items: center;
+  border-bottom: 1px solid #e7eaf0;
   background: #ffffff;
 }
 .create-back {
@@ -1336,7 +1826,6 @@ const styles = `
 }
 .create-topbar > b {
   display: flex;
-  height: 60px;
   align-items: center;
   padding-left: 56px;
   color: #111827;
@@ -1344,96 +1833,131 @@ const styles = `
   font-weight: 700;
   white-space: nowrap;
 }
-.create-steps {
-  display: flex;
-  height: 52px;
-  max-width: 760px;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  margin: 0 auto;
-  padding: 0 20px;
-  color: #98a2b3;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.create-steps::-webkit-scrollbar {
-  display: none;
-}
-.create-steps span {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  color: #98a2b3;
-  font-size: 14px;
-  line-height: 1;
-  white-space: nowrap;
-}
-.create-steps span b {
-  display: inline-flex;
-  min-width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #d9dee8;
-  border-radius: 999px;
-  color: #98a2b3;
-  font-size: 14px;
-  font-weight: 700;
-}
-.create-steps span.active {
-  color: #0646ff;
-  font-weight: 700;
-}
-.create-steps span.active b {
-  min-width: 62px;
-  padding: 0 10px;
-  border: 0;
-  background: #0646ff;
-  color: #ffffff;
-  font-size: 12px;
-}
-.create-steps i {
-  width: 44px;
-  height: 1px;
-  flex: 0 0 44px;
-  background: #e4e7ec;
-}
 .create-body {
   display: flex;
-  min-height: calc(100vh - 209px);
-  flex-direction: column;
-  align-items: center;
-  padding: 56px 24px 72px;
+  min-height: calc(100vh - 156px);
+  align-items: flex-start;
+  justify-content: center;
+  padding: 34px 24px 56px;
 }
 .create-main {
-  width: min(100%, 960px);
+  width: min(100%, 1120px);
 }
-.create-main h3 {
-  margin: 0 0 16px;
-  color: #1d2939;
-  font-size: 18px;
+.create-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+.create-hero h2 {
+  margin: 6px 0 8px;
+  color: #111827;
+  font-size: 28px;
   line-height: 1.2;
+  font-weight: 800;
+  letter-spacing: 0;
 }
+.create-hero p {
+  max-width: 680px;
+  margin: 0;
+  color: #52637f;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.create-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.86fr) minmax(460px, 1.14fr);
+  gap: 18px;
+  align-items: start;
+}
+.create-panel {
+  min-width: 0;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
+}
+.create-info-panel,
+.create-source-panel {
+  padding: 22px;
+}
+.create-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.create-panel-title span {
+  color: #182230;
+  font-size: 17px;
+  font-weight: 800;
+}
+.create-panel-title small {
+  color: #667085;
+  font-size: 13px;
+}
+.create-form-stack {
+  display: grid;
+  gap: 18px;
+}
+.chunk-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.chunk-settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+.chunk-settings-grid .ant-input-number-group-wrapper,
+.chunk-settings-grid .ant-input-number {
+  width: 100%;
+}
+.drawer-chunk-settings {
+  margin-top: 0;
+}
+.create-form-stack label {
+  display: grid;
+  gap: 8px;
+  color: #344054;
+  font-size: 14px;
+  font-weight: 700;
+}
+.create-form-stack .ant-input,
+.create-form-stack .ant-input-affix-wrapper,
+.create-form-stack .ant-input-textarea-show-count textarea {
+  border-radius: 10px;
+}
+.create-form-stack textarea {
+  resize: none;
+}
+.create-scope-field .ant-segmented { width: 100%; padding: 3px; background: #f3f6fb; }
+.create-scope-hint { display: block; margin-top: 8px; color: #667085; font-size: 13px; }
 .source-choice-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  margin-bottom: 44px;
+  gap: 12px;
+  margin-bottom: 20px;
 }
 .source-choice-row button {
   display: flex;
   min-width: 0;
-  min-height: 78px;
+  min-height: 74px;
   align-items: center;
-  gap: 14px;
-  padding: 16px 18px;
+  gap: 12px;
+  padding: 14px;
   border: 1px solid #e4e7ec;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #ffffff;
   color: #344054;
-  font-size: 16px;
+  font-size: 15px;
   cursor: pointer;
   text-align: left;
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
@@ -1448,15 +1972,15 @@ const styles = `
 }
 .source-choice-row .anticon {
   display: inline-flex;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   align-items: center;
   justify-content: center;
   border: 1px solid #e4e7ec;
   border-radius: 10px;
   color: #0646ff;
-  font-size: 20px;
+  font-size: 19px;
 }
 .source-choice-row button > span:last-child {
   min-width: 0;
@@ -1465,29 +1989,30 @@ const styles = `
   word-break: keep-all;
 }
 .source-connect-card {
-  min-height: 244px;
-  padding: 30px;
-  border-radius: 20px;
-  background: linear-gradient(90deg, #f3f5f8 0%, #fbfcff 72%, #ffffff 100%);
+  min-height: 210px;
+  padding: 26px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 12px;
+  background: #f8fafc;
 }
 .source-connect-icon {
   display: inline-flex;
-  width: 60px;
-  height: 60px;
+  width: 52px;
+  height: 52px;
   align-items: center;
   justify-content: center;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
   border: 1px solid #e4e7ec;
-  border-radius: 12px;
+  border-radius: 10px;
   background: #ffffff;
   color: #111827;
-  font-size: 26px;
+  font-size: 24px;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 }
 .source-connect-card h3 {
   margin: 0 0 8px;
   color: #18223b;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 800;
 }
 .source-connect-card p {
@@ -1501,8 +2026,12 @@ const styles = `
   border-radius: 10px;
   background: #0646ff;
   border-color: #0646ff;
-}.upload-heading {
-  margin-top: 0 !important;
+}
+.upload-heading {
+  margin: 0 0 12px;
+  color: #1d2939;
+  font-size: 16px;
+  line-height: 1.2;
 }
 .create-upload.ant-upload-wrapper .ant-upload-drag {
   min-height: 176px;
@@ -1538,13 +2067,19 @@ const styles = `
 }
 .create-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  margin-top: 24px;
+  gap: 10px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #eaecf0;
 }
-.create-actions .ant-btn-primary {
-  min-width: 136px;
+.create-actions .ant-btn {
   height: 40px;
   border-radius: 10px;
+}
+.create-actions .ant-btn-primary {
+  min-width: 118px;
   background: #0646ff;
   border-color: #0646ff;
 }
@@ -1553,42 +2088,98 @@ const styles = `
   border-color: #dbe4ff !important;
   color: #ffffff !important;
 }
-.create-empty {
-  display: inline-flex;
-  width: min(100%, 960px);
+.create-upload-progress {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.create-upload-progress-head {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 24px;
-  border: 0;
-  background: transparent;
-  color: #0646ff;
-  cursor: pointer;
-  font-size: 14px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #1d2939;
+}
+.create-upload-progress-head span {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+.create-upload-progress p {
+  margin: 8px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ingest-progress-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.ingest-progress-title,
+.ingest-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ingest-progress-title {
+  margin-bottom: 10px;
+  color: #1d2939;
+}
+.ingest-progress-title span,
+.ingest-progress-row span {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ingest-progress-panel .ant-list-item {
+  padding: 10px 0;
+}
+.ingest-progress-item {
+  width: 100%;
+}
+.ingest-progress-row .ant-typography {
+  max-width: calc(100% - 56px);
+  margin: 0;
+  color: #18223b;
+  font-weight: 700;
+}
+.ingest-progress-item p {
+  margin: 6px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
 }
 @media (max-width: 980px) {
+  .create-grid {
+    grid-template-columns: 1fr;
+  }
   .source-choice-row {
     grid-template-columns: 1fr;
   }
-  .create-steps {
-    justify-content: flex-start;
-    max-width: 100%;
-  }
 }
 @media (max-width: 720px) {
-  .create-topbar > b {
-    height: 56px;
-  }
-  .create-steps {
-    height: 48px;
-    padding: 0 16px;
-  }
   .create-body {
-    min-height: calc(100vh - 200px);
-    padding: 40px 20px 64px;
+    padding: 28px 16px 48px;
   }
-  .create-steps i {
-    width: 28px;
-    flex-basis: 28px;
+  .create-hero h2 {
+    font-size: 23px;
+  }
+  .create-info-panel,
+  .create-source-panel {
+    padding: 18px;
+  }
+  .create-actions {
+    justify-content: stretch;
+  }
+  .create-actions .ant-btn {
+    flex: 1 1 100%;
   }
 }
 .kb-dify-home {
@@ -2127,6 +2718,179 @@ const styles = `
 }
 .doc-name:hover span:last-child {
   color: #155eef;
+}
+.knowledge-chunk-window {
+  min-height: calc(100vh - 104px);
+  padding: 26px 28px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+}
+.chunk-window-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+.chunk-window-header h3 { margin: 0 0 4px; }
+.chunk-window-header p { margin: 0; color: #64748b; }
+.chunk-page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+.chunk-list-panel {
+  min-height: 560px;
+  border-top: 1px solid #eef2f7;
+}
+.chunk-list-topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  color: #0f172a;
+}
+.chunk-list-topbar span { color: #64748b; font-size: 13px; }
+.chunk-scroll-area {
+  max-height: calc(100vh - 330px);
+  min-height: 420px;
+  overflow-y: auto;
+  padding-right: 14px;
+  scrollbar-gutter: stable;
+}
+.chunk-scroll-area::-webkit-scrollbar {
+  width: 12px;
+}
+.chunk-scroll-area::-webkit-scrollbar-track {
+  background: #f5f7fb;
+  border-radius: 999px;
+}
+.chunk-scroll-area::-webkit-scrollbar-thumb {
+  min-height: 76px;
+  border: 3px solid #f5f7fb;
+  border-radius: 999px;
+  background: #8b8f97;
+}
+.chunk-scroll-area::-webkit-scrollbar-thumb:hover {
+  background: #6f747c;
+}
+.chunk-pagination-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 0 4px;
+}
+.chunk-pagination-stepper,
+.chunk-pagination-pages,
+.chunk-page-size-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chunk-pagination-stepper { justify-self: start; gap: 16px; }
+.chunk-pagination-pages { justify-self: center; }
+.chunk-page-size-switch { justify-self: end; }
+.chunk-page-nav-button.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-color: #d9dee8;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #0f2748;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
+}
+.chunk-page-nav-button.ant-btn:hover:not(:disabled) {
+  border-color: #b7c4d8;
+  color: #155eef;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+}
+.chunk-page-nav-button.ant-btn:disabled {
+  background: #f8fafc;
+  color: #9aa4b2;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+}
+.chunk-page-nav-button .anticon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1;
+}
+.chunk-pagination-stepper span {
+  min-width: 54px;
+  text-align: center;
+  color: #0d2445;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 44px;
+}
+.chunk-pagination-pages button,
+.chunk-page-size-switch button {
+  min-width: 40px;
+  height: 38px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #1d3154;
+  font: inherit;
+  cursor: pointer;
+}
+.chunk-pagination-pages button.is-active,
+.chunk-page-size-switch button.is-active {
+  background: #f1f4f8;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+}
+.chunk-pagination-pages button:disabled,
+.chunk-page-size-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.chunk-page-size-switch {
+  padding: 0 6px;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 3px 14px rgba(15, 23, 42, 0.08);
+}
+.chunk-row {
+  align-items: flex-start !important;
+  padding: 18px 0 !important;
+}
+.chunk-row-main { width: 100%; min-width: 0; }
+.chunk-row-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.chunk-row-title span { color: #1e293b; font-weight: 700; }
+.chunk-row-title small { color: #64748b; }
+.chunk-meta-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: sticky;
+  top: 84px;
+}
+.chunk-meta-panel .ant-card {
+  border-radius: 8px;
+  border-color: rgba(15,23,42,0.08);
+  box-shadow: 0 8px 24px rgba(15,23,42,0.06);
+}
+.chunk-meta-copy {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.65;
 }
 .file-type-icon {
   display: inline-flex;
