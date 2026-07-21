@@ -2152,8 +2152,12 @@ export const createCollabRoom = (body: {
 export const createXiaoceTask = (body: { title?: string } = {}) =>
   api.post<CollabRoom>("/collab/xiaoce-tasks/", body).then((response) => response.data);
 
-export const getCollabRoom = (id: string) =>
-  api.get<CollabRoom>(`/collab/rooms/${id}/`).then((r) => r.data);
+export const getCollabRoom = (id: string, opts?: { includeMessages?: boolean }) =>
+  api.get<CollabRoom>(`/collab/rooms/${id}/`, {
+    params: {
+      include_messages: opts?.includeMessages ? "1" : "0",
+    },
+  }).then((r) => r.data);
 
 export const updateCollabRoom = (
   id: string,
