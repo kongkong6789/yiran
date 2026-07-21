@@ -23,10 +23,22 @@ class XiaoceApiTests(APITestCase):
         self.user = User.objects.create_user("api-owner", password="pw")
         self.other = User.objects.create_user("api-other", password="pw")
         bot = get_xiaoce_bot_user()
+        self.bot = bot
         self.room = CollabRoom.objects.create(created_by=self.user, room_kind="dm")
         CollabParticipant.objects.create(room=self.room, user=self.user)
         CollabParticipant.objects.create(room=self.room, user=bot)
         self.client.force_authenticate(self.user)
+
+    def create_context_room(self, *, owner=None, title="旧任务：夏季上新"):
+        owner = owner or self.user
+        room = CollabRoom.objects.create(
+            created_by=owner,
+            room_kind="dm",
+            title=title,
+        )
+        CollabParticipant.objects.create(room=room, user=owner)
+        CollabParticipant.objects.create(room=room, user=self.bot)
+        return room
 
     @property
     def messages_url(self):
@@ -70,6 +82,92 @@ class XiaoceApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(CollabMessage.objects.count(), before)
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_send_can_reference_one_owned_xiaoce_task(self, _thread_cls):
+        context_room = self.create_context_room()
+        CollabMessage.objects.create(
+            room=context_room,
+            sender=self.user,
+            content="目标是八月上新 3 个 SKU",
+            msg_type="user",
+        )
+        CollabMessage.objects.create(
+            room=context_room,
+            sender=self.bot,
+            content="已确定先完成定价表",
+            msg_type="ai",
+            ai_kind="xiaoce",
+        )
+
+        response = self.client.post(
+            self.messages_url,
+            {
+                "content": "@「旧任务：夏季上新」 继续排期",
+                "run_id": str(uuid.uuid4()),
+                "context_room_ids": [str(context_room.id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        refs = response.data["message"]["meta"]["context_rooms"]
+        self.assertEqual(refs[0]["id"], str(context_room.id))
+        self.assertEqual(refs[0]["title"], "旧任务：夏季上新")
+        self.assertEqual(refs[0]["message_count"], 2)
+        self.assertEqual(
+            refs[0]["last_message_id"],
+            context_room.messages.order_by("-id").values_list("id", flat=True).first(),
+        )
+        saved_message = CollabMessage.objects.get(id=response.data["message"]["id"])
+        self.assertEqual(views._xiaoce_trigger_prompt(saved_message), "继续排期")
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_formdata_reference_payload_is_supported_for_file_sends(self, _thread_cls):
+        context_room = self.create_context_room()
+
+        response = self.client.post(
+            self.messages_url,
+            {
+                "content": "继续",
+                "run_id": str(uuid.uuid4()),
+                "context_room_ids": f'["{context_room.id}"]',
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.data["message"]["meta"]["context_rooms"][0]["id"],
+            str(context_room.id),
+        )
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_reference_rejects_unowned_or_current_task(self, _thread_cls):
+        foreign_room = self.create_context_room(owner=self.other, title="他人任务")
+
+        foreign = self.client.post(
+            self.messages_url,
+            {
+                "content": "继续",
+                "run_id": str(uuid.uuid4()),
+                "context_room_ids": [str(foreign_room.id)],
+            },
+            format="json",
+        )
+        current = self.client.post(
+            self.messages_url,
+            {
+                "content": "继续",
+                "run_id": str(uuid.uuid4()),
+                "context_room_ids": [str(self.room.id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(foreign.status_code, 400)
+        self.assertEqual(current.status_code, 400)
+        self.assertEqual(self.room.messages.count(), 0)
 
     @patch("apps.collab.views.threading.Thread")
     def test_cancel_is_idempotent_and_returns_persisted_snapshot(self, _thread_cls):
@@ -136,6 +234,70 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
         self.assertEqual(run.result_message.content, "最终答案")
         self.assertEqual(run.result_message.meta["process_steps"], run.progress_steps)
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_injects_referenced_task_transcript(self, run_chat):
+        context_room = self.create_context_room()
+        CollabMessage.objects.create(
+            room=context_room,
+            sender=self.user,
+            content="方案代号是 Aurora，预算 20 万",
+            msg_type="user",
+        )
+        CollabMessage.objects.create(
+            room=context_room,
+            sender=self.bot,
+            content="下一步是确认供应商档期",
+            msg_type="ai",
+            ai_kind="xiaoce",
+        )
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="继续这个任务",
+            msg_type="user",
+            meta={
+                "context_rooms": [{
+                    "id": str(context_room.id),
+                    "title": context_room.title,
+                    "message_count": 2,
+                }],
+            },
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        run_chat.return_value = {"ok": True, "reply": "已承接"}
+
+        views._run_xiaoce_reply_async(run.id)
+
+        block = run_chat.call_args.kwargs["extra_reference_blocks"][0]
+        self.assertIn("方案代号是 Aurora", block)
+        self.assertIn("下一步是确认供应商档期", block)
+        self.assertIn(context_room.title, block)
+
+        run_chat.reset_mock()
+        followup = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="那么现在先做什么？",
+            msg_type="user",
+            meta={},
+        )
+        followup_run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=followup,
+        )
+
+        views._run_xiaoce_reply_async(followup_run.id)
+
+        inherited_block = run_chat.call_args.kwargs["extra_reference_blocks"][0]
+        self.assertIn("方案代号是 Aurora", inherited_block)
 
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_maps_internal_failure_to_safe_message(self, run_chat):

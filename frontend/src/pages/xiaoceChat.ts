@@ -2,6 +2,10 @@ import type { XiaoceRun } from "../api/client";
 
 
 type XiaoceRoomLike = {
+  id?: string;
+  title?: string;
+  display_title?: string;
+  message_count?: number;
   room_kind?: string;
   participants?: Array<{ username?: string; bot_id?: string }>;
 };
@@ -16,6 +20,24 @@ export function isXiaoceRoom(room: XiaoceRoomLike | null | undefined): boolean {
       ),
     ),
   );
+}
+
+
+export function findXiaoceReferenceRooms<T extends XiaoceRoomLike>(
+  rooms: T[],
+  activeRoomId: string | null | undefined,
+  query = "",
+  limit = 8,
+): T[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  return rooms
+    .filter((room) => room.id && room.id !== activeRoomId && isXiaoceRoom(room))
+    .filter((room) => {
+      if (!normalized) return true;
+      const title = room.display_title || room.title || "小策bot 历史任务";
+      return title.toLocaleLowerCase().includes(normalized);
+    })
+    .slice(0, Math.max(0, limit));
 }
 
 

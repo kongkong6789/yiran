@@ -1746,6 +1746,13 @@ export interface CollabRoom {
   active_xiaoce_run?: XiaoceRun | null;
 }
 
+export interface CollabContextRoomRef {
+  id: string;
+  title: string;
+  message_count?: number;
+  last_message_id?: number | null;
+}
+
 export interface CollabMessage {
   id: number;
   room_id: string;
@@ -1770,6 +1777,7 @@ export interface CollabMessage {
     error_message?: string;
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
+    context_rooms?: CollabContextRoomRef[];
     [key: string]: unknown;
   };
   msg_type?: "user" | "system" | "ai";
@@ -2148,6 +2156,7 @@ export const sendCollabMessage = (
   files?: File[],
   replyToId?: number,
   runId?: string,
+  contextRoomIds?: string[],
 ) => {
   if (files?.length) {
     const form = new FormData();
@@ -2155,6 +2164,7 @@ export const sendCollabMessage = (
     form.append("analyze", analyze ? "1" : "0");
     if (replyToId) form.append("reply_to_id", String(replyToId));
     if (runId) form.append("run_id", runId);
+    if (contextRoomIds?.length) form.append("context_room_ids", JSON.stringify(contextRoomIds));
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -2186,6 +2196,7 @@ export const sendCollabMessage = (
         analyze: analyze ? "1" : "0",
         ...(replyToId ? { reply_to_id: replyToId } : {}),
         ...(runId ? { run_id: runId } : {}),
+        ...(contextRoomIds?.length ? { context_room_ids: contextRoomIds } : {}),
       },
       { timeout: 120_000 },
     )

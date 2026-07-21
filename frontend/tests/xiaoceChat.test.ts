@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   createXiaoceRunId,
+  findXiaoceReferenceRooms,
   isXiaoceRoom,
   mergeXiaoceRunSnapshot,
 } from "../src/pages/xiaoceChat.ts";
@@ -27,6 +28,38 @@ test("recognizes only Xiaoce direct messages", () => {
   assert.equal(
     isXiaoceRoom({ room_kind: "dm", participants: [{ username: "同事" }] }),
     false,
+  );
+});
+
+test("finds prior Xiaoce tasks for @ references and excludes the active room", () => {
+  const rooms = [
+    {
+      id: "current",
+      title: "当前任务",
+      room_kind: "dm",
+      participants: [{ bot_id: "xiaoce" }],
+    },
+    {
+      id: "summer",
+      title: "夏季上新计划",
+      room_kind: "dm",
+      participants: [{ username: "小策bot" }],
+    },
+    {
+      id: "other",
+      title: "普通单聊",
+      room_kind: "dm",
+      participants: [{ username: "同事" }],
+    },
+  ];
+
+  assert.deepEqual(
+    findXiaoceReferenceRooms(rooms, "current", "夏季").map((room) => room.id),
+    ["summer"],
+  );
+  assert.deepEqual(
+    findXiaoceReferenceRooms(rooms, "summer").map((room) => room.id),
+    ["current"],
   );
 });
 
@@ -77,6 +110,8 @@ test("API types include durable Xiaoce progress and realtime snapshots", () => {
   assert.match(source, /export interface XiaoceRun/);
   assert.match(source, /xiaoce_runs\?: XiaoceRun\[\]/);
   assert.match(source, /cancelXiaoceRun/);
+  assert.match(source, /context_room_ids/);
+  assert.match(source, /context_rooms\?: CollabContextRoomRef\[\]/);
 });
 
 test("collaboration chat wires Xiaoce progress, pause, history, and skill refresh", () => {
@@ -88,6 +123,8 @@ test("collaboration chat wires Xiaoce progress, pause, history, and skill refres
   assert.match(source, /created_skill/);
   assert.match(source, /refreshKey=\{skillRefreshKey\}/);
   assert.match(source, /aria-label="暂停小策处理"/);
+  assert.match(source, /findXiaoceReferenceRooms/);
+  assert.match(source, /已引用小策历史任务/);
 });
 
 test("collaboration live hook forwards Xiaoce snapshots from websocket and fallback polling", () => {

@@ -5,7 +5,7 @@ import {
 import type { TooltipPlacement } from "antd/es/tooltip";
 import {
   AlertOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined,
-  CloseOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
+  CloseOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
   SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
   TeamOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
 } from "@ant-design/icons";
@@ -39,6 +39,7 @@ import {
   type CollabRoom,
   type CollabRoomStats,
   type CollabDraftTip,
+  type CollabContextRoomRef,
   type CollabUserBrief,
   type UserSkillItem,
   type XiaoceRun,
@@ -51,7 +52,12 @@ import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
-import { createXiaoceRunId, isXiaoceRoom, mergeXiaoceRunSnapshot } from "./xiaoceChat";
+import {
+  createXiaoceRunId,
+  findXiaoceReferenceRooms,
+  isXiaoceRoom,
+  mergeXiaoceRunSnapshot,
+} from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 50;
@@ -107,10 +113,11 @@ function authAvatarSrc(url?: string) {
 
 type MentionOption = {
   id: string;
-  type: "all" | "ai" | "user";
+  type: "all" | "ai" | "user" | "conversation";
   insert: string;
   label: string;
   desc: string;
+  room?: CollabRoom;
 };
 
 type MentionState = {
@@ -138,12 +145,24 @@ function buildMentionOptions(
   room: CollabRoom | null,
   me: AuthUser | null,
   query: string,
+  referenceRooms: CollabRoom[] = [],
 ): MentionOption[] {
   const q = query.trim().toLowerCase();
-  const list: MentionOption[] = [
+  const list: MentionOption[] = referenceRooms.map((item) => {
+    const title = item.display_title || item.title || "小策bot 历史任务";
+    return {
+      id: `conversation-${item.id}`,
+      type: "conversation" as const,
+      insert: `@「${title}」 `,
+      label: title,
+      desc: `引用整个历史任务${typeof item.message_count === "number" ? ` · ${item.message_count} 条消息` : ""}`,
+      room: item,
+    };
+  });
+  list.push(
     { id: "all", type: "all", insert: "@所有人 ", label: "所有人", desc: "提醒会话内全部成员" },
     { id: "ai", type: "ai", insert: "@AI ", label: "AI", desc: "召唤良策AI 直接回复" },
-  ];
+  );
   const members = room?.participants || [];
   for (const p of members) {
     if (me && p.id === me.id) continue;
@@ -646,6 +665,7 @@ export default function CollabRisk({
     draft: string;
     pendingFiles: { file: File; preview?: string }[];
     replyingTo: CollabMessage | null;
+    referencedRoom: CollabRoom | null;
   };
   type RoomViewCache = {
     room: CollabRoom;
@@ -693,6 +713,7 @@ export default function CollabRisk({
   const [creating, setCreating] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [replyingTo, setReplyingTo] = useState<CollabMessage | null>(null);
+  const [referencedRoom, setReferencedRoom] = useState<CollabRoom | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
   const [mention, setMention] = useState<MentionState>(null);
@@ -877,6 +898,7 @@ export default function CollabRisk({
         draft: draftRef.current,
         pendingFiles,
         replyingTo,
+        referencedRoom,
       });
       if (activeRoom && activeRoom.id === prevId) {
         roomViewCacheRef.current.set(prevId, {
@@ -895,6 +917,7 @@ export default function CollabRisk({
     setDraft(composer?.draft || "");
     setPendingFiles(composer?.pendingFiles || []);
     setReplyingTo(composer?.replyingTo || null);
+    setReferencedRoom(composer?.referencedRoom || null);
     setMention(null);
     setMentionIndex(0);
     setDraftCoach(null);
@@ -938,6 +961,7 @@ export default function CollabRisk({
     firstItemIndex,
     hasMoreBefore,
     pendingFiles,
+    referencedRoom,
     replyingTo,
     roomStats,
     rooms,
@@ -1002,6 +1026,7 @@ export default function CollabRisk({
             draft: nasPrompt,
             pendingFiles: [],
             replyingTo: null,
+            referencedRoom: null,
           });
           setDraft(nasPrompt);
           window.setTimeout(() => composerRef.current?.focus?.(), 0);
@@ -1602,6 +1627,7 @@ export default function CollabRisk({
     content: string,
     files: File[] = [],
     replyTarget: CollabMessage | null = null,
+    contextRoom: CollabRoom | null = null,
   ) => {
     if (!activeId || sending) return false;
     if (!content.trim() && files.length === 0) return false;
@@ -1646,7 +1672,17 @@ export default function CollabRisk({
         status: replyTarget.status,
         attachment_count: replyTarget.attachments?.length || 0,
       } : null,
-      meta: runId ? { run_id: runId } : {},
+      meta: {
+        ...(runId ? { run_id: runId } : {}),
+        ...(contextRoom ? {
+          context_rooms: [{
+            id: contextRoom.id,
+            title: contextRoom.display_title || contextRoom.title,
+            message_count: contextRoom.message_count,
+            last_message_id: contextRoom.last_message?.id,
+          } satisfies CollabContextRoomRef],
+        } : {}),
+      },
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -1661,6 +1697,7 @@ export default function CollabRisk({
         files.length ? files : undefined,
         replyTarget?.id,
         runId,
+        contextRoom ? [contextRoom.id] : undefined,
       );
       setMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId);
@@ -1705,11 +1742,12 @@ export default function CollabRisk({
 
   const handleSend = async () => {
     if (!activeId || sending || xiaoceBusy) return;
-    if (!draft.trim() && pendingFiles.length === 0) return;
-    const content = draft.trim();
+    if (!draft.trim() && pendingFiles.length === 0 && !referencedRoom) return;
+    const content = draft.trim() || (referencedRoom ? "请基于引用会话继续当前任务。" : "");
     const files = pendingFiles.map((p) => p.file);
     const previews = pendingFiles.map((p) => p.preview);
     const replyTarget = replyingTo;
+    const contextRoom = referencedRoom;
     // 发出后立刻停掉草稿分析（含进行中的请求）
     draftCoachSeq.current += 1;
     if (draftCoachTimer.current) {
@@ -1721,17 +1759,20 @@ export default function CollabRisk({
     setDraftCoachLoading(false);
     setPendingFiles([]);
     setReplyingTo(null);
+    setReferencedRoom(null);
     if (activeId) {
       roomComposerCacheRef.current.set(activeId, {
         draft: "",
         pendingFiles: [],
         replyingTo: null,
+        referencedRoom: null,
       });
     }
-    const ok = await sendPlainMessage(content, files, replyTarget);
+    const ok = await sendPlainMessage(content, files, replyTarget, contextRoom);
     if (!ok) {
       setDraft(content);
       setReplyingTo(replyTarget);
+      setReferencedRoom(contextRoom);
       setPendingFiles(files.map((file, i) => ({
         file,
         preview: previews[i],
@@ -1741,6 +1782,7 @@ export default function CollabRisk({
           draft: content,
           pendingFiles: files.map((file, i) => ({ file, preview: previews[i] })),
           replyingTo: replyTarget,
+          referencedRoom: contextRoom,
         });
       }
     } else {
@@ -1967,6 +2009,9 @@ export default function CollabRisk({
     const next = `${before}${opt.insert}${after}`;
     const caret = before.length + opt.insert.length;
     setDraft(next);
+    if (opt.type === "conversation" && opt.room) {
+      setReferencedRoom(opt.room);
+    }
     setMention(null);
     requestAnimationFrame(() => {
       const el = composerRef.current?.resizableTextArea?.textArea as HTMLTextAreaElement | undefined;
@@ -2288,8 +2333,15 @@ export default function CollabRisk({
   }, [activeRoom, me]);
 
   const mentionOptions = useMemo(
-    () => (mention ? buildMentionOptions(activeRoom, me, mention.query) : []),
-    [mention, activeRoom, me],
+    () => (mention ? buildMentionOptions(
+      activeRoom,
+      me,
+      mention.query,
+      xiaoceRoom
+        ? findXiaoceReferenceRooms(rooms, activeId, mention.query)
+        : [],
+    ) : []),
+    [mention, activeRoom, me, xiaoceRoom, rooms, activeId],
   );
 
   useEffect(() => {
@@ -2874,6 +2926,20 @@ export default function CollabRisk({
                           </Tooltip>
                         )}
                         <div className={`collab-bubble${flagged ? ` risk-edge-${flagLevel}` : ""}`}>
+                        {m.meta?.context_rooms?.map((contextRoom) => (
+                          <div key={contextRoom.id} className="collab-context-block">
+                            <HistoryOutlined aria-hidden />
+                            <span>
+                              <strong>引用小策历史任务</strong>
+                              <em>
+                                {contextRoom.title}
+                                {typeof contextRoom.message_count === "number"
+                                  ? ` · ${contextRoom.message_count} 条消息`
+                                  : ""}
+                              </em>
+                            </span>
+                          </div>
+                        ))}
                         {m.reply_to ? (
                           <button
                             type="button"
@@ -2987,6 +3053,31 @@ export default function CollabRisk({
             ) : null}
 
             <div className="agent-chat-input collab-agent-input">
+              {referencedRoom ? (
+                <div className="collab-context-composer">
+                  <HistoryOutlined aria-hidden />
+                  <div>
+                    <strong>已引用小策历史任务</strong>
+                    <span>
+                      {referencedRoom.display_title || referencedRoom.title}
+                      {typeof referencedRoom.message_count === "number"
+                        ? ` · ${referencedRoom.message_count} 条消息`
+                        : ""}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="取消引用历史任务"
+                    onClick={() => {
+                      const token = `@「${referencedRoom.display_title || referencedRoom.title}」 `;
+                      setDraft((current) => current.replace(token, ""));
+                      setReferencedRoom(null);
+                    }}
+                  >
+                    <CloseOutlined />
+                  </button>
+                </div>
+              ) : null}
               {replyingTo ? (
                 <div className="collab-reply-composer">
                   <div>
@@ -3064,7 +3155,13 @@ export default function CollabRisk({
                         }}
                       >
                         <span className="collab-mention-ico">
-                          {opt.type === "ai" ? <RobotOutlined /> : opt.type === "all" ? <TeamOutlined /> : <UserOutlined />}
+                          {opt.type === "conversation"
+                            ? <HistoryOutlined />
+                            : opt.type === "ai"
+                              ? <RobotOutlined />
+                              : opt.type === "all"
+                                ? <TeamOutlined />
+                                : <UserOutlined />}
                         </span>
                         <span>
                           <strong>{opt.label}</strong>
@@ -3151,7 +3248,9 @@ export default function CollabRisk({
                         ? "会话已结束"
                         : xiaoceBusy
                           ? "小策bot 正在处理，可点击右侧暂停"
-                        : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
+                        : xiaoceRoom
+                          ? "输入消息… 用 @ 引用之前的小策任务"
+                          : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
                   }
                   autoSize={{ minRows: 2, maxRows: 6 }}
                   disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy}
@@ -3233,7 +3332,9 @@ export default function CollabRisk({
                   <div className="agent-chat-composer-left">
                     <ChatSkillPicker onSelect={insertSkill} refreshKey={skillRefreshKey} />
                     {!(mention && mentionOptions.length > 0) ? (
-                      <span className="collab-composer-hint">@成员 · @AI · Skill</span>
+                      <span className="collab-composer-hint">
+                        {xiaoceRoom ? "@历史任务 · Skill" : "@成员 · @AI · Skill"}
+                      </span>
                     ) : null}
                   </div>
                   <div className="agent-chat-composer-right">
@@ -3270,7 +3371,7 @@ export default function CollabRisk({
                           icon={<SendOutlined />}
                           loading={sending}
                           disabled={
-                            (!draft.trim() && pendingFiles.length === 0)
+                            (!draft.trim() && pendingFiles.length === 0 && !referencedRoom)
                             || !isParticipant
                             || activeRoom.status === "closed"
                           }
@@ -3997,6 +4098,37 @@ const css = `
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.collab-context-block {
+  display: flex;
+  width: min(420px, 100%);
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--lc-accent-blue, #315efb) 22%, transparent);
+  border-radius: 9px;
+  color: var(--lc-accent-blue, #315efb);
+  background: color-mix(in srgb, var(--lc-accent-blue, #315efb) 7%, transparent);
+}
+.collab-context-block > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.collab-context-block strong {
+  font-size: 11px;
+  line-height: 1.35;
+}
+.collab-context-block em {
+  overflow: hidden;
+  color: var(--lc-text-muted, #66738a);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .collab-read-state {
   display: block;
   margin: 4px 3px 0 auto;
@@ -4323,6 +4455,58 @@ const css = `
 }
 .collab-reply-composer button:active {
   transform: scale(0.9);
+}
+.collab-context-composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px -5px;
+  padding: 9px 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--lc-accent-blue, #315efb) 28%, var(--lc-border-light, #dce5f1));
+  border-bottom: 0;
+  border-radius: 13px 13px 0 0;
+  color: var(--lc-accent-blue, #315efb);
+  background: color-mix(in srgb, var(--lc-bg-elevated, #fff) 94%, var(--lc-accent-blue, #315efb));
+  box-shadow: 0 -4px 18px rgba(22, 39, 67, 0.035);
+}
+.collab-context-composer:has(+ .collab-reply-composer) {
+  margin-bottom: 7px;
+  border-bottom: 1px solid color-mix(in srgb, var(--lc-accent-blue, #315efb) 28%, var(--lc-border-light, #dce5f1));
+  border-radius: 13px;
+}
+.collab-context-composer > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.collab-context-composer strong {
+  color: var(--lc-accent-blue, #315efb);
+  font-size: 11px;
+}
+.collab-context-composer span {
+  overflow: hidden;
+  color: var(--lc-text-muted, #66738a);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-context-composer button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--lc-text-muted, #7e8aa3);
+  background: transparent;
+  cursor: pointer;
+}
+.collab-context-composer button:hover {
+  background: color-mix(in srgb, var(--lc-text, #172033) 7%, transparent);
 }
 .xiaoce-live-process {
   flex-shrink: 0;
