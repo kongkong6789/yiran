@@ -36,6 +36,7 @@ import {
   type TaskAssignmentValue,
 } from "../features/task-console/mockWeCom";
 import { collectSubmitBlockers } from "../features/task-console/taskSubmitValidation";
+import { getTaskTemplate } from "../features/task-console/taskTemplates";
 import { createTaskTraceId } from "../utils/traceId";
 
 const decisionTag: Record<string, { color: string; text: string }> = {
@@ -87,10 +88,12 @@ const sopFailureDetail = (result: SopResult) => {
 
 export default function AgentConsole({
   view = "create",
+  templateKey,
   onViewChange,
   onDetailChange,
 }: {
   view?: "create" | TaskView;
+  templateKey?: string | null;
   onViewChange?: (view: "create" | TaskView) => void;
   onDetailChange?: (open: boolean) => void;
 }) {
@@ -144,6 +147,12 @@ export default function AgentConsole({
       setRightPanelTab("result");
     }
   }, [formattedBusinessResult, loading]);
+
+  useEffect(() => {
+    if (view !== "create") return;
+    const template = getTaskTemplate(templateKey);
+    if (template) setText(template.prompt);
+  }, [view, templateKey]);
 
   useEffect(() => {
     getCatalog().then((data) => setActions(data.actions)).catch(() => setActions([]));
