@@ -87,7 +87,7 @@ const WORK_GROUPS: NavGroup[] = [
     items: [
       { key: "task-center", path: "/work", icon: <FlagOutlined />, label: "任务中心", keywords: "任务" },
       { key: "task-todos", path: "/work?tab=todos", icon: <CheckSquareOutlined />, label: "待办", keywords: "清单" },
-      { key: "task-templates", path: "/skills?context=tasks", icon: <FileTextOutlined />, label: "模板中心", keywords: "模版 技能" },
+      { key: "task-templates", path: "/work?tab=templates", icon: <FileTextOutlined />, label: "模板中心", keywords: "模版 技能" },
       { key: "task-automation", path: "/work?tab=automation", icon: <PlayCircleOutlined />, label: "自动化", keywords: "流程" },
     ],
   },
@@ -220,9 +220,8 @@ function routeMatches(pathname: string, route: string) {
   return pathname === route || pathname.startsWith(`${route}/`);
 }
 
-function sectionForLocation(pathname: string, search: string): SectionKey {
-  const params = new URLSearchParams(search);
-  if (pathname === "/skills") return params.get("context") === "tasks" ? "work" : "knowledge";
+function sectionForLocation(pathname: string): SectionKey {
+  if (pathname === "/skills") return "knowledge";
   const visibleHit = SECTIONS.find((section) => (
     section.groups.some((group) => group.items.some((item) => routeMatches(pathname, item.path.split("?")[0])))
   ));
@@ -240,11 +239,12 @@ function navKeyForLocation(pathname: string, search: string) {
   }
   if (pathname === "/work") {
     if (params.get("tab") === "todos") return "task-todos";
+    if (params.get("tab") === "templates") return "task-templates";
     if (params.get("tab") === "automation") return "task-automation";
     return "task-center";
   }
   if (pathname === "/skills") {
-    return params.get("context") === "tasks" ? "task-templates" : "knowledge-skills";
+    return "knowledge-skills";
   }
   const ordered = [...ALL_VISIBLE_NAV, LOGS_NAV]
     .sort((a, b) => b.path.split("?")[0].length - a.path.split("?")[0].length);
@@ -285,7 +285,7 @@ export default function AppLayout() {
     nav("/login", { replace: true });
   };
 
-  const activeSectionKey = sectionForLocation(loc.pathname, loc.search);
+  const activeSectionKey = sectionForLocation(loc.pathname);
   const activeSection = SECTIONS.find((section) => section.key === activeSectionKey) || SECTIONS[0];
   const compactSidebar = screens.lg === false || navCollapsed;
   const sidebarHeaderMode = compactSidebar || sidebarWidth < 148

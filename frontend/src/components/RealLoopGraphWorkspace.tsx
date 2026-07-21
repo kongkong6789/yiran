@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApartmentOutlined, AppstoreOutlined, BranchesOutlined, CheckCircleFilled, ClockCircleOutlined, CompressOutlined,
-  FilterOutlined, FullscreenOutlined, ReloadOutlined, SearchOutlined, SyncOutlined,
+  FilterOutlined, FullscreenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ReloadOutlined, SearchOutlined, SyncOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import {
@@ -39,10 +39,24 @@ function formatTime(value?: string | null) {
   });
 }
 
+function useCompactLoopLayout() {
+  const [compact, setCompact] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 1280px)").matches
+  ));
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1280px)");
+    const onChange = () => setCompact(media.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+  return compact;
+}
+
 export default function RealLoopGraphWorkspace() {
   const { message } = App.useApp();
   const nav = useNavigate();
   const visualTheme = useVisualizationTheme();
+  const compactLayout = useCompactLoopLayout();
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const initialLoadStartedRef = useRef(false);
   const [loops, setLoops] = useState<FeedbackLoop[]>([]);
@@ -59,6 +73,18 @@ export default function RealLoopGraphWorkspace() {
   const [showAllConnections, setShowAllConnections] = useState(true);
   const [selectedNode, setSelectedNode] = useState<CompanyNodeDatum | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(() => (
+    typeof window !== "undefined" && !window.matchMedia("(max-width: 1280px)").matches
+  ));
+  const [rightPanelOpen, setRightPanelOpen] = useState(() => (
+    typeof window !== "undefined" && !window.matchMedia("(max-width: 1280px)").matches
+  ));
+
+  const rightPanelLabel = selectedNode
+    ? "系统详情"
+    : viewMode === "company"
+      ? "公司框架"
+      : "回路详情";
 
   const loadGraph = useCallback(async () => {
     setGraphLoading(true);
@@ -199,11 +225,32 @@ export default function RealLoopGraphWorkspace() {
 
   return (
     <div className="real-loop-workspace">
-      <div className="real-loop-main">
-        <aside className="real-loop-control-panel">
+      <div className={`real-loop-main${leftPanelOpen ? " is-left-open" : " is-left-collapsed"}${rightPanelOpen ? " is-right-open" : " is-right-collapsed"}`}>
+        {compactLayout && (leftPanelOpen || rightPanelOpen) ? (
+          <button
+            type="button"
+            className="real-loop-panel-backdrop"
+            aria-label="关闭侧边栏"
+            onClick={() => {
+              setLeftPanelOpen(false);
+              setRightPanelOpen(false);
+            }}
+          />
+        ) : null}
+        <aside className="real-loop-control-panel" aria-hidden={!leftPanelOpen}>
           <div className="real-loop-panel-heading">
             <div><strong>回路视图</strong><small>选择要查看的闭环</small></div>
-            <FilterOutlined />
+            <Space size={4}>
+              <FilterOutlined />
+              <Button
+                type="text"
+                size="small"
+                className="real-loop-panel-toggle"
+                icon={leftPanelOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+                aria-label={leftPanelOpen ? "折叠回路视图" : "展开回路视图"}
+                onClick={() => setLeftPanelOpen((open) => !open)}
+              />
+            </Space>
           </div>
           <div className="real-loop-view-buttons">
             <button type="button" className={status === "all" ? "is-active" : ""} onClick={() => setStatus("all")}>
@@ -275,6 +322,18 @@ export default function RealLoopGraphWorkspace() {
             )}
           </div>
         </aside>
+
+        {!leftPanelOpen ? (
+          <button
+            type="button"
+            className="real-loop-panel-expand"
+            aria-label="展开回路视图"
+            onClick={() => setLeftPanelOpen(true)}
+          >
+            <MenuUnfoldOutlined />
+            <span>回路视图</span>
+          </button>
+        ) : null}
 
         <section className="real-loop-canvas-shell" ref={canvasShellRef}>
           <div className="real-loop-canvas-toolbar">
@@ -389,17 +448,39 @@ export default function RealLoopGraphWorkspace() {
           </div>
         </section>
 
-        <aside className="real-loop-detail-panel">
+        {!rightPanelOpen ? (
+          <button
+            type="button"
+            className="real-loop-panel-expand is-right"
+            aria-label={`展开${rightPanelLabel}`}
+            onClick={() => setRightPanelOpen(true)}
+          >
+            <MenuUnfoldOutlined />
+            <span>{rightPanelLabel}</span>
+          </button>
+        ) : null}
+
+        <aside className="real-loop-detail-panel" aria-hidden={!rightPanelOpen}>
           <div className="real-loop-panel-heading">
             <div>
-              <strong>{selectedNode ? "系统详情" : viewMode === "company" ? "公司框架" : "回路详情"}</strong>
+              <strong>{rightPanelLabel}</strong>
               <small>{selectedNode
                 ? "画布中选中的公司经营系统"
                 : viewMode === "company" ? "公司级经营骨架与数据覆盖" : "当前选中的已保存回路"}</small>
             </div>
-            {selectedNode && (
-              <Button size="small" type="text" onClick={() => setSelectedNode(null)}>返回回路</Button>
-            )}
+            <Space size={4} wrap>
+              {selectedNode ? (
+                <Button size="small" type="text" onClick={() => setSelectedNode(null)}>返回回路</Button>
+              ) : null}
+              <Button
+                type="text"
+                size="small"
+                className="real-loop-panel-toggle"
+                icon={rightPanelOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+                aria-label={rightPanelOpen ? `折叠${rightPanelLabel}` : `展开${rightPanelLabel}`}
+                onClick={() => setRightPanelOpen((open) => !open)}
+              />
+            </Space>
           </div>
           {selectedNode && nodeDetail ? (
             <>

@@ -193,6 +193,13 @@ def login(request):
     password = str(request.data.get("password") or "")
     user = authenticate(request, username=username, password=password)
     if not user:
+        inactive_user = User.objects.filter(username=username).first()
+        if inactive_user and not inactive_user.is_active and inactive_user.check_password(password):
+            _write_auth_audit(
+                request, actor=username, action="auth.login_failed", intent="登录失败",
+                decision=AuditLog.Decision.BLOCK, result={"reason": "account_disabled"},
+            )
+            return Response({"ok": False, "error": "账号已停用，请联系管理员"}, status=400)
         _write_auth_audit(
             request, actor=username, action="auth.login_failed", intent="登录失败",
             decision=AuditLog.Decision.BLOCK, result={"reason": "invalid_credentials"},
