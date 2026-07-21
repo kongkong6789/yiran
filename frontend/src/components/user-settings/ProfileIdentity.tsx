@@ -11,6 +11,7 @@ import {
 import { Avatar, Button, Empty, Input, Popover, Tag, Upload } from "antd";
 import { useMemo, useState, type ReactNode } from "react";
 import type { OrganizationSummary } from "../../api/client";
+import { AvatarPreview } from "../AvatarPreview";
 
 const ROLE_LABELS: Record<string, string> = {
   owner: "企业所有者",
@@ -61,20 +62,36 @@ export function UserProfileHeader({
   return (
     <section className="ups-profile-header" aria-label="个人主信息">
       <div className="ups-profile-person">
-        <Upload
-          accept="image/png,image/jpeg,image/gif,image/webp"
-          showUploadList={false}
-          beforeUpload={(file) => {
-            onUpload(file);
-            return false;
-          }}
-          disabled={uploading || loading}
-        >
-          <button type="button" className="ups-avatar-wrap" aria-label="更换头像" disabled={uploading || loading}>
-            <Avatar size={64} src={avatarSrc} icon={<UserOutlined />} />
-            <span className="ups-avatar-cam"><CameraOutlined /></span>
-          </button>
-        </Upload>
+        <div className="ups-avatar-wrap">
+          {avatarSrc ? (
+            <AvatarPreview
+              src={avatarSrc}
+              size={64}
+              className="ups-avatar-preview"
+              alt={`${displayName || username || "用户"}的头像`}
+            />
+          ) : (
+            <Avatar size={64} icon={<UserOutlined />} />
+          )}
+          <Upload
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            showUploadList={false}
+            beforeUpload={(file) => {
+              onUpload(file);
+              return false;
+            }}
+            disabled={uploading || loading}
+          >
+            <button
+              type="button"
+              className="ups-avatar-cam"
+              aria-label="更换头像"
+              disabled={uploading || loading}
+            >
+              <CameraOutlined />
+            </button>
+          </Upload>
+        </div>
         <div className="ups-profile-person-copy">
           <strong title={displayName || username}>{displayName || username || "未设置昵称"}</strong>
           <div className="ups-profile-account">

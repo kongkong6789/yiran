@@ -52,6 +52,7 @@ export default function App() {
           <Route path="work" element={<WorkHub />} />
           <Route path="console" element={<Navigate to="/work" replace />} />
           <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />
+          <Route path="work/templates" element={<Navigate to="/work?tab=templates" replace />} />
           <Route path="connectors" element={<Connectors />} />
           <Route path="tables" element={<SmartTable />} />
           <Route path="nocodb" element={<Navigate to="/tables" replace />} />

@@ -3,10 +3,9 @@ import {
   PlayCircleOutlined,
 } from "@ant-design/icons";
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
 import WeComConnectionStatus from "./WeComConnectionStatus";
 
-export type TaskModuleView = "all" | "received" | "sent" | "todos" | "automation" | "create";
+export type TaskModuleView = "all" | "received" | "sent" | "todos" | "automation" | "templates" | "create";
 
 const PRIMARY_ITEMS: Array<{
   key: TaskModuleView;
@@ -17,6 +16,19 @@ const PRIMARY_ITEMS: Array<{
   { key: "todos", label: "待办", icon: <CheckSquareOutlined /> },
 ];
 
+const SECONDARY_ITEMS: Array<{
+  key: Extract<TaskModuleView, "templates" | "automation">;
+  label: string;
+  icon: ReactNode;
+}> = [
+  { key: "templates", label: "模板中心", icon: <FileTextOutlined /> },
+  { key: "automation", label: "自动化", icon: <PlayCircleOutlined /> },
+];
+
+function isTaskCenterView(view: TaskModuleView) {
+  return view === "all" || view === "received" || view === "sent" || view === "create";
+}
+
 export default function TaskModuleSidebar({
   active,
   onChange,
@@ -24,12 +36,6 @@ export default function TaskModuleSidebar({
   active: TaskModuleView;
   onChange: (view: TaskModuleView) => void;
 }) {
-  const navigate = useNavigate();
-  const linkedItems = [
-    { key: "templates", label: "模板中心", icon: <FileTextOutlined />, path: "/skills" },
-    { key: "automation", label: "自动化", icon: <PlayCircleOutlined />, path: "/work?tab=automation" },
-  ];
-
   return (
     <aside className="task-module-sidebar" aria-label="任务模块导航">
       <nav className="task-module-nav">
@@ -39,7 +45,7 @@ export default function TaskModuleSidebar({
             key={item.key}
             className={`task-module-nav-item${
               item.key === "all"
-                ? active !== "todos" ? " is-active" : ""
+                ? isTaskCenterView(active) ? " is-active" : ""
                 : active === item.key ? " is-active" : ""
             }`}
             onClick={() => onChange(item.key)}
@@ -49,12 +55,12 @@ export default function TaskModuleSidebar({
           </button>
         ))}
         <div className="task-module-nav-separator" />
-        {linkedItems.map((item) => (
+        {SECONDARY_ITEMS.map((item) => (
           <button
             type="button"
             key={item.key}
-            className={`task-module-nav-item${item.key === "automation" && active === "automation" ? " is-active" : ""}`}
-            onClick={() => item.key === "automation" ? onChange("automation") : navigate(item.path)}
+            className={`task-module-nav-item${active === item.key ? " is-active" : ""}`}
+            onClick={() => onChange(item.key)}
           >
             {item.icon}
             <span>{item.label}</span>

@@ -336,7 +336,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
               <Form.Item
                 label="手机号"
                 name="phone"
-                extra={<>{phoneMasked ? <>当前：{phoneMasked} · </> : null}用于自动匹配企业微信成员；保存后将触发一次账号绑定同步</>}
+                extra={<>{phoneMasked ? <>当前：{phoneMasked} · </> : null}用于自动匹配企业微信成员；仅当手机号实际变更时才会触发绑定同步</>}
               >
                 <Input
                   prefix={<MobileOutlined />}

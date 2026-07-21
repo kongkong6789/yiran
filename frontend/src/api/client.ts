@@ -52,6 +52,8 @@ export interface AuthUser {
   avatar_url?: string;
   is_staff?: boolean;
   is_superuser?: boolean;
+  /** 是否可进入账号管理：平台管理员，或任一企业的所有者/管理员 */
+  can_manage_accounts?: boolean;
   organization?: {
     id: number;
     name: string;
@@ -272,9 +274,12 @@ export const createAdminUser = (body: {
   email?: string;
   display_name?: string;
   is_staff?: boolean;
+  is_superuser?: boolean;
+  platform_role?: "user" | "staff" | "superuser";
   phone?: string;
   organization_id?: number;
   organization_role?: "owner" | "admin" | "member";
+  organizations?: Array<{ id: number; role: "owner" | "admin" | "member" }>;
 }) =>
   api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     "/auth/admin/users/",
@@ -289,9 +294,12 @@ export const updateAdminUser = (
     display_name?: string;
     is_active?: boolean;
     is_staff?: boolean;
+    is_superuser?: boolean;
+    platform_role?: "user" | "staff" | "superuser";
     phone?: string;
     organization_id?: number;
     organization_role?: "owner" | "admin" | "member";
+    organizations?: Array<{ id: number; role: "owner" | "admin" | "member" }>;
   },
 ) =>
   api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
@@ -408,11 +416,18 @@ export const updateUserSettings = (
     avatar_url?: string;
   }>("/auth/settings/", body).then((r) => r.data);
 
-export const uploadUserAvatar = (file: File) => {
+export const uploadUserAvatar = (file: File, userId?: number) => {
   const form = new FormData();
   form.append("file", file);
+  if (userId) form.append("user_id", String(userId));
   return api
-    .post<{ ok: boolean; avatar: string; avatar_url: string; user: AuthUser }>(
+    .post<{
+      ok: boolean;
+      avatar: string;
+      avatar_url: string;
+      user?: AuthUser | null;
+      admin_user?: AdminUserRow | null;
+    }>(
       "/auth/avatar/",
       form,
       { headers: { "Content-Type": "multipart/form-data" } },
