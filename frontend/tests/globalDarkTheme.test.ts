@@ -160,6 +160,17 @@ test("work, knowledge, and smart table avoid light-only islands in dark mode", (
   assert.match(css, /:root\[data-theme="dark"\] \.st-grid th,[^}]*\{[^}]*background:\s*var\(--lc-surface-raised\)/);
 });
 
+test("reported dark-mode islands use semantic surfaces", () => {
+  const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+  const teamCss = readFileSync(new URL("../src/styles/teamCollaboration.css", import.meta.url), "utf8");
+
+  assert.match(css, /:root\[data-theme="dark"\] \.work-todo-row\s*\{[^}]*background:\s*var\(--lc-surface-raised\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.ups-modal \.ant-modal-content,[\s\S]*background:\s*var\(--lc-surface-raised\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.ups-profile-header,[\s\S]*background:\s*var\(--lc-surface\)/);
+  assert.match(css, /:root\[data-theme="dark"\] \.ups-enterprise-popover-overlay \.ant-popover-inner\s*\{[^}]*background:\s*var\(--lc-surface-overlay\)/);
+  assert.match(teamCss, /:root\[data-theme="dark"\] \.team-workspace \.council-card,[\s\S]*\.council-meeting-row,[\s\S]*background:\s*var\(--lc-surface\)/);
+});
+
 test("visualization theme supplies dark canvas, grid, labels, and tooltip", () => {
   const visual = getVisualizationTheme("dark");
 
