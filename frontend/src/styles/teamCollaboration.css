@@ -1012,3 +1012,149 @@
     border-color: currentColor;
   }
 }
+
+/* Round-table dark surfaces: the embedded component still ships light defaults. */
+:root[data-theme="dark"] .team-workspace .council-page {
+  color: var(--lc-ink);
+  background: transparent;
+}
+
+:root[data-theme="dark"] .team-workspace .council-hero h3,
+:root[data-theme="dark"] .team-workspace .council-create-title,
+:root[data-theme="dark"] .team-workspace .council-create-members-head h2,
+:root[data-theme="dark"] .team-workspace .council-meeting-title-row b,
+:root[data-theme="dark"] .team-workspace .council-member-tile-text b,
+:root[data-theme="dark"] .team-workspace .council-pick-row b,
+:root[data-theme="dark"] .team-workspace .council-agent-card b,
+:root[data-theme="dark"] .team-workspace .council-history-title,
+:root[data-theme="dark"] .team-workspace .council-desc-row b,
+:root[data-theme="dark"] .team-workspace .council-agenda .is-current,
+:root[data-theme="dark"] .team-workspace .council-mention-item b,
+:root[data-theme="dark"] .team-workspace .council-bubble:not(.is-mine) {
+  color: var(--lc-ink);
+}
+
+:root[data-theme="dark"] .team-workspace .council-hero .ant-typography-secondary,
+:root[data-theme="dark"] .team-workspace .council-back-link,
+:root[data-theme="dark"] .team-workspace .council-create-lead,
+:root[data-theme="dark"] .team-workspace .council-field > span,
+:root[data-theme="dark"] .team-workspace .council-create-members-head p,
+:root[data-theme="dark"] .team-workspace .council-selected-empty,
+:root[data-theme="dark"] .team-workspace .council-create-hint,
+:root[data-theme="dark"] .team-workspace .council-member-tile-text em,
+:root[data-theme="dark"] .team-workspace .council-meeting-sub,
+:root[data-theme="dark"] .team-workspace .council-meeting-meta,
+:root[data-theme="dark"] .team-workspace .council-pick-head,
+:root[data-theme="dark"] .team-workspace .council-pick-row em,
+:root[data-theme="dark"] .team-workspace .council-agent-card em,
+:root[data-theme="dark"] .team-workspace .council-desc-row span,
+:root[data-theme="dark"] .team-workspace .council-rules,
+:root[data-theme="dark"] .team-workspace .council-agenda,
+:root[data-theme="dark"] .team-workspace .council-agent-chips-label,
+:root[data-theme="dark"] .team-workspace .council-mention-item em,
+:root[data-theme="dark"] .team-workspace .council-live-member em,
+:root[data-theme="dark"] .team-workspace .council-bubble-meta {
+  color: var(--lc-text-secondary);
+}
+
+:root[data-theme="dark"] .team-workspace .council-card,
+:root[data-theme="dark"] .team-workspace .council-create-members,
+:root[data-theme="dark"] .team-workspace .council-meeting-row,
+:root[data-theme="dark"] .team-workspace .council-agent-card,
+:root[data-theme="dark"] .team-workspace .council-history-item {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-meeting-row:hover,
+:root[data-theme="dark"] .team-workspace .council-history-item:hover,
+:root[data-theme="dark"] .team-workspace .council-agent-card:hover {
+  border-color: var(--lc-border-strong);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-create-aside {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background:
+    radial-gradient(ellipse at 20% 0%, var(--lc-status-warning-bg), transparent 58%),
+    var(--lc-surface);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-empty,
+:root[data-theme="dark"] .team-workspace .council-selected-chip,
+:root[data-theme="dark"] .team-workspace .council-member-tile,
+:root[data-theme="dark"] .team-workspace .council-pick-pane,
+:root[data-theme="dark"] .team-workspace .council-agent-chip,
+:root[data-theme="dark"] .team-workspace .council-bubble:not(.is-mine) {
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-raised);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-chip.is-agent,
+:root[data-theme="dark"] .team-workspace .council-member-tile.is-on,
+:root[data-theme="dark"] .team-workspace .council-agent-card.is-on,
+:root[data-theme="dark"] .team-workspace .council-agent-chip.is-all {
+  color: var(--lc-status-warning);
+  border-color: color-mix(in srgb, var(--lc-status-warning) 42%, transparent);
+  background: var(--lc-status-warning-bg);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-member-tile:hover,
+:root[data-theme="dark"] .team-workspace .council-pick-row:hover,
+:root[data-theme="dark"] .team-workspace .council-agent-chip:hover,
+:root[data-theme="dark"] .team-workspace .council-mention-item:hover,
+:root[data-theme="dark"] .team-workspace .council-mention-item.is-active {
+  border-color: var(--lc-border);
+  background: var(--lc-hover);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-chip i,
+:root[data-theme="dark"] .team-workspace .council-face-sm {
+  background: var(--lc-surface-overlay);
+}
+
+:root[data-theme="dark"] .team-workspace .council-pick-head,
+:root[data-theme="dark"] .team-workspace .council-desc-row,
+:root[data-theme="dark"] .team-workspace .council-agent-chips,
+:root[data-theme="dark"] .team-workspace .council-chat-input,
+:root[data-theme="dark"] .team-workspace .council-live-topbar,
+:root[data-theme="dark"] .team-workspace .council-live-controls {
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .team-workspace .council-agent-chips,
+:root[data-theme="dark"] .team-workspace .council-chat-input,
+:root[data-theme="dark"] .team-workspace .council-live-topbar,
+:root[data-theme="dark"] .team-workspace .council-live-controls {
+  background: var(--lc-surface-raised);
+}
+
+:root[data-theme="dark"] .team-workspace .council-agent-chip.is-human {
+  color: var(--lc-status-info);
+  border-color: color-mix(in srgb, var(--lc-status-info) 42%, transparent);
+  background: var(--lc-status-info-bg);
+}
+
+:root[data-theme="dark"] .team-workspace .council-mention-pop {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-overlay);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+}
+
+:root[data-theme="dark"] .team-workspace .council-chat-list,
+:root[data-theme="dark"] .team-workspace .council-live-center {
+  color: var(--lc-text-secondary);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
+}
+
+:root[data-theme="dark"] .team-workspace .council-live-stage {
+  background:
+    radial-gradient(ellipse at 50% 40%, var(--lc-status-warning-bg), transparent 58%),
+    var(--lc-surface-input);
+}

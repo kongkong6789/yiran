@@ -85,7 +85,7 @@ test("API client exposes the dedicated Xiaoce task endpoint", () => {
   assert.ok(source.includes('api.post<CollabRoom>("/collab/xiaoce-tasks/"'));
 });
 
-test("Xiaoce task list exposes create, select, rename, delete, and running state", () => {
+test("Xiaoce task list exposes create, select, rename, delete, running, and all-task states", () => {
   const source = readFileSync(
     new URL("../src/components/XiaoceTaskList.tsx", import.meta.url),
     "utf8",
@@ -95,6 +95,10 @@ test("Xiaoce task list exposes create, select, rename, delete, and running state
   assert.ok(source.includes("修改任务名称"));
   assert.ok(source.includes("删除任务"));
   assert.ok(source.includes("onSelect(task.id)"));
+  assert.ok(source.includes("展开所有任务"));
+  assert.ok(source.includes("收起所有任务"));
+  assert.ok(source.includes("onOpenChange={setAllTasksOpen}"));
+  assert.ok(source.includes('role="dialog"'));
 });
 
 test("Xiaoce task list styles use semantic theme variables", () => {
@@ -105,6 +109,8 @@ test("Xiaoce task list styles use semantic theme variables", () => {
   assert.ok(css.includes("var(--lc-surface"));
   assert.ok(css.includes("var(--lc-border"));
   assert.ok(css.includes("var(--lc-ink)"));
+  assert.ok(css.includes(".xiaoce-all-tasks-popover"));
+  assert.ok(css.includes("var(--lc-surface-overlay)"));
   assert.ok(css.includes(":focus-visible"));
 });
 
