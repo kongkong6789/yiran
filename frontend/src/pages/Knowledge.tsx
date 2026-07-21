@@ -19,6 +19,7 @@ import {
   Segmented,
   Select,
   Space,
+  Spin,
   Statistic,
   Switch,
   Tag,
@@ -459,7 +460,7 @@ export default function Knowledge() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [scopeFilter, setScopeFilter] = useState<Visibility | "all">("all");
-  const [templateId, setTemplateId] = useState("customer-360");
+  const [templateId, setTemplateId] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("team");
   const [engine, setEngine] = useState<Engine>("hybrid-rag");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
@@ -487,7 +488,7 @@ export default function Knowledge() {
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploadPurpose, setUploadPurpose] = useState("作为当前知识应用的补充资料，进入解析、切块、向量化和权限标注流程。");
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
-  const [baseLoading, setBaseLoading] = useState(false);
+  const [baseLoading, setBaseLoading] = useState(true);
   const [detailFilesByBase, setDetailFilesByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -520,7 +521,7 @@ export default function Knowledge() {
     setChunkCurrentPage(1);
     if (chunkPageFile) void loadFileChunks(chunkPageFile, 1, pageSize);
   }
-  const baseTemplates = useMemo(() => knowledgeBases.length ? knowledgeBases.map(mapKnowledgeBase) : templates, [knowledgeBases]);
+  const baseTemplates = useMemo(() => knowledgeBases.map(mapKnowledgeBase), [knowledgeBases]);
   const categories = useMemo(() => ["全部", ...Array.from(new Set(baseTemplates.map((item) => item.category)))], [baseTemplates]);
   const visibleTemplates = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -558,6 +559,8 @@ export default function Knowledge() {
       setKnowledgeBases(rows);
       if (rows.length && !rows.some((item) => String(item.id) === templateId)) {
         setTemplateId(String(rows[0].id));
+      } else if (!rows.length) {
+        setTemplateId("");
       }
     } catch (error) {
       console.error(error);
@@ -1542,7 +1545,14 @@ export default function Knowledge() {
                   </article>
                 );
               })}
-              {visibleTemplates.length === 0 ? <Empty description="没有匹配的知识库" /> : null}
+              {baseLoading && visibleTemplates.length === 0 ? (
+                <div className="knowledge-loading-state">
+                  <Spin />
+                  <Text type="secondary">正在加载知识库...</Text>
+                </div>
+              ) : visibleTemplates.length === 0 ? (
+                <Empty description={knowledgeBases.length === 0 ? "暂无知识库" : "没有匹配的知识库"} />
+              ) : null}
             </div>
           </section>
         </>
@@ -2283,6 +2293,15 @@ const styles = `
   grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
   gap: 14px;
   align-items: start;
+}
+.knowledge-loading-state {
+  grid-column: 1 / -1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
 }
 .dify-kb-card {
   position: relative;
