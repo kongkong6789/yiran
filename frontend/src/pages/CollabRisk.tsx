@@ -6,7 +6,7 @@ import type { TooltipPlacement } from "antd/es/tooltip";
 import {
   AlertOutlined, ClearOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined,
   CloseOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
-  SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
+  SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
   TeamOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
@@ -40,6 +40,7 @@ import {
   type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
+  type CollabSearchResult,
   type CollabDraftTip,
   type CollabContextRoomRef,
   type CollabUserBrief,
@@ -52,6 +53,7 @@ import ChatSkillPicker from "../components/ChatSkillPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
+import CollabMessageSearch from "../components/CollabMessageSearch";
 import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -72,6 +74,7 @@ import {
   reconcileRoomDetailSnapshot,
   resolveXiaoceDeleteState,
   setRoomPending,
+  stabilizeXiaoceRunSnapshot,
   transitionRoomComposer,
   xiaoceDeleteContent,
   type RoomMutation,
@@ -726,6 +729,7 @@ export default function CollabRisk({
   const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const [contacts, setContacts] = useState<CollabUserBrief[]>([]);
   const [contactKeyword, setContactKeyword] = useState("");
   const [groupOpen, setGroupOpen] = useState(false);
@@ -780,6 +784,7 @@ export default function CollabRisk({
   const sendingRoomIdsRef = useRef<Set<string>>(new Set());
   const contactKeywordRef = useRef("");
   const loadingOlderRequestRef = useRef<Map<string, number>>(new Map());
+  const pendingSearchTargetRef = useRef<{ roomId: string; messageId: number } | null>(null);
   const readSessionRef = useRef(
     `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   );
@@ -974,19 +979,27 @@ export default function CollabRisk({
     }
   }, [activeId, getRoomDataRevision, message]);
 
-  const loadRoomDetail = useCallback(async (id: string, opts?: { soft?: boolean }) => {
-    const soft = Boolean(opts?.soft);
+  const loadRoomDetail = useCallback(async (
+    id: string,
+    opts?: { soft?: boolean; targetMessageId?: number },
+  ) => {
+    const targetMessageId = opts?.targetMessageId;
+    const soft = !targetMessageId && Boolean(opts?.soft);
     const seq = ++roomLoadSeqRef.current;
     const requestRevision = getRoomDataRevision(id);
     const requestStartMessageIds = activeIdRef.current === id
       ? messagesRef.current.map((row) => row.id)
       : roomViewCacheRef.current.get(id)?.messages.map((row) => row.id) || [];
     const hadCache = roomViewCacheRef.current.has(id);
-    if (!soft && !hadCache) setRoomDetailLoading(true);
+    if (targetMessageId || (!soft && !hadCache)) setRoomDetailLoading(true);
     try {
       const [room, page] = await Promise.all([
         getCollabRoom(id),
-        listCollabMessages(id, { limit: MSG_WINDOW, includeParticipants: false }),
+        listCollabMessages(id, {
+          limit: MSG_WINDOW,
+          aroundId: targetMessageId,
+          includeParticipants: false,
+        }),
       ]);
       if (seq !== roomLoadSeqRef.current || activeIdRef.current !== id) return;
       const hydratedRoom = {
@@ -1005,11 +1018,16 @@ export default function CollabRisk({
       const pageRun = isXiaoceRoom(hydratedRoom)
         ? (hydratedRoom.active_xiaoce_run || null)
         : null;
+      const stablePageRun = stabilizeXiaoceRunSnapshot(
+        currentRun,
+        pageRun,
+        [...(page.results || []), ...currentMessages],
+      );
       const reconciled = reconcileRoomDetailSnapshot({
         pageMessages: page.results || [],
         currentMessages,
         requestStartMessageIds,
-        pageRun,
+        pageRun: stablePageRun,
         currentRun,
         requestRevision,
         currentRevision: getRoomDataRevision(id),
@@ -1024,7 +1042,7 @@ export default function CollabRisk({
       setActiveXiaoceRun(nextXiaoce);
       setInsights(nextInsights);
 
-      const mergedForCache = soft && cachedAtResolution?.messages?.length
+      const mergedForCache = !targetMessageId && soft && cachedAtResolution?.messages?.length
         ? (() => {
             const byId = new Map<number, CollabMessage>();
             for (const m of cachedAtResolution.messages) byId.set(m.id, m);
@@ -1034,10 +1052,10 @@ export default function CollabRisk({
             );
           })()
         : nextMessages;
-      const resolvedHasMore = soft && cachedAtResolution
+      const resolvedHasMore = !targetMessageId && soft && cachedAtResolution
         ? nextHasMore || cachedAtResolution.hasMoreBefore
         : nextHasMore;
-      const resolvedFirstItemIndex = soft && cachedAtResolution
+      const resolvedFirstItemIndex = !targetMessageId && soft && cachedAtResolution
         ? cachedAtResolution.firstItemIndex
         : VIRT_BASE_INDEX;
 
@@ -1045,7 +1063,32 @@ export default function CollabRisk({
       messagesRef.current = mergedForCache;
       setMessages(mergedForCache);
       setHasMoreBefore(resolvedHasMore);
-      if (!soft || !cachedAtResolution) {
+      if (targetMessageId) {
+        setFirstItemIndex(VIRT_BASE_INDEX);
+        setHighlightId(targetMessageId);
+        stickBottomRef.current = false;
+        forceStickUntilRef.current = 0;
+        const targetIndex = mergedForCache
+          .filter((item) => item.status !== "deleted")
+          .findIndex((item) => item.id === targetMessageId);
+        if (targetIndex >= 0) {
+          const scrollToTarget = () => {
+            virtuosoRef.current?.scrollToIndex({
+              index: VIRT_BASE_INDEX + targetIndex,
+              align: "center",
+              behavior: "smooth",
+            });
+            document.getElementById(`collab-msg-${targetMessageId}`)?.scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          };
+          requestAnimationFrame(() => {
+            scrollToTarget();
+            window.setTimeout(scrollToTarget, 100);
+          });
+        }
+      } else if (!soft || !cachedAtResolution) {
         setFirstItemIndex(VIRT_BASE_INDEX);
         stickBottomRef.current = true;
         forceStickUntilRef.current = Date.now() + 2000;
@@ -1491,13 +1534,19 @@ export default function CollabRisk({
       return;
     }
     prevActiveIdForComposerRef.current = activeId;
-    stickBottomRef.current = true;
+    const pendingTarget = pendingSearchTargetRef.current?.roomId === activeId
+      ? pendingSearchTargetRef.current
+      : null;
+    if (pendingTarget) pendingSearchTargetRef.current = null;
+    stickBottomRef.current = !pendingTarget;
     const cached = roomViewCacheRef.current.get(activeId);
     const fresh = Boolean(
       cached && Date.now() - (cached.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
     );
     // 有缓存：秒开后后台 soft 同步；无缓存：hard 拉取。避免每次切房整页重绘等待。
-    void loadRoomDetail(activeId, { soft: Boolean(cached) || fresh });
+    void loadRoomDetail(activeId, pendingTarget
+      ? { targetMessageId: pendingTarget.messageId }
+      : { soft: Boolean(cached) || fresh });
   }, [activeId, loadRoomDetail]);
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
@@ -1549,7 +1598,12 @@ export default function CollabRisk({
     const roomId = activeIdRef.current;
     if (!roomId) return;
     const previousRun = activeXiaoceRunRef.current;
-    const nextRun = mergeXiaoceRunSnapshot(previousRun, newest, {
+    const stableNewest = stabilizeXiaoceRunSnapshot(
+      previousRun,
+      newest,
+      messagesRef.current,
+    );
+    const nextRun = mergeXiaoceRunSnapshot(previousRun, stableNewest, {
       authoritative: Boolean(context.authoritative),
       requestRevision: context.requestRevision,
       currentRevision: getRoomDataRevision(roomId),
@@ -2874,21 +2928,63 @@ export default function CollabRisk({
     });
   };
 
+  const openSearchResult = (result: CollabSearchResult) => {
+    setChatSearchOpen(false);
+    setSiderTab("chats");
+    const roomId = result.room.id;
+    const messageId = result.message?.id;
+    if (!messageId) {
+      selectRoom(roomId);
+      return;
+    }
+    if (activeIdRef.current === roomId) {
+      void loadRoomDetail(roomId, { targetMessageId: messageId });
+      return;
+    }
+    pendingSearchTargetRef.current = { roomId, messageId };
+    selectRoom(roomId);
+  };
+
   return (
     <div className={`collab-page${embedded ? " collab-page--embedded" : ""}`}>
       <style>{css}</style>
 
       <aside className="collab-sider">
         <div className="collab-sider-head">
-          <Typography.Text strong>协作</Typography.Text>
-          <Tooltip title="发起群聊">
-            <Button
-              type="primary"
-              size="small"
-              icon={<TeamOutlined />}
-              onClick={() => setGroupOpen(true)}
-            />
-          </Tooltip>
+          <Typography.Text strong>{siderTab === "chats" ? "消息列表" : "团队通讯录"}</Typography.Text>
+          <Space size={4}>
+            {siderTab === "chats" ? (
+              <Popover
+                trigger="click"
+                placement="rightTop"
+                overlayClassName="collab-search-popover"
+                open={chatSearchOpen}
+                onOpenChange={setChatSearchOpen}
+                content={(
+                  <CollabMessageSearch
+                    onClose={() => setChatSearchOpen(false)}
+                    onSelect={openSearchResult}
+                  />
+                )}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<SearchOutlined />}
+                  title="搜索聊天记录"
+                  aria-label="搜索聊天记录"
+                />
+              </Popover>
+            ) : null}
+            <Tooltip title="发起群聊">
+              <Button
+                type="primary"
+                size="small"
+                icon={<TeamOutlined />}
+                onClick={() => setGroupOpen(true)}
+              />
+            </Tooltip>
+          </Space>
         </div>
         <div className="collab-tabs">
           <button

@@ -2155,6 +2155,7 @@ export const updateCollabMemberNickname = (
 export type CollabMessageQuery = {
   afterId?: number;
   beforeId?: number;
+  aroundId?: number;
   limit?: number;
   lite?: boolean;
   includeParticipants?: boolean;
@@ -2165,6 +2166,7 @@ export type CollabMessagePage = {
   results: CollabMessage[];
   changed?: CollabMessage[];
   has_more_before?: boolean;
+  has_more_after?: boolean;
   room: Partial<CollabRoom>;
 };
 
@@ -2174,6 +2176,7 @@ export const listCollabMessages = (id: string, opts: CollabMessageQuery | number
   const params: Record<string, string | number> = {};
   if (o.afterId) params.after_id = o.afterId;
   if (o.beforeId) params.before_id = o.beforeId;
+  if (o.aroundId) params.around_id = o.aroundId;
   if (o.limit) params.limit = o.limit;
   if (o.lite) params.lite = "1";
   if (o.includeParticipants === false) params.include_participants = "0";
@@ -2182,6 +2185,44 @@ export const listCollabMessages = (id: string, opts: CollabMessageQuery | number
     .get<CollabMessagePage>(`/collab/rooms/${id}/messages/`, { params })
     .then((r) => r.data);
 };
+
+export type CollabSearchRoom = {
+  id: string;
+  title: string;
+  display_title: string;
+  room_kind: "dm" | "group";
+  status: "open" | "closed";
+  is_xiaoce: boolean;
+  updated_at: string;
+};
+
+export type CollabSearchMessage = {
+  id: number;
+  content: string;
+  snippet: string;
+  msg_type: "user" | "system" | "ai";
+  ai_kind: "" | "reply" | "interject" | "suggest" | "xiaoce";
+  sender: CollabUserBrief;
+  created_at: string;
+};
+
+export type CollabSearchResult = {
+  kind: "room" | "message";
+  room: CollabSearchRoom;
+  message: CollabSearchMessage | null;
+  snippet: string;
+  created_at: string;
+};
+
+export const searchCollabMessages = (query: string, limit = 40) =>
+  api
+    .get<{
+      query: string;
+      count: number;
+      has_more: boolean;
+      results: CollabSearchResult[];
+    }>("/collab/search/", { params: { q: query, limit } })
+    .then((r) => r.data);
 
 export const getCollabRoomPresence = (id: string) =>
   api.get<{

@@ -37,8 +37,19 @@ export default function XiaoceProcess({
 }: Props) {
   const [manuallyExpanded, setManuallyExpanded] = useState(defaultExpanded);
   const expanded = live || manuallyExpanded;
+  const visibleSteps: XiaoceProgressStep[] = steps.length > 0
+    ? steps
+    : live ? [{
+        code: "understanding",
+        label: "正在理解你的问题…",
+        status: "running",
+        tool_count: 0,
+        detail: "",
+        started_at: "",
+        finished_at: "",
+      }] : [];
 
-  if (steps.length === 0) return null;
+  if (visibleSteps.length === 0) return null;
 
   const statusTitle = status === "failed"
     ? "执行失败"
@@ -71,13 +82,13 @@ export default function XiaoceProcess({
           onClick={() => setManuallyExpanded((value) => !value)}
         >
           {expanded ? <DownOutlined /> : <RightOutlined />}
-          <span>查看处理过程（{steps.length}步）</span>
+          <span>查看处理过程（{visibleSteps.length}步）</span>
         </button>
       ) : null}
 
       {expanded ? (
         <ol className="xiaoce-process-steps">
-          {steps.map((step) => (
+          {visibleSteps.map((step) => (
             <li key={step.code} className={`is-${step.status}`}>
               <StepIcon status={step.status} />
               <span>{step.label}</span>
