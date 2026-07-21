@@ -149,8 +149,6 @@ def _user_brief(
 
 
 def _can_access_room(user, room: CollabRoom) -> bool:
-    if _is_admin(user):
-        return True
     return CollabParticipant.objects.filter(room=room, user=user).exists()
 
 
@@ -1199,10 +1197,8 @@ def room_list(request):
             status=201,
         )
 
-    if _is_admin(request.user):
-        qs = CollabRoom.objects.all()
-    else:
-        qs = CollabRoom.objects.filter(participants__user=request.user).distinct()
+    # 会话只对实际成员可见；管理员如需参与，也必须先成为会话成员。
+    qs = CollabRoom.objects.filter(participants__user=request.user).distinct()
     status_filter = str(request.query_params.get("status") or "").strip()
     if status_filter in ("open", "closed"):
         qs = qs.filter(status=status_filter)
@@ -1625,9 +1621,9 @@ def room_messages(request, room_id):
     if request.method == "POST":
         if room.status != "open":
             return Response({"ok": False, "error": "会话已结束，无法发送"}, status=400)
-        # 管理员旁观不可代发（除非也是参与者）
+        # 纵深校验：只有实际会话成员可以发送。
         if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
-            return Response({"ok": False, "error": "旁观者无法发送消息"}, status=403)
+            return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
         content = str(request.data.get("content") or "").strip()
         is_bot_dm = _is_xiaoce_dm(room)
         xiaoce_run_id = None
@@ -1958,8 +1954,8 @@ def room_message_detail(request, room_id, message_id):
         return Response({"ok": False, "error": "消息已删除"}, status=400)
 
     is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
-    if not is_member and not _is_admin(request.user):
-        return Response({"ok": False, "error": "旁观者无法操作消息"}, status=403)
+    if not is_member:
+        return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
 
     nick_map = _nickname_map(room)
 
