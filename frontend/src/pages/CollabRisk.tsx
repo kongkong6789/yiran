@@ -54,6 +54,7 @@ import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useThemeMode } from "../theme/mode";
 import {
+  applyRoomMutation,
   beginRoomSelection,
   createXiaoceRunId,
   isRoomAsyncResultCurrent,
@@ -69,6 +70,7 @@ import {
   setRoomPending,
   transitionRoomComposer,
   xiaoceDeleteContent,
+  type RoomMutation,
 } from "./xiaoceChat";
 import "../styles/xiaoceChatTheme.css";
 
@@ -793,6 +795,47 @@ export default function CollabRisk({
     return next;
   }, []);
 
+  const mutateRoomData = useCallback((roomId: string, mutation: RoomMutation) => {
+    if (
+      activeIdRef.current === roomId
+      && activeRoomRef.current
+      && !roomViewCacheRef.current.has(roomId)
+    ) {
+      roomViewCacheRef.current.set(roomId, {
+        room: activeRoomRef.current,
+        messages: messagesRef.current,
+        insights: insightsRef.current,
+        hasMoreBefore: hasMoreBeforeRef.current,
+        firstItemIndex: firstItemIndexRef.current,
+        xiaoceRun: activeXiaoceRunRef.current,
+        stats: roomStatsRef.current,
+      });
+    }
+    const next = applyRoomMutation({
+      roomId,
+      revision: getRoomDataRevision(roomId),
+      rooms: roomsRef.current,
+      cache: roomViewCacheRef.current,
+      activeRoomId: activeIdRef.current,
+      activeRoom: activeRoomRef.current,
+      activeMessages: messagesRef.current,
+      activeRun: activeXiaoceRunRef.current,
+    }, mutation);
+    roomDataRevisionRef.current.set(roomId, next.revision);
+    roomViewCacheRef.current = next.cache;
+    roomsRef.current = next.rooms;
+    setRooms(next.rooms);
+    if (activeIdRef.current === roomId) {
+      activeRoomRef.current = next.activeRoom;
+      messagesRef.current = next.activeMessages;
+      activeXiaoceRunRef.current = next.activeRun;
+      setActiveRoom(next.activeRoom);
+      setMessages(next.activeMessages);
+      setActiveXiaoceRun(next.activeRun);
+    }
+    return next;
+  }, [getRoomDataRevision]);
+
   const isParticipant = useMemo(() => {
     if (!me || !activeRoom) return false;
     return activeRoom.participants.some((p) => p.id === me.id);
@@ -1338,8 +1381,8 @@ export default function CollabRisk({
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
     const shouldStick = stickBottomRef.current || Date.now() < forceStickUntilRef.current;
     const roomId = activeIdRef.current;
-    if (roomId && (incoming.length || changed?.length)) bumpRoomDataRevision(roomId);
-    setMessages((prev) => {
+    if (!roomId || (!incoming.length && !changed?.length)) return;
+    mutateRoomData(roomId, { messages: (prev) => {
       let next = prev;
       if (incoming.length) {
         next = [...next];
@@ -1356,19 +1399,15 @@ export default function CollabRisk({
       if (changed?.length) {
         next = mergeMessagePatches(next, changed);
       }
-      if (roomId) {
-        const cached = roomViewCacheRef.current.get(roomId);
-        if (cached) roomViewCacheRef.current.set(roomId, { ...cached, messages: next });
-      }
       return next;
-    });
+    } });
     if (shouldStick && incoming.length) {
       scrollMessagesToBottom("auto");
     }
     if ([...incoming, ...(changed || [])].some((item) => Boolean(item.meta?.created_skill))) {
       setSkillRefreshKey((value) => value + 1);
     }
-  }, [bumpRoomDataRevision, scrollMessagesToBottom]);
+  }, [mutateRoomData, scrollMessagesToBottom]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
     setInsights((prev) => {
@@ -1393,24 +1432,13 @@ export default function CollabRisk({
       requestRevision: context.requestRevision,
       currentRevision: getRoomDataRevision(roomId),
     });
-    if (nextRun !== previousRun) bumpRoomDataRevision(roomId);
-    activeXiaoceRunRef.current = nextRun;
-    setActiveXiaoceRun(nextRun);
-    setRooms((current) => current.map((room) => (
-      room.id === roomId ? { ...room, active_xiaoce_run: nextRun } : room
-    )));
-    setActiveRoom((current) => current?.id === roomId
-      ? { ...current, active_xiaoce_run: nextRun }
-      : current);
-    const cached = roomViewCacheRef.current.get(roomId);
-    if (cached) {
-      roomViewCacheRef.current.set(roomId, {
-        ...cached,
-        room: { ...cached.room, active_xiaoce_run: nextRun },
-        xiaoceRun: nextRun,
+    if (nextRun !== previousRun) {
+      mutateRoomData(roomId, {
+        room: (current) => ({ ...current, active_xiaoce_run: nextRun }),
+        xiaoceRun: () => nextRun,
       });
     }
-  }, [bumpRoomDataRevision, getRoomDataRevision]);
+  }, [getRoomDataRevision, mutateRoomData]);
 
   const patchRoomMeta = useCallback((meta: Partial<CollabRoom>) => {
     setActiveRoom((prev) => {
@@ -1652,26 +1680,25 @@ export default function CollabRisk({
   };
 
   const handleInviteMembers = async () => {
-    if (!activeId || !activeRoom) return;
+    const roomId = activeIdRef.current;
+    if (!roomId || !activeRoom) return;
     if (inviteMembers.length < 1) {
       message.warning("请选择要邀请的联系人");
       return;
     }
     setInviting(true);
     try {
-      const res = await addCollabRoomMembers(activeId, inviteMembers);
+      const res = await addCollabRoomMembers(roomId, inviteMembers);
       setInviteOpen(false);
       setInviteMembers([]);
-      if (res.message) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === res.message.id)) return prev;
-          return [...prev, res.message];
-        });
-      }
-      if (res.room) {
-        setActiveRoom((prev) => prev ? { ...prev, ...res.room } : res.room);
-        setRooms((prev) => prev.map((r) => (r.id === res.room.id ? { ...r, ...res.room } : r)));
-      }
+      mutateRoomData(roomId, {
+        ...(res.message ? {
+          messages: (previous) => previous.some((item) => item.id === res.message.id)
+            ? previous
+            : [...previous, res.message],
+        } : {}),
+        ...(res.room ? { room: (previous) => ({ ...previous, ...res.room }) } : {}),
+      });
       message.success(`已邀请 ${res.added_count} 人加入群聊`);
     } catch (e: any) {
       message.error(e?.response?.data?.error || "邀请失败");
@@ -1719,29 +1746,17 @@ export default function CollabRisk({
     setRenaming(true);
     try {
       const room = await updateCollabRoom(roomId, { title: next });
-      setRooms((current) => current.map((item) => (
-        item.id === roomId ? { ...item, ...room, messages: undefined, insights: undefined } : item
-      )));
-      if (activeIdRef.current === roomId) {
-        setActiveRoom((current) => current?.id === roomId
-          ? { ...current, ...room, messages: undefined, insights: undefined }
-          : current);
-        if (target.room_kind === "group" && room.messages?.length) {
-          const last = room.messages[room.messages.length - 1];
-          setMessages((current) => (
-            current.some((messageRow) => messageRow.id === last.id)
-              ? current
-              : [...current, last]
-          ));
-        }
-      }
-      const cached = roomViewCacheRef.current.get(roomId);
-      if (cached) {
-        roomViewCacheRef.current.set(roomId, {
-          ...cached,
-          room: { ...cached.room, ...room, messages: undefined, insights: undefined },
-        });
-      }
+      const last = target.room_kind === "group" && room.messages?.length
+        ? room.messages[room.messages.length - 1]
+        : null;
+      mutateRoomData(roomId, {
+        room: (previous) => ({ ...previous, ...room, messages: undefined, insights: undefined }),
+        ...(last ? {
+          messages: (previous) => previous.some((item) => item.id === last.id)
+            ? previous
+            : [...previous, last],
+        } : {}),
+      });
       setRenameOpen(false);
       message.success(isXiaoceRoom(target) ? "任务名称已更新" : "群名已更新");
     } catch (error: any) {
@@ -1755,7 +1770,8 @@ export default function CollabRisk({
   };
 
   const handleSaveNicknames = async () => {
-    if (!activeId || !activeRoom || !me) return;
+    const roomId = activeIdRef.current;
+    if (!roomId || !activeRoom || !me) return;
     const canEditOthers = Boolean(me.is_staff || activeRoom.created_by?.id === me.id);
     const targets = (activeRoom.participants || []).filter((p) => {
       if (p.id === me.id) return true;
@@ -1775,24 +1791,24 @@ export default function CollabRisk({
     try {
       let latestRoom = activeRoom;
       for (const p of changes) {
-        const res = await updateCollabMemberNickname(activeId, {
+        const res = await updateCollabMemberNickname(roomId, {
           username: p.username,
           nickname: (nickDrafts[p.username] || "").trim(),
         });
         latestRoom = res.room;
-        if (res.message) {
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === res.message!.id)) return prev;
-            return [...prev, res.message!];
-          });
-        }
+        mutateRoomData(roomId, {
+          room: (previous) => ({ ...previous, ...res.room }),
+          ...(res.message ? {
+            messages: (previous) => previous.some((item) => item.id === res.message!.id)
+              ? previous
+              : [...previous, res.message!],
+          } : {}),
+        });
       }
-      setActiveRoom((prev) => prev ? { ...prev, ...latestRoom } : latestRoom);
-      setRooms((prev) => prev.map((r) => (r.id === latestRoom.id ? { ...r, ...latestRoom } : r)));
       // 刷新消息发送者展示名
       if (latestRoom.participants) {
         const byId = new Map(latestRoom.participants.map((p) => [p.id, p]));
-        setMessages((prev) => prev.map((m) => {
+        mutateRoomData(roomId, { messages: (prev) => prev.map((m) => {
           const p = byId.get(m.sender.id);
           if (!p || m.msg_type === "ai" || m.msg_type === "system") return m;
           return {
@@ -1805,7 +1821,7 @@ export default function CollabRisk({
               bio: p.bio || m.sender.bio,
             },
           };
-        }));
+        }) });
       }
       setNickOpen(false);
       message.success("群内名称已更新");
@@ -1817,14 +1833,15 @@ export default function CollabRisk({
   };
 
   const handleKickMembers = async () => {
-    if (!activeId || !activeRoom) return;
+    const roomId = activeIdRef.current;
+    if (!roomId || !activeRoom) return;
     if (kickMembers.length < 1) {
       message.warning("请选择要移出的成员");
       return;
     }
     setKicking(true);
     try {
-      const res = await removeCollabRoomMembers(activeId, kickMembers);
+      const res = await removeCollabRoomMembers(roomId, kickMembers);
       setKickOpen(false);
       setKickMembers([]);
       if (res.left) {
@@ -1836,16 +1853,14 @@ export default function CollabRisk({
         message.success("已退出群聊");
         return;
       }
-      if (res.message) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === res.message.id)) return prev;
-          return [...prev, res.message];
-        });
-      }
-      if (res.room) {
-        setActiveRoom((prev) => prev ? { ...prev, ...res.room } : res.room);
-        setRooms((prev) => prev.map((r) => (r.id === res.room!.id ? { ...r, ...res.room! } : r)));
-      }
+      mutateRoomData(roomId, {
+        ...(res.message ? {
+          messages: (previous) => previous.some((item) => item.id === res.message.id)
+            ? previous
+            : [...previous, res.message],
+        } : {}),
+        ...(res.room ? { room: (previous) => ({ ...previous, ...res.room! }) } : {}),
+      });
       message.success(`已移出 ${res.removed_count} 人`);
     } catch (e: any) {
       message.error(e?.response?.data?.error || "移出失败");
@@ -1917,16 +1932,10 @@ export default function CollabRisk({
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    bumpRoomDataRevision(targetRoomId);
-    const cachedAtStart = roomViewCacheRef.current.get(targetRoomId);
-    if (cachedAtStart) {
-      roomViewCacheRef.current.set(targetRoomId, {
-        ...cachedAtStart,
-        messages: [...cachedAtStart.messages, optimistic],
-      });
-    }
+    mutateRoomData(targetRoomId, {
+      messages: (current) => [...current, optimistic],
+    });
     if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-      setMessages((current) => [...current, optimistic]);
       scrollMessagesToBottom("auto");
     }
     markRoomSending(targetRoomId, true);
@@ -1970,36 +1979,18 @@ export default function CollabRisk({
       const mergedRun = runSeed
         ? mergeXiaoceRunSnapshots(runSeed, currentRunSnapshots)
         : null;
-      if (cached) {
-        roomViewCacheRef.current.set(targetRoomId, {
-          ...cached,
-          messages: mergeResponseMessages(cached.messages),
-          room: {
-            ...cached.room,
-            ...res.room,
-            active_xiaoce_run: mergedRun,
-          },
-          xiaoceRun: mergedRun,
-        });
-      }
-      setRooms((current) => current.map((room) => (
-        room.id === targetRoomId ? {
+      mutateRoomData(targetRoomId, {
+        messages: mergeResponseMessages,
+        room: (room) => ({
           ...room,
           ...res.room,
           active_xiaoce_run: mergedRun,
           updated_at: res.room.updated_at || room.updated_at,
-        } : room
-      )));
+        }),
+        xiaoceRun: () => mergedRun,
+      });
       if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-        setMessages(mergeResponseMessages);
         scrollMessagesToBottom("auto");
-        activeXiaoceRunRef.current = mergedRun;
-        setActiveXiaoceRun(mergedRun);
-        setActiveRoom((current) => current?.id === targetRoomId ? {
-          ...current,
-          ...res.room,
-          active_xiaoce_run: mergedRun,
-        } : current);
         setMention(null);
       }
       // 统计看板稍后刷新，不挡发送体感
@@ -2009,20 +2000,11 @@ export default function CollabRisk({
       const removeOptimistic = (current: CollabMessage[]) => (
         current.filter((row) => row.id !== tempId)
       );
-      const cached = roomViewCacheRef.current.get(targetRoomId);
-      if (cached) {
-        roomViewCacheRef.current.set(targetRoomId, {
-          ...cached,
-          messages: removeOptimistic(cached.messages),
-        });
-      }
-      if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-        setMessages(removeOptimistic);
-      }
       const pendingRun = e?.response?.data?.xiaoce_run as XiaoceRun | undefined;
+      let mergedPendingRun: XiaoceRun | undefined;
       if (pendingRun) {
         const failedCache = roomViewCacheRef.current.get(targetRoomId);
-        const mergedPendingRun = mergeXiaoceRunSnapshots(pendingRun, [
+        mergedPendingRun = mergeXiaoceRunSnapshots(pendingRun, [
           failedCache?.xiaoceRun,
           failedCache?.room.active_xiaoce_run,
           roomsRef.current.find((room) => room.id === targetRoomId)?.active_xiaoce_run,
@@ -2033,24 +2015,14 @@ export default function CollabRisk({
             ? activeRoomRef.current.active_xiaoce_run
             : null,
         ]);
-        setRooms((current) => current.map((room) => (
-          room.id === targetRoomId ? { ...room, active_xiaoce_run: mergedPendingRun } : room
-        )));
-        if (failedCache) {
-          roomViewCacheRef.current.set(targetRoomId, {
-            ...failedCache,
-            room: { ...failedCache.room, active_xiaoce_run: mergedPendingRun },
-            xiaoceRun: mergedPendingRun,
-          });
-        }
-        if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-          activeXiaoceRunRef.current = mergedPendingRun;
-          setActiveXiaoceRun(mergedPendingRun);
-          setActiveRoom((current) => current?.id === targetRoomId
-            ? { ...current, active_xiaoce_run: mergedPendingRun }
-            : current);
-        }
       }
+      mutateRoomData(targetRoomId, {
+        messages: removeOptimistic,
+        ...(mergedPendingRun ? {
+          room: (room) => ({ ...room, active_xiaoce_run: mergedPendingRun }),
+          xiaoceRun: () => mergedPendingRun,
+        } : {}),
+      });
       message.error(e?.response?.data?.error || "发送失败");
       return false;
     } finally {
@@ -2121,38 +2093,22 @@ export default function CollabRisk({
         requestRevision,
         currentRevision: getRoomDataRevision(roomId),
       });
-      bumpRoomDataRevision(roomId);
-      const cached = roomViewCacheRef.current.get(roomId);
-      if (cached) {
-        const messageIndex = cached.messages.findIndex((item) => item.id === response.message.id);
-        const nextMessages = [...cached.messages];
-        if (messageIndex < 0) nextMessages.push(response.message);
-        else nextMessages[messageIndex] = response.message;
-        roomViewCacheRef.current.set(roomId, {
-          ...cached,
-          messages: nextMessages,
-          room: { ...cached.room, ...response.room, active_xiaoce_run: nextRun },
-          xiaoceRun: nextRun,
-        });
-      }
-      setRooms((previous) => previous.map((room) => (
-        room.id === roomId ? { ...room, ...response.room, active_xiaoce_run: nextRun } : room
-      )));
-      if (activeIdRef.current === roomId) {
-        setMessages((previous) => {
+      mutateRoomData(roomId, {
+        messages: (previous) => {
           const index = previous.findIndex((item) => item.id === response.message.id);
           if (index < 0) return [...previous, response.message];
           const next = [...previous];
           next[index] = response.message;
           return next;
-        });
-        setActiveRoom((previous) => previous ? {
+        },
+        room: (previous) => ({
           ...previous,
           ...response.room,
           active_xiaoce_run: nextRun,
-        } : previous);
-        activeXiaoceRunRef.current = nextRun;
-        setActiveXiaoceRun(nextRun);
+        }),
+        xiaoceRun: () => nextRun,
+      });
+      if (activeIdRef.current === roomId) {
         scrollMessagesToBottom("auto");
       }
     } catch (error: any) {
@@ -2265,13 +2221,16 @@ export default function CollabRisk({
   };
 
   const handleRecallMessage = async (m: CollabMessage) => {
-    if (!activeId) return;
+    const roomId = activeIdRef.current;
+    if (!roomId) return;
     try {
-      const res = await recallCollabMessage(activeId, m.id);
-      setMessages((prev) => mergeMessagePatches(prev, [res.message]));
-      if (res.room) {
-        setActiveRoom((prev) => (prev ? { ...prev, ...res.room } : res.room));
-      }
+      const res = await recallCollabMessage(roomId, m.id);
+      mutateRoomData(roomId, {
+        messages: (previous) => mergeMessagePatches(previous, [res.message]),
+        ...(res.room ? {
+          room: (previous) => ({ ...previous, ...res.room }),
+        } : {}),
+      });
       message.success("已撤回");
     } catch (e: any) {
       message.error(e?.response?.data?.error || "撤回失败");
@@ -2279,7 +2238,8 @@ export default function CollabRisk({
   };
 
   const handleDeleteMessage = (m: CollabMessage) => {
-    if (!activeId) return;
+    const roomId = activeIdRef.current;
+    if (!roomId) return;
     Modal.confirm({
       title: "删除这条消息？",
       content: "删除后会话内其他人也将看不到该消息。",
@@ -2288,11 +2248,13 @@ export default function CollabRisk({
       cancelText: "取消",
       onOk: async () => {
         try {
-          const res = await deleteCollabMessage(activeId, m.id);
-          setMessages((prev) => mergeMessagePatches(prev, [res.message]));
-          if (res.room) {
-            setActiveRoom((prev) => (prev ? { ...prev, ...res.room } : res.room));
-          }
+          const res = await deleteCollabMessage(roomId, m.id);
+          mutateRoomData(roomId, {
+            messages: (previous) => mergeMessagePatches(previous, [res.message]),
+            ...(res.room ? {
+              room: (previous) => ({ ...previous, ...res.room }),
+            } : {}),
+          });
           message.success("已删除");
         } catch (e: any) {
           message.error(e?.response?.data?.error || "删除失败");
@@ -2361,11 +2323,12 @@ export default function CollabRisk({
   };
 
   const handleClose = async () => {
-    if (!activeId) return;
+    const roomId = activeIdRef.current;
+    if (!roomId) return;
     try {
-      const room = await updateCollabRoom(activeId, { status: "closed" });
-      setActiveRoom(room);
-      if (room.insights) setInsights(room.insights);
+      const room = await updateCollabRoom(roomId, { status: "closed" });
+      mutateRoomData(roomId, { room: () => room });
+      if (room.insights && activeIdRef.current === roomId) setInsights(room.insights);
       await loadRooms();
       message.success("会话已结束，已生成风控纪要");
     } catch (e: any) {
@@ -2374,7 +2337,8 @@ export default function CollabRisk({
   };
 
   const handleClearHistory = () => {
-    if (!activeId) return;
+    const roomId = activeIdRef.current;
+    if (!roomId) return;
     Modal.confirm({
       title: "清空聊天记录？",
       content: "将删除本会话全部消息与风控洞察，会话本身保留。此操作对所有成员生效。",
@@ -2383,12 +2347,20 @@ export default function CollabRisk({
       cancelText: "取消",
       onOk: async () => {
         try {
-          const res = await clearCollabMessages(activeId);
-          setMessages(res.room?.messages || (res.message ? [res.message] : []));
-          setInsights(res.room?.insights || []);
-          if (res.room) {
-            setActiveRoom((prev) => prev ? { ...prev, ...res.room, messages: undefined, insights: undefined } : res.room);
-            setRooms((prev) => prev.map((r) => (r.id === res.room.id ? { ...r, ...res.room, messages: undefined, insights: undefined } : r)));
+          const res = await clearCollabMessages(roomId);
+          mutateRoomData(roomId, {
+            messages: () => res.room?.messages || (res.message ? [res.message] : []),
+            ...(res.room ? {
+              room: (previous) => ({
+                ...previous,
+                ...res.room,
+                messages: undefined,
+                insights: undefined,
+              }),
+            } : {}),
+          });
+          if (activeIdRef.current === roomId) {
+            setInsights(res.room?.insights || []);
           }
           message.success("聊天记录已清空");
         } catch (e: any) {
@@ -2427,6 +2399,7 @@ export default function CollabRisk({
       onOk: async () => {
         try {
           await deleteCollabRoom(id);
+          mutateRoomData(id, {});
           const remaining = roomsRef.current.filter((room) => room.id !== id);
           roomsRef.current = remaining;
           setRooms((current) => current.filter((room) => room.id !== id));
@@ -2462,18 +2435,22 @@ export default function CollabRisk({
   };
 
   const handleRefreshInsight = async () => {
-    if (!activeId) return;
+    const roomId = activeIdRef.current;
+    if (!roomId) return;
     try {
-      const res = await refreshCollabInsights(activeId);
-      setInsights((prev) => [...prev, res.insight]);
-      setActiveRoom(res.room);
-      if (res.ai_message) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === res.ai_message!.id)) return prev;
-          return [...prev, res.ai_message!];
-        });
+      const res = await refreshCollabInsights(roomId);
+      if (activeIdRef.current === roomId) {
+        setInsights((prev) => [...prev, res.insight]);
       }
-      await refreshStats(activeId);
+      mutateRoomData(roomId, {
+        room: () => res.room,
+        ...(res.ai_message ? {
+          messages: (previous) => previous.some((item) => item.id === res.ai_message!.id)
+            ? previous
+            : [...previous, res.ai_message!],
+        } : {}),
+      });
+      await refreshStats(roomId);
       message.success("已重新分析");
     } catch (e: any) {
       message.error(e?.response?.data?.error || "分析失败");

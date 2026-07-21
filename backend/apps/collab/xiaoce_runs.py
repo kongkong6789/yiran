@@ -9,7 +9,6 @@ from django.utils.text import slugify
 from apps.core.conversation_skill import ConversationSkillError
 from apps.skills.models import SkillAsset, UserSkill
 from apps.skills.repository import (
-    delete_skill_asset,
     delete_skill_storage,
     save_skill_asset_from_bytes,
     skill_asset_storage_snapshot,
@@ -189,9 +188,19 @@ def _staging_skill_id(skill_id: str, run_id) -> tuple[str, str]:
 def _cleanup_staged_skill(user, staging_id: str) -> None:
     try:
         UserSkill.objects.filter(user=user, skill_id=staging_id).delete()
-        delete_skill_asset(user, staging_id)
     except Exception:
-        logger.exception("failed to clean staged Xiaoce skill %s", staging_id)
+        logger.exception("failed to clean staged Xiaoce UserSkill %s", staging_id)
+    asset = SkillAsset.objects.filter(uploader=user, skill_id=staging_id).first()
+    if asset is None:
+        return
+    try:
+        delete_skill_storage(skill_asset_storage_snapshot(asset))
+    except Exception:
+        logger.exception("failed to clean staged Xiaoce skill storage %s", staging_id)
+    try:
+        asset.delete()
+    except Exception:
+        logger.exception("failed to clean staged Xiaoce SkillAsset %s", staging_id)
 
 
 def _adopt_staged_skill(
@@ -210,6 +219,13 @@ def _adopt_staged_skill(
         .filter(user=user, skill_id=stable_id)
         .first()
     )
+    if final_asset is not None:
+        has_foreign_adopters = final_asset.adoptions.exclude(user=user).exists()
+        if (
+            final_asset.visibility == SkillAsset.Visibility.SHARED
+            or has_foreign_adopters
+        ):
+            raise ConversationSkillError("同名 Skill 已共享或已被其他用户启用，无法覆盖")
     old_storage = skill_asset_storage_snapshot(final_asset) if final_asset else None
     asset_fields = [
         "name",
@@ -273,6 +289,7 @@ def complete_xiaoce_run_with_skill(run_id, prepared) -> CollabMessage | None:
             adopt=True,
             visibility=SkillAsset.Visibility.PRIVATE,
             skill_id_override=staging_id,
+            rollback_storage_on_failure=True,
         )
         if staged_personal is None:
             raise ConversationSkillError("Skill 已生成但未能自动启用")

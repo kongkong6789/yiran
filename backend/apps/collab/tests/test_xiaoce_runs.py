@@ -17,12 +17,14 @@ from apps.collab import views
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
 from apps.collab.xiaoce_progress import XiaoceProgressReporter, _publish_after_commit
 from apps.collab.xiaoce_runs import (
+    _adopt_staged_skill,
     cancel_xiaoce_run,
     complete_xiaoce_run,
     complete_xiaoce_run_with_skill,
     fail_xiaoce_run,
     is_xiaoce_run_cancelled,
 )
+from apps.core.conversation_skill import ConversationSkillError
 from apps.core.conversation_skill import PreparedConversationSkill
 from apps.skills.models import SkillAsset, UserSkill
 from apps.skills.repository import save_skill_asset_from_bytes
@@ -232,6 +234,100 @@ class XiaoceRunLifecycleTests(TestCase):
                     sorted(path.name for path in (Path(tmp) / str(self.user.id)).iterdir()),
                     [prepared.skill_id],
                 )
+
+    @patch("apps.skills.repository.cos_enabled", return_value=False)
+    def test_shared_stable_skill_with_foreign_adopter_is_never_replaced(self, _cos_enabled):
+        prepared = prepared_skill(self.room)
+        other = User.objects.create_user("shared-adopter", password="pw")
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(SKILLS_WORKSPACE_ROOT=Path(tmp)):
+                stable_asset, stable_personal = save_skill_asset_from_bytes(
+                    self.user,
+                    prepared.filename,
+                    prepared.package_data,
+                    adopt=True,
+                    visibility=SkillAsset.Visibility.SHARED,
+                    skill_id_override=prepared.skill_id,
+                )
+                foreign = UserSkill.objects.create(
+                    user=other,
+                    skill_id=prepared.skill_id,
+                    name="Foreign adoption",
+                    source_asset=stable_asset,
+                )
+                stable_snapshot = {
+                    "name": stable_asset.name,
+                    "visibility": stable_asset.visibility,
+                    "cos_bucket": stable_asset.cos_bucket,
+                    "cos_key": stable_asset.cos_key,
+                    "cos_url": stable_asset.cos_url,
+                    "skill_md_key": stable_asset.skill_md_key,
+                    "package_manifest": stable_asset.package_manifest,
+                }
+
+                with self.assertRaises(ConversationSkillError):
+                    complete_xiaoce_run_with_skill(self.run.id, prepared)
+
+                stable_asset.refresh_from_db()
+                stable_personal.refresh_from_db()
+                foreign.refresh_from_db()
+                self.assertEqual(stable_asset.name, stable_snapshot["name"])
+                self.assertEqual(stable_asset.visibility, SkillAsset.Visibility.SHARED)
+                self.assertEqual(stable_asset.cos_bucket, stable_snapshot["cos_bucket"])
+                self.assertEqual(stable_asset.cos_key, stable_snapshot["cos_key"])
+                self.assertEqual(stable_asset.cos_url, stable_snapshot["cos_url"])
+                self.assertEqual(stable_asset.skill_md_key, stable_snapshot["skill_md_key"])
+                self.assertEqual(stable_asset.package_manifest, stable_snapshot["package_manifest"])
+                self.assertEqual(foreign.source_asset_id, stable_asset.id)
+                self.assertEqual(stable_personal.source_asset_id, stable_asset.id)
+                self.assertEqual(SkillAsset.objects.count(), 1)
+                self.assertEqual(UserSkill.objects.count(), 2)
+                self.assertEqual(
+                    sorted(path.name for path in (Path(tmp) / str(self.user.id)).iterdir()),
+                    [prepared.skill_id],
+                )
+
+    @patch("apps.skills.repository.cos_enabled", return_value=False)
+    def test_adopt_rejects_private_stable_asset_with_foreign_adopter(self, _cos_enabled):
+        prepared = prepared_skill(self.room)
+        other = User.objects.create_user("private-adopter", password="pw")
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(SKILLS_WORKSPACE_ROOT=Path(tmp)):
+                stable_asset, _ = save_skill_asset_from_bytes(
+                    self.user,
+                    prepared.filename,
+                    prepared.package_data,
+                    adopt=True,
+                    visibility=SkillAsset.Visibility.PRIVATE,
+                    skill_id_override=prepared.skill_id,
+                )
+                UserSkill.objects.create(
+                    user=other,
+                    skill_id=prepared.skill_id,
+                    name="Foreign adoption",
+                    source_asset=stable_asset,
+                )
+                staging_id = f"stage-{self.run.id.hex}"
+                staged_asset, staged_personal = save_skill_asset_from_bytes(
+                    self.user,
+                    prepared.filename,
+                    prepared.package_data,
+                    adopt=True,
+                    visibility=SkillAsset.Visibility.PRIVATE,
+                    skill_id_override=staging_id,
+                )
+
+                with self.assertRaises(ConversationSkillError):
+                    _adopt_staged_skill(
+                        self.user,
+                        staged_asset,
+                        staged_personal,
+                        prepared.skill_id,
+                    )
+
+                stable_asset.refresh_from_db()
+                self.assertEqual(stable_asset.visibility, SkillAsset.Visibility.PRIVATE)
+                self.assertEqual(stable_asset.adoptions.count(), 2)
 
     @patch("apps.collab.views.ws_push.publish_sync")
     def test_final_publish_is_a_noop_after_room_deletion(self, publish):

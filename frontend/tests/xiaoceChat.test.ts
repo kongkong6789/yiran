@@ -228,6 +228,166 @@ test("late room detail preserves messages and run updates created after request 
   assert.equal(result.xiaoceRun, newerRun);
 });
 
+function deferredRoomMutationHarness() {
+  const applyMutation = (xiaoceChatHelpers as Record<string, unknown>)
+    .applyRoomMutation as ((state: Record<string, any>, mutation: Record<string, any>) => Record<string, any>) | undefined;
+  const reconcileDetail = (xiaoceChatHelpers as Record<string, unknown>)
+    .reconcileRoomDetailSnapshot as ((input: Record<string, any>) => {
+      messages: Array<Record<string, any>>;
+      xiaoceRun: Record<string, any> | null;
+    }) | undefined;
+  assert.equal(typeof applyMutation, "function");
+  assert.equal(typeof reconcileDetail, "function");
+  const room = {
+    id: "room-a",
+    active_xiaoce_run: null,
+  };
+  const original = {
+    id: 10,
+    room_id: "room-a",
+    content: "original",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:01Z",
+  };
+  return {
+    applyMutation: applyMutation!,
+    reconcileDetail: reconcileDetail!,
+    requestRevision: 3,
+    pageMessages: [original],
+    state: {
+      roomId: "room-a",
+      revision: 3,
+      rooms: [room],
+      cache: new Map([["room-a", {
+        room,
+        messages: [original],
+        xiaoceRun: null,
+      }]]),
+      activeRoomId: "room-a",
+      activeRoom: room,
+      activeMessages: [original],
+      activeRun: null,
+    },
+  };
+}
+
+test("detail started before recall preserves the recalled message", async () => {
+  const harness = deferredRoomMutationHarness();
+  const recalled = {
+    ...harness.pageMessages[0],
+    content: "",
+    status: "recalled",
+    updated_at: "2026-07-20T10:00:04Z",
+  };
+  const next = harness.applyMutation(harness.state, {
+    messages: (current: Array<Record<string, any>>) => current.map((message) => (
+      message.id === recalled.id ? recalled : message
+    )),
+  });
+  await Promise.resolve();
+  const resolved = harness.reconcileDetail({
+    pageMessages: harness.pageMessages,
+    currentMessages: next.activeMessages,
+    requestStartMessageIds: [10],
+    pageRun: null,
+    currentRun: next.activeRun,
+    requestRevision: harness.requestRevision,
+    currentRevision: next.revision,
+  });
+  assert.equal(resolved.messages[0].status, "recalled");
+});
+
+test("detail started before delete cannot restore the deleted message", async () => {
+  const harness = deferredRoomMutationHarness();
+  const next = harness.applyMutation(harness.state, {
+    messages: (current: Array<Record<string, any>>) => current.filter((message) => message.id !== 10),
+  });
+  await Promise.resolve();
+  const resolved = harness.reconcileDetail({
+    pageMessages: harness.pageMessages,
+    currentMessages: next.activeMessages,
+    requestStartMessageIds: [10],
+    pageRun: null,
+    currentRun: next.activeRun,
+    requestRevision: harness.requestRevision,
+    currentRevision: next.revision,
+  });
+  assert.deepEqual(resolved.messages, []);
+});
+
+test("detail started before send success preserves returned message and new run", async () => {
+  const harness = deferredRoomMutationHarness();
+  const sent = {
+    id: 11,
+    room_id: "room-a",
+    content: "sent",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:04Z",
+  };
+  const run = {
+    id: "run-new",
+    room_id: "room-a",
+    status: "running",
+    created_at: "2026-07-20T10:00:04Z",
+    updated_at: "2026-07-20T10:00:04Z",
+  };
+  const next = harness.applyMutation(harness.state, {
+    messages: (current: Array<Record<string, any>>) => [...current, sent],
+    room: (current: Record<string, any>) => ({ ...current, active_xiaoce_run: run }),
+    xiaoceRun: () => run,
+  });
+  await Promise.resolve();
+  const resolved = harness.reconcileDetail({
+    pageMessages: harness.pageMessages,
+    currentMessages: next.activeMessages,
+    requestStartMessageIds: [10],
+    pageRun: null,
+    currentRun: next.activeRun,
+    requestRevision: harness.requestRevision,
+    currentRevision: next.revision,
+  });
+  assert.deepEqual(resolved.messages.map((message) => message.id), [10, 11]);
+  assert.equal(resolved.xiaoceRun, run);
+});
+
+test("detail started before cancellation preserves cancellation response state", async () => {
+  const harness = deferredRoomMutationHarness();
+  const running = {
+    id: "run-a",
+    room_id: "room-a",
+    status: "running",
+    created_at: "2026-07-20T10:00:00Z",
+    updated_at: "2026-07-20T10:00:02Z",
+  };
+  harness.state.activeRun = running;
+  harness.state.activeRoom = { ...harness.state.activeRoom, active_xiaoce_run: running };
+  harness.state.cache.get("room-a").xiaoceRun = running;
+  const cancellation = {
+    id: 12,
+    room_id: "room-a",
+    content: "paused",
+    status: "normal",
+    updated_at: "2026-07-20T10:00:05Z",
+  };
+  const next = harness.applyMutation(harness.state, {
+    messages: (current: Array<Record<string, any>>) => [...current, cancellation],
+    room: (current: Record<string, any>) => ({ ...current, active_xiaoce_run: null }),
+    xiaoceRun: () => null,
+  });
+  await Promise.resolve();
+  const resolved = harness.reconcileDetail({
+    pageMessages: harness.pageMessages,
+    currentMessages: next.activeMessages,
+    requestStartMessageIds: [10],
+    pageRun: running,
+    currentRun: next.activeRun,
+    requestRevision: harness.requestRevision,
+    currentRevision: next.revision,
+  });
+  assert.deepEqual(resolved.messages.map((message) => message.id), [10, 12]);
+  assert.equal(resolved.xiaoceRun, null);
+});
+
 test("deferred room A pagination updates only A after selecting room B", async () => {
   const isSelectionCurrent = (xiaoceChatHelpers as Record<string, unknown>)
     .isRoomSelectionCurrent as ((
@@ -634,10 +794,25 @@ test("send success and pending failure publish one merged run snapshot to every 
   assert.match(sendSource, /mergeXiaoceRunSnapshots/);
   assert.match(sendSource, /mergedRun/);
   assert.match(sendSource, /mergedPendingRun/);
-  assert.match(sendSource, /activeXiaoceRunRef\.current = mergedRun/);
-  assert.match(sendSource, /activeXiaoceRunRef\.current = mergedPendingRun/);
+  assert.match(sendSource, /mutateRoomData\(targetRoomId/);
+  assert.match(sendSource, /xiaoceRun: \(\) => mergedRun/);
+  assert.match(sendSource, /xiaoceRun: \(\) => mergedPendingRun/);
   assert.doesNotMatch(sendSource, /active_xiaoce_run: pendingRun/);
   assert.doesNotMatch(sendSource, /\? res\.room\.active_xiaoce_run/);
+});
+
+test("authoritative callbacks use the synchronous room mutation transition", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const sections = [
+    ["const sendPlainMessage", "const handleSend"],
+    ["const pauseXiaoce", "const runDraftCoach"],
+    ["const handleRecallMessage", "const addFiles"],
+    ["const handleDeleteRoom", "const handleRefreshInsight"],
+  ];
+  for (const [start, end] of sections) {
+    const section = source.slice(source.indexOf(start), source.indexOf(end));
+    assert.match(section, /mutateRoomData\(/, `${start} must use mutateRoomData`);
+  }
 });
 
 test("collaboration live hook gates every room effect by local generation", () => {

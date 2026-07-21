@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import uuid
 from copy import deepcopy
 from pathlib import Path
 
@@ -28,28 +29,41 @@ def _local_skill_root(user_id: int, skill_id: str) -> Path:
 
 def _write_local_package(user_id: int, skill_id: str, files: list[tuple[str, bytes]]) -> tuple[list[dict], str]:
     base = _local_skill_root(user_id, skill_id)
-    if base.exists():
-        for p in sorted(base.rglob("*"), reverse=True):
-            if p.is_file():
-                p.unlink()
-            elif p.is_dir():
-                p.rmdir()
+    base_existed = base.exists()
+    write_base = base
+    if base_existed:
+        write_base = base.with_name(f".{base.name}-write-{uuid.uuid4().hex}")
     manifest: list[dict] = []
     skill_md_key = ""
-    for rel_path, payload in files:
-        dest = base / rel_path.replace("/", os.sep)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(payload)
-        entry = {
-            "path": rel_path,
-            "cos_key": "",
-            "cos_url": "",
-            "size": len(payload),
-            "local_path": str(dest),
-        }
-        manifest.append(entry)
-        if rel_path.lower().endswith("skill.md"):
-            skill_md_key = rel_path
+    try:
+        for rel_path, payload in files:
+            dest = write_base / rel_path.replace("/", os.sep)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload)
+            entry = {
+                "path": rel_path,
+                "cos_key": "",
+                "cos_url": "",
+                "size": len(payload),
+                "local_path": str(base / rel_path.replace("/", os.sep)),
+            }
+            manifest.append(entry)
+            if rel_path.lower().endswith("skill.md"):
+                skill_md_key = rel_path
+    except Exception:
+        shutil.rmtree(write_base, ignore_errors=True)
+        raise
+
+    if base_existed:
+        backup = base.with_name(f".{base.name}-backup-{uuid.uuid4().hex}")
+        base.rename(backup)
+        try:
+            write_base.rename(base)
+        except Exception:
+            backup.rename(base)
+            shutil.rmtree(write_base, ignore_errors=True)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
     return manifest, skill_md_key
 
 
@@ -185,6 +199,7 @@ def save_skill_asset_from_bytes(
     adopt: bool = False,
     visibility: str = SkillAsset.Visibility.SHARED,
     skill_id_override: str | None = None,
+    rollback_storage_on_failure: bool = False,
 ) -> tuple[SkillAsset, UserSkill | None]:
     extracted = extract_skill_from_upload(filename, data)
     parsed = {k: v for k, v in extracted.items() if k not in {"package_files", "upload_kind"}}
@@ -232,6 +247,55 @@ def save_skill_asset_from_bytes(
             skill_md_key = single_name
             package_kind = "single"
 
+        storage_snapshot = {
+            "uploader_id": user.id,
+            "skill_id": skill_id,
+            "cos_bucket": stored["bucket"],
+            "cos_key": stored["cos_key"],
+            "package_kind": package_kind,
+            "package_manifest": manifest,
+        }
+        try:
+            asset, _ = SkillAsset.objects.update_or_create(
+                uploader=user,
+                skill_id=skill_id,
+                defaults={
+                    "name": parsed["name"],
+                    "visibility": visibility,
+                    "description": parsed.get("description") or "",
+                    "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
+                    "cos_bucket": stored["bucket"],
+                    "cos_key": stored["cos_key"],
+                    "cos_url": stored["cos_url"],
+                    "file_size": sum(len(b) for _, b in package_files) or len(data),
+                    "instructions_preview": (parsed["instructions"] or "")[:500],
+                    "package_kind": package_kind,
+                    "package_manifest": manifest,
+                    "skill_md_key": skill_md_key or stored["cos_key"],
+                },
+            )
+            personal = materialize_user_skill(user, asset) if adopt else None
+            return asset, personal
+        except Exception:
+            if rollback_storage_on_failure:
+                try:
+                    delete_skill_storage(storage_snapshot)
+                except Exception:
+                    pass
+            raise
+
+    # 未启用 COS:写入本地工作区
+    manifest, skill_md_key = _write_local_package(user.id, skill_id, package_files)
+    package_kind = "package" if len(package_files) > 1 else "single"
+    storage_snapshot = {
+        "uploader_id": user.id,
+        "skill_id": skill_id,
+        "cos_bucket": "",
+        "cos_key": skill_md_key or "SKILL.md",
+        "package_kind": package_kind,
+        "package_manifest": manifest,
+    }
+    try:
         asset, _ = SkillAsset.objects.update_or_create(
             uploader=user,
             skill_id=skill_id,
@@ -240,42 +304,25 @@ def save_skill_asset_from_bytes(
                 "visibility": visibility,
                 "description": parsed.get("description") or "",
                 "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
-                "cos_bucket": stored["bucket"],
-                "cos_key": stored["cos_key"],
-                "cos_url": stored["cos_url"],
+                "cos_bucket": "",
+                "cos_key": skill_md_key or "SKILL.md",
+                "cos_url": "",
                 "file_size": sum(len(b) for _, b in package_files) or len(data),
                 "instructions_preview": (parsed["instructions"] or "")[:500],
                 "package_kind": package_kind,
                 "package_manifest": manifest,
-                "skill_md_key": skill_md_key or stored["cos_key"],
+                "skill_md_key": skill_md_key or "SKILL.md",
             },
         )
         personal = materialize_user_skill(user, asset) if adopt else None
         return asset, personal
-
-    # 未启用 COS:写入本地工作区
-    manifest, skill_md_key = _write_local_package(user.id, skill_id, package_files)
-    package_kind = "package" if len(package_files) > 1 else "single"
-    asset, _ = SkillAsset.objects.update_or_create(
-        uploader=user,
-        skill_id=skill_id,
-        defaults={
-            "name": parsed["name"],
-            "visibility": visibility,
-            "description": parsed.get("description") or "",
-            "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
-            "cos_bucket": "",
-            "cos_key": skill_md_key or "SKILL.md",
-            "cos_url": "",
-            "file_size": sum(len(b) for _, b in package_files) or len(data),
-            "instructions_preview": (parsed["instructions"] or "")[:500],
-            "package_kind": package_kind,
-            "package_manifest": manifest,
-            "skill_md_key": skill_md_key or "SKILL.md",
-        },
-    )
-    personal = materialize_user_skill(user, asset) if adopt else None
-    return asset, personal
+    except Exception:
+        if rollback_storage_on_failure:
+            try:
+                delete_skill_storage(storage_snapshot)
+            except Exception:
+                pass
+        raise
 
 
 def skill_asset_storage_snapshot(asset: SkillAsset) -> dict:

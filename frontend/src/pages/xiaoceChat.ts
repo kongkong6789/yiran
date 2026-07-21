@@ -1,4 +1,4 @@
-import type { CollabMessage, XiaoceRun } from "../api/client";
+import type { CollabMessage, CollabRoom, XiaoceRun } from "../api/client";
 
 
 export type XiaoceRoomLike = {
@@ -176,16 +176,17 @@ export function mergeXiaoceRunSnapshot(
     currentRevision?: number;
   } = {},
 ): XiaoceRun | null {
+  if (
+    context.authoritative
+    && context.requestRevision !== undefined
+    && context.currentRevision !== undefined
+    && context.requestRevision !== context.currentRevision
+  ) {
+    return current;
+  }
   if (incoming === null) {
     if (current === null) return null;
     if (!context.authoritative) return current;
-    if (
-      context.requestRevision !== undefined
-      && context.currentRevision !== undefined
-      && context.requestRevision !== context.currentRevision
-    ) {
-      return current;
-    }
     return null;
   }
   if (current === null) return incoming;
@@ -212,6 +213,82 @@ export function mergeXiaoceRunSnapshots(
     merged = mergeXiaoceRunSnapshot(merged, snapshot) || merged;
   }
   return merged;
+}
+
+
+type RoomMutationCacheLike = {
+  room: CollabRoom;
+  messages: CollabMessage[];
+  xiaoceRun: XiaoceRun | null;
+};
+
+export type RoomMutation = {
+  messages?: (current: CollabMessage[]) => CollabMessage[];
+  room?: (current: CollabRoom) => CollabRoom;
+  xiaoceRun?: (current: XiaoceRun | null) => XiaoceRun | null;
+};
+
+export function applyRoomMutation<TCache extends RoomMutationCacheLike>(
+  state: {
+    roomId: string;
+    revision: number;
+    rooms: CollabRoom[];
+    cache: ReadonlyMap<string, TCache>;
+    activeRoomId: string | null;
+    activeRoom: CollabRoom | null;
+    activeMessages: CollabMessage[];
+    activeRun: XiaoceRun | null;
+  },
+  mutation: RoomMutation,
+): {
+  revision: number;
+  rooms: CollabRoom[];
+  cache: Map<string, TCache>;
+  activeRoom: CollabRoom | null;
+  activeMessages: CollabMessage[];
+  activeRun: XiaoceRun | null;
+} {
+  const cached = state.cache.get(state.roomId);
+  const isActive = state.activeRoomId === state.roomId;
+  const listedRoom = state.rooms.find((room) => room.id === state.roomId) || null;
+  const currentRoom = (isActive ? state.activeRoom : null) || cached?.room || listedRoom;
+  const currentMessages = isActive ? state.activeMessages : (cached?.messages || []);
+  const currentRun = isActive
+    ? state.activeRun
+    : (cached?.xiaoceRun || currentRoom?.active_xiaoce_run || null);
+  const nextMessages = mutation.messages
+    ? mutation.messages(currentMessages)
+    : currentMessages;
+  const nextRun = mutation.xiaoceRun
+    ? mutation.xiaoceRun(currentRun)
+    : currentRun;
+  let nextRoom = currentRoom && mutation.room
+    ? mutation.room(currentRoom)
+    : currentRoom;
+  if (nextRoom && mutation.xiaoceRun) {
+    nextRoom = { ...nextRoom, active_xiaoce_run: nextRun };
+  }
+
+  const nextCache = new Map(state.cache);
+  if (cached && nextRoom) {
+    nextCache.set(state.roomId, {
+      ...cached,
+      room: nextRoom,
+      messages: nextMessages,
+      xiaoceRun: nextRun,
+    });
+  }
+  const nextRooms = nextRoom
+    ? state.rooms.map((room) => (room.id === state.roomId ? nextRoom! : room))
+    : state.rooms;
+  return {
+    revision: state.revision + 1,
+    rooms: nextRooms,
+    cache: nextCache,
+    activeRoom: isActive ? nextRoom : state.activeRoom,
+    activeMessages: isActive ? nextMessages : state.activeMessages,
+    activeRun: isActive ? nextRun : state.activeRun,
+  };
 }
 
 

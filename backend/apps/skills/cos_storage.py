@@ -91,32 +91,46 @@ def upload_skill_package(
 
     client = _client()
     manifest: list[dict[str, Any]] = []
-    for rel_path, payload in files:
-        key = build_skill_key(user_id, skill_id, rel_path)
-        content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=payload,
-            ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
-            ContentType=content_type,
-        )
-        manifest.append({
-            "path": rel_path,
-            "cos_key": key,
-            "cos_url": public_url(bucket, key),
-            "size": len(payload),
-        })
+    try:
+        for rel_path, payload in files:
+            key = build_skill_key(user_id, skill_id, rel_path)
+            content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=payload,
+                ACL=getattr(settings, "TENCENT_COS_ACL", "public-read"),
+                ContentType=content_type,
+            )
+            manifest.append({
+                "path": rel_path,
+                "cos_key": key,
+                "cos_url": public_url(bucket, key),
+                "size": len(payload),
+            })
+    except Exception:
+        try:
+            delete_skill_package(bucket, manifest)
+        except Exception:
+            pass
+        raise
     return {"bucket": bucket, "manifest": manifest}
 
 
 def delete_skill_package(bucket: str, manifest: list[dict]) -> None:
     if not cos_enabled() or not bucket:
         return
+    first_error = None
     for item in manifest or []:
         key = item.get("cos_key") or ""
         if key:
-            delete_object(bucket, key)
+            try:
+                delete_object(bucket, key)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def upload_skill_bytes(
