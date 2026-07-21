@@ -1,4 +1,4 @@
-﻿from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from .models import (
@@ -35,6 +35,42 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
         if not getattr(user, "is_authenticated", False):
             return False
         return bool(user.is_staff or user.is_superuser or obj.owner_user_id == user.id)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        instance = self.instance
+        name = (attrs.get("name", getattr(instance, "name", "")) or "").strip()
+        visibility = attrs.get("visibility", getattr(instance, "visibility", KnowledgeBase.Visibility.TEAM))
+        owner_user_id = getattr(instance, "owner_user_id", None)
+        if instance is None and getattr(user, "is_authenticated", False):
+            owner_user_id = user.id
+
+        if not name:
+            raise serializers.ValidationError({"name": "请填写知识库名称。"})
+
+        duplicates = KnowledgeBase.objects.filter(
+            archived_at__isnull=True,
+            name__iexact=name,
+            visibility=visibility,
+        )
+        if instance is not None:
+            duplicates = duplicates.exclude(pk=instance.pk)
+        if visibility == KnowledgeBase.Visibility.PRIVATE:
+            duplicates = duplicates.filter(owner_user_id=owner_user_id)
+
+        if duplicates.exists():
+            if visibility == KnowledgeBase.Visibility.PRIVATE:
+                message = "你的个人知识库中已存在同名知识库。"
+            elif visibility == KnowledgeBase.Visibility.TEAM:
+                message = "团队知识库中已存在同名知识库。"
+            else:
+                message = "公司知识库中已存在同名知识库。"
+            raise serializers.ValidationError({"name": message})
+
+        attrs["name"] = name
+        return attrs
 
     class Meta:
         model = KnowledgeBase

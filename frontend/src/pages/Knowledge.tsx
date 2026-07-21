@@ -115,8 +115,15 @@ function chunkKeywords(chunk: KnowledgeChunkItem, text: string) {
   return fallbackKeywords(text, 12);
 }
 function apiErrorMessage(error: unknown, fallback: string) {
-  const responseData = (error as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
-  return responseData?.message || responseData?.error || fallback;
+  const responseData = (error as { response?: { data?: Record<string, unknown> } })?.response?.data;
+  if (!responseData) return fallback;
+  const direct = responseData.message || responseData.error || responseData.detail;
+  if (typeof direct === "string" && direct.trim()) return direct;
+  for (const value of Object.values(responseData)) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value) && value.length) return String(value[0]);
+  }
+  return fallback;
 }
 
 function ingestStageLabel(stage?: string, status?: KnowledgeIngestJobItem["status"]) {
@@ -402,7 +409,7 @@ function mapKnowledgeBase(base: KnowledgeBaseItem): KnowledgeTemplate {
     visibility: base.visibility,
     evidenceCoverage: base.status === "ready" ? 90 : 40,
     readiness: base.status === "ready" ? 90 : base.status === "processing" ? 65 : 45,
-    limitations: ["PDF/PPT parser is not connected yet", "Semantic search requires local embedding service"],
+    limitations: ["PDF/DOC/PPT/XLS parse through MinerU", "Semantic search requires local embedding service"],
     sampleQuestion: `Search key facts in ${base.name}`,
     canEdit: base.can_edit ?? true,
   };
@@ -715,7 +722,7 @@ export default function Knowledge() {
       message.success("Knowledge base created");
     } catch (error) {
       console.error(error);
-      message.error("Failed to create knowledge base");
+      message.error(apiErrorMessage(error, "Failed to create knowledge base"));
     } finally {
       setBaseLoading(false);
     }
@@ -824,7 +831,7 @@ export default function Knowledge() {
       message.success("知识库已更新");
     } catch (error) {
       console.error(error);
-      message.error("更新知识库失败");
+      message.error(apiErrorMessage(error, "更新知识库失败"));
     } finally {
       setEditSaving(false);
     }
@@ -853,7 +860,7 @@ export default function Knowledge() {
           message.success("知识库已删除");
         } catch (error) {
           console.error(error);
-          message.error("删除知识库失败");
+          message.error(apiErrorMessage(error, "删除知识库失败"));
         }
       },
     });
@@ -1163,7 +1170,7 @@ export default function Knowledge() {
                           setUploadFiles(info.fileList);
                           setCreateUploadProgress(null);
                         }}
-                        accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
+                        accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm"
                       >
                         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                         <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
@@ -1764,7 +1771,7 @@ export default function Knowledge() {
             fileList={uploadFiles}
             beforeUpload={() => false}
             onChange={(info) => setUploadFiles(info.fileList)}
-            accept=".pdf,.doc,.docx,.md,.txt,.csv,.xlsx,.json,.html,.ppt,.pptx"
+            accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm"
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
             <p className="ant-upload-text">拖拽知识文件到这里，或点击选择文件</p>

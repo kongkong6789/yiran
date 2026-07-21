@@ -26,18 +26,24 @@ from django.utils import timezone
 
 from apps.skills.cos_storage import cos_enabled, fetch_object_bytes, upload_media_bytes
 
+from .mineru import parse_to_markdown
 from .models import KnowledgeBase, KnowledgeChunkRef, KnowledgeEmbedding, KnowledgeFile, KnowledgeIngestJob
 
 
 EXTENSION_TO_FILE_TYPE = {
     ".csv": "csv",
+    ".doc": "mineru_markdown",
     ".docx": "docx",
     ".htm": "html",
     ".html": "html",
     ".json": "json",
     ".markdown": "markdown",
     ".md": "markdown",
+    ".pdf": "mineru_markdown",
+    ".ppt": "mineru_markdown",
+    ".pptx": "mineru_markdown",
     ".txt": "txt",
+    ".xls": "mineru_markdown",
     ".xlsx": "xlsx",
 }
 
@@ -45,6 +51,7 @@ TEXT_FILE_TYPES = {"docx", "html", "json", "markdown", "txt"}
 TABLE_FILE_TYPES = {"csv", "xlsx", "csv_markdown", "xlsx_markdown"}
 TABLE_SOURCE_FILE_SUFFIXES = {".csv", ".xls", ".xlsx"}
 TABLE_SOURCE_TYPES = {"csv", "xls", "xlsx"}
+MINERU_MARKDOWN_FILE_TYPE = "mineru_markdown"
 
 KEYWORD_STOPWORDS = {
     "and",
@@ -172,7 +179,7 @@ def parse_cos_storage_path(storage_path: str) -> tuple[str, str] | None:
     return bucket, key
 
 
-def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str) -> tuple[str, bytes, dict]:
+def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: str, *, use_cos: bool = True) -> tuple[str, bytes, dict]:
     relative_path = relative_storage_path(knowledge_base_id, file_id, filename)
     content = bytearray()
     for chunk in upload.chunks():
@@ -180,7 +187,7 @@ def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: 
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
     data = bytes(content)
-    if cos_enabled():
+    if use_cos and cos_enabled():
         media = upload_media_bytes(relative_path, data, content_type=getattr(upload, "content_type", "") or None)
         return cos_storage_path(media["bucket"], media["cos_key"]), data, {
             "storage_backend": "cos",
@@ -196,6 +203,8 @@ def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: 
 
 
 def read_stored_file(storage_path: str) -> bytes:
+    if not (storage_path or "").strip():
+        raise TraditionalRagError("Upload file was not stored; please upload it again.", "upload_not_stored")
     cos_ref = parse_cos_storage_path(storage_path)
     if cos_ref:
         content = fetch_object_bytes(*cos_ref)
@@ -218,6 +227,8 @@ class _TextHTMLParser(HTMLParser):
             self._skip_depth += 1
         elif lowered in {"article", "br", "div", "h1", "h2", "h3", "h4", "li", "p", "section", "tr"}:
             self._parts.append("\n")
+        elif lowered in {"td", "th"}:
+            self._parts.append(" | ")
 
     def handle_endtag(self, tag: str) -> None:
         lowered = tag.lower()
@@ -317,6 +328,17 @@ def markdown_frontmatter_table_type(metadata: dict) -> str | None:
     return None
 
 
+
+def clean_mineru_markdown(markdown: bytes) -> bytes:
+    text = markdown.decode("utf-8", errors="replace")
+    text = re.sub(r"(?m)^\s*!\[[^\]]*\]\([^\)]+\)\s*$", "", text)
+    if re.search(r"</?(?:table|tr|td|th)\b", text, flags=re.IGNORECASE):
+        parser = _TextHTMLParser()
+        parser.feed(text)
+        text = parser.text()
+    text = re.sub(r"[ \t]*\|[ \t]*(?:\|[ \t]*)+", " | ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text.encode("utf-8")
 def parse_markdown_table_bytes(content: bytes) -> ParsedDocument:
     text = content.decode("utf-8", errors="replace")
     frontmatter, body = split_markdown_frontmatter(text)
@@ -889,6 +911,24 @@ def parse_document(content: bytes, file_type: str) -> ParsedDocument:
     if file_type in TABLE_FILE_TYPES:
         return parse_table_bytes(content, file_type)
     raise TraditionalRagError("Unsupported file type for parsing.", "unsupported_file_type")
+
+
+
+def prepare_content_for_parsing(*, filename: str, content: bytes, file_type: str, content_metadata: dict, document_id: str | None = None) -> tuple[bytes, str, dict]:
+    if file_type != MINERU_MARKDOWN_FILE_TYPE:
+        return content, file_type, content_metadata
+    converted = parse_to_markdown(filename=filename, content=content, document_id=document_id)
+    markdown = clean_mineru_markdown(converted.markdown)
+    converted_hash = hashlib.sha256(markdown).hexdigest()
+    metadata = {
+        **content_metadata,
+        "source_file_type": file_type,
+        "source_filename": filename,
+        "ingest_mode": "mineru-traditional-rag",
+        "converted_content_hash": converted_hash,
+        "mineru": converted.metadata,
+    }
+    return markdown, "markdown", metadata
 
 
 def segment_reference(segment_index: int, metadata: dict) -> dict:
@@ -1525,11 +1565,18 @@ def _run_async_ingest_job(job_id: int, *, chunk_size: int | None, chunk_overlap:
             "ingest_mode": "traditional-rag",
             "async": True,
         }
+        content, parser_file_type, content_metadata = prepare_content_for_parsing(
+            filename=file.original_filename,
+            content=content,
+            file_type=file_type,
+            content_metadata=content_metadata,
+            document_id=f"knowledge-file-{file.id}",
+        )
         _run_ingest_pipeline(
             file=file,
             job=job,
             content=content,
-            file_type=file_type,
+            file_type=parser_file_type,
             digest=digest,
             content_metadata=content_metadata,
             chunk_size=chunk_size,
@@ -1573,7 +1620,7 @@ def enqueue_ingest_upload(
         created_by=None,
     )
     try:
-        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename)
+        storage_path, content, storage_metadata = write_uploaded_file(upload, knowledge_base.id, file.id, original_filename, use_cos=False)
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
         file.storage_path = storage_path
@@ -1636,18 +1683,26 @@ def ingest_upload(
         file.storage_path = storage_path
         file_type = detect_file_type(original_filename, content)
         digest = hashlib.sha256(content).hexdigest()
+        content_metadata = {
+            "content_type": getattr(upload, "content_type", ""),
+            **storage_metadata,
+            "file_size": getattr(upload, "size", len(content)),
+            "ingest_mode": "traditional-rag",
+        }
+        content, parser_file_type, content_metadata = prepare_content_for_parsing(
+            filename=original_filename,
+            content=content,
+            file_type=file_type,
+            content_metadata=content_metadata,
+            document_id=f"knowledge-file-{file.id}",
+        )
         return _run_ingest_pipeline(
             file=file,
             job=job,
             content=content,
-            file_type=file_type,
+            file_type=parser_file_type,
             digest=digest,
-            content_metadata={
-                "content_type": getattr(upload, "content_type", ""),
-                **storage_metadata,
-                "file_size": getattr(upload, "size", len(content)),
-                "ingest_mode": "traditional-rag",
-            },
+            content_metadata=content_metadata,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
