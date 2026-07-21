@@ -13,6 +13,7 @@ import {
 } from "@ant-design/icons";
 import { getAgeStats, listAgents, listMeetings, getAuditLogs } from "../api/client";
 import { useVisualizationTheme } from "../theme/visualization";
+import OperatingMapV2 from "../components/OperatingMapV2";
 
 type Domain = {
   name: string;
@@ -29,17 +30,17 @@ const DOMAINS: Domain[] = [
   {
     name: "知识库", sub: "Knowledge", desc: "文档 · 检索 · 注入",
     color: "#9c7cff", route: "/knowledge", countLabel: "1,248 个节点",
-    samples: ["客服话术规范", "品牌 FAQ", "交付标准", "售后指南"], share: 26,
+    samples: ["客服话术规范", "品牌 FAQ", "交付标准", "售后指南"], share: 29,
   },
   {
     name: "技能", sub: "Skills", desc: "上传 · 启用 · 调用",
     color: "#4e84ff", route: "/skills", countLabel: "342 个节点",
-    samples: ["蝉妈妈分析", "日报汇总", "价格监控", "企微同步"], share: 18,
+    samples: ["蝉妈妈分析", "日报汇总", "价格监控", "企微同步"], share: 21,
   },
   {
     name: "圆桌会议", sub: "Council", desc: "多个专家一起研讨方案",
     color: "#5bd5f2", route: "/collab?view=roundtable", countLabel: "128 个节点",
-    samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 16,
+    samples: ["运营分析专家", "客服优化", "财务对账", "私域增长"], share: 17,
   },
   {
     name: "连接", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
@@ -47,19 +48,14 @@ const DOMAINS: Domain[] = [
     samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
   },
   {
-    name: "智能表格", sub: "Tables", desc: "多维表 · 视图 · 仪表盘",
-    color: "#31caa1", route: "/tables", countLabel: "多维表入口",
-    samples: ["表格视图", "看板视图", "表单收集", "仪表盘"], share: 12,
-  },
-  {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
-    samples: ["审批流", "编排任务", "执行记录", "审计"], share: 9,
+    samples: ["审批流", "编排任务", "执行记录", "审计"], share: 12,
   },
   {
     name: "图谱", sub: "Graph", desc: "实体关系 · 因果推理",
     color: "#8b63ff", route: "/ontology", countLabel: "关系中枢",
-    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 7,
+    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 9,
   },
 ];
 
@@ -81,7 +77,7 @@ type GraphNode = {
 
 type GraphEdge = { source: number; target: number; type: "main" | "cluster" | "mesh" };
 
-type Mode = "star" | "relation";
+type Mode = "star" | "relation" | "map";
 
 function hexToRgba(hex: string, alpha: number) {
   const h = hex.replace("#", "");
@@ -158,7 +154,7 @@ export default function Home() {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef(buildGraph());
   const stateRef = useRef({
-    mode: "star" as Mode,
+    mode: "map" as Mode,
     offsetX: 0,
     offsetY: 0,
     scale: 1,
@@ -170,7 +166,7 @@ export default function Home() {
     motionTime: 0,
   });
 
-  const [mode, setMode] = useState<Mode>("star");
+  const [mode, setMode] = useState<Mode>("map");
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [edgeCount] = useState(() => buildGraph().edges.length);
   const [stats, setStats] = useState({ vertices: 1336, edges: 3158, agents: 128, meetings: 0 });
@@ -230,6 +226,8 @@ export default function Home() {
     dome.addColorStop(1, visual.mode === "dark" ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)");
     ctx.fillStyle = dome;
     ctx.fillRect(0, 0, width, height);
+
+    if (m === "map") return;
 
     [
       [0.02, 0.13, "rgba(119,184,255,.10)"],
@@ -400,7 +398,54 @@ export default function Home() {
       const hovered = hoveredId === node.id;
       const selectedN = selectedId === node.id;
 
-      if (node.type === "center") return;
+      if (node.type === "center") {
+        const centerSize = m === "star" ? 34 : 30;
+        ctx.save();
+        ctx.translate(node.x, node.y);
+        ctx.shadowBlur = hovered || selectedN ? 34 : 24;
+        ctx.shadowColor = hexToRgba(node.color, .45);
+
+        const halo = ctx.createRadialGradient(0, 0, 4, 0, 0, centerSize * 2.8);
+        halo.addColorStop(0, hexToRgba(node.color, .24));
+        halo.addColorStop(.48, hexToRgba(node.color, .08));
+        halo.addColorStop(1, hexToRgba(node.color, 0));
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(0, 0, centerSize * 2.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.setLineDash([4, 5]);
+        ctx.strokeStyle = hexToRgba(node.color, .3);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, 0, centerSize * 1.75, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = visual.nodeHover;
+        ctx.strokeStyle = hexToRgba(node.color, .75);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, centerSize, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = node.color;
+        ctx.font = "800 13px Inter, PingFang SC, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("AI", 0, -3);
+        ctx.font = "600 8px Inter, PingFang SC, Microsoft YaHei, sans-serif";
+        ctx.fillText("KNOWLEDGE", 0, 10);
+        ctx.restore();
+
+        ctx.fillStyle = visual.mutedText;
+        ctx.font = "650 12px Inter, PingFang SC, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.fillText("良策 AI 知识中枢", node.x, node.y + centerSize + 24);
+        return;
+      }
 
       if (node.type === "core") {
         const groupAngle = -0.25 + (node.group || 0) * 0.22;
@@ -726,7 +771,7 @@ export default function Home() {
   } : undefined;
 
   return (
-    <div className="kgv3-page">
+    <div className={`kgv3-page ${mode === "map" ? "map-mode" : ""}`}>
       <style>{css}</style>
 
       <main className="kgv3-workspace">
@@ -753,6 +798,13 @@ export default function Home() {
               >
                 星图模式
               </button>
+              <button
+                type="button"
+                className={mode === "map" ? "active" : ""}
+                onClick={() => applyLayout("map", true)}
+              >
+                经营地图
+              </button>
             </div>
             <div className="kgv3-toolbar-right">
               <button type="button" className="kgv3-tool-btn" onClick={resetView}>
@@ -764,7 +816,11 @@ export default function Home() {
 
           <canvas ref={canvasRef} className="kgv3-canvas" />
 
-          {selected && selectedDomain && (
+          {mode === "map" && (
+            <OperatingMapV2 onSelectDomain={selectDomain} onNavigate={nav} />
+          )}
+
+          {mode !== "map" && selected && selectedDomain && (
             <div className="kgv3-node-popover" style={selectedPopoverStyle}>
               <div className="kgv3-node-popover__head">
                 <span className="kgv3-node-popover__signal" style={{ color: selected.color }}>
@@ -800,11 +856,13 @@ export default function Home() {
         </section>
       </main>
 
-      <aside className="kgv3-right">
+      {mode !== "map" && <aside className="kgv3-right">
         <div className="kgv3-card">
           <div className="kgv3-card-head">
             <h2>良策 AI</h2>
-            <span className="kgv3-badge">{mode === "star" ? "星图模式" : "关系图谱"}</span>
+            <span className="kgv3-badge">
+              {mode === "star" ? "星图模式" : "关系图谱"}
+            </span>
           </div>
           <p className="kgv3-desc">
             {mode === "star"
@@ -812,77 +870,79 @@ export default function Home() {
               : "关系图谱强调节点之间的连接网络，更适合查看依赖与跨域关联。"}
           </p>
           <div className="kgv3-metrics">
-            <div className="kgv3-metric"><span>知识域</span><strong>8</strong></div>
+            <div className="kgv3-metric"><span>知识域</span><strong>6</strong></div>
             <div className="kgv3-metric"><span>核心节点</span><strong>{stats.vertices.toLocaleString("zh-CN")}</strong></div>
             <div className="kgv3-metric"><span>关联节点</span><strong>{Math.max(stats.edges, 3158).toLocaleString("zh-CN")}</strong></div>
             <div className="kgv3-metric"><span>关系总数</span><strong>{edgeCount}</strong></div>
           </div>
         </div>
 
-        <div className="kgv3-card">
-          <h3>{selected ? "选中节点详情" : "节点详情"}</h3>
-          {!selected ? (
-            <div className="kgv3-hint">点击任意星点，可查看所属知识域与入口；双击核心星团直接进入模块。</div>
-          ) : (
-            <div className="kgv3-node-meta">
-              <div className="kgv3-node-title">
-                <span className="kgv3-node-symbol" style={{ color: selected.color }}><CompassOutlined /></span>
-                <b>{selected.name}</b>
-              </div>
-              <div className="kgv3-node-line"><span>类型</span><b>{selected.type === "center" ? "系统中心" : selected.type === "core" ? "知识域" : "关联节点"}</b></div>
-              <div className="kgv3-node-line"><span>说明</span><b>{selected.desc || selected.count || "—"}</b></div>
-              {selected.route && (
-                <div className="kgv3-actions">
-                  <button type="button" className="primary" onClick={() => nav(selected.route!)}>
-                    进入模块 <RightOutlined />
-                  </button>
+        <>
+            <div className="kgv3-card">
+              <h3>{selected ? "选中节点详情" : "节点详情"}</h3>
+              {!selected ? (
+                <div className="kgv3-hint">点击任意星点，可查看所属知识域与入口；双击核心星团直接进入模块。</div>
+              ) : (
+                <div className="kgv3-node-meta">
+                  <div className="kgv3-node-title">
+                    <span className="kgv3-node-symbol" style={{ color: selected.color }}><CompassOutlined /></span>
+                    <b>{selected.name}</b>
+                  </div>
+                  <div className="kgv3-node-line"><span>类型</span><b>{selected.type === "center" ? "系统中心" : selected.type === "core" ? "知识域" : "关联节点"}</b></div>
+                  <div className="kgv3-node-line"><span>说明</span><b>{selected.desc || selected.count || "—"}</b></div>
+                  {selected.route && (
+                    <div className="kgv3-actions">
+                      <button type="button" className="primary" onClick={() => nav(selected.route!)}>
+                        进入模块 <RightOutlined />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-        </div>
 
-        <div className="kgv3-card">
-          <h3>星团分布</h3>
-          <div className="kgv3-bars">
-            {DOMAINS.map((d, index) => (
-              <button
-                type="button"
-                className={`kgv3-bar-row ${selected?.group === index ? "active" : ""}`}
-                key={d.name}
-                onClick={() => selectDomain(index)}
-                aria-label={`查看${d.name}星团`}
-              >
-                <span>{d.name}</span>
-                <div className="kgv3-bar"><b style={{ width: `${d.share * 3.2}%`, background: `linear-gradient(90deg, ${d.color}, ${hexToRgba(d.color, 0.55)})` }} /></div>
-                <em>{d.share}%</em>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="kgv3-card">
-          <h3>最近更新</h3>
-          {feedRows.map((row, i) => (
-            <div className="kgv3-update" key={`${row.text}-${i}`}>
-              <div className="kgv3-update-icon" style={{ color: DOMAINS[i % DOMAINS.length].color }}>
-                <DeploymentUnitOutlined />
-              </div>
-              <div>
-                <b>{row.text}</b>
-                <span>{row.meta}</span>
+            <div className="kgv3-card">
+              <h3>星团分布</h3>
+              <div className="kgv3-bars">
+                {DOMAINS.map((d, index) => (
+                  <button
+                    type="button"
+                    className={`kgv3-bar-row ${selected?.group === index ? "active" : ""}`}
+                    key={d.name}
+                    onClick={() => selectDomain(index)}
+                    aria-label={`查看${d.name}星团`}
+                  >
+                    <span>{d.name}</span>
+                    <div className="kgv3-bar"><b style={{ width: `${d.share * 3.2}%`, background: `linear-gradient(90deg, ${d.color}, ${hexToRgba(d.color, 0.55)})` }} /></div>
+                    <em>{d.share}%</em>
+                  </button>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
 
-        <div className="kgv3-card muted">
-          <div className="kgv3-mini-stats">
-            <div><span>专家</span><strong>{stats.agents}</strong></div>
-            <div><span>会议</span><strong>{stats.meetings}</strong></div>
-          </div>
-        </div>
-      </aside>
+            <div className="kgv3-card">
+              <h3>最近更新</h3>
+              {feedRows.map((row, i) => (
+                <div className="kgv3-update" key={`${row.text}-${i}`}>
+                  <div className="kgv3-update-icon" style={{ color: DOMAINS[i % DOMAINS.length].color }}>
+                    <DeploymentUnitOutlined />
+                  </div>
+                  <div>
+                    <b>{row.text}</b>
+                    <span>{row.meta}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="kgv3-card muted">
+              <div className="kgv3-mini-stats">
+                <div><span>专家</span><strong>{stats.agents}</strong></div>
+                <div><span>会议</span><strong>{stats.meetings}</strong></div>
+              </div>
+            </div>
+        </>
+      </aside>}
     </div>
   );
 }
@@ -897,7 +957,7 @@ const css = `
   --kg-brand-soft: #edf3ff;
   --kg-shadow: 0 16px 48px rgba(66,88,140,.07);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 324px;
+  grid-template-columns: minmax(0, 1fr) 268px;
   height: calc(100vh - 68px);
   margin: 0;
   background: var(--kg-bg);
@@ -970,6 +1030,7 @@ const css = `
   transition: .28s ease;
 }
 .kgv3-mode.star .kgv3-mode-pill { transform: translateX(104px); }
+.kgv3-mode.map .kgv3-mode-pill { transform: translateX(208px); }
 .kgv3-mode button {
   position: relative; z-index: 1;
   width: 104px; height: 36px;
@@ -1008,6 +1069,12 @@ const css = `
 .kgv3-legend i {
   width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px;
 }
+.kgv3-page.map-mode .kgv3-zoom,
+.kgv3-page.map-mode .kgv3-legend { display: none; }
+.kgv3-page.map-mode .kgv3-canvas { display: none; }
+.kgv3-page.map-mode { grid-template-columns: minmax(0, 1fr); }
+.kgv3-page.map-mode .kgv3-toolbar { right: 346px; }
+.kgv3-page.map-mode .kgv3-tool-btn { visibility: hidden; }
 
 .kgv3-right {
   min-width: 0; min-height: 0;
@@ -1038,6 +1105,7 @@ const css = `
   border-radius: 999px; background: var(--kg-brand-soft); color: var(--kg-brand);
   font-size: 12px; font-weight: 600;
 }
+.kgv3-page.map-mode .kgv3-badge { color: #2f7896; background: rgba(224,242,244,.72); }
 .kgv3-desc { font-size: 13px; line-height: 1.75; color: #7b879c; margin: 0; }
 .kgv3-metrics {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-top: 16px;
@@ -1074,6 +1142,51 @@ const css = `
 }
 .kgv3-actions .primary {
   background: #f3f7ff; border-color: #e4ebff; color: var(--kg-brand);
+}
+.kgv3-route-card { padding-top: 20px; }
+.kgv3-route-list { display: grid; margin-top: 12px; }
+.kgv3-route-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 7px 5px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--kg-text);
+  text-align: left;
+  cursor: pointer;
+}
+.kgv3-route-step:hover,
+.kgv3-route-step.active { background: rgba(237,243,255,.72); }
+.kgv3-route-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 17px;
+}
+.kgv3-route-copy b,
+.kgv3-route-copy em { display: block; }
+.kgv3-route-copy b { font-size: 12px; }
+.kgv3-route-copy em { margin-top: 3px; color: #8995aa; font-size: 10px; font-style: normal; }
+.kgv3-route-arrow { position: absolute; left: 18px; bottom: -5px; color: #abc0e7; font-size: 9px; }
+.kgv3-route-primary {
+  width: 100%;
+  height: 36px;
+  margin-top: 14px;
+  border: 1px solid #315efb;
+  border-radius: 10px;
+  background: #fff;
+  color: #315efb;
+  font-weight: 650;
+  cursor: pointer;
 }
 .kgv3-bars { display: grid; gap: 10px; }
 .kgv3-bar-row {
@@ -1134,6 +1247,12 @@ const css = `
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+@media (max-width: 1500px) {
+  .kgv3-page.map-mode .kgv3-toolbar { right: 322px; }
+}
+@media (max-width: 1250px) {
+  .kgv3-page.map-mode .kgv3-toolbar { right: 300px; }
+}
 @media (max-width: 1100px) {
   .kgv3-page { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 68px); }
   .kgv3-workspace { height: 62vh; min-height: 420px; }
@@ -1143,10 +1262,12 @@ const css = `
 @media (max-width: 640px) {
   .kgv3-workspace { height: 66vh; min-height: 480px; }
   .kgv3-toolbar { left: 12px; right: 12px; top: 12px; }
+  .kgv3-page.map-mode .kgv3-toolbar { right: 12px; }
   .kgv3-tool-btn { padding: 0 11px; font-size: 12px; }
   .kgv3-toolbar-right { display: none; }
   .kgv3-mode button, .kgv3-mode-pill { width: 82px; }
   .kgv3-mode.star .kgv3-mode-pill { transform: translateX(82px); }
+  .kgv3-mode.map .kgv3-mode-pill { transform: translateX(164px); }
   .kgv3-zoom { left: 12px; bottom: 12px; }
   .kgv3-node-popover { width: 190px; }
 }
