@@ -72,6 +72,7 @@ def _asset_payload(row: SkillAsset) -> dict:
     return {
         "id": row.id,
         "skill_id": row.skill_id,
+        "category": row.category,
         "visibility": row.visibility,
         "name": row.name,
         "description": row.description,
@@ -139,7 +140,9 @@ def _skill_md_from_manifest(asset: SkillAsset) -> tuple[str, bytes]:
             break
     if cos_enabled() and asset.cos_bucket and skill_key:
         return skill_key, fetch_skill_bytes(asset.cos_bucket, skill_key)
-    if asset.package_kind == "package" and manifest:
+    # 本地工作区的单文件与完整包都通过 manifest 保存实际路径。
+    # 统一回读，避免单文件上传后立即采用时找不到刚写入的 SKILL.md。
+    if manifest:
         local_path = ""
         for item in manifest:
             if (item.get("path") or "").lower().endswith("skill.md"):
@@ -185,8 +188,15 @@ def save_skill_asset_from_bytes(
     *,
     adopt: bool = False,
     visibility: str = SkillAsset.Visibility.PRIVATE,
+    category: str = SkillAsset.Category.GENERAL,
     skill_id_override: str | None = None,
     rollback_storage_on_failure: bool = False,
+    source: str = SkillAsset.Source.UPLOAD,
+    source_url: str = "",
+    source_version: str = "",
+    source_verified: bool = False,
+    source_metadata: dict | None = None,
+    content_hash: str = "",
 ) -> tuple[SkillAsset, UserSkill | None]:
     extracted = extract_skill_from_upload(filename, data)
     parsed = {k: v for k, v in extracted.items() if k not in {"package_files", "upload_kind"}}
@@ -194,6 +204,10 @@ def save_skill_asset_from_bytes(
     upload_kind = extracted.get("upload_kind") or "single"
     if visibility not in SkillAsset.Visibility.values:
         raise ValueError("Skill 可见范围无效")
+    if category not in SkillAsset.Category.values:
+        raise ValueError("能力分类无效")
+    if source not in SkillAsset.Source.values:
+        raise ValueError("Skill 来源无效")
     skill_id = parsed["skill_id"]
     if skill_id_override is not None:
         skill_id = slugify(skill_id_override, allow_unicode=False)[:64]
@@ -205,6 +219,22 @@ def save_skill_asset_from_bytes(
         if path.lower().endswith("skill.md"):
             skill_md_key = path
             break
+
+    asset_defaults = {
+        "name": parsed["name"],
+        "source": source,
+        "source_url": source_url,
+        "source_version": source_version,
+        "source_verified": source_verified,
+        "source_metadata": source_metadata or {},
+        "content_hash": content_hash,
+        "category": category,
+        "visibility": visibility,
+        "description": parsed.get("description") or "",
+        "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
+        "file_size": sum(len(b) for _, b in package_files) or len(data),
+        "instructions_preview": (parsed["instructions"] or "")[:500],
+    }
 
     if cos_enabled():
         if upload_kind == "package" and len(package_files) > 1:
@@ -247,15 +277,10 @@ def save_skill_asset_from_bytes(
                 uploader=user,
                 skill_id=skill_id,
                 defaults={
-                    "name": parsed["name"],
-                    "visibility": visibility,
-                    "description": parsed.get("description") or "",
-                    "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
+                    **asset_defaults,
                     "cos_bucket": stored["bucket"],
                     "cos_key": stored["cos_key"],
                     "cos_url": stored["cos_url"],
-                    "file_size": sum(len(b) for _, b in package_files) or len(data),
-                    "instructions_preview": (parsed["instructions"] or "")[:500],
                     "package_kind": package_kind,
                     "package_manifest": manifest,
                     "skill_md_key": skill_md_key or stored["cos_key"],
@@ -290,15 +315,10 @@ def save_skill_asset_from_bytes(
             uploader=user,
             skill_id=skill_id,
             defaults={
-                "name": parsed["name"],
-                "visibility": visibility,
-                "description": parsed.get("description") or "",
-                "original_filename": filename.rsplit("/", 1)[-1] or "SKILL.md",
+                **asset_defaults,
                 "cos_bucket": "",
                 "cos_key": skill_md_key or "SKILL.md",
                 "cos_url": "",
-                "file_size": sum(len(b) for _, b in package_files) or len(data),
-                "instructions_preview": (parsed["instructions"] or "")[:500],
                 "package_kind": package_kind,
                 "package_manifest": manifest,
                 "skill_md_key": skill_md_key or "SKILL.md",
