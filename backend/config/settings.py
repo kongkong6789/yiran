@@ -254,6 +254,12 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 圆桌发言/上下文压缩用的"快模型";最终方案仍用 LLM_MODEL(更强)。
 LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", LLM_MODEL)
+# 主模型 channel 不可用时按序重试（逗号分隔）
+LLM_MODEL_FALLBACKS = [
+    m.strip()
+    for m in (os.getenv("LLM_MODEL_FALLBACKS", "") or "").split(",")
+    if m.strip()
+]
 # Traditional RAG embedding. Default format matches the local /v1/embeddings service:
 # {"inputs": [{"text": "..."}], "normalize": true, "pooling": "mean"}
 EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
@@ -293,6 +299,19 @@ JACKYUN_BASE_URL = os.getenv(
 )
 JACKYUN_METHOD_GOODS = os.getenv("JACKYUN_METHOD_GOODS", "erp.goods.listget")
 JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
+JACKYUN_METHOD_INVENTORY = os.getenv(
+    "JACKYUN_METHOD_INVENTORY", "erp.stockquantity.get"
+)
+JACKYUN_API_TIMEOUT = int(os.getenv("JACKYUN_API_TIMEOUT", "30"))
+JACKYUN_MAX_RETRIES = int(os.getenv("JACKYUN_MAX_RETRIES", "2"))
+
+# 金蝶云星空 K3Cloud（只读）
+KINGDEE_BASE_URL = os.getenv("KINGDEE_BASE_URL", "")
+KINGDEE_ACCT_ID = os.getenv("KINGDEE_ACCT_ID", "")
+KINGDEE_USERNAME = os.getenv("KINGDEE_USERNAME", "")
+KINGDEE_PASSWORD = os.getenv("KINGDEE_PASSWORD", "")
+KINGDEE_LCID = os.getenv("KINGDEE_LCID", "2052")
+KINGDEE_API_TIMEOUT = int(os.getenv("KINGDEE_API_TIMEOUT", "30"))
 
 # MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
 MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")

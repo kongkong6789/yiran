@@ -36,8 +36,8 @@ test("navigation hides requested entries while routes remain available", () => {
   assert.doesNotMatch(work, /path:\s*"\/agent"/);
   assert.match(work, /label:\s*"团队协作"[\s\S]*label:\s*"消息"[\s\S]*label:\s*"通讯录"/);
   assert.match(work, /label:\s*"任务与待办"[\s\S]*label:\s*"任务中心"[\s\S]*label:\s*"自动化"/);
-  assert.match(knowledge, /path:\s*"\/tables"[\s\S]*label:\s*"智能表格"/);
-  assert.doesNotMatch(knowledge, /\/ontology|\/agent-memory|\/my\/recent/);
+  assert.match(knowledge, /path:\s*"\/knowledge"[\s\S]*label:\s*"知识库"/);
+  assert.doesNotMatch(knowledge, /\/tables|智能表格|\/ontology|\/agent-memory|\/my\/recent/);
   assert.match(commerce, /\/commerce\/loops/);
   assert.doesNotMatch(commerce, /\/commerce\/bench|label:\s*"经营首页"/);
   assert.doesNotMatch(admin, /\/audit/);
@@ -54,6 +54,7 @@ test("navigation hides requested entries while routes remain available", () => {
   ]) {
     assert.match(appSource, new RegExp(`path="${route.replace("/", "\\/")}"`));
   }
+  assert.match(appSource, /path="tables"\s+element=\{<Navigate to="\/knowledge"/);
 });
 
 test("workspace uses top-level modules and a fixed contextual sidebar", () => {

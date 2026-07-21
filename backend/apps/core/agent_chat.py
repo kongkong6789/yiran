@@ -35,12 +35,13 @@ Current conversation may include enterprise WeCom documents. Follow these rules:
 
 SYSTEM_PROMPT = """You are Liangce AI, an assistant for ecommerce and retail operations teams.
 
-You can use retrieved knowledge base snippets, business graph evidence, loop metrics, MCP documents, and skill outputs when they are provided in the prompt. Answer in the user language, prefer Chinese for Chinese questions, and ground factual answers in the supplied context.
+You can use retrieved knowledge base snippets, business graph evidence, loop metrics, MCP documents, connector evidence (e.g. Jackyun inventory, Kingdee finance status), and skill outputs when they are provided in the prompt. Answer in the user language, prefer Chinese for Chinese questions, and ground factual answers in the supplied context.
 
 Rules:
 - Do not claim data is missing when relevant context is present.
 - If context is insufficient, say what is missing and suggest a precise next query or data source.
 - For product filing, ingredients, claims, sales, inventory, cost, and profit questions, prioritize exact product names, filing numbers, dates, and file evidence.
+- Do not tell the user to go to another page to look up connectors when connector evidence is already in the prompt.
 - Keep answers concise, but include enough evidence for the user to verify the result.
 """
 
@@ -163,6 +164,7 @@ def run_chat(
     progress_callback=None,
     session_key: str | None = None,
     usage_source: str = "agent",
+    extra_reference_blocks: list[str] | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -200,26 +202,32 @@ def run_chat(
     graph: dict = {"refs": []}
     emit_progress(progress_callback, "knowledge_search", "running")
     if not doc_mode:
-        knowledge = gather_knowledge(message, top_k=4)
+        knowledge = gather_knowledge(message, top_k=4, user=user)
         raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
         raise_if_cancelled(cancel_check)
     selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(message, knowledge_mode, knowledge_base_ids, user=user)
 
-    mcp = (
-        read_wecom_document(
-            message,
-            document_url=doc_url,
-            user=user,
-            cancel_check=cancel_check,
+    try:
+        mcp = (
+            read_wecom_document(
+                message,
+                document_url=doc_url,
+                user=user,
+                cancel_check=cancel_check,
+            )
+            if doc_url
+            else read_wecom_document(message, user=user, cancel_check=cancel_check)
         )
-        if doc_url
-        else read_wecom_document(message, user=user, cancel_check=cancel_check)
-    )
+    except Exception:
+        mcp = {"attempted": False, "content": "", "error": "wecom_unavailable"}
     raise_if_cancelled(cancel_check)
-    nas = read_nas_for_agent(user, message) if user is not None else {
-        "attempted": False, "content": "", "files": [], "error": "",
-    }
+    try:
+        nas = read_nas_for_agent(user, message) if user is not None else {
+            "attempted": False, "content": "", "files": [], "error": "",
+        }
+    except Exception:
+        nas = {"attempted": False, "content": "", "files": [], "error": "nas_unavailable"}
     nas_files = nas.get("files") or []
     context_attachments = [*attachments, *nas_files]
     raise_if_cancelled(cancel_check)
@@ -282,7 +290,7 @@ def run_chat(
     if has_evidence:
         emit_progress(progress_callback, "validation", "completed")
 
-    reference_blocks: list[str] = []
+    reference_blocks: list[str] = list(extra_reference_blocks or [])
     attach_ctx = format_attachment_context(attachments)
     if attach_ctx:
         reference_blocks.append(attach_ctx)

@@ -22,6 +22,13 @@ class SmartSheet(models.Model):
         blank=True,
         db_index=True,
     )
+    knowledge_base_id = models.PositiveIntegerField(
+        "所属知识库ID",
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="跨库软关联 knowledge.KnowledgeBase.id（knowledge 与 default 分库，不能用外键）",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

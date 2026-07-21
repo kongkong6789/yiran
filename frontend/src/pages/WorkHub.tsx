@@ -10,6 +10,7 @@ import WeComConnectionStatus from "../features/task-console/WeComConnectionStatu
 import type { TaskView } from "../features/task-console/mockTasks";
 import AgentConsole from "./AgentConsole";
 import WorkAutomation from "./WorkAutomation";
+import WorkTemplates from "./WorkTemplates";
 import WorkTodos from "./WorkTodos";
 
 export default function WorkHub() {
@@ -21,11 +22,18 @@ export default function WorkHub() {
   const [taskDetailOpen, setTaskDetailOpen] = useState(false);
   const isTodos = searchParams.get("tab") === "todos";
   const isAutomation = searchParams.get("tab") === "automation";
+  const isTemplates = searchParams.get("tab") === "templates";
   const rawView = searchParams.get("view");
   const taskView: "create" | TaskView = rawView === "create" || rawView === "sent" || rawView === "received"
     ? rawView
     : "all";
-  const active: TaskModuleView = isTodos ? "todos" : isAutomation ? "automation" : taskView;
+  const active: TaskModuleView = isTodos
+    ? "todos"
+    : isAutomation
+      ? "automation"
+      : isTemplates
+        ? "templates"
+        : taskView;
 
   const changeSection = (next: TaskModuleView) => {
     setMobileNavOpen(false);
@@ -38,7 +46,17 @@ export default function WorkHub() {
       setSearchParams({ tab: "automation" });
       return;
     }
+    if (next === "templates") {
+      setSearchParams({ tab: "templates" });
+      return;
+    }
     setSearchParams(next === "all" ? {} : { view: next });
+  };
+
+  const useTaskTemplate = (templateKey: string) => {
+    setMobileNavOpen(false);
+    setTaskDetailOpen(false);
+    setSearchParams({ view: "create", template: templateKey });
   };
 
   return (
@@ -65,13 +83,17 @@ export default function WorkHub() {
                 aria-label="打开任务导航"
               />
               <div>
-                <Typography.Title level={2}>{isTodos ? "待办" : isAutomation ? "自动化" : "任务中心"}</Typography.Title>
+                <Typography.Title level={2}>
+                  {isTodos ? "待办" : isAutomation ? "自动化" : isTemplates ? "模板中心" : "任务中心"}
+                </Typography.Title>
                 <Typography.Text type="secondary">
                   {isTodos
                     ? "集中处理需要跟进的个人与企业协作事项"
                     : isAutomation
                       ? "把重复工作配置成可复用、可追踪的自动化流程"
-                      : "高效协作，让 AI 帮你完成更多工作"}
+                      : isTemplates
+                        ? "从常见业务场景快速发起任务，减少重复描述"
+                        : "高效协作，让 AI 帮你完成更多工作"}
                 </Typography.Text>
               </div>
             </div>
@@ -86,9 +108,11 @@ export default function WorkHub() {
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => setAutomationCreateRequestId((value) => value + 1)}>
                   新建自动化
                 </Button>
+              ) : isTemplates ? (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => changeSection("create")}>自定义任务</Button>
               ) : (
                 <>
-                  <Button icon={<FileTextOutlined />} onClick={() => navigate("/skills?context=tasks")}>模板中心</Button>
+                  <Button icon={<FileTextOutlined />} onClick={() => changeSection("templates")}>模板中心</Button>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => changeSection("create")}>新建任务</Button>
                 </>
               )}
@@ -100,9 +124,12 @@ export default function WorkHub() {
             ? <WorkTodos embedded createRequestId={todoCreateRequestId} />
             : isAutomation
               ? <WorkAutomation createRequestId={automationCreateRequestId} />
+              : isTemplates
+                ? <WorkTemplates onUseTemplate={useTaskTemplate} />
             : (
               <AgentConsole
                 view={taskView}
+                templateKey={searchParams.get("template")}
                 onViewChange={changeSection}
                 onDetailChange={setTaskDetailOpen}
               />

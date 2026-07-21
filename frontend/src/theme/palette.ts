@@ -150,9 +150,15 @@ export function getAntThemeTokens(mode: ThemeMode) {
   return {
     colorPrimary: mode === "dark" ? "#ffffff" : "#000000",
     colorInfo: palette.info,
+    colorInfoBg: palette.infoBg,
     colorSuccess: palette.success,
+    // Ant Design derives *Bg from the seed color; a dark seed like #237a45
+    // collapses to a muddy gray-green (#afbab1) that looks like a black veil on Tags.
+    colorSuccessBg: palette.successBg,
     colorWarning: palette.warning,
+    colorWarningBg: palette.warningBg,
     colorError: palette.error,
+    colorErrorBg: palette.errorBg,
     colorLink: mode === "dark" ? palette.text : "#000000",
     colorBgBase: palette.canvas,
     colorBgLayout: palette.canvas,

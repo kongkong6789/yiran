@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, Button, DatePicker, Empty, Input, Pagination, Select, Spin, Table, Tag } from "antd";
+import { Avatar, Button, DatePicker, Empty, Input, Modal, Pagination, Select, Spin, Table, Tag } from "antd";
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
@@ -10,6 +10,7 @@ import {
   SearchOutlined,
   TeamOutlined,
   ThunderboltOutlined,
+  TrophyOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -22,6 +23,7 @@ import {
   type AuditTrendPoint,
 } from "../api/client";
 import { authenticatedAvatarUrl } from "../utils/avatar";
+import { TopRankBadge, TopRankWatermark } from "../components/TopRankBadge";
 
 const TABS: { key: AuditLogCategory; label: string }[] = [
   { key: "operation", label: "操作日志" },
@@ -177,6 +179,7 @@ export default function Logs() {
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [detailRow, setDetailRow] = useState<AuditRow | null>(null);
   const kwTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -280,7 +283,9 @@ export default function Logs() {
     },
     {
       title: "操作", key: "op", width: 76,
-      render: () => <button type="button" className="logs-detail-link">详情</button>,
+      render: (_: unknown, row: AuditRow) => (
+        <button type="button" className="logs-detail-link" onClick={() => setDetailRow(row)}>详情</button>
+      ),
     },
   ];
 
@@ -404,11 +409,16 @@ export default function Logs() {
           </section>
 
           <section className="logs-panel logs-top-panel">
-            <div className="logs-panel-head"><h3>TOP 操作用户</h3></div>
+            <div className="logs-panel-head logs-top-panel-head">
+              <h3><TrophyOutlined className="logs-top-title-icon" /> TOP 操作用户</h3>
+            </div>
             <ul className="logs-top-list">
-              {(data?.topUsers || []).map((u, i) => (
-                <li key={u.actor}>
-                  <span className={`logs-top-rank rank-${i + 1}`}>{i + 1}</span>
+              {(data?.topUsers || []).map((u, i) => {
+                const rank = i + 1;
+                return (
+                <li key={u.actor} className={rank <= 3 ? `logs-top-item rank-${rank}` : "logs-top-item"}>
+                  {rank <= 3 ? <TopRankWatermark rank={rank as 1 | 2 | 3} /> : null}
+                  <TopRankBadge rank={rank} />
                   <Avatar size={30} src={authenticatedAvatarUrl(u.avatarUrl)} style={{ background: avatarColor(u.name), flex: "none" }}>{u.name.slice(0, 1)}</Avatar>
                   <div className="logs-top-meta">
                     <div className="logs-top-name">{u.name}</div>
@@ -416,7 +426,8 @@ export default function Logs() {
                   </div>
                   <span className="logs-top-count">{fmtNumber(u.count)} 次</span>
                 </li>
-              ))}
+                );
+              })}
               {!data?.topUsers?.length && <li className="logs-top-empty">暂无数据</li>}
             </ul>
           </section>
@@ -444,6 +455,78 @@ export default function Logs() {
           </div>
         </div>
       </Spin>
+
+      <Modal
+        title="日志详情"
+        open={!!detailRow}
+        onCancel={() => setDetailRow(null)}
+        footer={null}
+        destroyOnClose
+        width={560}
+        className="logs-detail-modal"
+      >
+        {detailRow ? (
+          <div className="logs-detail-body">
+            <div className="logs-detail-hero">
+              <Avatar
+                size={44}
+                src={authenticatedAvatarUrl(detailRow.user.avatarUrl)}
+                style={{ background: avatarColor(detailRow.user.name), flex: "none" }}
+              >
+                {detailRow.user.name.slice(0, 1)}
+              </Avatar>
+              <div className="logs-detail-hero-meta">
+                <strong>{detailRow.user.name}</strong>
+                <span>{detailRow.user.roleLabel}</span>
+              </div>
+              <Tag color={STATUS_TAG_COLOR[detailRow.status.key] || "default"} className="logs-status-tag">
+                {detailRow.status.label}
+              </Tag>
+            </div>
+
+            <dl className="logs-detail-grid">
+              <div>
+                <dt>时间</dt>
+                <dd>{detailRow.time}</dd>
+              </div>
+              <div>
+                <dt>操作类型</dt>
+                <dd>
+                  <Tag color={TYPE_TAG_COLOR[detailRow.operationType.key] || "default"} className="logs-type-tag">
+                    {detailRow.operationType.label}
+                  </Tag>
+                </dd>
+              </div>
+              <div className="logs-detail-span">
+                <dt>操作内容</dt>
+                <dd>{detailRow.content || "—"}</dd>
+              </div>
+              {detailRow.detail ? (
+                <div className="logs-detail-span">
+                  <dt>补充说明</dt>
+                  <dd className="logs-detail-note">{detailRow.detail}</dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>资源类型</dt>
+                <dd>{detailRow.resourceType || "—"}</dd>
+              </div>
+              <div>
+                <dt>资源名称</dt>
+                <dd>{detailRow.resourceName || "—"}</dd>
+              </div>
+              <div>
+                <dt>IP 地址</dt>
+                <dd className="logs-cell-mono">{detailRow.ip || "—"}</dd>
+              </div>
+              <div>
+                <dt>Trace ID</dt>
+                <dd className="logs-cell-mono">{detailRow.traceId || "—"}</dd>
+              </div>
+            </dl>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

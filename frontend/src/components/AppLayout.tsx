@@ -10,7 +10,6 @@ import {
   CheckSquareOutlined,
   CommentOutlined,
   ContactsOutlined,
-  DatabaseOutlined,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
@@ -108,7 +107,6 @@ const KNOWLEDGE_GROUPS: NavGroup[] = [
     label: "知识资产",
     items: [
       { key: "knowledge-library", path: "/knowledge", icon: <BookOutlined />, label: "知识库", keywords: "内容 文档" },
-      { key: "knowledge-tables", path: "/tables", icon: <DatabaseOutlined />, label: "智能表格", keywords: "数据 表格" },
     ],
   },
   {
