@@ -54,8 +54,12 @@ test("navigation hides requested entries while routes remain available", () => {
 test("workspace uses top-level modules and a fixed contextual sidebar", () => {
   assert.match(layoutSource, /className="app-module-nav"/);
   assert.match(layoutSource, /className="app-module-sidebar"/);
+  assert.match(layoutSource, /\{SECTIONS\.map\(\(section\) =>/);
   assert.match(layoutSource, /activeSection\.items/);
-  assert.match(layoutSource, /\)\.map\(\(item\)\s*=>/);
+  assert.match(
+    layoutSource,
+    /activeSection\.key === "admin"[\s\S]*?\[\.\.\.activeSection\.items, LOGS_NAV\][\s\S]*?: activeSection\.items[\s\S]*?\)\.map\(\(item\) =>/,
+  );
   assert.doesNotMatch(layoutSource, /children:\s*WORK_NAV/);
 });
 

@@ -164,6 +164,7 @@ def run_chat(
     progress_callback=None,
     session_key: str | None = None,
     usage_source: str = "agent",
+    extra_reference_blocks: list[str] | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -289,7 +290,7 @@ def run_chat(
     if has_evidence:
         emit_progress(progress_callback, "validation", "completed")
 
-    reference_blocks: list[str] = []
+    reference_blocks: list[str] = list(extra_reference_blocks or [])
     attach_ctx = format_attachment_context(attachments)
     if attach_ctx:
         reference_blocks.append(attach_ctx)

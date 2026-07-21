@@ -1795,4 +1795,3 @@ def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: i
             scored.append((score, chunk.created_at, chunk))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [chunk for _score, _created_at, chunk in scored[:cap]]
-

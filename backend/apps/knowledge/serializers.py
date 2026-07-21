@@ -92,4 +92,3 @@ class KnowledgeAuditLogSerializer(serializers.ModelSerializer):
         model = KnowledgeAuditLog
         fields = "__all__"
         read_only_fields = ["actor", "created_at"]
-

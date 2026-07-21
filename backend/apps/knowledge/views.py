@@ -241,7 +241,6 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
         if kb_id:
             qs = qs.filter(knowledge_base_id=kb_id)
         return qs
-
     def perform_create(self, serializer):
         file = serializer.save(uploaded_by=None)
         KnowledgeBase.objects.filter(id=file.knowledge_base_id).update(file_count=file.knowledge_base.files.filter(archived_at__isnull=True).count())
@@ -528,4 +527,3 @@ class KnowledgeAuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         if kb_id:
             qs = qs.filter(knowledge_base_id=kb_id)
         return qs
-
