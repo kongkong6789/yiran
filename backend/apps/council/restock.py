@@ -176,6 +176,44 @@ def _classify(available: float, daily: float, purchasing: float) -> tuple[str, f
     return "充足", cover, 4
 
 
+def _extract_sku_token(question: str) -> str:
+    import re
+
+    token = re.search(r"\b([A-Za-z]{2,8}-\d{2,}|\d{6,20})\b", question or "")
+    if token:
+        return token.group(1)
+    kw = re.search(
+        r"(?:货号|sku|商品编码|条码|barcode)\s*[:：]?\s*([a-zA-Z0-9._-]+)",
+        question or "",
+        flags=re.IGNORECASE,
+    )
+    return kw.group(1).strip("-") if kw else ""
+
+
+def _velocity_for_sku(sku: str) -> dict | None:
+    rows = pglake.query(
+        """
+        WITH span AS (
+            SELECT MAX(dt) AS max_dt FROM dwd_sales_detail
+        )
+        SELECT d.sku,
+               COALESCE(p.product_name, d.sku) AS product,
+               p.brand AS brand,
+               SUM(d.units) AS units,
+               COUNT(DISTINCT d.dt) AS sell_days,
+               %s::int AS window_days
+        FROM dwd_sales_detail d
+        CROSS JOIN span
+        LEFT JOIN dim_product p ON p.sku = d.sku
+        WHERE d.dt > span.max_dt - %s::int
+          AND d.sku = %s
+        GROUP BY d.sku, p.product_name, p.brand
+        """,
+        [WINDOW_DAYS, WINDOW_DAYS, sku],
+    )
+    return rows[0] if rows else None
+
+
 def restock_block(question: str) -> str:
     """命中补货意图时，返回可审计的紧急补货分析卡；否则返回空串。"""
     q = (question or "").lower()
@@ -185,6 +223,49 @@ def restock_block(question: str) -> str:
         return "【紧急补货】业务库不可用，暂时无法计算销量速度。"
 
     try:
+        from apps.connectors.jackyun import jackyun_configured
+    except Exception:
+        jackyun_configured = lambda: False  # noqa: E731
+    live = jackyun_configured()
+    target = _extract_sku_token(question)
+
+    # 指定货号/条码时优先做单品判定，避免被 Top 动销列表淹没。
+    if target and live:
+        try:
+            vel_row = _velocity_for_sku(target)
+        except Exception:
+            vel_row = None
+        product = (vel_row or {}).get("product") or target
+        units = float((vel_row or {}).get("units") or 0)
+        daily = units / WINDOW_DAYS if units else 0.0
+        inv = _inventory_for(target, product)
+        lines = [
+            f"【单品补货判定({target})】",
+            f"- 口径：日均销量=近{WINDOW_DAYS}天件数/{WINDOW_DAYS}；"
+            f"可售天数=可用库存/日均销量；紧急阈值={LEAD_TIME_DAYS}天、偏低阈值={WARN_DAYS}天",
+        ]
+        if inv is None:
+            lines.append(
+                f"- 吉客云未查到货号/条码 `{target}` 的库存，无法给出可售天数。"
+            )
+            if vel_row:
+                lines.append(f"- 近{WINDOW_DAYS}天销量 {_fmt(units)} 件，日均 {_fmt(daily)} 件。")
+            return "\n".join(lines)
+        grade, cover, _rank = _classify(inv["available"], daily, inv["purchasing"])
+        cover_txt = "∞" if cover == float("inf") else f"{cover:.1f}天"
+        lines.append(
+            f"- [{grade}] {inv.get('goods_name') or product}"
+            f"（货号={inv.get('goods_no') or target}）："
+            f"日均{_fmt(daily)}件，可用{_fmt(inv['available'])}，"
+            f"在途{_fmt(inv['purchasing'])}，可售≈{cover_txt}"
+        )
+        if not vel_row:
+            lines.append(
+                f"- 近{WINDOW_DAYS}天 DataLake 无该 SKU 动销，可售天数按日均=0 仅作库存参考。"
+            )
+        return "\n".join(lines)
+
+    try:
         vel = _velocity_rows()
     except Exception as exc:
         return f"【紧急补货】销量速度查询失败：{exc}"
@@ -192,12 +273,6 @@ def restock_block(question: str) -> str:
         return (
             "【紧急补货】近 %d 天没有动销记录，无法计算可售天数。" % WINDOW_DAYS
         )
-
-    try:
-        from apps.connectors.jackyun import jackyun_configured
-    except Exception:
-        jackyun_configured = lambda: False  # noqa: E731
-    live = jackyun_configured()
 
     analyzed: list[dict] = []
     unaligned: list[dict] = []

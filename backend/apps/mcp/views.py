@@ -113,7 +113,7 @@ def server_probe(request, server_id: str):
     cfg = resolve_config(defn, user=request.user)
     if not cfg["enabled"]:
         return Response({"ok": False, "status": "disabled", "message": "该 MCP 服务已在界面禁用"})
-    if not cfg["configured"]:
+    if not cfg["configured"] and server_id not in ("jackyun", "kingdee", "nas"):
         return Response({
             "ok": False,
             "status": "unconfigured",
@@ -135,6 +135,50 @@ def server_probe(request, server_id: str):
             "status": "reachable",
             "message": f"NAS 已连接，可访问 {payload['count']} 个项目",
             "transport": transport,
+        })
+
+    if server_id == "jackyun":
+        from apps.connectors.credentials import use_connector_secrets
+        from apps.connectors.jackyun import jackyun_status
+
+        with use_connector_secrets("jackyun", user=request.user):
+            result = jackyun_status(probe=True)
+        if result.get("reachable"):
+            return Response({
+                "ok": True,
+                "status": "reachable",
+                "message": "吉客云 OpenAPI 连通正常",
+                "transport": "openapi",
+                "detail": result,
+            })
+        return Response({
+            "ok": False,
+            "status": "unreachable" if result.get("configured") else "unconfigured",
+            "message": result.get("error") or "吉客云探测失败",
+            "transport": "openapi",
+            "detail": result,
+        })
+
+    if server_id == "kingdee":
+        from apps.connectors.credentials import use_connector_secrets
+        from apps.connectors.kingdee import kingdee_status
+
+        with use_connector_secrets("kingdee", user=request.user):
+            result = kingdee_status(probe=True)
+        if result.get("reachable"):
+            return Response({
+                "ok": True,
+                "status": "reachable",
+                "message": "金蝶 K3Cloud 登录探测成功",
+                "transport": "openapi",
+                "detail": result,
+            })
+        return Response({
+            "ok": False,
+            "status": "unreachable" if result.get("configured") else "unconfigured",
+            "message": result.get("error") or "金蝶探测失败",
+            "transport": "openapi",
+            "detail": result,
         })
 
     if transport == "stdio":

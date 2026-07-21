@@ -89,9 +89,23 @@ function cellText(value: unknown): string {
   return String(value);
 }
 
-export default function SmartTable() {
+export type SmartTableProps = {
+  /** 嵌入知识库文档时：直接打开指定表格，并隐藏左侧表列表 */
+  embeddedSheetId?: number;
+  knowledgeBaseId?: number;
+  onBack?: () => void;
+  onSheetDeleted?: () => void;
+};
+
+export default function SmartTable({
+  embeddedSheetId,
+  knowledgeBaseId,
+  onBack,
+  onSheetDeleted,
+}: SmartTableProps = {}) {
+  const embedded = embeddedSheetId != null;
   const [sheets, setSheets] = useState<SmartSheetListItem[]>([]);
-  const [sheetId, setSheetId] = useState<number | null>(null);
+  const [sheetId, setSheetId] = useState<number | null>(embeddedSheetId ?? null);
   const [sheet, setSheet] = useState<SmartSheetDetail | null>(null);
   const [viewId, setViewId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -110,10 +124,12 @@ export default function SmartTable() {
   );
 
   const loadList = useCallback(async () => {
-    const data = await listSmartSheets();
+    const data = await listSmartSheets(
+      knowledgeBaseId != null ? { knowledge_base: knowledgeBaseId } : undefined,
+    );
     setSheets(data.results || []);
     return data.results || [];
-  }, []);
+  }, [knowledgeBaseId]);
 
   const loadSheet = useCallback(async (id: number) => {
     const detail = await getSmartSheet(id);
@@ -129,6 +145,10 @@ export default function SmartTable() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      if (embedded && embeddedSheetId != null) {
+        await loadSheet(embeddedSheetId);
+        return;
+      }
       const list = await loadList();
       const prefer = sheetId && list.some((s) => s.id === sheetId) ? sheetId : list[0]?.id;
       if (prefer) await loadSheet(prefer);
@@ -138,12 +158,16 @@ export default function SmartTable() {
     } finally {
       setLoading(false);
     }
-  }, [loadList, loadSheet, sheetId]);
+  }, [embedded, embeddedSheetId, loadList, loadSheet, sheetId]);
 
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [embeddedSheetId, knowledgeBaseId]);
+
+  useEffect(() => {
+    if (embeddedSheetId != null) setSheetId(embeddedSheetId);
+  }, [embeddedSheetId]);
 
   const rows = useMemo(() => {
     let list = [...(sheet?.rows || [])];
@@ -190,7 +214,10 @@ export default function SmartTable() {
         />
       ),
       onOk: () => withBusy(async () => {
-        const created = await createSmartSheet({ name: name.trim() || "未命名表格" });
+        const created = await createSmartSheet({
+          name: name.trim() || "未命名表格",
+          knowledge_base: knowledgeBaseId,
+        });
         await loadList();
         await loadSheet(created.id);
         message.success("已创建");
@@ -307,7 +334,8 @@ export default function SmartTable() {
   }
 
   return (
-    <div className="st-root">
+    <div className={`st-root${embedded ? " st-embedded" : ""}`}>
+      {!embedded ? (
       <aside className="st-side">
         <div className="st-side-head">
           <Typography.Text strong>数据表</Typography.Text>
@@ -348,12 +376,14 @@ export default function SmartTable() {
           </button>
         </div>
       </aside>
+      ) : null}
 
       <section className="st-main">
         {!sheet ? (
           <div className="st-center">
             <Empty description="创建或导入一张数据表开始">
               <Space>
+                {onBack ? <Button onClick={onBack}>返回文档</Button> : null}
                 <Button type="primary" icon={<PlusOutlined />} onClick={onCreateSheet}>新建数据表</Button>
                 <Button icon={<UploadOutlined />} onClick={triggerImport}>导入 Excel/CSV</Button>
               </Space>
@@ -363,12 +393,17 @@ export default function SmartTable() {
           <>
             <header className="st-top">
               <div className="st-crumb">
+                {onBack ? (
+                  <Button type="text" onClick={onBack} style={{ marginRight: 4, paddingInline: 6 }}>
+                    ← 文档
+                  </Button>
+                ) : null}
                 <Typography.Title
                   level={5}
                   editable={sheet.can_manage !== false ? {
                     onChange: (name) => void withBusy(async () => {
                       await updateSmartSheet(sheet.id, { name });
-                      await loadList();
+                      if (!embedded) await loadList();
                       await loadSheet(sheet.id);
                     }),
                   } : false}
@@ -397,6 +432,10 @@ export default function SmartTable() {
                         onOk: () => withBusy(async () => {
                           await deleteSmartSheet(sheet.id);
                           setSheetId(null);
+                          if (embedded) {
+                            onSheetDeleted?.();
+                            return;
+                          }
                           await refresh();
                         }),
                       });
@@ -1538,6 +1577,14 @@ const css = `
     background: var(--st-bg);
     color: var(--st-text);
     font-size: 13px;
+  }
+  .st-root.st-embedded {
+    grid-template-columns: 1fr;
+    height: calc(100dvh - 140px);
+    min-height: 520px;
+    border: 1px solid var(--st-border);
+    border-radius: 12px;
+    overflow: hidden;
   }
   .st-center {
     height: 100%;

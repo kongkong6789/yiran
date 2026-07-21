@@ -10,7 +10,7 @@ import uuid
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Q, Sum
+from django.db.models import Avg, Count, Max, Q, Sum
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -149,9 +149,10 @@ def _user_brief(
 
 
 def _can_access_room(user, room: CollabRoom) -> bool:
-    if _is_admin(user):
+    if CollabParticipant.objects.filter(room=room, user=user).exists():
         return True
-    return CollabParticipant.objects.filter(room=room, user=user).exists()
+    # 管理员仅可旁观小策任务运行；普通私聊和群聊仍保持成员隔离。
+    return _is_admin(user) and _is_xiaoce_dm(room)
 
 
 def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
@@ -186,7 +187,13 @@ def _unread_count_for(user, room: CollabRoom, *, last_read_id: int | None = None
     )
 
 
-def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> int:
+def _mark_room_read(
+    user,
+    room: CollabRoom,
+    *,
+    up_to_id: int | None = None,
+    record_receipts: bool = True,
+) -> int:
     with transaction.atomic():
         row = (
             CollabParticipant.objects.select_for_update()
@@ -202,26 +209,29 @@ def _mark_room_read(user, room: CollabRoom, *, up_to_id: int | None = None) -> i
         if up_to_id <= previous_id:
             return previous_id
 
-        now = timezone.now()
-        newly_read = list(
-            room.messages
-            .filter(id__gt=previous_id, id__lte=up_to_id)
-            .exclude(sender=user)
-            .exclude(status="deleted")
-            .only("id", "created_at")
-        )
-        CollabMessageRead.objects.bulk_create(
-            [
-                CollabMessageRead(
-                    room=room,
-                    message=msg,
-                    user=user,
-                    latency_ms=max(0, int((now - msg.created_at).total_seconds() * 1000)),
+        if record_receipts:
+            now = timezone.now()
+            newly_read = list(
+                room.messages
+                .filter(id__gt=previous_id, id__lte=up_to_id)
+                .exclude(sender=user)
+                .exclude(status="deleted")
+                .only("id", "created_at")
+            )
+            # 打开会话可能一次追上大量未读；回执写入改走显式 mark-read，避免切房卡顿
+            if len(newly_read) <= 40:
+                CollabMessageRead.objects.bulk_create(
+                    [
+                        CollabMessageRead(
+                            room=room,
+                            message=msg,
+                            user=user,
+                            latency_ms=max(0, int((now - msg.created_at).total_seconds() * 1000)),
+                        )
+                        for msg in newly_read
+                    ],
+                    ignore_conflicts=True,
                 )
-                for msg in newly_read
-            ],
-            ignore_conflicts=True,
-        )
         row.last_read_message_id = up_to_id
         row.save(update_fields=["last_read_message_id"])
         return row.last_read_message_id
@@ -258,6 +268,125 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         ids.append(room.created_by_id)
     pmap = presence_map(ids)
     profiles = _profile_map(ids)
+    return _room_payload_from_parts(
+        room,
+        participant_rows=participant_rows,
+        pmap=pmap,
+        profiles=profiles,
+        include_messages=include_messages,
+        viewer=viewer,
+    )
+
+
+def _room_payloads_for_list(rooms: list[CollabRoom], *, viewer) -> list[dict]:
+    """会话列表专用：批量取在线/资料/计数/末条，避免每个房间一轮 N+1。"""
+    if not rooms:
+        return []
+
+    room_ids = [room.id for room in rooms]
+    participant_rows_by_room: dict = {room.id: [] for room in rooms}
+    all_user_ids: set[int] = set()
+    for room in rooms:
+        rows = list(room.participants.all())
+        participant_rows_by_room[room.id] = rows
+        for row in rows:
+            all_user_ids.add(row.user_id)
+        if room.created_by_id:
+            all_user_ids.add(room.created_by_id)
+
+    pmap = presence_map(list(all_user_ids))
+    profiles = _profile_map(list(all_user_ids))
+
+    message_counts = {
+        row["room_id"]: row["c"]
+        for row in CollabMessage.objects.filter(room_id__in=room_ids)
+        .values("room_id")
+        .annotate(c=Count("id"))
+    }
+    insight_counts = {
+        row["room_id"]: row["c"]
+        for row in CollabInsight.objects.filter(room_id__in=room_ids)
+        .values("room_id")
+        .annotate(c=Count("id"))
+    }
+
+    last_ids = {
+        row["room_id"]: row["mid"]
+        for row in CollabMessage.objects.filter(room_id__in=room_ids)
+        .exclude(status__in=["deleted", "recalled"])
+        .values("room_id")
+        .annotate(mid=Max("id"))
+    }
+    last_by_room: dict = {}
+    if last_ids:
+        for msg in (
+            CollabMessage.objects.filter(id__in=list(last_ids.values()))
+            .select_related("sender")
+        ):
+            last_by_room[msg.room_id] = msg
+
+    xiaoce_run_by_room: dict = {}
+    if viewer is not None:
+        run_query = XiaoceRun.objects.filter(
+            room_id__in=room_ids,
+            status=XiaoceRun.Status.RUNNING,
+        )
+        if not _is_admin(viewer):
+            run_query = run_query.filter(user=viewer)
+        for run in run_query.order_by("-created_at"):
+            if run.room_id not in xiaoce_run_by_room:
+                xiaoce_run_by_room[run.room_id] = xiaoce_run_payload(run)
+
+    unread_by_room: dict[object, int] = {room.id: 0 for room in rooms}
+    if viewer is not None:
+        last_read_by_room = {
+            row.room_id: int(row.last_read_message_id or 0)
+            for room in rooms
+            for row in participant_rows_by_room[room.id]
+            if row.user_id == viewer.id
+        }
+        for room in rooms:
+            last_read = last_read_by_room.get(room.id, 0)
+            unread_by_room[room.id] = (
+                CollabMessage.objects.filter(room_id=room.id, id__gt=last_read)
+                .exclude(sender_id=viewer.id)
+                .exclude(status="deleted")
+                .count()
+            )
+
+    results = []
+    for room in rooms:
+        payload = _room_payload_from_parts(
+            room,
+            participant_rows=participant_rows_by_room[room.id],
+            pmap=pmap,
+            profiles=profiles,
+            include_messages=False,
+            viewer=viewer,
+            message_count=message_counts.get(room.id, 0),
+            insight_count=insight_counts.get(room.id, 0),
+            last_message=last_by_room.get(room.id),
+            unread_count=unread_by_room.get(room.id, 0),
+            active_xiaoce_run=xiaoce_run_by_room.get(room.id),
+        )
+        results.append(payload)
+    return results
+
+
+def _room_payload_from_parts(
+    room: CollabRoom,
+    *,
+    participant_rows: list,
+    pmap: dict,
+    profiles: dict,
+    include_messages: bool = False,
+    viewer=None,
+    message_count: int | None = None,
+    insight_count: int | None = None,
+    last_message=None,
+    unread_count: int | None = None,
+    active_xiaoce_run=None,
+) -> dict:
     nick_by_id = {p.user_id: (p.nickname or "").strip() for p in participant_rows}
     members = [
         _user_brief(
@@ -285,7 +414,6 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         names = [m["display_name"] for m in members][:4]
         display_title = "、".join(names) + ("…" if len(members) > 4 else "")
 
-    # 单聊：对端是否在线；群聊：在线人数
     peer_online = None
     online_count = sum(1 for m in members if m.get("online"))
     if room.room_kind == "dm" and viewer is not None:
@@ -314,24 +442,43 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
         "online_count": online_count,
         "created_at": room.created_at.isoformat(),
         "updated_at": room.updated_at.isoformat(),
-        "message_count": room.messages.count(),
-        "insight_count": room.insights.count(),
+        "message_count": (
+            int(message_count)
+            if message_count is not None
+            else room.messages.count()
+        ),
+        "insight_count": (
+            int(insight_count)
+            if insight_count is not None
+            else room.insights.count()
+        ),
         "unread_count": 0,
-        "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
+        "active_xiaoce_run": (
+            active_xiaoce_run
+            if message_count is not None
+            else _active_xiaoce_run_payload(room, viewer)
+        ),
     }
     if viewer is not None:
         viewer_part = next((p for p in participant_rows if p.user_id == viewer.id), None)
         if viewer_part is not None:
-            payload["unread_count"] = _unread_count_for(
-                viewer, room, last_read_id=viewer_part.last_read_message_id,
+            payload["unread_count"] = (
+                int(unread_count)
+                if unread_count is not None
+                else _unread_count_for(
+                    viewer, room, last_read_id=viewer_part.last_read_message_id,
+                )
             )
             payload["last_read_message_id"] = viewer_part.last_read_message_id or 0
-    last = (
-        room.messages.select_related("sender")
-        .exclude(status__in=["deleted", "recalled"])
-        .order_by("-id")
-        .first()
-    )
+
+    last = last_message
+    if last is None and message_count is None:
+        last = (
+            room.messages.select_related("sender")
+            .exclude(status__in=["deleted", "recalled"])
+            .order_by("-id")
+            .first()
+        )
     if last:
         preview = (last.content or "").strip()
         if not preview and last.attachments:
@@ -352,7 +499,6 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
             "created_at": last.created_at.isoformat(),
         }
     if include_messages:
-        # 仅最近窗口，完整历史走 messages/?before_id= 分页
         msg_rows = list(
             room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .exclude(status="deleted")
@@ -376,6 +522,12 @@ def _room_payload(room: CollabRoom, *, include_messages: bool = False, viewer=No
             oldest_id
             and room.messages.exclude(status="deleted").filter(id__lt=oldest_id).exists()
         )
+        payload["insights"] = [
+            _insight_payload(i) for i in room.insights.order_by("-id")[:30]
+        ]
+        payload["insights"].reverse()
+    else:
+        # 切房轻量详情也需要纪要侧栏数据，但不附带消息正文
         payload["insights"] = [
             _insight_payload(i) for i in room.insights.order_by("-id")[:30]
         ]
@@ -1199,17 +1351,21 @@ def room_list(request):
             status=201,
         )
 
+    # 普通会话只对实际成员可见；管理员额外保留小策任务的运行观察能力。
+    access_filter = Q(participants__user=request.user)
     if _is_admin(request.user):
-        qs = CollabRoom.objects.all()
-    else:
-        qs = CollabRoom.objects.filter(participants__user=request.user).distinct()
+        access_filter |= Q(
+            room_kind="dm",
+            participants__user__username=XIAOCE_BOT_USERNAME,
+        )
+    qs = CollabRoom.objects.filter(access_filter).distinct()
     status_filter = str(request.query_params.get("status") or "").strip()
     if status_filter in ("open", "closed"):
         qs = qs.filter(status=status_filter)
     rooms = list(qs.select_related("created_by").prefetch_related("participants__user")[:100])
     return Response({
         "count": len(rooms),
-        "results": [_room_payload(r, viewer=request.user) for r in rooms],
+        "results": _room_payloads_for_list(rooms, viewer=request.user),
     })
 
 
@@ -1265,12 +1421,13 @@ def search_messages(request):
     if not query:
         return Response({"query": "", "count": 0, "has_more": False, "results": []})
 
+    access_filter = Q(participants__user=request.user)
     if _is_admin(request.user):
-        accessible_rooms = CollabRoom.objects.all()
-    else:
-        accessible_rooms = CollabRoom.objects.filter(
-            participants__user=request.user,
-        ).distinct()
+        access_filter |= Q(
+            room_kind="dm",
+            participants__user__username=XIAOCE_BOT_USERNAME,
+        )
+    accessible_rooms = CollabRoom.objects.filter(access_filter).distinct()
 
     room_match_filter = (
         Q(title__icontains=query)
@@ -1438,10 +1595,12 @@ def room_detail(request, room_id):
             return Response(_room_payload(room, include_messages=True, viewer=request.user))
         return Response(_room_payload(room, include_messages=True, viewer=request.user))
 
-    # 打开会话详情视为已读
-    if CollabParticipant.objects.filter(room=room, user=request.user).exists():
-        _mark_room_read(request.user, room)
-    return Response(_room_payload(room, include_messages=True, viewer=request.user))
+    # 打开会话详情默认不附带消息正文（前端走 /messages/）；?include_messages=1 兼容旧调用
+    include_messages = str(
+        request.query_params.get("include_messages") or "0"
+    ).lower() in ("1", "true", "yes")
+    # 已读由前端 mark-read 上报，避免切房时同步写回执拖慢首屏
+    return Response(_room_payload(room, include_messages=include_messages, viewer=request.user))
 
 
 @api_view(["POST"])
@@ -1733,7 +1892,10 @@ def room_members(request, room_id):
 @api_view(["GET", "POST", "DELETE"])
 @permission_classes([IsAuthenticated])
 def room_messages(request, room_id):
-    touch_presence(request.user)
+    # 切房首屏 lite 请求跳过心跳写库，降低远程库往返
+    lite_hint = str(request.query_params.get("lite") or "").lower() in ("1", "true", "yes")
+    if request.method != "GET" or not lite_hint:
+        touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
     if not _can_access_room(request.user, room):
         return Response({"ok": False, "error": "无权访问该会话"}, status=403)
@@ -1776,9 +1938,9 @@ def room_messages(request, room_id):
     if request.method == "POST":
         if room.status != "open":
             return Response({"ok": False, "error": "会话已结束，无法发送"}, status=400)
-        # 管理员旁观不可代发（除非也是参与者）
+        # 纵深校验：只有实际会话成员可以发送。
         if not CollabParticipant.objects.filter(room=room, user=request.user).exists():
-            return Response({"ok": False, "error": "旁观者无法发送消息"}, status=403)
+            return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
         content = str(request.data.get("content") or "").strip()
         is_bot_dm = _is_xiaoce_dm(room)
         xiaoce_run_id = None
@@ -1995,30 +2157,27 @@ def room_messages(request, room_id):
         # 历史上拉：取更旧的一页，正序返回
         qs = base.exclude(status="deleted").filter(id__lt=before_id).order_by("-id")
         rows = list(qs[:limit])
-        has_more_before = len(rows) == limit and base.exclude(status="deleted").filter(
-            id__lt=rows[-1].id if rows else before_id,
-        ).exists()
+        # 满页即可能还有更早消息，省一次 exists 往返
+        has_more_before = len(rows) == limit
         rows.reverse()
     elif after_id > 0:
         # 增量：新消息
         qs = base.filter(id__gt=after_id).order_by("id")
         rows = list(qs[:limit])
-        oldest_loaded = after_id
-        has_more_before = base.exclude(status="deleted").filter(id__lt=oldest_loaded).exists()
+        # 增量同步不需要准确 has_more；前端已有本地窗口
+        has_more_before = False
     else:
         # 首屏：最近窗口
         qs = base.exclude(status="deleted").order_by("-id")
         rows = list(qs[:limit])
-        has_more_before = len(rows) == limit and base.exclude(status="deleted").filter(
-            id__lt=rows[-1].id if rows else 0,
-        ).exists()
+        has_more_before = len(rows) == limit
         rows.reverse()
 
     nick_map = _nickname_map(room)
     # 轮询/SSE 同步撤回/删除（已落在 after_id 之前的消息）
     changed = []
     changed_rows: list[CollabMessage] = []
-    if after_id > 0:
+    if after_id > 0 and not lite:
         changed_rows = list(
             room.messages.select_related("sender", "reply_to", "reply_to__sender")
             .filter(
@@ -2030,10 +2189,10 @@ def room_messages(request, room_id):
     sender_ids = list({m.sender_id for m in rows} | {m.sender_id for m in changed_rows})
     msg_profiles = _profile_map(sender_ids)
     if changed_rows:
-        changed_read_states = _message_read_state_map(
-            room,
-            changed_rows,
-            nickname_map=nick_map,
+        changed_read_states = (
+            {}
+            if lite
+            else _message_read_state_map(room, changed_rows, nickname_map=nick_map)
         )
         changed = [
             _message_payload(
@@ -2051,7 +2210,7 @@ def room_messages(request, room_id):
         "risk_level": room.risk_level,
         "updated_at": room.updated_at.isoformat(),
         "unread_count": 0,
-        "active_xiaoce_run": _active_xiaoce_run_payload(room, request.user),
+        "active_xiaoce_run": None if lite else _active_xiaoce_run_payload(room, request.user),
     }
     if include_participants:
         room_view = _room_payload(room, viewer=request.user)
@@ -2060,7 +2219,7 @@ def room_messages(request, room_id):
             "online_count": room_view.get("online_count"),
             "participants": room_view.get("participants"),
         })
-    else:
+    elif not lite:
         # 轻量：只算在线人数，不带完整成员列表
         member_ids = list(
             CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
@@ -2074,11 +2233,12 @@ def room_messages(request, room_id):
         room_meta["online_count"] = online_count
         room_meta["peer_online"] = peer_online
 
-    # 正在拉取消息 = 正在看此会话，标记已读到最新（历史上拉不刷已读）
-    if before_id <= 0 and CollabParticipant.objects.filter(room=room, user=request.user).exists():
-        _mark_room_read(request.user, room)
-
-    read_states = _message_read_state_map(room, rows, nickname_map=nick_map)
+    # lite 首屏跳过群已读回执计算，切房后再由前端/非 lite 同步补齐
+    read_states = (
+        {}
+        if lite
+        else _message_read_state_map(room, rows, nickname_map=nick_map)
+    )
     return Response({
         "count": len(rows),
         "results": [
@@ -2145,8 +2305,8 @@ def room_message_detail(request, room_id, message_id):
         return Response({"ok": False, "error": "消息已删除"}, status=400)
 
     is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
-    if not is_member and not _is_admin(request.user):
-        return Response({"ok": False, "error": "旁观者无法操作消息"}, status=403)
+    if not is_member:
+        return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
 
     nick_map = _nickname_map(room)
 

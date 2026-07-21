@@ -32,7 +32,15 @@ from .serializers import (
     KnowledgeSourceBindingSerializer,
     KnowledgeTemplateSerializer,
 )
-from .traditional_rag import TraditionalRagError, enqueue_ingest_upload, keyword_search, read_stored_file, semantic_search
+from .traditional_rag import (
+    TraditionalRagError,
+    enqueue_file_reingest,
+    enqueue_ingest_upload,
+    keyword_search,
+    read_stored_file,
+    semantic_search,
+    write_bytes_content,
+)
 
 
 
@@ -263,6 +271,128 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
         if content_type:
             response["Content-Type"] = content_type
         return response
+
+    @action(detail=True, methods=["get", "put", "patch"])
+    def content(self, request, pk=None):
+        """Read/write plain-text document body (Markdown docs in knowledge workspace)."""
+        file = self.get_object()
+        # 可见即可读写；私有库仍由 queryset 限制可见范围（飞书式协作）
+        if request.method == "GET":
+            if not file.storage_path:
+                return Response({"content": "", "file": KnowledgeFileSerializer(file).data})
+            try:
+                raw = read_stored_file(file.storage_path)
+            except Exception as error:
+                return Response({"error": "read_failed", "message": str(error)}, status=status.HTTP_404_NOT_FOUND)
+            text = raw.decode("utf-8", errors="replace")
+            return Response({
+                "content": text,
+                "encoding": "utf-8",
+                "file": KnowledgeFileSerializer(file).data,
+            })
+
+        body = request.data if isinstance(request.data, dict) else {}
+        content = body.get("content")
+        if content is None:
+            return Response({"error": "invalid_input", "message": "content is required"}, status=400)
+        text = str(content)
+        data = text.encode("utf-8")
+
+        title = str(body.get("title") or "").strip()
+        filename = file.original_filename
+        if title:
+            # Strip known compound / simple extensions from the incoming title.
+            stem = title
+            for ext in (".mind.json", ".xmind.md", ".markdown", ".md", ".txt", ".json"):
+                if stem.lower().endswith(ext):
+                    stem = stem[: -len(ext)]
+                    break
+            stem = (
+                stem.replace("\\", "_")
+                .replace("/", "_")
+                .replace(":", "_")
+                .replace("*", "_")
+                .replace("?", "_")
+                .replace('"', "_")
+                .replace("<", "_")
+                .replace(">", "_")
+                .replace("|", "_")
+                .strip()
+                or "未命名文档"
+            )
+            original = file.original_filename or ""
+            lower_original = original.lower()
+            if lower_original.endswith(".mind.json"):
+                filename = f"{stem}.mind.json"
+            elif lower_original.endswith(".xmind.md"):
+                filename = f"{stem}.xmind.md"
+            elif "." in original:
+                ext = original.rsplit(".", 1)[-1]
+                filename = f"{stem}.{ext}"
+            else:
+                filename = f"{stem}.md"
+
+        try:
+            storage_path, raw, storage_metadata = write_bytes_content(
+                data,
+                knowledge_base_id=file.knowledge_base_id,
+                file_id=file.id,
+                filename=filename,
+                content_type="text/markdown;charset=utf-8",
+                existing_storage_path=file.storage_path or None,
+            )
+        except TraditionalRagError as error:
+            return Response({"error": error.code, "message": error.message}, status=400)
+
+        import hashlib
+
+        digest = hashlib.sha256(raw).hexdigest()
+        file.storage_path = storage_path
+        file.original_filename = filename
+        file.file_type = file.file_type or "md"
+        file.content_hash = digest
+        file.char_count = len(text)
+        file.metadata = {
+            **(file.metadata or {}),
+            **storage_metadata,
+            "content_hash": digest,
+            "content_type": "text/markdown;charset=utf-8",
+            "file_size": len(raw),
+            "editor": "markdown",
+        }
+        file.save(update_fields=[
+            "storage_path",
+            "original_filename",
+            "file_type",
+            "content_hash",
+            "char_count",
+            "metadata",
+            "updated_at",
+        ])
+
+        reingest = bool(body.get("reingest", True))
+        job = None
+        if reingest:
+            job = enqueue_file_reingest(file=file)
+
+        _log(
+            request.user,
+            file.knowledge_base,
+            "file.content_updated",
+            "knowledge_file",
+            file.id,
+            {"filename": filename, "chars": len(text), "job_id": getattr(job, "id", None)},
+        )
+        payload = {
+            "ok": True,
+            "file": KnowledgeFileSerializer(file).data,
+            "content": text,
+        }
+        if job is not None:
+            payload["job"] = KnowledgeIngestJobSerializer(job).data
+            payload["job_id"] = job.id
+        return Response(payload)
+
     @action(detail=True, methods=["get"])
     def chunks(self, request, pk=None):
         file = self.get_object()

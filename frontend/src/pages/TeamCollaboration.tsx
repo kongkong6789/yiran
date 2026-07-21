@@ -1,9 +1,7 @@
-import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftOutlined,
-  CommentOutlined,
   PlusOutlined,
-  TeamOutlined,
 } from "@ant-design/icons";
 import { useSearchParams } from "react-router-dom";
 
@@ -12,6 +10,7 @@ import CollabRisk, { type CollabRoundtableSeed } from "./CollabRisk";
 import "../styles/teamCollaboration.css";
 
 type CollaborationView = "chat" | "roundtable";
+type CollaborationPanel = "chats" | "contacts";
 
 const VIEW_META: Record<CollaborationView, {
   eyebrow: string;
@@ -42,7 +41,15 @@ export function TeamCollaboration() {
   const view: CollaborationView = (
     searchParams.get("view") === "roundtable" || searchParams.has("meeting")
   ) ? "roundtable" : "chat";
-  const meta = VIEW_META[view];
+  const panel: CollaborationPanel = searchParams.get("panel") === "contacts" ? "contacts" : "chats";
+  const meta = view === "chat" && panel === "contacts"
+    ? {
+        eyebrow: "TEAM DIRECTORY",
+        title: "团队通讯录",
+        description: "快速找到成员、发起单聊或组织新的群聊。",
+        status: "成员状态已同步",
+      }
+    : VIEW_META[view];
 
   const updateView = useCallback((next: CollaborationView) => {
     const params = new URLSearchParams(searchParams);
@@ -51,6 +58,7 @@ export function TeamCollaboration() {
     } else {
       params.delete("view");
       params.delete("meeting");
+      params.delete("panel");
     }
     setSearchParams(params, { replace: true });
   }, [searchParams, setSearchParams]);
@@ -75,6 +83,15 @@ export function TeamCollaboration() {
     params.set("view", "roundtable");
     params.delete("meeting");
     if (seed?.sourceRoomId) params.set("room", seed.sourceRoomId);
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const updatePanel = useCallback((next: CollaborationPanel) => {
+    const params = new URLSearchParams(searchParams);
+    params.delete("view");
+    params.delete("meeting");
+    if (next === "contacts") params.set("panel", "contacts");
+    else params.delete("panel");
     setSearchParams(params, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -106,16 +123,6 @@ export function TeamCollaboration() {
     return () => animation.cancel();
   }, [view]);
 
-  const handleTabsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const next = event.key === "ArrowLeft" || event.key === "Home" ? "chat" : "roundtable";
-    selectView(next);
-    requestAnimationFrame(() => {
-      document.getElementById(`team-workspace-tab-${next}`)?.focus();
-    });
-  };
-
   return (
     <div className={`team-workspace team-workspace--${view}`}>
       <header className="team-workspace-bar">
@@ -123,44 +130,6 @@ export function TeamCollaboration() {
           <span className="team-workspace-eyebrow">{meta.eyebrow}</span>
           <span className="team-workspace-title">{meta.title}</span>
           <span className="team-workspace-description">{meta.description}</span>
-        </div>
-
-        <div
-          className="team-workspace-tabs"
-          role="tablist"
-          aria-label="团队协作模式"
-          onKeyDown={handleTabsKeyDown}
-        >
-          <span
-            className={`team-workspace-tab-indicator is-${view}`}
-            aria-hidden="true"
-          />
-          <button
-            id="team-workspace-tab-chat"
-            type="button"
-            role="tab"
-            aria-selected={view === "chat"}
-            aria-controls="team-workspace-panel"
-            tabIndex={view === "chat" ? 0 : -1}
-            className={view === "chat" ? "is-active" : ""}
-            onClick={() => selectView("chat")}
-          >
-            <CommentOutlined />
-            消息
-          </button>
-          <button
-            id="team-workspace-tab-roundtable"
-            type="button"
-            role="tab"
-            aria-selected={view === "roundtable"}
-            aria-controls="team-workspace-panel"
-            tabIndex={view === "roundtable" ? 0 : -1}
-            className={view === "roundtable" ? "is-active" : ""}
-            onClick={() => selectView("roundtable")}
-          >
-            <TeamOutlined />
-            圆桌
-          </button>
         </div>
 
         <div className="team-workspace-actions">
@@ -195,10 +164,16 @@ export function TeamCollaboration() {
         ref={paneRef}
         className={`team-workspace-content team-workspace-content--${view}`}
         role="tabpanel"
-        aria-labelledby={`team-workspace-tab-${view}`}
+        aria-label={meta.title}
       >
         {view === "chat" ? (
-          <CollabRisk key="team-chat" embedded onStartRoundtable={startRoundtable} />
+          <CollabRisk
+            key="team-chat"
+            embedded
+            panel={panel}
+            onPanelChange={updatePanel}
+            onStartRoundtable={startRoundtable}
+          />
         ) : (
           <Council key="team-roundtable" embedded initialDraft={roundtableSeed} />
         )}

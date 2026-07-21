@@ -180,8 +180,32 @@ def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: 
     if not content:
         raise TraditionalRagError("Uploaded file is empty.", "empty_file")
     data = bytes(content)
+    return write_bytes_content(
+        data,
+        knowledge_base_id=knowledge_base_id,
+        file_id=file_id,
+        filename=filename,
+        content_type=getattr(upload, "content_type", "") or None,
+    )
+
+
+def write_bytes_content(
+    data: bytes,
+    *,
+    knowledge_base_id: int,
+    file_id: int,
+    filename: str,
+    content_type: str | None = None,
+    existing_storage_path: str | None = None,
+) -> tuple[str, bytes, dict]:
+    if not data:
+        raise TraditionalRagError("Uploaded file is empty.", "empty_file")
+    relative_path = relative_storage_path(knowledge_base_id, file_id, filename)
     if cos_enabled():
-        media = upload_media_bytes(relative_path, data, content_type=getattr(upload, "content_type", "") or None)
+        # Prefer rewriting the same COS key when possible.
+        cos_ref = parse_cos_storage_path(existing_storage_path or "")
+        upload_key = cos_ref[1] if cos_ref else relative_path
+        media = upload_media_bytes(upload_key, data, content_type=content_type)
         return cos_storage_path(media["bucket"], media["cos_key"]), data, {
             "storage_backend": "cos",
             "cos_bucket": media["bucket"],
@@ -192,6 +216,14 @@ def write_uploaded_file(upload, knowledge_base_id: int, file_id: int, filename: 
     destination = resolve_storage_path(relative_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
+    # Clean old local path if filename changed.
+    if existing_storage_path and not existing_storage_path.startswith("cos://"):
+        old = resolve_storage_path(existing_storage_path)
+        if old != destination and old.exists():
+            try:
+                old.unlink()
+            except OSError:
+                pass
     return relative_path, data, {"storage_backend": "local"}
 
 
@@ -1603,6 +1635,40 @@ def enqueue_ingest_upload(
     )
     thread.start()
     return TraditionalIngestResult(file=file, job=job, chunks=[])
+
+
+def enqueue_file_reingest(
+    *,
+    file: KnowledgeFile,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> KnowledgeIngestJob:
+    """Re-run parse/chunk/embed after document content was overwritten."""
+    job = KnowledgeIngestJob.objects.create(
+        file=file,
+        status=KnowledgeIngestJob.Status.PENDING,
+        stage="queued",
+        progress=5,
+        created_by=None,
+    )
+    file.status = KnowledgeFile.Status.PROCESSING
+    meta = dict(file.metadata or {})
+    if chunk_size is not None or chunk_overlap is not None:
+        meta["chunk_config"] = {
+            **(meta.get("chunk_config") or {}),
+            "max_chars": chunk_size or DEFAULT_CHUNK_SIZE,
+            "overlap_chars": chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP,
+        }
+    file.metadata = meta
+    file.save(update_fields=["status", "metadata", "updated_at"])
+    thread = threading.Thread(
+        target=_run_async_ingest_job,
+        kwargs={"job_id": job.id, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
+        name=f"knowledge-reingest-{job.id}",
+        daemon=True,
+    )
+    thread.start()
+    return job
 
 
 def ingest_upload(

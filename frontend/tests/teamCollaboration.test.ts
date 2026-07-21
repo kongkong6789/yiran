@@ -20,8 +20,10 @@ test("message and roundtable workspaces are mutually exclusive", () => {
     workspaceSource,
     /view === "chat"[\s\S]*?<CollabRisk[\s\S]*?:[\s\S]*?<Council/,
   );
-  assert.match(workspaceSource, /<CollabRisk key="team-chat"/);
+  assert.match(workspaceSource, /<CollabRisk[\s\S]*?key="team-chat"/);
   assert.match(workspaceSource, /<Council key="team-roundtable"/);
+  assert.match(workspaceSource, /panel=\{panel\}/);
+  assert.match(workspaceSource, /onPanelChange=\{updatePanel\}/);
 });
 
 test("chat empty state never mounts the roundtable illustration", () => {

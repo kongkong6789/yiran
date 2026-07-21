@@ -65,6 +65,7 @@ const TRANSPORT_LABEL: Record<string, string> = {
   streamable_http: "HTTP",
   sse: "SSE",
   stdio: "stdio",
+  openapi: "OpenAPI",
 };
 
 const WECOM_JSON_TEMPLATE = `{
@@ -89,6 +90,16 @@ type FormValues = {
   args?: string;
   env?: string;
   paste_json?: string;
+  // 吉客云
+  app_key?: string;
+  app_secret?: string;
+  base_url?: string;
+  method_inventory?: string;
+  // 金蝶
+  acct_id?: string;
+  username?: string;
+  password?: string;
+  lcid?: string;
 };
 
 type StatusFilter = "all" | "configured" | "reachable" | "attention";
@@ -140,6 +151,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     const nasPath = [...(d.args || [])]
       .reverse()
       .find((value) => value && !value.startsWith("-") && !value.startsWith("@")) || "";
+    const native = d.native || {};
     form.setFieldsValue({
       enabled: d.enabled !== false,
       nas_path: d.id === "nas" ? nasPath : "",
@@ -150,11 +162,15 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         ? JSON.stringify(d.env, null, 2)
         : "",
       paste_json: "",
+      app_key: native.app_key || "",
+      app_secret: "",
+      base_url: native.base_url || ph.base_url || "",
+      method_inventory: native.method_inventory || ph.method_inventory || "erp.stockquantity.get",
+      acct_id: native.acct_id || ph.acct_id || "",
+      username: native.username || "",
+      password: "",
+      lcid: native.lcid || ph.lcid || "2052",
     });
-    // 未配置时用占位提示(不写入 form 正式值,靠 placeholder 展示)
-    if (!d.command && !d.url && ph.command) {
-      // keep empty so user can see placeholders
-    }
   }, [form]);
 
   const applyDetail = (saved: McpServerDetail, id: string) => {
@@ -189,6 +205,30 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     const values = await form.validateFields();
     setSaving(true);
     try {
+      if (openId === "jackyun" || openId === "kingdee") {
+        const native = openId === "jackyun"
+          ? {
+              app_key: values.app_key?.trim() || "",
+              app_secret: values.app_secret?.trim() || "",
+              base_url: values.base_url?.trim() || "",
+              method_inventory: values.method_inventory?.trim() || "erp.stockquantity.get",
+            }
+          : {
+              base_url: values.base_url?.trim() || "",
+              acct_id: values.acct_id?.trim() || "",
+              username: values.username?.trim() || "",
+              password: values.password?.trim() || "",
+              lcid: values.lcid?.trim() || "2052",
+            };
+        const saved = await saveMcpServer(openId, {
+          enabled: values.enabled,
+          native,
+          ...native,
+        });
+        applyDetail(saved, openId);
+        message.success(`${openId === "jackyun" ? "吉客云" : "金蝶"}配置已保存`);
+        return;
+      }
       const nasPath = values.nas_path?.trim() || "";
       const saved = await saveMcpServer(openId, {
         enabled: values.enabled,
@@ -392,8 +432,11 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const isWecom = openId === "wecom";
   const isNas = openId === "nas";
-  const showStdio = !isWecom && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
-  const showUrl = !isWecom && (
+  const isJackyun = openId === "jackyun";
+  const isKingdee = openId === "kingdee";
+  const isNativeOpenApi = isJackyun || isKingdee;
+  const showStdio = !isWecom && !isNativeOpenApi && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
+  const showUrl = !isWecom && !isNativeOpenApi && (
     detail?.declared_transport === "streamable_http"
     || detail?.declared_transport === "sse"
     || !!detail?.url
@@ -560,7 +603,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
       <Drawer
         title={detail ? (isNas ? (
           <span className="nas-drawer-title"><HddOutlined /> NAS 文件资源管理器</span>
-        ) : `${detail.name} · MCP 配置`) : "MCP 配置"}
+        ) : isNativeOpenApi ? `${detail.name} · 连接配置` : `${detail.name} · MCP 配置`) : "连接配置"}
         open={!!openId}
         onClose={() => {
           setOpenId(null);
@@ -645,7 +688,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                 </details>
               )}
 
-              {!isNas && (
+              {!isNas && !isNativeOpenApi && (
                 <div className="mcp-config-modebar">
                   <Segmented<ConfigInputMode>
                     value={configInputMode}
@@ -655,6 +698,15 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                       { value: "import", label: "JSON 导入" },
                     ]}
                   />
+                  <Button size="small" type="text" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
+                    检查连接
+                  </Button>
+                </div>
+              )}
+
+              {isNativeOpenApi && (
+                <div className="mcp-config-modebar">
+                  <Typography.Text type="secondary">OpenAPI 企业配置</Typography.Text>
                   <Button size="small" type="text" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
                     检查连接
                   </Button>
@@ -687,6 +739,62 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                     <Input size="large" placeholder="\\\\192.168.0.188" allowClear autoFocus />
                   </Form.Item>
                   <p className="mcp-config-note">使用运行良策后端的 Windows 账户访问；已在资源管理器登录时通常无需再次输入密码。</p>
+                </section>
+              ) : isJackyun ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>吉客云开放平台</strong>
+                      <span>AppKey / AppSecret 按当前企业保存</span>
+                    </div>
+                  </div>
+                  <Form.Item label="AppKey" name="app_key" rules={[{ required: true, message: "请填写 AppKey" }]}>
+                    <Input placeholder={ph.app_key || "开放平台 AppKey"} allowClear />
+                  </Form.Item>
+                  <Form.Item
+                    label="AppSecret"
+                    name="app_secret"
+                    extra={detail.native?.app_secret_set ? "已保存密钥；留空则保持不变" : "请填写 AppSecret"}
+                  >
+                    <Input.Password placeholder={detail.native?.app_secret_set ? "******（留空保持不变）" : (ph.app_secret || "开放平台 AppSecret")} />
+                  </Form.Item>
+                  <Form.Item label="OpenAPI 地址" name="base_url">
+                    <Input placeholder={ph.base_url || "https://open.jackyun.com/open/openapi/do"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="库存方法" name="method_inventory">
+                    <Input placeholder={ph.method_inventory || "erp.stockquantity.get"} allowClear />
+                  </Form.Item>
+                </section>
+              ) : isKingdee ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>金蝶云星空 K3Cloud</strong>
+                      <span>地址 / 账套 / 账号 / LCID 可在此手动配置</span>
+                    </div>
+                  </div>
+                  <Form.Item label="服务器地址" name="base_url" rules={[{ required: true, message: "请填写 K3Cloud 地址" }]}>
+                    <Input placeholder={ph.base_url || "http://159.75.104.61/k3cloud"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="账套 ID" name="acct_id" rules={[{ required: true, message: "请填写账套 ID" }]}>
+                    <Input placeholder={ph.acct_id || "65405d0ec432ee"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="账号" name="username" rules={[{ required: true, message: "请填写登录账号" }]}>
+                    <Input placeholder={ph.username || "金蝶登录账号"} allowClear autoComplete="username" />
+                  </Form.Item>
+                  <Form.Item
+                    label="密码"
+                    name="password"
+                    extra={detail.native?.password_set ? "已保存密码；留空则保持不变" : "请填写登录密码"}
+                  >
+                    <Input.Password
+                      placeholder={detail.native?.password_set ? "******（留空保持不变）" : (ph.password || "金蝶登录密码")}
+                      autoComplete="current-password"
+                    />
+                  </Form.Item>
+                  <Form.Item label="LCID（语言）" name="lcid" extra="简体中文一般为 2052">
+                    <Input placeholder={ph.lcid || "2052"} allowClear />
+                  </Form.Item>
                 </section>
               ) : configInputMode === "direct" && isWecom ? (
                 <section className="mcp-config-section">

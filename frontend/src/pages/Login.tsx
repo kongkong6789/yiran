@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Form, Input, Tabs, Typography, message } from "antd";
+import { App, Button, Card, Form, Input, Tabs, Typography } from "antd";
 import { useNavigate } from "react-router-dom";
 import { getMe, login, register, setAuthToken } from "../api/client";
 import BrandLogo from "../components/BrandLogo";
 
 export default function Login() {
   const nav = useNavigate();
+  const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (!localStorage.getItem("liangce_auth_token")) return;
     getMe()
-      .then(() => nav("/home", { replace: true }))
+      .then(() => nav("/collab", { replace: true }))
       .catch(() => undefined);
   }, [nav]);
 
@@ -25,7 +26,7 @@ export default function Login() {
       }
       setAuthToken(res.token);
       message.success(`欢迎回来，${res.user.username}`);
-      nav("/home", { replace: true });
+      nav("/collab", { replace: true });
     } catch (e: any) {
       message.error(e?.response?.data?.error || "登录失败");
     } finally {
@@ -43,7 +44,7 @@ export default function Login() {
       }
       setAuthToken(res.token);
       message.success("注册成功，已自动登录");
-      nav("/home", { replace: true });
+      nav("/collab", { replace: true });
     } catch (e: any) {
       message.error(e?.response?.data?.error || "注册失败");
     } finally {
@@ -53,7 +54,7 @@ export default function Login() {
 
   return (
     <div className="login-page">
-      <Card className="login-card" bordered={false}>
+      <Card className="login-card" variant="borderless">
         <div className="login-brand">
           <BrandLogo size={72} />
           <Typography.Title level={3} style={{ margin: "14px 0 0", textAlign: "center" }}>
