@@ -223,8 +223,13 @@ def validate_skill_command(workspace: Path, command: str) -> tuple[bool, str]:
         if token in lowered or token in cmd:
             return False, f"命令包含禁止片段: {token.strip() or token}"
 
-    # 解析解释器与脚本路径（支持引号）
-    parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', cmd)
+    # 解析解释器与脚本路径（支持引号）。开发目录可能含空格，先识别完整
+    # sys.executable，避免把合法的虚拟环境解释器截断成第一个路径片段。
+    sys_python = str(Path(sys.executable))
+    if cmd.startswith(f"{sys_python} "):
+        parts = [sys_python, *re.findall(r'"[^"]*"|\'[^\']*\'|\S+', cmd[len(sys_python):].strip())]
+    else:
+        parts = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', cmd)
     if not parts:
         return False, "无法解析命令"
 
