@@ -634,6 +634,7 @@ body {
   margin-left: auto;
 }
 .account-edit-modal .ant-modal-content {
+  padding: 0;
   overflow: hidden;
   border-radius: 18px;
   background: #f7f8fb;
@@ -802,7 +803,7 @@ body {
 }
 .account-edit-form .account-form-grid {
   margin-bottom: 4px;
-  padding: 14px 16px 2px;
+  padding: 14px 16px 8px;
   border: 1px solid #e8ebf2;
   border-radius: 14px;
   background: #fff;
@@ -811,6 +812,12 @@ body {
   display: flex;
   align-items: center;
   min-height: 32px;
+}
+.account-edit-phone-item .ant-form-item-explain {
+  padding-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
 }
 .account-edit-modal .ant-switch-checked {
   background: #7c3aed;
@@ -3526,6 +3533,7 @@ body {
   .account-admin-toolbar .ant-space,
   .account-admin-toolbar .ant-input-affix-wrapper { width: 100%; }
   .account-form-grid { grid-template-columns: 1fr; }
+  .account-edit-phone-item .ant-form-item-explain { white-space: normal; }
   .organization-profile {
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;

@@ -956,6 +956,7 @@ export default function Accounts() {
             <Form.Item
               label="手机号"
               name="phone"
+              className="account-edit-phone-item"
               help={target?.phone_masked ? `当前：${target.phone_masked}（填写新号码才会更新）` : "填写后用于匹配企业微信成员"}
             >
               <Input prefix={<PhoneOutlined />} placeholder="留空则不修改" />
