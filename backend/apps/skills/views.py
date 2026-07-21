@@ -1,8 +1,13 @@
 """Skill 上传 / 管理 / 调用 API。"""
 from __future__ import annotations
 
+import logging
+from datetime import date, timedelta
+
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -11,8 +16,15 @@ from rest_framework.response import Response
 
 from .analytics import build_skill_analytics, management_scope
 from .cos_storage import cos_enabled
-from .models import SkillAsset, UserSkill
-from .parser import build_skill_folder_archive, extract_skill_from_upload, parse_skill_markdown
+from .models import SkillAsset, SkillUsageEvent, UserSkill
+from .parser import (
+    MAX_SKILL_BYTES,
+    MAX_SKILL_PACKAGE_FILES,
+    MAX_SKILL_ZIP_BYTES,
+    build_skill_folder_archive,
+    extract_skill_from_upload,
+    parse_skill_markdown,
+)
 from .repository import (
     delete_skill_asset,
     find_shared_asset,
@@ -20,7 +32,10 @@ from .repository import (
     materialize_user_skill,
     save_skill_asset_from_bytes,
 )
+from .skillhub import SkillHubError, download_verified_skill, get_skill_detail, search_skills
 from .service import list_user_skills, resolve_skills, skills_payload
+
+logger = logging.getLogger(__name__)
 
 
 def _skill_row_payload(row: UserSkill) -> dict:
@@ -56,6 +71,13 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
     return {
         "id": row.id,
         "skill_id": row.skill_id,
+        "source": row.source,
+        "source_url": row.source_url,
+        "source_version": row.source_version,
+        "source_verified": row.source_verified,
+        "source_metadata": row.source_metadata,
+        "content_hash": row.content_hash,
+        "category": row.category,
         "visibility": row.visibility,
         "name": row.name,
         "description": row.description,
@@ -85,12 +107,36 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
     }
 
 
+def _usage_event_payload(row: SkillUsageEvent) -> dict:
+    user = row.user
+    return {
+        "id": row.id,
+        "skill_id": row.skill_id,
+        "skill_name": row.skill_name,
+        "user_id": row.user_id,
+        "user": (user.get_full_name().strip() or user.username) if user else "未知用户",
+        "source": row.source,
+        "source_label": row.get_source_display(),
+        "used_at": row.used_at.isoformat(),
+    }
+
+
 def _read_upload(request) -> tuple[str, bytes]:
     if request.FILES.get("file"):
         upload = request.FILES["file"]
+        lower_name = str(upload.name or "").lower()
+        max_bytes = MAX_SKILL_ZIP_BYTES if lower_name.endswith(".zip") else MAX_SKILL_BYTES
+        if upload.size > max_bytes:
+            label = f"{max_bytes // (1024 * 1024)}MB" if max_bytes >= 1024 * 1024 else f"{max_bytes // 1024}KB"
+            raise ValueError(f"{upload.name} 过大,上限 {label}")
         return upload.name, upload.read()
     folder_uploads = request.FILES.getlist("files")
     if folder_uploads:
+        if len(folder_uploads) > MAX_SKILL_PACKAGE_FILES:
+            raise ValueError(f"Skill 文件夹文件过多,上限 {MAX_SKILL_PACKAGE_FILES} 个")
+        total_size = sum(upload.size for upload in folder_uploads)
+        if total_size > MAX_SKILL_ZIP_BYTES:
+            raise ValueError(f"Skill 文件夹过大,上限 {MAX_SKILL_ZIP_BYTES // (1024 * 1024)}MB")
         paths = request.data.getlist("paths")
         if paths and len(paths) != len(folder_uploads):
             raise ValueError("技能文件夹路径信息不完整,请重新选择文件夹")
@@ -130,7 +176,110 @@ def asset_list(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def skill_analytics(request):
-    return Response(build_skill_analytics(request.user))
+    today = timezone.localdate()
+    raw_start = request.query_params.get("trend_start")
+    raw_end = request.query_params.get("trend_end")
+    try:
+        trend_end = date.fromisoformat(raw_end) if raw_end else today
+        trend_start = date.fromisoformat(raw_start) if raw_start else trend_end - timedelta(days=6)
+    except ValueError:
+        return Response({"error": "日期格式无效，请使用 YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+    trend_days = (trend_end - trend_start).days + 1
+    if trend_end > today:
+        return Response({"error": "趋势结束日期不能晚于今天"}, status=status.HTTP_400_BAD_REQUEST)
+    if trend_days < 1:
+        return Response({"error": "趋势开始日期不能晚于结束日期"}, status=status.HTTP_400_BAD_REQUEST)
+    if trend_days > 90:
+        return Response({"error": "单次最多查询 90 天趋势"}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(build_skill_analytics(
+        request.user,
+        trend_start=trend_start,
+        trend_end=trend_end,
+    ))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def skillhub_search(request):
+    try:
+        result = search_skills(
+            str(request.query_params.get("q") or ""),
+            page=int(request.query_params.get("page") or 1),
+            page_size=int(request.query_params.get("page_size") or 12),
+            sort_by=str(request.query_params.get("sort_by") or "score"),
+            source=str(request.query_params.get("source") or ""),
+            category=str(request.query_params.get("category") or ""),
+            api_key=str(request.query_params.get("api_key") or ""),
+        )
+    except (SkillHubError, TypeError, ValueError) as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({"ok": True, **result})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def skillhub_detail(request, slug: str):
+    try:
+        detail = get_skill_detail(slug)
+    except SkillHubError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({"ok": True, "skill": detail})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def skillhub_import(request):
+    slug = str(request.data.get("slug") or "")
+    version = str(request.data.get("version") or "") or None
+    category = str(request.data.get("category") or SkillAsset.Category.GENERAL)
+    adopt = bool(request.data.get("adopt", True))
+    try:
+        detail, data, verification = download_verified_skill(slug, version)
+        existing = SkillAsset.objects.filter(
+            uploader=request.user,
+            source=SkillAsset.Source.SKILLHUB,
+            source_metadata__slug=detail["slug"],
+        ).first()
+        asset, personal = save_skill_asset_from_bytes(
+            request.user,
+            f"{detail['slug']}-{detail['version']}.zip",
+            data,
+            adopt=adopt,
+            visibility=existing.visibility if existing else SkillAsset.Visibility.PRIVATE,
+            category=category,
+            source=SkillAsset.Source.SKILLHUB,
+            source_url=detail["detail_url"],
+            source_version=detail["version"],
+            source_verified=bool(verification.get("verified")),
+            source_metadata={
+                "slug": detail["slug"],
+                "owner": detail.get("owner", ""),
+                "downloads": detail.get("downloads", 0),
+                "stars": detail.get("stars", 0),
+                "security_reports": {
+                    key: {
+                        "status": report.get("status", "unknown"),
+                        "status_text": report.get("status_text", "未提供结论"),
+                    }
+                    for key, report in detail.get("security_reports", {}).items()
+                    if isinstance(report, dict)
+                },
+                "verification_status": verification.get("status", "unknown"),
+                "signature_key_id": verification.get("key_id", ""),
+            },
+            content_hash=str(verification.get("content_hash") or ""),
+        )
+    except (SkillHubError, ValueError) as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(asset, request.user),
+        "personal": _skill_row_payload(personal) if personal else None,
+        "adopted": bool(personal),
+        "verification": verification,
+    }, status=status.HTTP_201_CREATED)
 
 
 @api_view(["PATCH"])
@@ -184,6 +333,29 @@ def asset_visibility_update(request, asset_id: int):
     })
 
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def asset_category_update(request, asset_id: int):
+    asset = get_object_or_404(
+        SkillAsset.objects.select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    can_manage, _, scoped_user_ids = management_scope(request.user)
+    manager_in_scope = can_manage and (
+        scoped_user_ids is None or asset.uploader_id in scoped_user_ids
+    )
+    if asset.uploader_id != request.user.id and not manager_in_scope:
+        return Response({"ok": False, "error": "仅上传者或企业管理员可调整能力分类"}, status=403)
+
+    category = str(request.data.get("category") or "")
+    if category not in SkillAsset.Category.values:
+        return Response({"ok": False, "error": "能力分类无效"}, status=400)
+
+    asset.category = category
+    asset.save(update_fields=["category", "updated_at"])
+    return Response({"ok": True, "asset": _asset_row_payload(asset, request.user)})
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def asset_upload(request):
@@ -191,11 +363,20 @@ def asset_upload(request):
     try:
         filename, data = _read_upload(request)
         adopt = bool(request.data.get("adopt", False))
+        category = str(request.data.get("category") or SkillAsset.Category.GENERAL)
         asset, personal = save_skill_asset_from_bytes(
-            request.user, filename, data, adopt=adopt,
+            request.user,
+            filename,
+            data,
+            adopt=adopt,
+            category=category,
+            skill_id_override=str(request.data.get("skill_id") or "").strip() or None,
         )
     except ValueError as exc:
         return Response({"ok": False, "error": str(exc)}, status=400)
+    except Exception:
+        logger.exception("Skill 资产上传失败 user_id=%s", request.user.id)
+        return Response({"ok": False, "error": "技能存储服务处理失败，请稍后重试"}, status=502)
 
     if asset:
         body = {
@@ -219,6 +400,42 @@ def asset_upload(request):
 
 
 asset_upload.parser_classes = (MultiPartParser, FormParser)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def asset_usage_history(request, asset_id: int):
+    """返回当前用户有权查看的 Skill 完整调用记录。"""
+    can_manage, _, scoped_user_ids = management_scope(request.user)
+    assets = SkillAsset.objects.select_related("uploader", "owner")
+    if can_manage:
+        if scoped_user_ids is not None:
+            assets = assets.filter(uploader_id__in=scoped_user_ids)
+    else:
+        assets = assets.filter(Q(uploader=request.user) | Q(visibility=SkillAsset.Visibility.SHARED))
+    asset = get_object_or_404(assets, id=asset_id)
+
+    events = SkillUsageEvent.objects.filter(asset=asset).select_related("user")
+    if not can_manage and asset.uploader_id != request.user.id:
+        events = events.filter(user=request.user)
+
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+        page_size = min(50, max(1, int(request.query_params.get("page_size") or 20)))
+    except (TypeError, ValueError):
+        return Response({"ok": False, "error": "分页参数无效"}, status=400)
+
+    total = events.count()
+    start = (page - 1) * page_size
+    rows = events[start:start + page_size]
+    return Response({
+        "ok": True,
+        "asset": {"id": asset.id, "skill_id": asset.skill_id, "name": asset.name},
+        "page": page,
+        "page_size": page_size,
+        "count": total,
+        "results": [_usage_event_payload(row) for row in rows],
+    })
 
 
 @api_view(["POST"])
@@ -278,7 +495,11 @@ def skill_upload(request):
         adopt = not cos_enabled()
 
     asset, personal = save_skill_asset_from_bytes(
-        request.user, filename, data, adopt=bool(adopt),
+        request.user,
+        filename,
+        data,
+        adopt=bool(adopt),
+        category=str(request.data.get("category") or SkillAsset.Category.GENERAL),
     )
     if asset:
         return Response({

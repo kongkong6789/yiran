@@ -11,6 +11,7 @@ from django.utils.text import slugify
 FRONTMATTER_RE = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
 MAX_SKILL_BYTES = 512_000
 MAX_SKILL_ZIP_BYTES = 20 * 1024 * 1024
+MAX_SKILL_PACKAGE_FILES = 200
 SKIP_ZIP_PREFIXES = ("__MACOSX/", ".DS_Store", "Thumbs.db")
 SKIP_ZIP_SUFFIXES = (".DS_Store",)
 
@@ -108,14 +109,19 @@ def extract_zip_package(data: bytes) -> tuple[dict[str, Any], list[tuple[str, by
     skill_md_path = ""
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        total_size = sum(info.file_size for info in zf.infolist() if not info.is_dir())
+        file_infos = [
+            info
+            for info in zf.infolist()
+            if not info.is_dir() and not _should_skip_zip_entry(_normalize_zip_path(info.filename))
+        ]
+        if len(file_infos) > MAX_SKILL_PACKAGE_FILES:
+            raise ValueError(f"Skill 包文件过多,上限 {MAX_SKILL_PACKAGE_FILES} 个")
+        total_size = sum(info.file_size for info in file_infos)
         if total_size > MAX_SKILL_ZIP_BYTES:
             raise ValueError(f"Skill 目录过大,上限 {MAX_SKILL_ZIP_BYTES // (1024 * 1024)}MB")
-        for raw_name in zf.namelist():
-            norm = _normalize_zip_path(raw_name)
-            if _should_skip_zip_entry(norm):
-                continue
-            payload = zf.read(raw_name)
+        for info in file_infos:
+            norm = _normalize_zip_path(info.filename)
+            payload = zf.read(info)
             files.append((norm, payload))
             if norm.rsplit("/", 1)[-1].lower() == "skill.md":
                 if not skill_md_path or norm.count("/") < skill_md_path.count("/"):
@@ -137,6 +143,8 @@ def build_skill_folder_archive(files: list[tuple[str, bytes]]) -> tuple[str, byt
     """把浏览器目录选择器提交的相对路径安全封装为 Skill zip。"""
     if not files:
         raise ValueError("请选择包含 SKILL.md 的技能文件夹")
+    if len(files) > MAX_SKILL_PACKAGE_FILES:
+        raise ValueError(f"Skill 文件夹文件过多,上限 {MAX_SKILL_PACKAGE_FILES} 个")
 
     normalized: list[tuple[str, bytes]] = []
     seen: set[str] = set()

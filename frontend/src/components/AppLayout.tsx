@@ -22,7 +22,6 @@ import {
   QuestionCircleOutlined,
   SearchOutlined,
   SettingOutlined,
-  ShopOutlined,
   SyncOutlined,
   TeamOutlined,
   ThunderboltOutlined,
@@ -58,7 +57,7 @@ type NavItem = {
   keywords?: string;
 };
 type NavGroup = { key: string; label: string; items: NavItem[] };
-type SectionKey = "work" | "knowledge" | "commerce" | "admin";
+type SectionKey = "common" | "knowledge";
 type NavSection = {
   key: SectionKey;
   label: string;
@@ -142,46 +141,27 @@ const ADMIN_GROUPS: NavGroup[] = [
 /** 仅超级管理员可见 */
 const LOGS_NAV: NavItem = { key: "admin-logs", path: "/logs", icon: <FileSearchOutlined />, label: "系统日志" };
 
+
 const SECTIONS: NavSection[] = [
   {
-    key: "work",
-    label: "工作区",
-    description: "协同与执行",
-    sidebarTitle: "协作工作区",
-    eyebrow: "WORKSPACE",
+    key: "common",
+    label: "通用",
+    description: "协作与配置",
+    sidebarTitle: "通用功能",
+    eyebrow: "COMMON",
     icon: <HomeOutlined />,
     defaultPath: "/collab",
-    groups: WORK_GROUPS,
+    groups: [...WORK_GROUPS, ...COMMERCE_GROUPS, ...ADMIN_GROUPS],
   },
   {
     key: "knowledge",
-    label: "知识",
+    label: "知识库",
     description: "内容与技能",
-    sidebarTitle: "知识与能力",
+    sidebarTitle: "知识库沉淀",
     eyebrow: "KNOWLEDGE",
     icon: <BookOutlined />,
     defaultPath: "/knowledge",
     groups: KNOWLEDGE_GROUPS,
-  },
-  {
-    key: "commerce",
-    label: "经营",
-    description: "流程与洞察",
-    sidebarTitle: "经营分析",
-    eyebrow: "OPERATIONS",
-    icon: <ShopOutlined />,
-    defaultPath: "/commerce/loops",
-    groups: COMMERCE_GROUPS,
-  },
-  {
-    key: "admin",
-    label: "管理",
-    description: "组织与配置",
-    sidebarTitle: "组织管理",
-    eyebrow: "ADMINISTRATION",
-    icon: <SettingOutlined />,
-    defaultPath: "/accounts",
-    groups: ADMIN_GROUPS,
   },
 ];
 
@@ -192,17 +172,18 @@ const ALL_VISIBLE_NAV = SECTIONS.flatMap((section) => section.groups.flatMap((gr
  * 这让隐藏项可以在后续需求中零成本恢复。
  */
 const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
-  ["/agent", "work"],
+  ["/agent", "common"],
   ["/ontology", "knowledge"],
   ["/agent-memory", "knowledge"],
   ["/my/recent", "knowledge"],
   ["/my/knowledge", "knowledge"],
   ["/my/favorites", "knowledge"],
-  ["/commerce/bench", "commerce"],
-  ["/commerce", "commerce"],
-  ["/datalake", "work"],
-  ["/audit", "admin"],
-  ["/logs", "admin"],
+  ["/commerce/bench", "common"],
+  ["/commerce", "common"],
+  ["/datalake", "common"],
+  ["/audit", "common"],
+  ["/logs", "common"],
+  ["/tables", "knowledge"],
 ];
 
 const FULL_BLEED = new Set([
@@ -220,14 +201,17 @@ function routeMatches(pathname: string, route: string) {
   return pathname === route || pathname.startsWith(`${route}/`);
 }
 
-function sectionForLocation(pathname: string): SectionKey {
-  if (pathname === "/skills") return "knowledge";
+function sectionForLocation(pathname: string, search: string): SectionKey {
+  const params = new URLSearchParams(search);
+  if (pathname === "/skills") return params.get("context") === "tasks" ? "work" : "knowledge";
   const visibleHit = SECTIONS.find((section) => (
-    section.groups.some((group) => group.items.some((item) => routeMatches(pathname, item.path.split("?")[0])))
+    section.groups.some((group) => group.items.some((item) => (
+      routeMatches(pathname, item.path.split("?")[0])
+    )))
   ));
   if (visibleHit) return visibleHit.key;
   const hiddenHit = HIDDEN_ROUTE_SECTION.find(([route]) => routeMatches(pathname, route));
-  return hiddenHit?.[1] || "work";
+  return hiddenHit?.[1] || "common";
 }
 
 function navKeyForLocation(pathname: string, search: string) {
@@ -461,6 +445,14 @@ export default function AppLayout() {
     lastOpenSidebarWidthRef.current = next;
   }, [navCollapsed, sidebarWidth, toggleSidebar]);
 
+  const goNavItem = useCallback((item: NavItem) => {
+    nav(item.path);
+  }, [nav]);
+
+  const goSection = useCallback((section: NavSection) => {
+    nav(section.defaultPath);
+  }, [nav]);
+
   const submitSearch = () => {
     const query = searchValue.trim().toLowerCase();
     if (!query) return;
@@ -470,7 +462,7 @@ export default function AppLayout() {
       || item.keywords?.toLowerCase().includes(query)
     ));
     if (target) {
-      nav(target.path);
+      goNavItem(target);
       setSearchValue("");
     }
   };
@@ -523,7 +515,7 @@ export default function AppLayout() {
               type="button"
               className={section.key === activeSectionKey ? "is-active" : ""}
               aria-current={section.key === activeSectionKey ? "page" : undefined}
-              onClick={() => nav(section.defaultPath)}
+              onClick={() => goSection(section)}
             >
               <span className="app-module-nav-icon">{section.icon}</span>
               <span className="app-module-nav-copy">
@@ -604,13 +596,13 @@ export default function AppLayout() {
         {screens.lg === false ? (
           <nav ref={mobileSubnavRef} className="app-mobile-subnav" aria-label={`${activeSection.label}二级功能`}>
             {activeSection.groups.flatMap((group) => group.items).concat(
-              activeSection.key === "admin" && user?.is_superuser ? [LOGS_NAV] : [],
+              activeSection.key === "common" && user?.is_superuser ? [LOGS_NAV] : [],
             ).map((item) => (
               <button
                 key={item.key}
                 type="button"
                 className={selectedKeys.includes(item.key) ? "is-active" : ""}
-                onClick={() => nav(item.path)}
+                onClick={() => goNavItem(item)}
                 aria-current={selectedKeys.includes(item.key) ? "page" : undefined}
               >
                 {item.icon}
@@ -662,7 +654,7 @@ export default function AppLayout() {
             selectedKeys={selectedKeys}
             items={(compactSidebar
               ? activeSection.groups.flatMap((group) => group.items).concat(
-                  activeSection.key === "admin" && user?.is_superuser ? [LOGS_NAV] : [],
+                  activeSection.key === "common" && user?.is_superuser ? [LOGS_NAV] : [],
                 ).map((item) => ({
                   key: item.key,
                   icon: item.icon,
@@ -680,7 +672,7 @@ export default function AppLayout() {
                     title: item.label,
                   })),
                 })).concat(
-                  activeSection.key === "admin" && user?.is_superuser
+                  activeSection.key === "common" && user?.is_superuser
                     ? [{
                         key: "group-system",
                         type: "group" as const,
@@ -696,7 +688,7 @@ export default function AppLayout() {
                 ))}
             onClick={({ key }) => {
               const target = [...ALL_VISIBLE_NAV, LOGS_NAV].find((item) => item.key === key);
-              if (target) nav(target.path);
+              if (target) goNavItem(target);
             }}
           />
 

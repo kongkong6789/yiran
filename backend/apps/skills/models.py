@@ -43,9 +43,20 @@ class UserSkill(models.Model):
 class SkillAsset(models.Model):
     """COS Skill 仓库中的上传文件(与个人启用列表分离)。"""
 
+    class Category(models.TextChoices):
+        BUSINESS = "business", "经营运营"
+        ANALYSIS = "analysis", "数据分析"
+        CONTENT = "content", "内容生产"
+        AUTOMATION = "automation", "自动化工具"
+        GENERAL = "general", "通用能力"
+
     class Visibility(models.TextChoices):
         SHARED = "shared", "全员共享"
         PRIVATE = "private", "仅上传者"
+
+    class Source(models.TextChoices):
+        UPLOAD = "upload", "本地上传"
+        SKILLHUB = "skillhub", "SkillHub"
 
     uploader = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -62,6 +73,25 @@ class SkillAsset(models.Model):
         verbose_name="责任人",
     )
     skill_id = models.CharField("Skill ID", max_length=64, db_index=True)
+    source = models.CharField(
+        "来源",
+        max_length=16,
+        choices=Source.choices,
+        default=Source.UPLOAD,
+        db_index=True,
+    )
+    source_url = models.URLField("来源地址", max_length=1024, blank=True, default="")
+    source_version = models.CharField("来源版本", max_length=64, blank=True, default="")
+    source_verified = models.BooleanField("来源内容已验证", default=False)
+    source_metadata = models.JSONField("来源元数据", default=dict, blank=True)
+    content_hash = models.CharField("内容指纹", max_length=64, blank=True, default="")
+    category = models.CharField(
+        "能力分类",
+        max_length=16,
+        choices=Category.choices,
+        default=Category.GENERAL,
+        db_index=True,
+    )
     visibility = models.CharField(
         "可见范围",
         max_length=16,
