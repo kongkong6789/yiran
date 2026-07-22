@@ -1155,7 +1155,6 @@ export default function Accounts() {
                   && target.id === selfUserId
                   && platformRoleOf(target) === "superuser"
                 )}
-                disabled={Boolean(target && target.id === selfUserId && platformRoleOf(target) === "superuser")}
               />
             </Form.Item>
           )}

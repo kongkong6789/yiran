@@ -185,6 +185,42 @@ class OrganizationOwnershipApiTests(APITestCase):
             ).exists(),
         )
 
+    def test_organization_admin_cannot_delete_member_shared_with_another_enterprise(self):
+        other_owner = User.objects.create_user("other-delete-owner", password="password123")
+        other_organization = create_personal_organization(
+            other_owner,
+            name="账号删除边界企业",
+        ).organization
+        assign_user_to_organization(
+            self.member,
+            other_organization,
+            role=OrganizationMembership.Role.MEMBER,
+            make_primary=False,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(
+            f"/api/auth/admin/users/{self.member.id}/",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.member.refresh_from_db()
+        self.assertTrue(self.member.is_active)
+        self.assertTrue(
+            OrganizationMembership.objects.filter(
+                user=self.member,
+                organization=self.organization,
+                is_active=True,
+            ).exists(),
+        )
+        self.assertTrue(
+            OrganizationMembership.objects.filter(
+                user=self.member,
+                organization=other_organization,
+                is_active=True,
+            ).exists(),
+        )
+
     def test_account_delete_rejects_self_owner_and_superuser(self):
         self.client.force_authenticate(self.admin)
         self_response = self.client.delete(

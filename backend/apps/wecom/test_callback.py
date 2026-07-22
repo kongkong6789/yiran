@@ -10,6 +10,8 @@ from django.test import override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+from apps.core.models import Organization, OrganizationMembership
+
 from .models import WeComApiConfig, WeComBindingSyncJob, WeComCallbackEvent
 from .event_processor import process_callback_event
 
@@ -36,7 +38,18 @@ class WeComCallbackTests(APITestCase):
     def setUp(self):
         self.user = User.objects.create_user("callback-owner", password="test-pass-123")
         self.token = Token.objects.create(user=self.user)
-        self.config = WeComApiConfig.objects.create(user=self.user, corp_id="ww-callback", agent_id="100001")
+        self.organization = Organization.objects.create(name="回调测试企业", created_by=self.user)
+        OrganizationMembership.objects.create(
+            organization=self.organization,
+            user=self.user,
+            role=OrganizationMembership.Role.OWNER,
+        )
+        self.config = WeComApiConfig.objects.create(
+            user=self.user,
+            organization=self.organization,
+            corp_id="ww-callback",
+            agent_id="100001",
+        )
         self.config.secret = "app-secret"
         self.config.save()
         self.config.ensure_callback_credentials()

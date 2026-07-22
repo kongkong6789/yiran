@@ -4,9 +4,11 @@ import { readFileSync } from "node:fs";
 
 import {
   createXiaoceRunId,
+  deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
   hasXiaoceRunTerminalMessage,
   isXiaoceRoom,
+  mentionMenuScrollTop,
   mergeXiaoceRunSnapshot,
   partitionXiaoceRooms,
   stabilizeXiaoceRunSnapshot,
@@ -65,6 +67,40 @@ test("finds prior Xiaoce tasks for @ references and excludes the active room", (
     findXiaoceReferenceRooms(rooms, "summer").map((room) => room.id),
     ["current"],
   );
+});
+
+test("keeps the active mention option inside the menu viewport", () => {
+  assert.equal(mentionMenuScrollTop(40, 120, 60, 32), 40);
+  assert.equal(mentionMenuScrollTop(40, 120, 12, 32), 12);
+  assert.equal(mentionMenuScrollTop(40, 120, 148, 32), 60);
+});
+
+test("deletes inserted mentions as one textarea unit", () => {
+  const tokens = ["@所有人", "@AI", "@alice", "@al"];
+
+  assert.deepEqual(
+    deleteAtomicMentionAtCaret("请 @alice 处理", 9, 9, "backward", tokens),
+    { value: "请 处理", caret: 2, deleted: "@alice " },
+  );
+  assert.deepEqual(
+    deleteAtomicMentionAtCaret("@AI 帮我", 0, 0, "forward", tokens),
+    { value: "帮我", caret: 0, deleted: "@AI " },
+  );
+  assert.deepEqual(
+    deleteAtomicMentionAtCaret("通知 @所有人 ", 3, 3, "forward", tokens),
+    { value: "通知 ", caret: 3, deleted: "@所有人 " },
+  );
+  assert.deepEqual(
+    deleteAtomicMentionAtCaret("引用 @「夏季上新 计划」 继续", 14, 14, "backward", tokens),
+    { value: "引用 继续", caret: 3, deleted: "@「夏季上新 计划」 " },
+  );
+});
+
+test("atomic mention deletion preserves selections and non-mention text", () => {
+  const tokens = ["@AI", "@al"];
+  assert.equal(deleteAtomicMentionAtCaret("@AI hello", 0, 3, "backward", tokens), null);
+  assert.equal(deleteAtomicMentionAtCaret("hello", 5, 5, "backward", tokens), null);
+  assert.equal(deleteAtomicMentionAtCaret("@alice ", 7, 7, "backward", tokens), null);
 });
 
 test("partitions multiple Xiaoce tasks without reordering either group", () => {
@@ -976,4 +1012,32 @@ test("Xiaoce process presentation has dedicated responsive styles", () => {
   assert.match(processStyles, /var\(--lc-border-light/);
   assert.match(processStyles, /var\(--lc-text-muted/);
   assert.match(processStyles, /var\(--lc-accent-blue/);
+});
+
+test("Xiaoce messages, live progress, and composer share one bounded content column", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const theme = readFileSync(
+    new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
+    "utf8",
+  );
+  const columnStyles = theme.slice(
+    theme.indexOf("/* Keep virtual rows"),
+    theme.indexOf(".xiaoce-chat-shell .collab-msg.ai"),
+  );
+
+  assert.match(source, /className="xiaoce-live-process-inner"/);
+  assert.match(source, /className="collab-agent-input-inner"/);
+  assert.match(columnStyles, /\.collab-virt-item/);
+  assert.match(columnStyles, /\.xiaoce-live-process-inner/);
+  assert.match(columnStyles, /\.collab-agent-input-inner/);
+  assert.match(columnStyles, /width:\s*min\(/);
+  assert.match(columnStyles, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
+  assert.match(columnStyles, /margin-inline:\s*auto/);
+  assert.match(theme, /--xiaoce-chat-scrollbar-width:\s*10px/);
+  assert.match(columnStyles, /\.collab-virt-item[\s\S]*padding-inline:\s*0/);
+  assert.match(
+    columnStyles,
+    /\.xiaoce-live-process[\s\S]*\.collab-agent-input[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
+  );
+  assert.match(theme, /@media \(max-width: 860px\)[\s\S]*--xiaoce-chat-column-gutter:\s*10px/);
 });
