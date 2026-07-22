@@ -1,5 +1,6 @@
 import { Avatar } from "antd";
 import type { Agent, CouncilHuman } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 export type RoundSeat =
   | { key: string; kind: "agent"; id: number; name: string; emoji: string; role?: string }
@@ -82,7 +83,7 @@ export default function RoundTable({
           >
             <Avatar
               size={52}
-              src={s.kind === "human" ? s.avatarUrl || undefined : undefined}
+              src={s.kind === "human" ? authenticatedAvatarUrl(s.avatarUrl) : undefined}
               className="rt-seat-avatar"
             >
               {s.kind === "agent" ? s.emoji : (s.name[0] || "?").toUpperCase()}

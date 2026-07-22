@@ -61,6 +61,11 @@ from .summary import (
     summary_payload,
     summary_suggestion,
 )
+from .translation import (
+    TranslationConfigurationError,
+    TranslationLLMError,
+    translate_message_batch,
+)
 from .xiaoce_progress import XiaoceProgressReporter, xiaoce_run_payload
 from .xiaoce_runs import (
     cancel_xiaoce_run,
@@ -1773,7 +1778,6 @@ def room_messages(request, room_id):
             "message": tip_payload,
             "room": room_payload,
         })
-
     if request.method == "POST":
         if room.status != "open":
             return Response({"ok": False, "error": "会话已结束，无法发送"}, status=400)
@@ -2057,6 +2061,157 @@ def room_messages(request, room_id):
         "changed": changed,
         "has_more_before": has_more_before,
         "room": room_meta,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def forward_room_messages(request, room_id):
+    """将当前账号可见的消息合并或逐条转发到目标会话。"""
+    touch_presence(request.user)
+    target_room = get_object_or_404(CollabRoom, id=room_id)
+    if target_room.status != "open":
+        return Response({"ok": False, "error": "目标会话已结束"}, status=400)
+    if not CollabParticipant.objects.filter(room=target_room, user=request.user).exists():
+        return Response({"ok": False, "error": "你不是目标会话成员"}, status=403)
+
+    mode = str(request.data.get("mode") or "separate").strip().lower()
+    if mode not in {"merge", "separate"}:
+        return Response({"ok": False, "error": "转发方式无效"}, status=400)
+    raw_ids = request.data.get("message_ids")
+    if not isinstance(raw_ids, list):
+        return Response({"ok": False, "error": "请选择要转发的消息"}, status=400)
+    try:
+        message_ids = list(dict.fromkeys(int(item) for item in raw_ids))
+    except (TypeError, ValueError):
+        return Response({"ok": False, "error": "消息编号无效"}, status=400)
+    if not message_ids or len(message_ids) > 50:
+        return Response({"ok": False, "error": "每次可转发 1 至 50 条消息"}, status=400)
+
+    rows = list(
+        CollabMessage.objects.select_related("room", "sender")
+        .filter(id__in=message_ids, status="normal")
+        .exclude(msg_type="system")
+    )
+    row_by_id = {row.id: row for row in rows}
+    ordered = [row_by_id[item] for item in message_ids if item in row_by_id]
+    if len(ordered) != len(message_ids):
+        return Response({"ok": False, "error": "部分消息不存在、已撤回或不可转发"}, status=400)
+
+    source_room_ids = {row.room_id for row in ordered}
+    joined_room_ids = set(
+        CollabParticipant.objects.filter(
+            user=request.user,
+            room_id__in=source_room_ids,
+        ).values_list("room_id", flat=True)
+    )
+    if joined_room_ids != source_room_ids:
+        return Response({"ok": False, "error": "无权转发其中部分消息"}, status=403)
+
+    bundle = []
+    all_attachments: list[dict] = []
+    for row in ordered:
+        payload = _message_payload(row)
+        attachments = list(row.attachments or [])
+        all_attachments.extend(attachments)
+        bundle.append({
+            "message_id": row.id,
+            "room_id": str(row.room_id),
+            "room_title": row.room.title or "会话",
+            "sender": payload["sender"],
+            "content": (row.content or "")[:4000],
+            "attachments": attachments,
+            "created_at": row.created_at.isoformat(),
+        })
+
+    created: list[CollabMessage] = []
+    with transaction.atomic():
+        if mode == "merge":
+            created.append(CollabMessage.objects.create(
+                room=target_room,
+                sender=request.user,
+                content=f"合并转发 · {len(bundle)} 条聊天记录",
+                attachments=all_attachments,
+                mentions=[],
+                msg_type="user",
+                meta={"forward_mode": "merge", "forward_bundle": bundle},
+            ))
+        else:
+            for source, item in zip(ordered, bundle):
+                created.append(CollabMessage.objects.create(
+                    room=target_room,
+                    sender=request.user,
+                    content=source.content or "",
+                    attachments=source.attachments or [],
+                    mentions=[],
+                    msg_type="user",
+                    meta={
+                        "forward_mode": "separate",
+                        "forwarded_from": {
+                            "message_id": source.id,
+                            "room_id": str(source.room_id),
+                            "room_title": source.room.title or "会话",
+                            "sender": item["sender"],
+                            "created_at": source.created_at.isoformat(),
+                        },
+                    },
+                ))
+        target_room.save(update_fields=["updated_at"])
+
+    nickname_map = _nickname_map(target_room)
+    payloads = [_message_payload(item, nickname_map=nickname_map) for item in created]
+    room_payload = _room_payload_lite(target_room, viewer=request.user)
+    ws_push.publish_sync(target_room.id, messages=payloads, room=room_payload)
+    return Response({
+        "ok": True,
+        "mode": mode,
+        "messages": payloads,
+        "room": room_payload,
+    }, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def translate_room_messages(request, room_id):
+    """Translate visible chat messages using the requesting user's configured LLM."""
+    touch_presence(request.user)
+    room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
+
+    raw_ids = request.data.get("message_ids")
+    if not isinstance(raw_ids, list):
+        return Response({"ok": False, "error": "请选择要翻译的消息"}, status=400)
+    try:
+        message_ids = list(dict.fromkeys(int(item) for item in raw_ids))
+    except (TypeError, ValueError):
+        return Response({"ok": False, "error": "消息编号无效"}, status=400)
+    if not message_ids or len(message_ids) > 30:
+        return Response({"ok": False, "error": "每次可翻译 1 至 30 条消息"}, status=400)
+
+    rows = list(
+        room.messages.filter(id__in=message_ids, status="normal")
+        .exclude(msg_type="system")
+        .only("id", "content")
+    )
+    row_by_id = {row.id: row for row in rows}
+    ordered = [row_by_id[item] for item in message_ids if item in row_by_id]
+    if len(ordered) != len(message_ids):
+        return Response({"ok": False, "error": "部分消息不存在、已撤回或不可翻译"}, status=400)
+
+    try:
+        translations, model = translate_message_batch(
+            [{"message_id": row.id, "text": row.content or ""} for row in ordered],
+            user=request.user,
+        )
+    except TranslationConfigurationError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    except TranslationLLMError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=502)
+    return Response({
+        "ok": True,
+        "model": model,
+        "translations": translations,
     })
 
 

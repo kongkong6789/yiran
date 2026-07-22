@@ -11874,11 +11874,17 @@ body {
 
 /* ========== 2026 工作台框架：顶部一级模块 + 左侧固定模块导航 ========== */
 .app-shell-topnav {
+  width: 100%;
+  max-width: 100vw;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
   background: #f6f8fb !important;
 }
 
 .app-layout-body {
+  width: 100%;
+  min-width: 0;
   height: calc(100vh - 68px);
   min-height: 0;
   overflow: hidden;
@@ -12023,6 +12029,42 @@ body {
   font-size: 10px;
 }
 
+.app-organization-dropdown .ant-dropdown-menu {
+  min-width: 286px;
+  max-width: min(340px, calc(100vw - 28px));
+  padding: 9px;
+  border: 1px solid rgba(219, 224, 234, 0.86);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 22px 60px rgba(26, 38, 64, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+
+.app-organization-dropdown .ant-dropdown-menu-item-group-title {
+  padding: 6px 10px 8px;
+  color: #929bad;
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: 0.08em;
+}
+
+.app-organization-dropdown .ant-dropdown-menu-item {
+  min-height: 52px;
+  margin: 2px 0;
+  padding: 7px 10px !important;
+  border-radius: 11px;
+}
+
+.app-organization-dropdown .ant-dropdown-menu-item:hover {
+  background: linear-gradient(135deg, #f6f3ff, #f9f8ff) !important;
+}
+
+.app-organization-dropdown .ant-dropdown-menu-item-icon {
+  color: #6f55e8 !important;
+  font-size: 14px !important;
+}
+
 .app-module-nav {
   display: flex;
   height: 100%;
@@ -12152,6 +12194,80 @@ body {
 .app-global-search .anticon {
   color: #8a94a8;
 }
+
+.app-search-popover .ant-popover-inner {
+  width: min(360px, calc(100vw - 28px));
+  padding: 8px;
+  border: 1px solid rgba(218, 223, 233, 0.86);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 22px 64px rgba(27, 39, 66, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: blur(24px) saturate(155%);
+  backdrop-filter: blur(24px) saturate(155%);
+}
+
+.app-search-results {
+  display: grid;
+  max-height: min(520px, calc(100vh - 110px));
+  gap: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-search-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 8px;
+}
+
+.app-search-results-head strong { color: #313a50; font-size: 11px; }
+.app-search-results-head span { color: #99a2b1; font-size: 10px; }
+
+.app-search-results > button {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 11px;
+  color: #4a556b;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  transition: transform 120ms ease, background-color 160ms ease;
+}
+
+.app-search-results > button:hover,
+.app-search-results > button:focus-visible {
+  outline: none;
+  background: linear-gradient(135deg, #f5f2ff, #f8f7ff);
+  transform: translateX(2px);
+}
+
+.app-search-result-icon {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 10px;
+  color: #6548da;
+  background: #eee9ff;
+}
+
+.app-search-result-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.app-search-result-copy strong { color: #303a50; font-size: 12px; }
+.app-search-result-copy small { color: #919aab; font-size: 10px; }
+.app-search-result-action { color: #806ce0; font-size: 10px; }
 
 .app-topnav-actions {
   gap: 1px !important;
@@ -12523,6 +12639,21 @@ body {
   background: #171b25;
 }
 
+:root[data-theme="dark"] .app-organization-dropdown .ant-dropdown-menu,
+:root[data-theme="dark"] .app-search-popover .ant-popover-inner {
+  border-color: #323846;
+  background: rgba(23, 27, 37, 0.96);
+}
+
+:root[data-theme="dark"] .app-organization-menu-item strong,
+:root[data-theme="dark"] .app-search-results-head strong,
+:root[data-theme="dark"] .app-search-result-copy strong { color: #eef0f5; }
+
+:root[data-theme="dark"] .app-search-results > button:hover,
+:root[data-theme="dark"] .app-search-results > button:focus-visible {
+  background: rgba(111, 85, 232, 0.16);
+}
+
 :root[data-theme="dark"] .app-module-nav button,
 :root[data-theme="dark"] .app-module-sidebar-menu .ant-menu-item {
   color: #aab1bf;
@@ -12638,7 +12769,18 @@ body {
   .app-topnav { height: 60px !important; }
   .app-module-nav { min-width: 0; }
   .app-module-nav button { min-width: 42px; font-size: 12px; }
-  .app-topnav-actions .app-topnav-icon { display: none; }}
+  .app-topnav-actions .app-topnav-icon { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-organization-switcher,
+  .app-module-nav button,
+  .app-search-results > button,
+  .app-mobile-subnav button {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 /* ===================== 日志中心（超级管理员） ===================== */
 .logs-page {
@@ -13904,4 +14046,10 @@ body {
 :root[data-theme="dark"] .ups-bill-plan em {
   color: var(--lc-status-info);
   background: var(--lc-status-info-bg);
+}
+
+/* 未上传头像时统一展示用户指定的良策 AI 品牌机器人。 */
+img[src*="liangce-default-avatar"] {
+  transform: scale(1.7);
+  transform-origin: 72% 16%;
 }

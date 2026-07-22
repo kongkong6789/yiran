@@ -1,4 +1,4 @@
-import { App, Avatar, Button, Dropdown, Grid, Input, Layout, Menu, Space, Tooltip, Typography } from "antd";
+import { App, Avatar, Button, Dropdown, Empty, Grid, Input, Layout, Menu, Popover, Space, Tooltip, Typography } from "antd";
 import {
   ApartmentOutlined,
   ApiOutlined,
@@ -39,14 +39,13 @@ import { brand } from "../theme/brand";
 import { useThemeMode } from "../theme/mode";
 import {
   clearAuthToken,
-  getAuthToken,
   getMe,
-  listOrganizations,
   logout,
   switchCurrentOrganization,
   type AuthUser,
   type OrganizationSummary,
 } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 const { Header, Content, Sider } = Layout;
 
@@ -265,6 +264,7 @@ export default function AppLayout() {
   const lastOpenSidebarWidthRef = useRef(232);
   const mobileSubnavRef = useRef<HTMLElement | null>(null);
   const [searchValue, setSearchValue] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [switchingOrganizationId, setSwitchingOrganizationId] = useState<number | null>(null);
 
@@ -272,9 +272,7 @@ export default function AppLayout() {
     getMe()
       .then((res) => {
         setUser(res.user);
-        void listOrganizations()
-          .then((organizationResponse) => setOrganizations(organizationResponse.results || []))
-          .catch(() => setOrganizations([]));
+        setOrganizations(res.user.organizations || []);
       })
       .catch(() => setUser(null));
   }, []);
@@ -337,10 +335,7 @@ export default function AppLayout() {
     try {
       const result = await switchCurrentOrganization(organizationId);
       setUser(result.user);
-      setOrganizations((previous) => previous.map((organization) => ({
-        ...organization,
-        isCurrent: organization.id === organizationId,
-      })));
+      setOrganizations(result.user.organizations || []);
       message.success(`已切换到 ${result.organization.name}`);
       window.setTimeout(() => window.location.reload(), 220);
     } catch (error: any) {
@@ -369,15 +364,21 @@ export default function AppLayout() {
             <span className="app-organization-menu-item">
               <span>
                 <strong>{organization.name}</strong>
-                <small>{organization.isCurrent || organization.id === user?.organization?.id ? "当前企业" : "点击切换"}</small>
+                <small>
+                  {organization.isCurrent || organization.id === user?.organization?.id
+                    ? "当前企业"
+                    : `${organization.role === "owner" ? "所有者" : organization.role === "admin" ? "管理员" : "成员"} · 点击切换`}
+                </small>
               </span>
             </span>
           ),
           disabled: Boolean(switchingOrganizationId),
         })),
       },
-      { type: "divider" as const },
-      { key: "manage-organizations", icon: <SettingOutlined />, label: "企业与成员管理" },
+      ...(user?.can_manage_accounts ? [
+        { type: "divider" as const },
+        { key: "manage-organizations", icon: <SettingOutlined />, label: "企业与成员管理" },
+      ] : []),
     ],
     onClick: ({ key }: { key: string }) => {
       if (key === "manage-organizations") {
@@ -387,7 +388,7 @@ export default function AppLayout() {
       const organizationId = Number(key.replace("organization-", ""));
       if (organizationId) void handleOrganizationSwitch(organizationId);
     },
-  }), [handleOrganizationSwitch, nav, organizationName, organizations, switchingOrganizationId, user?.organization?.id, user?.organization?.role]);
+  }), [handleOrganizationSwitch, nav, organizationName, organizations, switchingOrganizationId, user?.can_manage_accounts, user?.organization?.id, user?.organization?.role]);
 
   const toggleSidebar = useCallback(() => {
     setNavCollapsed((collapsed) => {
@@ -472,8 +473,52 @@ export default function AppLayout() {
     if (target) {
       nav(target.path);
       setSearchValue("");
+      setSearchOpen(false);
     }
   };
+
+  const searchResults = useMemo(() => {
+    const query = searchValue.trim().toLowerCase();
+    if (!query) return ALL_VISIBLE_NAV.slice(0, 6).map((item) => ({ item, section: "快捷入口" }));
+    return SECTIONS.flatMap((section) => section.groups.flatMap((group) => group.items.map((item) => ({
+      item,
+      section: `${section.label} · ${group.label}`,
+    })))).filter(({ item }) => (
+      item.label.toLowerCase().includes(query)
+      || item.path.toLowerCase().includes(query)
+      || item.keywords?.toLowerCase().includes(query)
+    )).slice(0, 8);
+  }, [searchValue]);
+
+  const searchPanel = (
+    <div className="app-search-results" role="listbox" aria-label="功能搜索建议">
+      <div className="app-search-results-head">
+        <strong>{searchValue.trim() ? "搜索结果" : "快捷入口"}</strong>
+        <span>{searchResults.length ? `${searchResults.length} 项` : "未找到"}</span>
+      </div>
+      {searchResults.length ? searchResults.map(({ item, section }) => (
+        <button
+          key={item.key}
+          type="button"
+          role="option"
+          onClick={() => {
+            nav(item.path);
+            setSearchValue("");
+            setSearchOpen(false);
+          }}
+        >
+          <span className="app-search-result-icon">{item.icon}</span>
+          <span className="app-search-result-copy">
+            <strong>{item.label}</strong>
+            <small>{section}</small>
+          </span>
+          <span className="app-search-result-action">前往</span>
+        </button>
+      )) : (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的功能" />
+      )}
+    </div>
+  );
 
   return (
     <Layout className="app-shell-topnav">
@@ -498,7 +543,7 @@ export default function AppLayout() {
         </div>
 
         {screens.xl !== false ? (
-          <Dropdown menu={organizationMenu} placement="bottomLeft" trigger={["click"]}>
+          <Dropdown menu={organizationMenu} placement="bottomLeft" trigger={["click"]} overlayClassName="app-organization-dropdown">
             <button
               type="button"
               className="app-organization-switcher"
@@ -535,16 +580,31 @@ export default function AppLayout() {
         </nav>
 
         {screens.xl !== false ? (
-          <Input
-            className="app-global-search"
-            value={searchValue}
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder="搜索功能、知识、应用…"
-            onChange={(event) => setSearchValue(event.target.value)}
-            onPressEnter={submitSearch}
-            aria-label="全局功能搜索"
-          />
+          <Popover
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+            content={searchPanel}
+            trigger="click"
+            placement="bottomRight"
+            arrow={false}
+            overlayClassName="app-search-popover"
+          >
+            <Input
+              className="app-global-search"
+              value={searchValue}
+              allowClear
+              prefix={<SearchOutlined />}
+              placeholder="搜索功能、知识、应用…"
+              onFocus={() => setSearchOpen(true)}
+              onChange={(event) => {
+                setSearchValue(event.target.value);
+                setSearchOpen(true);
+              }}
+              onPressEnter={submitSearch}
+              aria-label="全局功能搜索"
+              aria-expanded={searchOpen}
+            />
+          </Popover>
         ) : null}
 
         <Space className="app-topnav-actions" size={4}>
@@ -572,11 +632,7 @@ export default function AppLayout() {
             <button type="button" className="app-topnav-user" aria-label="打开账户菜单">
               <Avatar
                 size={32}
-                src={
-                  user?.avatar_url
-                    ? `${user.avatar_url}${user.avatar_url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getAuthToken() || "")}`
-                    : undefined
-                }
+                src={authenticatedAvatarUrl(user?.avatar_url)}
                 style={{ background: brand.gradientGold }}
               >
                 {displayName[0]?.toUpperCase()}

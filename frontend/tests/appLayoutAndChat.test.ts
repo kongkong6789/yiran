@@ -19,6 +19,10 @@ const liveSource = readFileSync(
   "utf8",
 );
 const monitorStyles = chatSource.slice(chatSource.indexOf("const css = `"));
+const avatarSource = readFileSync(
+  new URL("../src/utils/avatar.ts", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(start: string, end: string) {
   const from = layoutSource.indexOf(start);
@@ -73,7 +77,8 @@ test("workspace navigation supports resizing, responsive access, and organizatio
   assert.match(layoutSource, /sidebarHeaderMode/);
   assert.match(layoutSource, /setPointerCapture\(pointerId\)/);
   assert.match(layoutSource, /className="app-mobile-subnav"/);
-  assert.match(layoutSource, /listOrganizations/);
+  assert.match(layoutSource, /setOrganizations\(res\.user\.organizations \|\| \[\]\)/);
+  assert.doesNotMatch(layoutSource, /listOrganizations/);
   assert.match(layoutSource, /switchCurrentOrganization/);
   assert.match(layoutSource, /aria-label=\{`切换企业，当前为 \$\{organizationName\}`\}/);
 });
@@ -96,8 +101,15 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
   assert.match(chatSource, /const existingRoom = findDirectRoom\(username\)/);
   assert.match(chatSource, /primeRoomSnapshot\(room\)/);
   assert.doesNotMatch(chatSource, /EyeOutlined|旁观模式|管理员旁观|旁观者/);
-  assert.match(chatSource, /className="collab-avatar-preview-modal"/);
+  assert.match(chatSource, /trigger="click"/);
+  assert.match(chatSource, /aria-label=\{`查看 \$\{label\} 的资料`\}/);
+  assert.doesNotMatch(chatSource, /collab-avatar-preview-modal/);
   assert.match(chatSource, /消息会在这里直接打开，不再加载中转卡片/);
+  assert.match(chatSource, /DRAG_ATTACHMENT_TYPE/);
+  assert.match(chatSource, /forwardCollabMessages/);
+  assert.match(chatSource, /合并转发/);
+  assert.match(chatSource, /逐条转发/);
+  assert.doesNotMatch(chatSource, /collab-msg-flag-line/);
 });
 
 test("chat identity, feedback, and background activity stay polished", () => {
@@ -110,6 +122,22 @@ test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(liveSource, /const pageIsVisible = \(\) => document\.visibilityState === "visible"/);
   assert.match(liveSource, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
   assert.match(liveSource, /closeWebSocketQuietly\(ws\);[\s\S]*?ws = null;/);
+});
+
+test("chat supports stable bottom scrolling, team grouping, translation, and branded avatars", () => {
+  const bottomStateStart = chatSource.indexOf("atBottomStateChange={(bottom)");
+  const bottomStateEnd = chatSource.indexOf("startReached={()", bottomStateStart);
+  assert.ok(bottomStateStart >= 0 && bottomStateEnd > bottomStateStart);
+  assert.doesNotMatch(chatSource.slice(bottomStateStart, bottomStateEnd), /scrollToIndex/);
+  assert.match(monitorStyles, /\.collab-virtuoso\s*\{[\s\S]*?overscroll-behavior-y:\s*none;/);
+  assert.match(chatSource, /listTeams/);
+  assert.match(chatSource, /团队分组/);
+  assert.match(chatSource, /直接选择团队/);
+  assert.match(chatSource, /translateCollabMessages/);
+  assert.match(chatSource, /aria-pressed=\{autoTranslate\}/);
+  assert.match(chatSource, /中文自动译为英文，英文自动译为中文/);
+  assert.match(monitorStyles, /\.collab-message-menu \.ant-dropdown-menu-item-danger/);
+  assert.match(avatarSource, /liangce-default-avatar\.png/);
 });
 
 test("monitor owns a single complete scroll surface", () => {

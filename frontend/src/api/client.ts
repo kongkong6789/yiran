@@ -61,6 +61,8 @@ export interface AuthUser {
     roleLabel: string;
     canManage: boolean;
   } | null;
+  /** 当前账号真实加入且可切换的企业；不包含仅因平台管理权限而可管理的主体。 */
+  organizations?: OrganizationSummary[];
 }
 
 export const login = (body: { username: string; password: string }) =>
@@ -1998,6 +2000,16 @@ export interface CollabContextRoomRef {
   last_message_id?: number | null;
 }
 
+export interface CollabForwardBundleItem {
+  message_id: number;
+  room_id: string;
+  room_title: string;
+  sender: CollabUserBrief;
+  content: string;
+  attachments?: CollabMessage["attachments"];
+  created_at: string;
+}
+
 export interface CollabMessage {
   id: number;
   room_id: string;
@@ -2023,6 +2035,15 @@ export interface CollabMessage {
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
     context_rooms?: CollabContextRoomRef[];
+    forward_mode?: "merge" | "separate";
+    forward_bundle?: CollabForwardBundleItem[];
+    forwarded_from?: {
+      message_id: number;
+      room_id: string;
+      room_title: string;
+      sender: CollabUserBrief;
+      created_at: string;
+    };
     [key: string]: unknown;
   };
   msg_type?: "user" | "system" | "ai";
@@ -2045,6 +2066,13 @@ export interface CollabMessage {
   };
   created_at: string;
   updated_at?: string;
+}
+
+export interface CollabTranslation {
+  message_id: number;
+  source_language: "zh" | "en" | string;
+  target_language: "en" | "zh-CN" | string;
+  translated_text: string;
 }
 
 export interface CollabSummary {
@@ -2408,6 +2436,31 @@ export const deleteCollabMessage = (roomId: string, messageId: number) =>
       `/collab/rooms/${roomId}/messages/${messageId}/`,
     )
     .then((r) => r.data);
+
+export const forwardCollabMessages = (
+  targetRoomId: string,
+  messageIds: number[],
+  mode: "merge" | "separate",
+) => api.post<{
+  ok: boolean;
+  mode: "merge" | "separate";
+  messages: CollabMessage[];
+  room: Partial<CollabRoom>;
+  error?: string;
+}>(`/collab/rooms/${targetRoomId}/messages/forward/`, {
+  message_ids: messageIds,
+  mode,
+}).then((r) => r.data);
+
+export const translateCollabMessages = (roomId: string, messageIds: number[]) =>
+  api.post<{
+    ok: boolean;
+    model: string;
+    translations: CollabTranslation[];
+    error?: string;
+  }>(`/collab/rooms/${roomId}/messages/translate/`, {
+    message_ids: messageIds,
+  }).then((r) => r.data);
 
 export const sendCollabMessage = (
   id: string,

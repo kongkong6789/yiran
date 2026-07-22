@@ -38,7 +38,6 @@ import {
 import {
   createAdminUser,
   deleteAdminUser,
-  getAuthToken,
   getMe,
   listAdminUsers,
   listOrganizations,
@@ -53,6 +52,7 @@ import WeComNotificationManager from "../features/wecom-bindings/WeComNotificati
 import OrganizationManager from "../features/organizations/OrganizationManager";
 import TeamManager from "../features/teams/TeamManager";
 import { AvatarPreview } from "../components/AvatarPreview";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 function AccountEditModalHead({
   icon,
@@ -135,13 +135,6 @@ const PLATFORM_ROLE_OPTIONS: { value: PlatformRole; label: ReactNode }[] = [
     ),
   },
 ];
-
-const authenticatedAvatarUrl = (url?: string) => {
-  if (!url) return undefined;
-  const token = getAuthToken();
-  if (!token) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
-};
 
 export default function Accounts() {
   const { message, modal } = App.useApp();

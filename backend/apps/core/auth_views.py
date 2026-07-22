@@ -112,7 +112,18 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
     if settings is None:
         settings, _ = UserSettings.objects.get_or_create(user=user)
     display = (settings.display_name or "").strip() or user.username
-    membership = primary_membership(user)
+    memberships = list(
+        OrganizationMembership.objects.select_related("organization")
+        .filter(
+            user=user,
+            is_active=True,
+            organization__is_active=True,
+        )
+        .order_by("-is_primary", "organization__name", "organization_id")
+    )
+    membership = next((row for row in memberships if row.is_primary), None)
+    if membership is None and memberships:
+        membership = memberships[0]
     can_manage_accounts = bool(
         user.is_staff or user.is_superuser or is_organization_admin(user)
     )
@@ -137,6 +148,31 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
                 OrganizationMembership.Role.ADMIN,
             },
         } if membership else None,
+        # 顶栏主体切换只允许使用当前账号真实加入的企业。平台管理员也不能
+        # 因为拥有后台管理权限而在工作区看到或切换到未加入的主体。
+        "organizations": [
+            {
+                "id": row.organization_id,
+                "code": str(row.organization.code),
+                "name": row.organization.name,
+                "isActive": bool(row.organization.is_active),
+                "memberCount": row.organization.memberships.filter(
+                    is_active=True,
+                    user__is_active=True,
+                ).count(),
+                "role": row.role,
+                "canManage": row.role in {
+                    OrganizationMembership.Role.OWNER,
+                    OrganizationMembership.Role.ADMIN,
+                },
+                "isCurrent": row.id == membership.id if membership else False,
+                "canSwitch": True,
+                "createdAt": row.organization.created_at.isoformat()
+                if row.organization.created_at
+                else None,
+            }
+            for row in memberships
+        ],
     }
 
 
