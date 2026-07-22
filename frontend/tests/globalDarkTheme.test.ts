@@ -114,13 +114,17 @@ test("Agent memory debug output uses a semantic class", () => {
   assert.doesNotMatch(source, /#f5f5f5/);
 });
 
-test("data lake and audit pages expose stable dark-mode roots", () => {
-  const dataLake = readFileSync(new URL("../src/pages/DataLake.tsx", import.meta.url), "utf8");
-  const audit = readFileSync(new URL("../src/pages/Audit.tsx", import.meta.url), "utf8");
+test("enterprise data and consolidated audit surfaces expose stable theme roots", () => {
+  const enterpriseData = readFileSync(new URL("../src/features/knowledge/EnterpriseData.tsx", import.meta.url), "utf8");
+  const enterpriseCss = readFileSync(new URL("../src/features/knowledge/enterprise-data.css", import.meta.url), "utf8");
+  const logs = readFileSync(new URL("../src/pages/Logs.tsx", import.meta.url), "utf8");
 
-  assert.match(dataLake, /className="data-lake-page"/);
-  assert.match(audit, /className="audit-page"/);
-  assert.match(audit, /className="audit-debug"/);
+  assert.match(enterpriseData, /className="enterprise-data-page"/);
+  assert.match(enterpriseCss, /--enterprise-ink:\s*var\(--lc-text\)/);
+  assert.match(enterpriseCss, /--enterprise-surface:\s*var\(--lc-surface\)/);
+  assert.match(enterpriseCss, /--enterprise-soft:\s*var\(--lc-surface-raised\)/);
+  assert.match(logs, /className="logs-page"/);
+  assert.match(logs, /className="audit-debug"/);
 });
 
 test("every standard formal route has an explicit dark-mode root hook", () => {
@@ -135,10 +139,8 @@ test("every standard formal route has an explicit dark-mode root hook", () => {
     "skills-page",
     "connectors-page",
     "st-root",
-    "data-lake-page",
     "agents-page",
     "account-admin-page",
-    "audit-page",
     "section-hub",
     "login-page",
   ];

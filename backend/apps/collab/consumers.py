@@ -48,6 +48,30 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({"event": "pong", "data": {}})
 
     async def room_push(self, event):
+        event_room_id = str(event.get("room_id") or "")
+        if event_room_id != self.room_id:
+            logger.warning(
+                "collab ws drop cross-room event connected_room=%s event_room=%s user=%s",
+                self.room_id,
+                event_room_id or None,
+                getattr(self.scope.get("user"), "id", None),
+            )
+            return
+
+        # Access may change after the socket was accepted (for example, a
+        # participant is removed).  Re-check at delivery time so a stale
+        # connection cannot keep receiving messages or Xiaoce failure updates.
+        user = self.scope.get("user")
+        if not await self._can_access(user, self.room_id):
+            logger.warning(
+                "collab ws revoke: no access room=%s user=%s",
+                self.room_id,
+                getattr(user, "id", None),
+            )
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            await self.close(code=4403)
+            return
+
         await self.send_json({
             "event": event.get("event") or "sync",
             "data": event.get("data") or {},
@@ -55,9 +79,17 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
 
     @database_sync_to_async
     def _can_access(self, user, room_id: str) -> bool:
+        from django.contrib.auth import get_user_model
+
         from .models import CollabRoom
         from .views import _can_access_room
 
+        user_id = getattr(user, "id", None)
+        if not user_id or not get_user_model().objects.filter(
+            id=user_id,
+            is_active=True,
+        ).exists():
+            return False
         try:
             room = CollabRoom.objects.get(id=room_id)
         except CollabRoom.DoesNotExist:

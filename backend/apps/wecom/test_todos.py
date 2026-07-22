@@ -97,13 +97,14 @@ class WeComTodoTests(APITestCase):
         self.client.force_authenticate(self.member)
         platform_list = self.client.get("/api/wecom/todos/?view=assigned")
         self.assertEqual(platform_list.status_code, 200)
-        denied_sync = self.client.post("/api/wecom/todos/", {
-            "title": "仅保留平台", "assigneeIds": [self.member.id],
-            "wecomContactIds": [self.wecom_only_contact.id], "syncToWeCom": True,
-        }, format="json")
+        with patch("apps.wecom.todo_sync_service.WeComCliClient") as client_class:
+            denied_sync = self.client.post("/api/wecom/todos/", {
+                "title": "仅保留平台", "assigneeIds": [self.member.id],
+                "wecomContactIds": [self.wecom_only_contact.id], "syncToWeCom": True,
+            }, format="json")
         self.assertEqual(denied_sync.status_code, 201)
-        self.assertEqual(denied_sync.data["syncStatus"], WorkTodo.SyncStatus.PENDING)
-        process_due_work_todo_syncs()
+        self.assertEqual(denied_sync.data["syncStatus"], WorkTodo.SyncStatus.FAILED)
+        client_class.assert_not_called()
         self.assertEqual(
             WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM).sync_error_code,
             "not_authorized",
@@ -173,8 +174,7 @@ class WeComTodoTests(APITestCase):
             "syncToWeCom": True,
         }, format="json")
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["syncStatus"], WorkTodo.SyncStatus.PENDING)
-        process_due_work_todo_syncs()
+        self.assertEqual(response.data["syncStatus"], WorkTodo.SyncStatus.SYNCED)
         platform_row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.PLATFORM)
         row = WorkTodo.objects.get(recipient_type=WorkTodo.RecipientType.WECOM)
         self.assertEqual(platform_row.assignee, self.member)

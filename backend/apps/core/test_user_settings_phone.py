@@ -35,11 +35,13 @@ class UserSettingsPhoneTests(TransactionTestCase):
         self.assertEqual(response.data["wecom_binding"]["status"], "pending")
 
     def test_existing_binding_pending_reverification_is_not_presented_as_unbound(self):
-        UserWeComBinding.objects.create(
+        UserWeComBinding.objects.update_or_create(
             platform_user=self.user,
-            wecom_config=self.config,
-            wecom_userid="existing-userid",
-            status=UserWeComBinding.Status.PENDING,
+            defaults={
+                "wecom_config": self.config,
+                "wecom_userid": "existing-userid",
+                "status": UserWeComBinding.Status.PENDING,
+            },
         )
 
         response = self.client.get("/api/auth/settings/")

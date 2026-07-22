@@ -178,6 +178,101 @@ export function findXiaoceReferenceRooms<T extends XiaoceRoomLike>(
 }
 
 
+export function mentionMenuScrollTop(
+  currentScrollTop: number,
+  viewportHeight: number,
+  optionTop: number,
+  optionHeight: number,
+): number {
+  const scrollTop = Math.max(0, currentScrollTop);
+  const height = Math.max(0, viewportHeight);
+  const top = Math.max(0, optionTop);
+  const bottom = top + Math.max(0, optionHeight);
+  if (height === 0) return scrollTop;
+  if (top < scrollTop) return top;
+  if (bottom > scrollTop + height) return Math.max(0, bottom - height);
+  return scrollTop;
+}
+
+
+export type AtomicMentionDeletion = {
+  value: string;
+  caret: number;
+  deleted: string;
+};
+
+type MentionRange = { start: number; end: number };
+
+function isMentionEndBoundary(character: string | undefined): boolean {
+  return character === undefined || /[\s,.!?;:，。！？；：、()[\]{}<>"'“”‘’]/u.test(character);
+}
+
+function mentionRanges(value: string, mentionTokens: readonly string[]): MentionRange[] {
+  const ranges = new Map<string, MentionRange>();
+  const tokens = [...new Set(
+    mentionTokens
+      .map((token) => token.trimEnd())
+      .filter((token) => token.startsWith("@") && token.length > 1),
+  )].sort((a, b) => b.length - a.length);
+
+  for (const token of tokens) {
+    let from = 0;
+    while (from < value.length) {
+      const start = value.indexOf(token, from);
+      if (start < 0) break;
+      const end = start + token.length;
+      if (isMentionEndBoundary(value[end])) {
+        ranges.set(`${start}:${end}`, { start, end });
+      }
+      from = start + 1;
+    }
+  }
+
+  const conversationPattern = /@「[^」\r\n]+」/gu;
+  for (const match of value.matchAll(conversationPattern)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    ranges.set(`${start}:${end}`, { start, end });
+  }
+
+  return [...ranges.values()].sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+/**
+ * Treat an inserted mention as one textarea editing unit. A non-collapsed selection
+ * intentionally returns null so the browser can keep its normal selection behavior.
+ */
+export function deleteAtomicMentionAtCaret(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+  direction: "backward" | "forward",
+  mentionTokens: readonly string[],
+): AtomicMentionDeletion | null {
+  const start = Math.max(0, Math.min(value.length, Math.floor(selectionStart)));
+  const end = Math.max(0, Math.min(value.length, Math.floor(selectionEnd)));
+  if (start !== end) return null;
+
+  const caret = start;
+  const range = mentionRanges(value, mentionTokens).find((candidate) => (
+    direction === "backward"
+      ? (
+        (caret > candidate.start && caret <= candidate.end)
+        || (caret === candidate.end + 1 && value[candidate.end] === " ")
+      )
+      : caret >= candidate.start && caret < candidate.end
+  ));
+  if (!range) return null;
+
+  const deleteEnd = value[range.end] === " " ? range.end + 1 : range.end;
+  return {
+    value: `${value.slice(0, range.start)}${value.slice(deleteEnd)}`,
+    caret: range.start,
+    deleted: value.slice(range.start, deleteEnd),
+  };
+}
+
+
 export function createXiaoceRunId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();

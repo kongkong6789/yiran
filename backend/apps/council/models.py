@@ -159,7 +159,10 @@ class MeetingInvite(models.Model):
         verbose_name_plural = "会议邀请"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["user", "status", "-created_at"]),
+            models.Index(
+                fields=["user", "status", "-created_at"],
+                name="council_mee_user_id_7f9a1c_idx",
+            ),
         ]
         constraints = [
             models.UniqueConstraint(fields=["meeting", "user"], name="uniq_council_invite_meeting_user"),

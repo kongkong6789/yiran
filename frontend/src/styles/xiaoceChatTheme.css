@@ -1,7 +1,36 @@
 .xiaoce-chat-shell {
+  --xiaoce-chat-column-width: 800px;
+  --xiaoce-chat-column-gutter: 18px;
+  /* Matches the app-wide WebKit scrollbar width in index.css. */
+  --xiaoce-chat-scrollbar-width: 10px;
   color: var(--lc-ink);
   background: var(--lc-canvas);
   transition: color 180ms ease, background-color 180ms ease;
+}
+
+/* Keep virtual rows, live progress and the composer on one responsive column. */
+.xiaoce-chat-shell .collab-virt-item,
+.xiaoce-chat-shell .xiaoce-live-process-inner,
+.xiaoce-chat-shell .collab-agent-input-inner {
+  width: min(
+    var(--xiaoce-chat-column-width),
+    calc(100% - var(--xiaoce-chat-column-gutter) - var(--xiaoce-chat-column-gutter))
+  );
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.xiaoce-chat-shell .collab-virt-item {
+  padding-inline: 0;
+}
+
+/* Virtuoso's viewport loses this width to its vertical scrollbar. Reserve the
+   same right-side gutter for the sibling progress and composer rows so their
+   percentage widths and centering use the identical content box. */
+.xiaoce-chat-shell .xiaoce-live-process,
+.xiaoce-chat-shell .collab-agent-input {
+  padding-left: 0;
+  padding-right: var(--xiaoce-chat-scrollbar-width);
 }
 
 .xiaoce-chat-shell .collab-msg.ai {
@@ -236,5 +265,11 @@
 @media (prefers-reduced-motion: reduce) {
   .xiaoce-chat-shell {
     transition: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .xiaoce-chat-shell {
+    --xiaoce-chat-column-gutter: 10px;
   }
 }

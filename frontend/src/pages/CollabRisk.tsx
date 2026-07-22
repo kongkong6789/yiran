@@ -74,12 +74,14 @@ import {
   applyRoomMutation,
   beginRoomSelection,
   createXiaoceRunId,
+  deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
   isRoomAsyncResultCurrent,
   isRoomSelectionCurrent,
   isXiaoceTaskRunning,
   isXiaoceRoom,
   mergeOlderRoomPage,
+  mentionMenuScrollTop,
   mergeXiaoceRunSnapshot,
   mergeXiaoceRunSnapshots,
   partitionXiaoceRooms,
@@ -830,6 +832,7 @@ export default function CollabRisk({
   const [forwardSubmitting, setForwardSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -2785,6 +2788,11 @@ export default function CollabRisk({
 
   const onDraftChange = (value: string, caret?: number | null) => {
     setDraft(value);
+    const contextRoom = referencedRoomRef.current;
+    if (contextRoom) {
+      const contextTitle = contextRoom.display_title || contextRoom.title || "小策bot 历史任务";
+      if (!value.includes(`@「${contextTitle}」`)) setReferencedRoom(null);
+    }
     // Ant Design TextArea 的 onChange 里 selectionStart 偶发仍是 0；追加输入时按末尾算
     const resolved =
       caret == null
@@ -3461,9 +3469,29 @@ export default function CollabRisk({
     [mention, activeRoom, me, xiaoceRoom, rooms, activeId],
   );
 
+  const atomicMentionTokens = useMemo(() => [
+    "@所有人",
+    "@AI",
+    ...(activeRoom?.participants || []).map((participant) => `@${participant.username}`),
+  ], [activeRoom]);
+
   useEffect(() => {
     setMentionIndex(0);
   }, [mention?.query, mentionOptions.length]);
+
+  useEffect(() => {
+    const menu = mentionMenuRef.current;
+    if (!menu || mentionIndex < 0 || mentionIndex >= mentionOptions.length) return;
+    const option = menu.children.item(mentionIndex) as HTMLElement | null;
+    if (!option) return;
+    const nextScrollTop = mentionMenuScrollTop(
+      menu.scrollTop,
+      menu.clientHeight,
+      option.offsetTop,
+      option.offsetHeight,
+    );
+    if (nextScrollTop !== menu.scrollTop) menu.scrollTop = nextScrollTop;
+  }, [mention?.query, mentionIndex, mentionOptions.length]);
 
   const jumpEvidence = (mid: number) => {
     setHighlightId(mid);
@@ -4513,13 +4541,15 @@ export default function CollabRisk({
 
             {xiaoceBusy && activeXiaoceRun ? (
               <div className="xiaoce-live-process">
-                <span className="xiaoce-live-process-label">小策bot</span>
-                <XiaoceProcess
-                  steps={activeXiaoceRun.progress_steps}
-                  status={activeXiaoceRun.status}
-                  live
-                  errorMessage={activeXiaoceRun.error_message}
-                />
+                <div className="xiaoce-live-process-inner">
+                  <span className="xiaoce-live-process-label">小策bot</span>
+                  <XiaoceProcess
+                    steps={activeXiaoceRun.progress_steps}
+                    status={activeXiaoceRun.status}
+                    live
+                    errorMessage={activeXiaoceRun.error_message}
+                  />
+                </div>
               </div>
             ) : null}
 
@@ -4546,6 +4576,7 @@ export default function CollabRisk({
                   <strong>松开即可添加到当前会话</strong>
                 </div>
               ) : null}
+              <div className="collab-agent-input-inner">
               {referencedRoom ? (
                 <div className="collab-context-composer">
                   <HistoryOutlined aria-hidden />
@@ -4634,7 +4665,7 @@ export default function CollabRisk({
                 className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}${mention && mentionOptions.length > 0 ? " has-mention" : ""}`}
               >
                 {mention && mentionOptions.length > 0 ? (
-                  <div className="collab-mention-menu" role="listbox">
+                  <div ref={mentionMenuRef} className="collab-mention-menu" role="listbox">
                     {mentionOptions.map((opt, idx) => (
                       <button
                         key={opt.id}
@@ -4788,7 +4819,9 @@ export default function CollabRisk({
                     }, 0);
                   }}
                   onKeyDown={(e) => {
-                    if (mention && mentionOptions.length > 0) {
+                    const nativeEvent = e.nativeEvent as KeyboardEvent;
+                    const isComposing = nativeEvent.isComposing || nativeEvent.keyCode === 229;
+                    if (!isComposing && mention && mentionOptions.length > 0) {
                       if (e.key === "ArrowDown") {
                         e.preventDefault();
                         setMentionIndex((i) => (i + 1) % mentionOptions.length);
@@ -4815,7 +4848,29 @@ export default function CollabRisk({
                         return;
                       }
                     }
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (
+                      !isComposing
+                      && (e.key === "Backspace" || e.key === "Delete")
+                    ) {
+                      const el = e.currentTarget;
+                      const edit = deleteAtomicMentionAtCaret(
+                        el.value,
+                        el.selectionStart ?? el.value.length,
+                        el.selectionEnd ?? el.value.length,
+                        e.key === "Backspace" ? "backward" : "forward",
+                        atomicMentionTokens,
+                      );
+                      if (edit) {
+                        e.preventDefault();
+                        onDraftChange(edit.value, edit.caret);
+                        requestAnimationFrame(() => {
+                          el.focus();
+                          el.setSelectionRange(edit.caret, edit.caret);
+                        });
+                        return;
+                      }
+                    }
+                    if (!isComposing && e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();
                     }
@@ -4872,6 +4927,7 @@ export default function CollabRisk({
                     )}
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           </>
@@ -6347,6 +6403,12 @@ const css = `
   position: relative;
   z-index: 40;
   overflow: visible;
+}
+.collab-agent-input-inner {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
 }
 .collab-reply-composer {
   display: flex;

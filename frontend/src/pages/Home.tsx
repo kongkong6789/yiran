@@ -45,7 +45,7 @@ const DOMAINS: Domain[] = [
   {
     name: "连接", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
     color: "#ef5ba5", route: "/connectors", countLabel: "64 个节点",
-    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 18,
+    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
   },
   {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
@@ -55,7 +55,7 @@ const DOMAINS: Domain[] = [
   {
     name: "图谱", sub: "Graph", desc: "实体关系 · 因果推理",
     color: "#8b63ff", route: "/ontology", countLabel: "关系中枢",
-    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 10,
+    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 9,
   },
 ];
 

@@ -161,6 +161,8 @@ class NasDownloadEndpointTests(TestCase):
 
 
 class McpEnterpriseIsolationTests(TestCase):
+    server_id = "wecom"
+
     def setUp(self):
         User = get_user_model()
         self.owner = User.objects.create_user(username="mcp-org-owner")
@@ -182,49 +184,58 @@ class McpEnterpriseIsolationTests(TestCase):
         McpServerConfig.objects.create(
             organization=self.organization,
             user=self.owner,
-            server_id="jackyun",
+            server_id=self.server_id,
             url="https://enterprise-a.example/mcp",
         )
         McpServerConfig.objects.create(
             organization=self.other_organization,
             user=self.other_owner,
-            server_id="jackyun",
+            server_id=self.server_id,
             url="https://enterprise-b.example/mcp",
         )
         self.client = APIClient()
 
     def test_member_reads_enterprise_config_but_cannot_modify_it(self):
         self.client.force_authenticate(self.member)
-        response = self.client.get("/api/mcp/servers/jackyun/")
+        response = self.client.get(f"/api/mcp/servers/{self.server_id}/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["url"], "https://enterprise-a.example/mcp")
         self.assertEqual(response.data["organization_id"], self.organization.id)
         self.assertFalse(response.data["can_manage"])
 
         update = self.client.patch(
-            "/api/mcp/servers/jackyun/",
+            f"/api/mcp/servers/{self.server_id}/",
             {"url": "https://forbidden.example/mcp"},
             format="json",
         )
         self.assertEqual(update.status_code, 403)
         self.assertEqual(
-            McpServerConfig.objects.get(organization=self.organization, server_id="jackyun").url,
+            McpServerConfig.objects.get(
+                organization=self.organization,
+                server_id=self.server_id,
+            ).url,
             "https://enterprise-a.example/mcp",
         )
 
     def test_owner_update_does_not_modify_another_enterprise(self):
         self.client.force_authenticate(self.owner)
         response = self.client.patch(
-            "/api/mcp/servers/jackyun/",
+            f"/api/mcp/servers/{self.server_id}/",
             {"url": "https://enterprise-a-new.example/mcp", "enabled": True},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            McpServerConfig.objects.get(organization=self.organization, server_id="jackyun").url,
+            McpServerConfig.objects.get(
+                organization=self.organization,
+                server_id=self.server_id,
+            ).url,
             "https://enterprise-a-new.example/mcp",
         )
         self.assertEqual(
-            McpServerConfig.objects.get(organization=self.other_organization, server_id="jackyun").url,
+            McpServerConfig.objects.get(
+                organization=self.other_organization,
+                server_id=self.server_id,
+            ).url,
             "https://enterprise-b.example/mcp",
         )
