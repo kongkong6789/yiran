@@ -93,7 +93,7 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(by_id[task["id"]]["display_title"], "小策bot（GMV运算处理任务）")
         self.assertEqual(by_id[normal["id"]]["display_title"], self.colleague.username)
 
-    def test_staff_observer_sees_active_room_run_while_ordinary_outsider_is_isolated(self):
+    def test_xiaoce_task_is_visible_only_to_its_owner(self):
         trigger = CollabMessage.objects.create(
             room=self.room,
             sender=self.user,
@@ -107,26 +107,49 @@ class XiaoceApiTests(APITestCase):
             trigger_message=trigger,
         )
 
-        self.client.force_authenticate(self.staff)
-        detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
-        listed = self.client.get("/api/collab/rooms/")
-        listed_room = next(row for row in listed.data["results"] if row["id"] == str(self.room.id))
-
-        self.assertEqual(detail.status_code, 200)
-        self.assertIsNotNone(detail.data["active_xiaoce_run"])
-        self.assertEqual(detail.data["active_xiaoce_run"]["id"], str(run.id))
-        self.assertEqual(detail.data["active_xiaoce_run"]["status"], "running")
-        self.assertEqual(listed_room["active_xiaoce_run"]["id"], str(run.id))
-
-        self.client.force_authenticate(self.other)
-        self.assertEqual(
-            self.client.get(f"/api/collab/rooms/{self.room.id}/").status_code,
-            403,
+        owner_detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
+        owner_list = self.client.get("/api/collab/rooms/")
+        owner_room = next(
+            row for row in owner_list.data["results"]
+            if row["id"] == str(self.room.id)
         )
-        ordinary_ids = {
-            row["id"] for row in self.client.get("/api/collab/rooms/").data["results"]
-        }
-        self.assertNotIn(str(self.room.id), ordinary_ids)
+        self.assertEqual(owner_detail.status_code, 200)
+        self.assertEqual(owner_detail.data["active_xiaoce_run"]["id"], str(run.id))
+        self.assertEqual(owner_room["active_xiaoce_run"]["id"], str(run.id))
+
+        # 管理员、普通外部用户，以及共享 bot 账号本身均不能读取。
+        for outsider in (self.staff, self.other, self.bot):
+            self.client.force_authenticate(outsider)
+            self.assertEqual(
+                self.client.get(f"/api/collab/rooms/{self.room.id}/").status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.get(f"/api/collab/rooms/{self.room.id}/messages/").status_code,
+                403,
+            )
+            self.assertEqual(
+                self.client.post(f"/api/collab/rooms/{self.room.id}/read/").status_code,
+                403,
+            )
+            listed_ids = {
+                row["id"]
+                for row in self.client.get("/api/collab/rooms/").data["results"]
+            }
+            self.assertNotIn(str(self.room.id), listed_ids)
+            searched_ids = {
+                row["room"]["id"]
+                for row in self.client.get(
+                    "/api/collab/search/",
+                    {"q": "long running task"},
+                ).data["results"]
+            }
+            self.assertNotIn(str(self.room.id), searched_ids)
+            unread_ids = {
+                row["room_id"]
+                for row in self.client.get("/api/collab/unread/").data["results"]
+            }
+            self.assertNotIn(str(self.room.id), unread_ids)
 
     def test_existing_room_endpoint_reuses_the_latest_xiaoce_task(self):
         first = self.client.post(self.tasks_url, {"title": "任务一"}, format="json").data

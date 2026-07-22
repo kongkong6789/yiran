@@ -149,21 +149,25 @@ def _user_brief(
 
 
 def _can_access_room(user, room: CollabRoom) -> bool:
-    if CollabParticipant.objects.filter(room=room, user=user).exists():
-        return True
-    # 管理员仅可旁观小策任务运行；普通私聊和群聊仍保持成员隔离。
-    return _is_admin(user) and _is_xiaoce_dm(room)
+    if _is_xiaoce_dm(room):
+        # 小策会话是用户私有数据：共享 bot 账号和平台管理员都不能代替创建者读取。
+        return bool(
+            getattr(user, "is_authenticated", False)
+            and room.created_by_id == user.id
+        )
+    return CollabParticipant.objects.filter(room=room, user=user).exists()
 
 
 def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
     if viewer is None or not getattr(viewer, "is_authenticated", False):
         return None
+    if not _can_access_room(viewer, room):
+        return None
     query = XiaoceRun.objects.filter(
         room=room,
+        user=viewer,
         status=XiaoceRun.Status.RUNNING,
     )
-    if not _is_admin(viewer):
-        query = query.filter(user=viewer)
     run = query.order_by("-created_at").first()
     return xiaoce_run_payload(run)
 
@@ -329,10 +333,9 @@ def _room_payloads_for_list(rooms: list[CollabRoom], *, viewer) -> list[dict]:
     if viewer is not None:
         run_query = XiaoceRun.objects.filter(
             room_id__in=room_ids,
+            user=viewer,
             status=XiaoceRun.Status.RUNNING,
         )
-        if not _is_admin(viewer):
-            run_query = run_query.filter(user=viewer)
         for run in run_query.order_by("-created_at"):
             if run.room_id not in xiaoce_run_by_room:
                 xiaoce_run_by_room[run.room_id] = xiaoce_run_payload(run)
@@ -810,6 +813,23 @@ def _is_xiaoce_dm(room: CollabRoom) -> bool:
     ).exists()
 
 
+def _accessible_rooms(user):
+    """返回当前用户可读的会话。
+
+    普通会话按成员隔离；小策单聊进一步按创建者隔离，防止共享 bot
+    账号、意外参与者或管理员权限读取他人任务。
+    """
+    xiaoce_room_ids = CollabRoom.objects.filter(
+        room_kind="dm",
+        participants__user__username=XIAOCE_BOT_USERNAME,
+    ).values("id")
+    return (
+        CollabRoom.objects.filter(participants__user=user)
+        .filter(Q(created_by=user) | ~Q(id__in=xiaoce_room_ids))
+        .distinct()
+    )
+
+
 def _parse_context_room_ids(raw) -> list[uuid.UUID]:
     """解析前端显式选中的小策历史任务。"""
     if raw in (None, "", []):
@@ -857,6 +877,7 @@ def _resolve_xiaoce_context_rooms(user, current_room: CollabRoom, raw) -> list[C
         } if candidate else set()
         if (
             candidate is None
+            or candidate.created_by_id != user.id
             or user.id not in participant_ids
             or XIAOCE_BOT_USERNAME not in participant_names
         ):
@@ -930,7 +951,11 @@ def _xiaoce_context_reference_blocks(run: XiaoceRun) -> list[str]:
             continue
         participant_ids = {item.user_id for item in room.participants.all()}
         participant_names = {item.user.username for item in room.participants.all()}
-        if run.user_id not in participant_ids or XIAOCE_BOT_USERNAME not in participant_names:
+        if (
+            room.created_by_id != run.user_id
+            or run.user_id not in participant_ids
+            or XIAOCE_BOT_USERNAME not in participant_names
+        ):
             continue
 
         base = (
@@ -1351,14 +1376,7 @@ def room_list(request):
             status=201,
         )
 
-    # 普通会话只对实际成员可见；管理员额外保留小策任务的运行观察能力。
-    access_filter = Q(participants__user=request.user)
-    if _is_admin(request.user):
-        access_filter |= Q(
-            room_kind="dm",
-            participants__user__username=XIAOCE_BOT_USERNAME,
-        )
-    qs = CollabRoom.objects.filter(access_filter).distinct()
+    qs = _accessible_rooms(request.user)
     status_filter = str(request.query_params.get("status") or "").strip()
     if status_filter in ("open", "closed"):
         qs = qs.filter(status=status_filter)
@@ -1421,13 +1439,7 @@ def search_messages(request):
     if not query:
         return Response({"query": "", "count": 0, "has_more": False, "results": []})
 
-    access_filter = Q(participants__user=request.user)
-    if _is_admin(request.user):
-        access_filter |= Q(
-            room_kind="dm",
-            participants__user__username=XIAOCE_BOT_USERNAME,
-        )
-    accessible_rooms = CollabRoom.objects.filter(access_filter).distinct()
+    accessible_rooms = _accessible_rooms(request.user)
 
     room_match_filter = (
         Q(title__icontains=query)
@@ -1609,13 +1621,13 @@ def room_mark_read(request, room_id):
     """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     participant = CollabParticipant.objects.filter(room=room, user=request.user).only(
         "last_read_message_id",
     ).first()
     if participant is None:
-        if not _is_admin(request.user):
-            return Response({"ok": False, "error": "无权访问该会话"}, status=403)
-        return Response({"ok": True, "unread_count": 0, "last_read_message_id": 0})
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     previous_id = int(participant.last_read_message_id or 0)
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
@@ -1674,7 +1686,10 @@ def unread_summary(request):
     """顶栏铃铛：未读协作消息汇总。"""
     touch_presence(request.user)
     parts = list(
-        CollabParticipant.objects.filter(user=request.user)
+        CollabParticipant.objects.filter(
+            user=request.user,
+            room__in=_accessible_rooms(request.user),
+        )
         .select_related("room", "room__created_by")
     )
     items = []
@@ -1711,6 +1726,8 @@ def room_members(request, room_id):
     """群聊拉人（POST）/ 踢人（DELETE）/ 修改群内名称（PATCH）。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom.objects.select_related("created_by"), id=room_id)
+    if _is_xiaoce_dm(room) and not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
     if not is_member and not _is_admin(request.user):
         return Response({"ok": False, "error": "仅群成员可操作"}, status=403)
