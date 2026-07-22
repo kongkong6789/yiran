@@ -16,6 +16,27 @@ from django.conf import settings
 from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
 
 
+_LLM_HTTP_HEADERS = {
+    # Cloudflare 1010 会拦默认 Python-urllib / 过简 UA
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; LiangceAgent/1.0; "
+        "+https://github.com/kongkong6789/yiran)"
+    ),
+    "Accept": "application/json",
+}
+
+
+def _llm_request_headers(api_key: str, *, accept: str | None = None) -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        **_LLM_HTTP_HEADERS,
+    }
+    if accept:
+        headers["Accept"] = accept
+    return headers
+
+
 def _resolve_credentials(user=None) -> tuple[str, str, str]:
     """解析 LLM 凭据: 用户个人设置优先,否则回退全局 .env。"""
     if user is not None and getattr(user, "is_authenticated", False):
@@ -252,8 +273,12 @@ def chat_messages_result(
         and (
             "LLM HTTP 401" in error
             or "LLM HTTP 403" in error
+            or "LLM HTTP 502" in error
+            or "LLM HTTP 503" in error
+            or "LLM network error" in error
             or "invalid token" in error.lower()
             or "invalid api key" in error.lower()
+            or "authentication" in error.lower()
         )
     )
     if personal_auth_failed:
@@ -413,12 +438,7 @@ def _chat_completions_stream_once(
     request = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": "LiangceAgent/1.0 (OpenAI-compatible)",
-            "Accept": "text/event-stream",
-        },
+        headers=_llm_request_headers(api_key, accept="text/event-stream"),
     )
     try:
         parts: list[str] = []
@@ -499,13 +519,7 @@ def _chat_completions_once(
     req = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            # 部分网关(Cloudflare 1010)会拦默认 Python-urllib UA
-            "User-Agent": "LiangceAgent/1.0 (OpenAI-compatible)",
-            "Accept": "application/json",
-        },
+        headers=_llm_request_headers(api_key),
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -170,6 +170,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         try:
             chunk_size = request.data.get("chunk_size")
             chunk_overlap = request.data.get("chunk_overlap")
+            asset_role = (request.data.get("asset_role") or "upload").strip()
             result = enqueue_ingest_upload(
                 knowledge_base=kb,
                 upload=upload,
@@ -177,6 +178,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                 segment_mode=request.data.get("segment_mode") or "general",
                 chunk_size=int(chunk_size) if chunk_size not in (None, "") else None,
                 chunk_overlap=int(chunk_overlap) if chunk_overlap not in (None, "") else None,
+                asset_role=asset_role,
             )
         except TraditionalRagError as error:
             return Response({"error": error.code, "message": error.message}, status=status.HTTP_400_BAD_REQUEST)

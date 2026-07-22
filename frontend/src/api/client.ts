@@ -537,13 +537,21 @@ export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: strin
 export const uploadKnowledgeFile = (
   knowledgeBaseId: number,
   file: File,
-  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number; onUploadProgress?: (event: AxiosProgressEvent) => void },
+  body?: {
+    segment_mode?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    /** upload = ?????smart_doc / mindmap = ?????? */
+    asset_role?: "upload" | "smart_doc" | "mindmap";
+    onUploadProgress?: (event: AxiosProgressEvent) => void;
+  },
 ) => {
   const form = new FormData();
   form.append("file", file);
   if (body?.segment_mode) form.append("segment_mode", body.segment_mode);
   if (body?.chunk_size) form.append("chunk_size", String(body.chunk_size));
   if (body?.chunk_overlap !== undefined) form.append("chunk_overlap", String(body.chunk_overlap));
+  form.append("asset_role", body?.asset_role || "upload");
   return api.post<{
     file: KnowledgeFileItem;
     job: KnowledgeIngestJobItem;

@@ -474,15 +474,25 @@ function mapKnowledgeFile(file: KnowledgeFileItem): KnowledgeTemplateFile {
   };
 }
 
+function getFileAssetRole(file: KnowledgeTemplateFile): "upload" | "smart_doc" | "mindmap" | "" {
+  const raw = file.backend?.metadata?.asset_role;
+  const role = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (role === "upload" || role === "smart_doc" || role === "mindmap") return role;
+  return "";
+}
+
+/** 仅「新建智能文档」产出的文件；普通上传的 md/txt 不算智能文档 */
 function isEditableMarkdownDoc(file: KnowledgeTemplateFile) {
   if (file.assetKind === "smart_sheet") return false;
   if (isMindMapDoc(file)) return false;
-  const name = file.name || "";
-  const kind = (file.kind || "").toLowerCase();
-  return /\.(md|markdown|txt)$/i.test(name) || ["md", "markdown", "txt", "text"].includes(kind);
+  return getFileAssetRole(file) === "smart_doc";
 }
 
 function isMindMapDoc(file: KnowledgeTemplateFile) {
+  const role = getFileAssetRole(file);
+  if (role === "mindmap") return true;
+  if (role === "upload" || role === "smart_doc") return false;
+  // 兼容旧数据：创建思维导图时用 .mind.json / .xmind 扩展名
   const name = file.name || "";
   const kind = (file.kind || "").toLowerCase();
   return (
@@ -490,8 +500,14 @@ function isMindMapDoc(file: KnowledgeTemplateFile) {
     || /\.xmind(\.md)?$/i.test(name)
     || kind === "mindmap"
     || kind === "mind"
-    || name.includes("导图")
   );
+}
+
+function knowledgeFileTypeLabel(file: KnowledgeTemplateFile) {
+  if (file.assetKind === "smart_sheet") return "多维表格";
+  if (isMindMapDoc(file)) return "思维导图";
+  if (isEditableMarkdownDoc(file)) return "智能文档";
+  return "上传文件";
 }
 
 function mapSmartSheetAsDoc(sheet: SmartSheetListItem): KnowledgeTemplateFile {
@@ -1108,6 +1124,7 @@ export default function Knowledge() {
     filename: string,
     content: string,
     mimeType = "text/markdown;charset=utf-8",
+    assetRole: "smart_doc" | "mindmap" = "smart_doc",
   ) {
     const targetId = await ensureActiveKnowledgeBaseId(createAssetName.trim() || undefined);
     if (targetId == null) return null;
@@ -1118,6 +1135,7 @@ export default function Knowledge() {
         segment_mode: "general",
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
+        asset_role: assetRole,
       });
       await refreshKnowledgeBases();
       await refreshKnowledgeDocs(String(targetId));
@@ -1184,7 +1202,7 @@ export default function Knowledge() {
     const filename = `${title.replace(/[\\/:*?"<>|]/g, "_")}.mind.json`;
     const content = buildDefaultMindJson(title);
     try {
-      const created = await ingestTextAsset(filename, content, "application/json;charset=utf-8");
+      const created = await ingestTextAsset(filename, content, "application/json;charset=utf-8", "mindmap");
       setCreateMindOpen(false);
       if (created?.id) {
         setOpenMindTitle(title);
@@ -1869,9 +1887,10 @@ export default function Knowledge() {
                         <button className="doc-name" onClick={() => void openChunkPage(file)}>
                           <span className="file-type-icon">
                             {file.assetKind === "smart_sheet" || file.kind === "智能表格" ? <TableOutlined />
+                              : isMindMapDoc(file) ? <ApartmentOutlined />
+                              : isEditableMarkdownDoc(file) ? <FileTextOutlined />
                               : /\.(xlsx?|csv)$/i.test(file.name) ? <FileExcelOutlined />
-                              : /\.xmind(\.md)?$/i.test(file.name) || file.name.includes("导图") ? <ApartmentOutlined />
-                              : /\.md$/i.test(file.name) ? <FileTextOutlined />
+                              : /\.(md|markdown|txt)$/i.test(file.name) ? <FileTextOutlined />
                               : <FileExcelOutlined />}
                           </span>
                           <span>{file.name}</span>
@@ -1883,10 +1902,10 @@ export default function Knowledge() {
                               ? "思维导图 · 双击打开画布编辑"
                               : isEditableMarkdownDoc(file)
                                 ? "智能文档 · 双击打开编辑"
-                                : file.source}
+                                : "上传文件 · 双击查看切片"}
                         </div>
                       </td>
-                      <td><span className="segment-pill">{file.assetKind === "smart_sheet" ? "多维表格" : isMindMapDoc(file) ? "思维导图" : isEditableMarkdownDoc(file) ? "智能文档" : "通用"}</span></td>
+                      <td><span className="segment-pill">{knowledgeFileTypeLabel(file)}</span></td>
                       <td>{chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : chars}</td>
                       <td>{recallCount}</td>
                       <td>{formatDateTime(file.uploadedAt)}</td>
