@@ -337,7 +337,7 @@ function CanvasInner({
     );
   }, [onConnect]);
 
-  const isValidConnection = useCallback((connection: Connection | null) => {
+  const isValidConnection = useCallback((connection: Edge | Connection) => {
     if (!connection?.source || !connection?.target) return false;
     return connection.source !== connection.target;
   }, []);

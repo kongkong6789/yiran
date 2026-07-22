@@ -25,6 +25,8 @@ WECOM_BINDING_CONFIG_USER_ID = int(os.getenv("WECOM_BINDING_CONFIG_USER_ID", "0"
 WECOM_BINDING_ASYNC_ENABLED = os.getenv("WECOM_BINDING_ASYNC_ENABLED", "true").lower() == "true"
 WECOM_CALLBACK_BASE_URL = os.getenv("WECOM_CALLBACK_BASE_URL", "").strip().rstrip("/")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
+YIRAN_PILOT_READ_ONLY = os.getenv("YIRAN_PILOT_READ_ONLY", "true").lower() == "true"
+YIRAN_ALLOW_FIXTURE_DATA = os.getenv("YIRAN_ALLOW_FIXTURE_DATA", "false").lower() == "true"
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 INSTALLED_APPS = [

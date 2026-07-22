@@ -134,7 +134,9 @@ def health(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def audit_logs(request):
-    """审计日志列表(第6层闸机产生的记录)。"""
+    """兼容用原始审计接口，仅供超级管理员访问。"""
+    if not request.user.is_superuser:
+        return Response({"ok": False, "detail": "仅超级管理员可查看日志。"}, status=403)
     limit = int(request.query_params.get("limit", 50))
     logs = AuditLog.objects.all()[:limit]
     data = [
@@ -403,6 +405,10 @@ def audit_overview(request):
             "ip": str(payload.get("ip") or payload.get("ip_address") or "-"),
             "status": {"key": status_key, "label": status_label},
             "traceId": log.trace_id,
+            "decision": log.decision,
+            "payload": log.payload if isinstance(log.payload, dict) else {},
+            "checks": log.checks if isinstance(log.checks, list) else [],
+            "result": log.result if isinstance(log.result, dict) else {},
         }
 
     rows = [_row_payload(log) for log in page_rows]

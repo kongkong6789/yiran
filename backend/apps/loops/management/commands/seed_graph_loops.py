@@ -14,13 +14,14 @@ from django.utils import timezone
 from apps.loops.models import FeedbackLoop, LoopMember
 from apps.ontology.models import OntObject, OntRelation
 from apps.ontology.signals import suppress_ontology_sync
+from apps.core.models import Organization
 
 PREFIX = "GRAPH-DEMO"
 
 
-def _pick_object(otype: str, name: str) -> OntObject | None:
+def _pick_object(organization, otype: str, name: str) -> OntObject | None:
     return (
-        OntObject.objects.filter(otype=otype, name=name)
+        OntObject.objects.filter(organization=organization, otype=otype, name=name)
         .order_by("id")
         .first()
     )
@@ -55,6 +56,7 @@ def _ensure_edge(
         )
         return existing
     return OntRelation.objects.create(
+        organization=source.organization,
         source=source,
         target=target,
         label=label,
@@ -67,6 +69,7 @@ def _ensure_edge(
 
 def _upsert_loop(
     *,
+    organization,
     code: str,
     name: str,
     loop_type: str,
@@ -74,9 +77,10 @@ def _upsert_loop(
     confidence: int,
     relation_ids: list[int],
 ) -> FeedbackLoop:
-    loop = FeedbackLoop.objects.filter(code=code).order_by("id").first()
+    loop = FeedbackLoop.objects.filter(organization=organization, code=code).order_by("id").first()
     if loop is None:
         loop = FeedbackLoop.objects.create(
+            organization=organization,
             code=code,
             name=name,
             loop_type=loop_type,
@@ -117,20 +121,23 @@ class Command(BaseCommand):
             self._seed(options)
 
     def _seed(self, options):
+        organization = Organization.objects.order_by("id").first()
+        if organization is None:
+            organization = Organization.objects.create(name="默认企业")
         if options["reset"]:
-            deleted, _ = FeedbackLoop.objects.filter(code__startswith=PREFIX).delete()
+            deleted, _ = FeedbackLoop.objects.filter(organization=organization, code__startswith=PREFIX).delete()
             self.stdout.write(self.style.WARNING(f"已删除预置回路 {deleted} 条"))
 
-        shop_tm = _pick_object("店铺", "天猫旗舰店")
-        shop_dy = _pick_object("店铺", "抖音小店")
-        sku_dress = _pick_object("商品", "连衣裙-经典款")
-        sku_new = _pick_object("商品", "连衣裙-新色")
-        sku_sun = _pick_object("商品", "防晒霜 50ml")
-        metric_gmv = _pick_object("指标定义", "GMV")
-        metric_refund = _pick_object("指标定义", "退款率")
-        metric_aov = _pick_object("指标定义", "客单价")
-        alert = _pick_object("异常预警", "refund_rate")
-        alert_gmv = _pick_object("异常预警", "gmv")
+        shop_tm = _pick_object(organization, "店铺", "天猫旗舰店")
+        shop_dy = _pick_object(organization, "店铺", "抖音小店")
+        sku_dress = _pick_object(organization, "商品", "连衣裙-经典款")
+        sku_new = _pick_object(organization, "商品", "连衣裙-新色")
+        sku_sun = _pick_object(organization, "商品", "防晒霜 50ml")
+        metric_gmv = _pick_object(organization, "指标定义", "GMV")
+        metric_refund = _pick_object(organization, "指标定义", "退款率")
+        metric_aov = _pick_object(organization, "指标定义", "客单价")
+        alert = _pick_object(organization, "异常预警", "refund_rate")
+        alert_gmv = _pick_object(organization, "异常预警", "gmv")
 
         missing = [
             n
@@ -162,7 +169,7 @@ class Command(BaseCommand):
         e4 = _ensure_edge(
             metric_aov, shop_tm, label="利润反哺投放", polarity="+", evidence_score=68,
         )
-        loop1 = _upsert_loop(
+        loop1 = _upsert_loop(organization=organization,
             code=f"{PREFIX}-R1",
             name="天猫主推飞轮（店铺→爆款→GMV→客单→再投放）",
             loop_type=FeedbackLoop.LoopType.R,
@@ -186,7 +193,7 @@ class Command(BaseCommand):
             alert, metric_gmv, label="收紧策略抑制放量", polarity="-",
             delay_days=2, evidence_score=72,
         )
-        loop2 = _upsert_loop(
+        loop2 = _upsert_loop(organization=organization,
             code=f"{PREFIX}-B1",
             name="退款刹车环（GMV→退款率→预警→收紧→GMV）",
             loop_type=FeedbackLoop.LoopType.B,
@@ -208,7 +215,7 @@ class Command(BaseCommand):
             metric_gmv, shop_tm, label="总盘预算再分配", polarity="+",
             delay_days=7, evidence_score=66,
         )
-        loop3 = _upsert_loop(
+        loop3 = _upsert_loop(organization=organization,
             code=f"{PREFIX}-B2",
             name="双店抢流环（天猫⊖抖音→防晒→GMV→再分配天猫）",
             loop_type=FeedbackLoop.LoopType.B,
@@ -227,7 +234,7 @@ class Command(BaseCommand):
         e15 = _ensure_edge(
             metric_aov, shop_dy, label="利润反哺达播", polarity="+", evidence_score=67,
         )
-        loop4 = _upsert_loop(
+        loop4 = _upsert_loop(organization=organization,
             code=f"{PREFIX}-R2",
             name="抖音新色飞轮（抖音→新色→GMV→客单→再种草）",
             loop_type=FeedbackLoop.LoopType.R,
@@ -249,7 +256,7 @@ class Command(BaseCommand):
             alert_gmv, shop_tm, label="收紧投放节奏", polarity="-",
             delay_days=2, evidence_score=71,
         )
-        loop5 = _upsert_loop(
+        loop5 = _upsert_loop(organization=organization,
             code=f"{PREFIX}-B3",
             name="大盘刹车环（天猫→GMV→大盘预警→收紧→天猫）",
             loop_type=FeedbackLoop.LoopType.B,

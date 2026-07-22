@@ -1143,6 +1143,7 @@ export const runSop = (body: {
   role?: string;
   agent_id?: number;
   trace_id?: string;
+  mode?: "task_create";
 }) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
 
 export const resumeSop = (body: {
@@ -1191,13 +1192,45 @@ export const queryJackyun = (body: {
 
 export const getTables = () =>
   api.get("/datalake/tables/").then((r) => r.data);
+export const getDataAssetPreview = (table: string, limit = 50) =>
+  api.get(`/datalake/assets/${encodeURIComponent(table)}/preview/`, { params: { limit } }).then((r) => r.data);
+export const publishDataAsset = (body: {
+  table: string;
+  asset_key: string;
+  display_name: string;
+  as_of: string;
+  confirm_complete: boolean;
+}) => api.post("/datalake/assets/publish/", body).then((r) => r.data);
 export const getMetrics = () =>
   api.get("/datalake/metrics/").then((r) => r.data);
 export const getAnomalies = () =>
   api.get("/datalake/anomalies/").then((r) => r.data);
-
-export const getAuditLogs = () =>
-  api.get("/audit-logs/").then((r) => r.data);
+export const getSourceSnapshots = () =>
+  api.get("/datalake/snapshots/").then((r) => r.data);
+export const getMetricContracts = () =>
+  api.get("/datalake/metric-contracts/").then((r) => r.data);
+export const getRawImports = () =>
+  api.get("/datalake/raw-imports/").then((r) => r.data);
+export const getImportContracts = () =>
+  api.get("/datalake/import-contracts/").then((r) => r.data);
+export const getReferenceMappings = () =>
+  api.get("/datalake/reference-mappings/").then((r) => r.data);
+export const createReferenceMapping = (body: {
+  mapping_key: string;
+  kind: "channel" | "product" | "warehouse";
+  version?: string;
+  mappings: Record<string, unknown>;
+}) => api.post("/datalake/reference-mappings/", body).then((r) => r.data);
+export const confirmReferenceMapping = (id: number) =>
+  api.post(`/datalake/reference-mappings/${id}/confirm/`, {}).then((r) => r.data);
+export const uploadSalesLedger = (form: FormData) =>
+  api.post("/datalake/raw-imports/sales-ledger/", form, { timeout: 10 * 60_000 }).then((r) => r.data);
+export const reconcileRawImport = (id: number, reconciliation_hash: string) =>
+  api.post(`/datalake/raw-imports/${id}/reconcile/`, { reconciliation_hash }).then((r) => r.data);
+export const composeInventorySalesSnapshot = (body: {
+  inventory_snapshot_id: number;
+  sales_snapshot_id: number;
+}) => api.post("/datalake/snapshots/compose/", body).then((r) => r.data);
 
 export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
 export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
@@ -1216,6 +1249,10 @@ export interface AuditRow {
   ip: string;
   status: { key: string; label: string };
   traceId: string;
+  decision: string;
+  payload: Record<string, unknown>;
+  checks: unknown[];
+  result: Record<string, unknown>;
 }
 export interface AuditOverview {
   ok: boolean;

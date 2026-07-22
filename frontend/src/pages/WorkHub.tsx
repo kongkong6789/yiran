@@ -2,7 +2,7 @@ import {
   FileTextOutlined, MenuOutlined, PlusOutlined,
 } from "@ant-design/icons";
 import { Button, Drawer, Space, Typography } from "antd";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import TaskModuleSidebar, { type TaskModuleView } from "../features/task-console/TaskModuleSidebar";
@@ -34,6 +34,11 @@ export default function WorkHub() {
       : isTemplates
         ? "templates"
         : taskView;
+  const [todosMounted, setTodosMounted] = useState(isTodos);
+
+  useEffect(() => {
+    if (isTodos) setTodosMounted(true);
+  }, [isTodos]);
 
   const changeSection = (next: TaskModuleView) => {
     setMobileNavOpen(false);
@@ -120,20 +125,25 @@ export default function WorkHub() {
           </header>
         )}
         <div className={`task-workspace-content${taskDetailOpen ? " is-task-detail" : ""}`}>
-          {isTodos
-            ? <WorkTodos embedded createRequestId={todoCreateRequestId} />
-            : isAutomation
+          {todosMounted && (
+            <div className={isTodos ? undefined : "task-panel-hidden"} aria-hidden={!isTodos}>
+              <WorkTodos embedded createRequestId={todoCreateRequestId} />
+            </div>
+          )}
+          {!isTodos && (
+            isAutomation
               ? <WorkAutomation createRequestId={automationCreateRequestId} />
               : isTemplates
                 ? <WorkTemplates onUseTemplate={useTaskTemplate} />
-            : (
-              <AgentConsole
-                view={taskView}
-                templateKey={searchParams.get("template")}
-                onViewChange={changeSection}
-                onDetailChange={setTaskDetailOpen}
-              />
-            )}
+                : (
+                  <AgentConsole
+                    view={taskView}
+                    templateKey={searchParams.get("template")}
+                    onViewChange={changeSection}
+                    onDetailChange={setTaskDetailOpen}
+                  />
+                )
+          )}
         </div>
       </main>
     </div>

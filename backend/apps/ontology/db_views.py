@@ -22,6 +22,7 @@ from .signals import bulk_import_mode
 from apps.council import llm
 from apps.datalake.pg import PgSession, pglake
 from apps.datalake import age as age_svc
+from apps.core.organizations import ensure_current_organization
 
 
 # lake 建模表元信息(主键 + 展示名)
@@ -137,20 +138,21 @@ def _pick_name(table: str, row: dict, name_cols: list[str], pk_cols: list[str]) 
 
 def _ensure_relation(source: OntObject, target: OntObject, label: str) -> tuple[OntRelation, bool]:
     """幂等建关系;若历史导入留下重复边,只保留一条。"""
-    qs = OntRelation.objects.filter(source=source, target=target, label=label).order_by("id")
+    qs = OntRelation.objects.filter(organization=source.organization, source=source, target=target, label=label).order_by("id")
     first = qs.first()
     if first:
         dupes = list(qs.values_list("id", flat=True)[1:])
         if dupes:
             OntRelation.objects.filter(id__in=dupes).delete()
         return first, False
-    return OntRelation.objects.create(source=source, target=target, label=label), True
+    return OntRelation.objects.create(organization=source.organization, source=source, target=target, label=label), True
 
 
-def _load_db_key_cache(prefix: str = "") -> dict[str, OntObject]:
+def _load_db_key_cache(prefix: str = "", organization=None) -> dict[str, OntObject]:
     """SQLite 不支持 JSON contains,导入前按 _db_key 建索引;可选 prefix 缩小范围。"""
     cache: dict[str, OntObject] = {}
-    for obj in OntObject.objects.only("id", "name", "otype", "category", "x", "y", "attributes").iterator(
+    qs = OntObject.objects.filter(organization=organization) if organization is not None else OntObject.objects.none()
+    for obj in qs.only("id", "name", "otype", "category", "x", "y", "attributes").iterator(
         chunk_size=1000,
     ):
         k = (obj.attributes or {}).get("_db_key")
@@ -175,7 +177,7 @@ def _find_by_db_key(db_key: str, cache: dict[str, OntObject] | None = None) -> O
 def _upsert_row(
     schema: str, table: str, otype: str, category: str,
     row: dict, pk_cols: list[str], name_cols: list[str], layout_i: int,
-    cache: dict[str, OntObject],
+    cache: dict[str, OntObject], organization,
 ) -> tuple[OntObject, bool]:
     db_key = _row_key(schema, table, pk_cols, row)
     attrs = {
@@ -207,6 +209,7 @@ def _upsert_row(
         return obj, False
 
     obj = OntObject.objects.create(
+        organization=organization,
         category=category, otype=otype, name=name[:128],
         attributes=attrs, x=x, y=y,
     )
@@ -283,13 +286,14 @@ def _foreign_keys(schema: str, sess: PgSession | None = None) -> list[dict]:
 
 def _import_schema_tables(
     schema: str,
+    organization,
     table_meta: dict[str, dict] | None = None,
     cache: dict[str, OntObject] | None = None,
     sess: PgSession | None = None,
 ) -> tuple[dict[str, OntObject], int, int]:
     """导入 schema 下所有表(每行一实体)。返回 db_key->对象, 新建对象数, 新建关系数。"""
     if cache is None:
-        cache = _load_db_key_cache()
+        cache = _load_db_key_cache(organization=organization)
     q = sess.query if sess else pglake.query
     tables = q(
         """
@@ -324,7 +328,7 @@ def _import_schema_tables(
 
         for row in rows:
             obj, created = _upsert_row(
-                schema, table, otype, category, row, pk_cols, name_cols, layout_i, cache,
+                schema, table, otype, category, row, pk_cols, name_cols, layout_i, cache, organization,
             )
             key_to_obj[obj.attributes["_db_key"]] = obj
             created_objs += int(created)
@@ -431,13 +435,14 @@ def import_from_db(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    cache = _load_db_key_cache()
+    organization = ensure_current_organization(request.user)
+    cache = _load_db_key_cache(organization=organization)
     try:
         with bulk_import_mode(), pglake.session() as sess:
             lake_objs, lake_new, lake_rels = _import_schema_tables(
-                pglake.schema, LAKE_TABLE_META, cache, sess,
+                pglake.schema, organization, LAKE_TABLE_META, cache, sess,
             )
-            pub_objs, pub_new, pub_rels = _import_schema_tables("public", {}, cache, sess)
+            pub_objs, pub_new, pub_rels = _import_schema_tables("public", organization, {}, cache, sess)
     except PsycopgError as exc:
         pglake._last_error = str(exc)
         return Response(
@@ -491,7 +496,7 @@ def _age_vertex_fields(
 
 def _upsert_age_vertex(
     graph: str, label: str, age_id, props: dict, layout_i: int,
-    cache: dict[str, OntObject],
+    cache: dict[str, OntObject], organization,
 ) -> tuple[OntObject, bool]:
     db_key, category, label, name, attrs, x, y = _age_vertex_fields(
         graph, label, age_id, props, layout_i,
@@ -508,13 +513,14 @@ def _upsert_age_vertex(
         cache[db_key] = obj
         return obj, False
     obj = OntObject.objects.create(
+        organization=organization,
         category=category, otype=label, name=name, attributes=attrs, x=x, y=y,
     )
     cache[db_key] = obj
     return obj, True
 
 
-def _import_from_age(source_id: str | None = None) -> dict:
+def _import_from_age(source_id: str | None = None, organization=None) -> dict:
     sid = (source_id or settings.LIGHTRAG_SOURCE_ID or "").strip()
     src_info = age_svc.resolve_source(sid)
     workspace_scoped = bool(src_info and src_info.get("workspace"))
@@ -530,7 +536,7 @@ def _import_from_age(source_id: str | None = None) -> dict:
             }
 
         cache_prefix = f"age.{graph}."
-        cache = _load_db_key_cache(cache_prefix)
+        cache = _load_db_key_cache(cache_prefix, organization)
         vertices: list[dict] = []
         edges: list[dict] = []
         for el in age_svc.iter_graph_elements(
@@ -563,6 +569,7 @@ def _import_from_age(source_id: str | None = None) -> dict:
                     to_update.append(obj)
                 else:
                     obj = OntObject(
+                        organization=organization,
                         category=category, otype=label, name=name,
                         attributes=attrs, x=x, y=y,
                     )
@@ -580,7 +587,7 @@ def _import_from_age(source_id: str | None = None) -> dict:
                 )
 
             existing_rels = set(
-                OntRelation.objects.values_list("source_id", "target_id", "label"),
+                OntRelation.objects.filter(organization=organization).values_list("source_id", "target_id", "label"),
             )
             new_rels: list[OntRelation] = []
             for el in edges:
@@ -592,7 +599,7 @@ def _import_from_age(source_id: str | None = None) -> dict:
                 key = (src.pk, tgt.pk, label)
                 if key in existing_rels:
                     continue
-                new_rels.append(OntRelation(source_id=src.pk, target_id=tgt.pk, label=label))
+                new_rels.append(OntRelation(organization=organization, source_id=src.pk, target_id=tgt.pk, label=label))
                 existing_rels.add(key)
             if new_rels:
                 OntRelation.objects.bulk_create(new_rels, batch_size=500)
@@ -621,12 +628,12 @@ def age_stats(request):
     })
 
 
-def _enrich_age_relations_causal(relations: list[dict]) -> list[dict]:
+def _enrich_age_relations_causal(relations: list[dict], organization) -> list[dict]:
     """将本地库已保存的因果元数据合并进 AGE 直读边列表。"""
     if not relations:
         return relations
     db_index: dict[tuple[int, int, str], OntRelation] = {}
-    for r in OntRelation.objects.select_related("source", "target").iterator(chunk_size=500):
+    for r in OntRelation.objects.filter(organization=organization).select_related("source", "target").iterator(chunk_size=500):
         sa = (r.source.attributes or {}).get("_age_id")
         ta = (r.target.attributes or {}).get("_age_id")
         if sa is None or ta is None:
@@ -681,7 +688,8 @@ def age_live_graph(request):
     if result.get("error"):
         return Response(result, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    relations = _enrich_age_relations_causal(result["relations"])
+    organization = ensure_current_organization(request.user)
+    relations = _enrich_age_relations_causal(result["relations"], organization)
     return Response({
         "source": "age_cypher",
         "objects": result["objects"],
@@ -702,7 +710,8 @@ def import_from_age(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     sid = (request.data.get("source_id") or settings.LIGHTRAG_SOURCE_ID or "").strip()
-    result = _import_from_age(sid)
+    organization = ensure_current_organization(request.user)
+    result = _import_from_age(sid, organization)
     if result.get("error"):
         return Response(result, status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response(result)
@@ -721,7 +730,8 @@ def _round_rows(rows: list[dict]) -> list[dict]:
 @api_view(["GET"])
 def object_data(request, obj_id: int):
     """返回对象在数据底座中的行级数据。"""
-    o = get_object_or_404(OntObject, id=obj_id)
+    organization = ensure_current_organization(request.user)
+    o = get_object_or_404(OntObject, id=obj_id, organization=organization)
     attrs = o.attributes or {}
     db_key = attrs.get("_db_key")
     table_ref = attrs.get("_table")

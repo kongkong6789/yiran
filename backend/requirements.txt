@@ -9,6 +9,7 @@ requests>=2.32,<3.0
 cos-python-sdk-v5>=1.9
 channels>=4.1,<5
 daphne>=4.1,<5
+langgraph>=1.0,<2.0
 
 # 第1层 数据底座
 duckdb>=1.1
@@ -17,8 +18,7 @@ openpyxl>=3.1
 xlrd>=2.0.1
 
 # 说明:
-# 第2层 LightRAG、第4层 LangGraph 目前用轻量自研接口占位(见 apps/rag、apps/orchestration),
-# 待运行环境稳定后可替换为:
-#   langgraph>=0.2
+# 第4层 LangGraph 以进程内 Python 库运行，不启动独立 LangGraph HTTP 服务。
+# 第2层 LightRAG 仍可按部署需要替换为完整 SDK:
 #   lightrag-hku
 #   openai>=1.0            # LLM 调用(意图识别/生成)

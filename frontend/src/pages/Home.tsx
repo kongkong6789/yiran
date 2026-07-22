@@ -11,7 +11,7 @@ import {
   ReloadOutlined,
   RightOutlined,
 } from "@ant-design/icons";
-import { getAgeStats, listAgents, listMeetings, getAuditLogs } from "../api/client";
+import { getAgeStats, listAgents, listMeetings, getAuditOverview } from "../api/client";
 import { useVisualizationTheme } from "../theme/visualization";
 import OperatingMapV2 from "../components/OperatingMapV2";
 
@@ -48,9 +48,6 @@ const DOMAINS: Domain[] = [
     samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 18,
   },
   {
-    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
-  },
-  {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
     samples: ["审批流", "编排任务", "执行记录", "审计"], share: 12,
@@ -59,7 +56,6 @@ const DOMAINS: Domain[] = [
     name: "图谱", sub: "Graph", desc: "实体关系 · 因果推理",
     color: "#8b63ff", route: "/ontology", countLabel: "关系中枢",
     samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 10,
-    samples: ["实体节点", "关系边", "因果链", "图谱查询"], share: 9,
   },
 ];
 
@@ -192,10 +188,10 @@ export default function Home() {
       const n = d?.count ?? d?.results?.length;
       if (n != null) setStats((s) => ({ ...s, meetings: n }));
     }).catch(() => undefined);
-    getAuditLogs().then((d: any) => {
-      const rows = (d?.results || []).slice(0, 4).map((r: any) => ({
-        text: String(r.action || r.intent || "系统动作"),
-        meta: `${r.decision || "记录"} · ${(r.created_at || "").slice(11, 16) || "刚刚"}`,
+    getAuditOverview({ page: 1, pageSize: 5 }).then((d: any) => {
+      const rows = (d?.rows || []).slice(0, 4).map((r: any) => ({
+        text: String(r.detail || r.content || "系统动作"),
+        meta: `${r.status?.label || "记录"} · ${(r.time || "").slice(11, 16) || "刚刚"}`,
       }));
       if (rows.length) setFeed(rows);
     }).catch(() => undefined);

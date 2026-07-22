@@ -14,8 +14,8 @@
 | 6 | `apps.harness` | 闸机层:Schema/权限/预算/状态/一致性校验 + Dry-run + 高风险审批 + 审计 |
 | 7 | `apps.connectors` | 业务系统执行层:金蝶 / 吉客云 / 企微智能表格 / 飞瓜蝉妈妈 / 店铺后台 / 审批 |
 
-> 说明:第 2 层 LightRAG、第 4 层 LangGraph 目前用轻量自研接口占位(接口已对齐,
-> 便于后续替换为真实库);DuckDB 数据底座为真实接入。
+> 说明:第 2 层 LightRAG 仍保留可替换适配层；第 4 层已使用进程内 LangGraph，
+> 不需要独立的 2024 后端。DuckDB/PostgreSQL 数据底座为真实接入。
 
 ## 技术栈
 
@@ -48,6 +48,7 @@ python -m venv .venv
 .venv\Scripts\activate           # Windows
 pip install -r requirements.txt
 python manage.py migrate
+python manage.py audit_fusion_migration --dry-run
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -80,6 +81,18 @@ Nginx、Caddy 或云负载均衡终止 TLS，再反向代理到 `http://127.0.0.
 | GET | `/api/datalake/{tables,metrics,anomalies}/` | 数据底座 |
 | GET | `/api/wiki/pages/` | Wiki 页面 |
 | GET | `/api/audit-logs/` | 闸机审计日志 |
+| GET/POST | `/api/datalake/snapshots/` | 企业隔离的不可变来源快照 |
+| POST | `/api/datalake/snapshots/compose/` | 将已对账销售窗口与库存快照组合为补货分析 Snapshot |
+| GET | `/api/datalake/metric-contracts/` | 认证指标契约 |
+| POST | `/api/datalake/metric-results/resolve/` | 基于 Snapshot 计算认证指标 |
+| GET/POST | `/api/datalake/import-contracts/` | 企业隔离的 governed Raw 导入契约 |
+| GET/POST | `/api/datalake/reference-mappings/` | 渠道、商品和仓库映射版本 |
+| GET | `/api/datalake/raw-imports/` | Raw 导入批次、隔离统计与对账状态 |
+| POST | `/api/datalake/raw-imports/sales-ledger/` | 按 Manifest 和契约导入销售明细账 XLSX |
+| POST | `/api/datalake/raw-imports/{id}/reconcile/` | 企业管理员完成外部对账并生成可信 Snapshot |
+| GET | `/api/loops/{id}/versions/` | 回路版本、Stock/Flow 与绑定 |
+| POST | `/api/loops/{id}/simulate/` | 只读、幂等的库存补货情景分析 |
+| GET | `/api/loops/simulation-runs/{id}/` | 查询可追溯 Simulation Run |
 | GET/PATCH | `/api/auth/organization/` | 查询当前企业、成员和角色，企业管理员可修改企业名称 |
 | GET/POST | `/api/auth/admin/organizations/` | 超级管理员查询或创建企业；创建时可传 `ownerUserId`，并自动建立唯一所有者关系 |
 | POST | `/api/auth/admin/organizations/assign-users/` | 超级管理员将一个或多个已有平台用户批量分配到指定企业 |
@@ -250,7 +263,7 @@ POST /api/orchestration/run/
 - 高风险动作审批流续跑 ✅(`/api/harness/approvals/`, `/api/orchestration/resume/`)
 - RAG 混合检索(AGE 实体 + Wiki + SOP 语料) ✅
 - Ontology「从数仓导入」UI ✅
-- 第 2 层替换为完整 LightRAG SDK,第 4 层替换为 LangGraph
+- 第 2 层按需要替换为完整 LightRAG SDK；LangGraph 已在 Django 进程内运行
 - 第 7 层其余 connector 接真实业务系统写 API
 - 用户体系与 RBAC 鉴权(当前骨架放开权限)
 - Loops 自动因果发现 / 模拟 / PDC

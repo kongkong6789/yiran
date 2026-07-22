@@ -9,11 +9,12 @@ from rest_framework import status
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 
-from .models import OntObject, OntRelation
+from .models import CausalLink, OntObject, OntRelation
 from .signals import suppress_ontology_sync
 from apps.council import llm
 from apps.datalake import age as age_svc
 from .commerce_schema import preset_types_for_ui
+from apps.core.organizations import ensure_current_organization
 
 # 前端预设类型：草图基础 + 电商经营类型（知行一期迁入）
 _BASE_PRESETS = {
@@ -36,6 +37,8 @@ def _obj(o: OntObject) -> dict:
     return {
         "id": o.id, "category": o.category, "otype": o.otype, "name": o.name,
         "attributes": o.attributes, "x": o.x, "y": o.y,
+        "object_key": o.object_key, "status": o.status, "version": o.version,
+        "source_system": o.source_system,
     }
 
 
@@ -57,11 +60,11 @@ def _age_graph_name() -> str:
     return age_svc.graph_name_for_workspace(workspace or "") if workspace else ""
 
 
-def _filter_graph_objects(scope: str) -> tuple[list[OntObject], list[OntRelation], dict]:
+def _filter_graph_objects(scope: str, organization) -> tuple[list[OntObject], list[OntRelation], dict]:
     """scope=age 时只查当前 AGE 本图,不扫全库。"""
     if scope != "age":
-        objs = list(OntObject.objects.all())
-        rels = list(OntRelation.objects.all())
+        objs = list(OntObject.objects.filter(organization=organization))
+        rels = list(OntRelation.objects.filter(organization=organization))
         meta = {
             "scope": scope,
             "objects": len(objs),
@@ -74,16 +77,16 @@ def _filter_graph_objects(scope: str) -> tuple[list[OntObject], list[OntRelation
         return [], [], {"scope": "age", "age_graph": "", "objects": 0, "relations": 0}
 
     table_key = f"age.{graph_name}"
-    objs = list(OntObject.objects.filter(attributes__contains={"_table": table_key}))
+    objs = list(OntObject.objects.filter(organization=organization, attributes__contains={"_table": table_key}))
     if not objs:
         # 兼容旧数据:仅 _db_key 带前缀、无 _table 时做小范围回退
         prefix = f"age.{graph_name}."
         objs = [
-            o for o in OntObject.objects.iterator(chunk_size=500)
+            o for o in OntObject.objects.filter(organization=organization).iterator(chunk_size=500)
             if str((o.attributes or {}).get("_db_key", "")).startswith(prefix)
         ]
     ids = {o.id for o in objs}
-    rels = list(OntRelation.objects.filter(source_id__in=ids, target_id__in=ids)) if ids else []
+    rels = list(OntRelation.objects.filter(organization=organization, source_id__in=ids, target_id__in=ids)) if ids else []
     meta = {
         "scope": "age",
         "age_graph": graph_name,
@@ -103,7 +106,8 @@ def graph(request):
     # visit even though this view does not render those statistics.
     src = age_svc.resolve_source(sid) if sid and scope == "age" else None
     stats = age_svc.graph_stats(sid) if sid and scope == "age" else {}
-    objs, rels, meta = _filter_graph_objects(scope)
+    organization = ensure_current_organization(request.user)
+    objs, rels, meta = _filter_graph_objects(scope, organization)
     return Response({
         "objects": [_obj(o) for o in objs],
         "relations": [_rel(r) for r in rels],
@@ -123,24 +127,28 @@ def graph(request):
 
 @api_view(["GET", "POST"])
 def objects(request):
+    organization = ensure_current_organization(request.user)
     if request.method == "POST":
         d = request.data
         if not d.get("name"):
             return Response({"error": "name 必填"}, status=status.HTTP_400_BAD_REQUEST)
         o = OntObject.objects.create(
+            organization=organization,
             category=d.get("category", "physical"),
             otype=d.get("otype", "物体"),
             name=d.get("name"),
             attributes=d.get("attributes", {}) or {},
             x=d.get("x", 120), y=d.get("y", 120),
+            created_by=request.user,
         )
         return Response(_obj(o), status=status.HTTP_201_CREATED)
-    return Response({"results": [_obj(o) for o in OntObject.objects.all()]})
+    return Response({"results": [_obj(o) for o in OntObject.objects.filter(organization=organization)]})
 
 
 @api_view(["PATCH", "DELETE"])
 def object_detail(request, obj_id: int):
-    o = get_object_or_404(OntObject, id=obj_id)
+    organization = ensure_current_organization(request.user)
+    o = get_object_or_404(OntObject, id=obj_id, organization=organization)
     if request.method == "DELETE":
         o.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -154,16 +162,19 @@ def object_detail(request, obj_id: int):
 
 @api_view(["POST"])
 def relations(request):
+    organization = ensure_current_organization(request.user)
     d = request.data
-    src = get_object_or_404(OntObject, id=d.get("source"))
-    tgt = get_object_or_404(OntObject, id=d.get("target"))
+    src = get_object_or_404(OntObject, id=d.get("source"), organization=organization)
+    tgt = get_object_or_404(OntObject, id=d.get("target"), organization=organization)
     if src.id == tgt.id:
         return Response({"error": "不能连接自身"}, status=status.HTTP_400_BAD_REQUEST)
-    r = OntRelation.objects.create(source=src, target=tgt, label=d.get("label", "关联"))
+    r = OntRelation.objects.create(
+        organization=organization, source=src, target=tgt, label=d.get("label", "关联"), created_by=request.user
+    )
     return Response(_rel(r), status=status.HTTP_201_CREATED)
 
 
-def _apply_causal_fields(r: OntRelation, d: dict) -> None:
+def _apply_causal_fields(r: OntRelation, d: dict, *, user=None) -> None:
     if "label" in d:
         r.label = d["label"]
     if "polarity" in d:
@@ -174,6 +185,22 @@ def _apply_causal_fields(r: OntRelation, d: dict) -> None:
         r.evidence_score = d["evidence_score"]
     if "is_causal_candidate" in d:
         r.is_causal_candidate = bool(d["is_causal_candidate"])
+    polarity = d.get("polarity", r.polarity)
+    if polarity in ("+", "-") and (d.get("is_causal_candidate", r.is_causal_candidate)):
+        CausalLink.objects.update_or_create(
+            relation=r,
+            defaults={
+                "organization": r.organization,
+                "polarity": polarity,
+                "delay_days": d.get("delay_days", r.delay_days),
+                "evidence_score": d.get("evidence_score", r.evidence_score),
+                "status": "candidate",
+                "maturity": "hypothesis",
+                "created_by": user,
+            },
+        )
+    elif polarity == "" or not d.get("is_causal_candidate", r.is_causal_candidate):
+        CausalLink.objects.filter(relation=r).delete()
 
 
 def _age_graph_table() -> str:
@@ -181,9 +208,9 @@ def _age_graph_table() -> str:
     return f"age.{g}" if g else ""
 
 
-def _build_age_id_index() -> dict[int, OntObject]:
+def _build_age_id_index(organization) -> dict[int, OntObject]:
     index: dict[int, OntObject] = {}
-    for obj in OntObject.objects.only("id", "attributes", "name"):
+    for obj in OntObject.objects.filter(organization=organization).only("id", "attributes", "name"):
         raw = (obj.attributes or {}).get("_age_id")
         if raw is None:
             continue
@@ -194,27 +221,28 @@ def _build_age_id_index() -> dict[int, OntObject]:
     return index
 
 
-def _find_by_age_id(age_id: int, index: dict[int, OntObject] | None = None) -> OntObject | None:
+def _find_by_age_id(age_id: int, organization, index: dict[int, OntObject] | None = None) -> OntObject | None:
     aid = int(age_id)
     if index is not None:
         return index.get(aid)
-    return _build_age_id_index().get(aid)
+    return _build_age_id_index(organization).get(aid)
 
 
 def _resolve_age_node(
     age_id: int,
+    organization,
     name: str = "",
     index: dict[int, OntObject] | None = None,
 ) -> tuple[OntObject, bool]:
     """解析 AGE 节点到本地 OntObject;不存在则自动创建。返回 (object, created)。"""
-    existing = _find_by_age_id(age_id, index)
+    existing = _find_by_age_id(age_id, organization, index)
     if existing:
         return existing, False
 
     nm = (name or "").strip()
     table = _age_graph_table()
     if nm:
-        for cand in OntObject.objects.filter(name=nm).only("id", "name", "attributes")[:30]:
+        for cand in OntObject.objects.filter(organization=organization, name=nm).only("id", "name", "attributes")[:30]:
             attrs = cand.attributes or {}
             if table and attrs.get("_table") and attrs.get("_table") != table:
                 continue
@@ -240,6 +268,7 @@ def _resolve_age_node(
         "数据来源": f"AGE·{graph}" if graph else "AGE",
     }
     obj = OntObject.objects.create(
+        organization=organization,
         category="virtual",
         otype="base",
         name=nm or f"node-{age_id}",
@@ -254,12 +283,13 @@ def _resolve_age_node(
 
 @api_view(["PATCH", "DELETE"])
 def relation_detail(request, rel_id: int):
-    r = get_object_or_404(OntRelation, id=rel_id)
+    organization = ensure_current_organization(request.user)
+    r = get_object_or_404(OntRelation, id=rel_id, organization=organization)
     if request.method == "DELETE":
         r.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
     with suppress_ontology_sync():
-        _apply_causal_fields(r, request.data)
+        _apply_causal_fields(r, request.data, user=request.user)
         r.save()
     return Response(_rel(r))
 
@@ -268,11 +298,12 @@ def relation_detail(request, rel_id: int):
 def relation_upsert_causal(request):
     """AGE 直读边按 source/target 的 _age_id 匹配本地关系并写入因果元数据。"""
     d = request.data
+    organization = ensure_current_organization(request.user)
     rel_id = d.get("relation_id")
     src_created = tgt_created = False
     with suppress_ontology_sync():
         if rel_id:
-            r = get_object_or_404(OntRelation, id=rel_id)
+            r = get_object_or_404(OntRelation, id=rel_id, organization=organization)
         else:
             try:
                 src_age = int(d["source_age_id"])
@@ -285,13 +316,13 @@ def relation_upsert_causal(request):
             label = (d.get("label") or "关联").strip()[:64]
             src_name = (d.get("source_name") or "").strip()
             tgt_name = (d.get("target_name") or "").strip()
-            age_index = _build_age_id_index()
-            src, src_created = _resolve_age_node(src_age, src_name, age_index)
-            tgt, tgt_created = _resolve_age_node(tgt_age, tgt_name, age_index)
-            r = OntRelation.objects.filter(source=src, target=tgt, label=label).first()
+            age_index = _build_age_id_index(organization)
+            src, src_created = _resolve_age_node(src_age, organization, src_name, age_index)
+            tgt, tgt_created = _resolve_age_node(tgt_age, organization, tgt_name, age_index)
+            r = OntRelation.objects.filter(organization=organization, source=src, target=tgt, label=label).first()
             if not r:
-                r = OntRelation.objects.create(source=src, target=tgt, label=label)
-        _apply_causal_fields(r, d)
+                r = OntRelation.objects.create(organization=organization, source=src, target=tgt, label=label, created_by=request.user)
+        _apply_causal_fields(r, d, user=request.user)
         r.save()
     payload = _rel(r)
     if not rel_id:
@@ -305,11 +336,13 @@ def relation_upsert_causal(request):
 @api_view(["POST"])
 def split(request, obj_id: int):
     """拆分:复制出一个同类型的新对象(用于把一个混合实体拆成两个)。"""
-    o = get_object_or_404(OntObject, id=obj_id)
+    organization = ensure_current_organization(request.user)
+    o = get_object_or_404(OntObject, id=obj_id, organization=organization)
     new_name = request.data.get("name") or (o.name + "-拆分")
     clone = OntObject.objects.create(
+        organization=organization,
         category=o.category, otype=o.otype, name=new_name,
-        attributes=dict(o.attributes), x=o.x + 80, y=o.y + 80,
+        attributes=dict(o.attributes), x=o.x + 80, y=o.y + 80, created_by=request.user,
     )
     return Response({"new_object": _obj(clone)}, status=status.HTTP_201_CREATED)
 
@@ -317,8 +350,9 @@ def split(request, obj_id: int):
 @api_view(["POST"])
 def merge(request):
     """合并:把 from_id 的关系并到 keep_id,合并属性后删除 from_id。"""
-    keep = get_object_or_404(OntObject, id=request.data.get("keep_id"))
-    drop = get_object_or_404(OntObject, id=request.data.get("from_id"))
+    organization = ensure_current_organization(request.user)
+    keep = get_object_or_404(OntObject, id=request.data.get("keep_id"), organization=organization)
+    drop = get_object_or_404(OntObject, id=request.data.get("from_id"), organization=organization)
     if keep.id == drop.id:
         return Response({"error": "不能与自身合并"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -348,6 +382,7 @@ def merge(request):
 def extract(request):
     """用 LLM 从自然语言抽取对象与关系并写入图谱;无 LLM 时返回提示。"""
     text = (request.data.get("text") or "").strip()
+    organization = ensure_current_organization(request.user)
     if not text:
         return Response({"error": "text 必填"}, status=status.HTTP_400_BAD_REQUEST)
     if not llm.llm_available():
@@ -378,10 +413,11 @@ def extract(request):
         if not nm:
             continue
         o = OntObject.objects.create(
+            organization=organization,
             category=item.get("category", "physical"),
             otype=item.get("otype", "物体"),
             name=nm,
-            x=base_x + (i % 4) * 160, y=base_y + (i // 4) * 140,
+            x=base_x + (i % 4) * 160, y=base_y + (i // 4) * 140, created_by=request.user,
         )
         name_to_obj[nm] = o
     created_rel = 0
@@ -389,12 +425,14 @@ def extract(request):
         s = name_to_obj.get(item.get("source"))
         t = name_to_obj.get(item.get("target"))
         if s and t and s.id != t.id:
-            OntRelation.objects.create(source=s, target=t, label=item.get("label", "关联"))
+            OntRelation.objects.create(
+                organization=organization, source=s, target=t, label=item.get("label", "关联"), created_by=request.user
+            )
             created_rel += 1
 
     return Response({
         "created_objects": len(name_to_obj),
         "created_relations": created_rel,
-        "objects": [_obj(o) for o in OntObject.objects.all()],
-        "relations": [_rel(r) for r in OntRelation.objects.all()],
+        "objects": [_obj(o) for o in OntObject.objects.filter(organization=organization)],
+        "relations": [_rel(r) for r in OntRelation.objects.filter(organization=organization)],
     })

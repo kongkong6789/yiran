@@ -14,6 +14,7 @@ import json
 import re
 import uuid
 
+from django.conf import settings
 from django.utils import timezone
 
 from apps.ontology.registry import get_action, list_actions, ACTIONS
@@ -25,6 +26,7 @@ from apps.core.models import AuditLog
 
 # 意图 -> 动作契约名 的规则映射(降级方案)
 _INTENT_RULES = [
+    (["补货分析", "库存诊断", "库存补货分析", "reorder shadow"], "inventory.reorder.shadow"),
     (["日报", "报告", "汇报", "report"], "report.generate"),
     (["改价", "调价", "价格", "price"], "price_change.apply"),
     (["采购", "补货", "进货", "purchase"], "purchase.create"),
@@ -112,6 +114,14 @@ def _execute_action(action_name: str, payload: dict) -> dict:
     action = get_action(action_name)
     if not action:
         return {"ok": False, "error": f"未知动作 {action_name}"}
+    if settings.YIRAN_PILOT_READ_ONLY and action.connector != "internal":
+        return {
+            "ok": False,
+            "blocked": True,
+            "code": "pilot_read_only",
+            "error": "影子试点已关闭所有外部 Connector 写入与同步执行",
+            "action": action_name,
+        }
     # 吉客云同步走专用入口
     if action_name == "jackyun.sync":
         from apps.connectors.jackyun import sync_to_datalake
@@ -120,7 +130,7 @@ def _execute_action(action_name: str, payload: dict) -> dict:
     return connector.execute(action_name, payload) if connector else {"ok": False}
 
 
-def run_sop(
+def run_sop_legacy(
     text: str,
     payload: dict | None = None,
     role: str = "operator",
@@ -238,6 +248,28 @@ def run_sop(
     return out
 
 
+def run_sop(
+    text: str,
+    payload: dict | None = None,
+    role: str = "operator",
+    trace_id: str | None = None,
+    *,
+    user=None,
+    organization=None,
+) -> dict:
+    """通过 Django 进程内 LangGraph 执行；不依赖 2024 服务。"""
+    from .runtime_graph import run_in_process_graph
+
+    return run_in_process_graph(
+        text=text,
+        payload=payload or {},
+        role=role,
+        trace_id=trace_id,
+        user=user,
+        organization=organization,
+    )
+
+
 def resume_approval(approval_id: int, *, approve: bool, approver: str = "manager",
                     comment: str = "") -> dict:
     """审批通过后真正执行;驳回则只更新状态。"""
@@ -273,6 +305,23 @@ def resume_approval(approval_id: int, *, approve: bool, approver: str = "manager
 
     action = get_action(appr.action)
     result = _execute_action(appr.action, appr.payload)
+    if result.get("blocked"):
+        appr.status = ApprovalRequest.Status.REJECTED
+        appr.result = result
+        appr.save(update_fields=["status", "approver", "comment", "decided_at", "result"])
+        _write_audit(
+            trace_id=appr.trace_id, role=approver, intent_desc=appr.intent or "审批通过续跑",
+            action_name=appr.action, payload=appr.payload, decision="block",
+            checks=appr.checks, result=result,
+        )
+        return {
+            "ok": False,
+            "approval_id": appr.id,
+            "status": str(appr.status),
+            "decision": "block",
+            "action": appr.action,
+            "result": result,
+        }
     appr.status = ApprovalRequest.Status.EXECUTED
     appr.result = result
     appr.save(update_fields=["status", "approver", "comment", "decided_at", "result"])

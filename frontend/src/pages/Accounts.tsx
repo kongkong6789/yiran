@@ -1150,11 +1150,6 @@ export default function Accounts() {
               <Select
                 className="account-platform-role-select-lg"
                 options={PLATFORM_ROLE_OPTIONS}
-                disabled={Boolean(
-                  target
-                  && target.id === selfUserId
-                  && platformRoleOf(target) === "superuser"
-                )}
                 disabled={Boolean(target && target.id === selfUserId && platformRoleOf(target) === "superuser")}
               />
             </Form.Item>

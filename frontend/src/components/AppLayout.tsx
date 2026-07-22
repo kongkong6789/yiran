@@ -182,8 +182,7 @@ const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
   ["/my/favorites", "knowledge"],
   ["/commerce/bench", "common"],
   ["/commerce", "common"],
-  ["/datalake", "common"],
-  ["/audit", "common"],
+  ["/datalake", "knowledge"],
   ["/logs", "common"],
   ["/tables", "knowledge"],
 ];
@@ -206,7 +205,7 @@ function routeMatches(pathname: string, route: string) {
 
 function sectionForLocation(pathname: string, search: string): SectionKey {
   const params = new URLSearchParams(search);
-  if (pathname === "/skills") return params.get("context") === "tasks" ? "work" : "knowledge";
+  if (pathname === "/skills") return params.get("context") === "tasks" ? "common" : "knowledge";
   const visibleHit = SECTIONS.find((section) => (
     section.groups.some((group) => group.items.some((item) => (
       routeMatches(pathname, item.path.split("?")[0])
@@ -272,7 +271,7 @@ export default function AppLayout() {
     nav("/login", { replace: true });
   };
 
-  const activeSectionKey = sectionForLocation(loc.pathname);
+  const activeSectionKey = sectionForLocation(loc.pathname, loc.search);
   const activeSection = SECTIONS.find((section) => section.key === activeSectionKey) || SECTIONS[0];
   const compactSidebar = screens.lg === false || navCollapsed;
   const sidebarHeaderMode = compactSidebar || sidebarWidth < 148

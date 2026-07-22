@@ -41,6 +41,11 @@ OBJECTS: dict[str, dict[str, Any]] = {
         "states": ["draft", "published"],
         "initial": "draft",
     },
+    "simulation_run": {
+        "title": "只读情景分析",
+        "states": ["draft", "completed", "blocked"],
+        "initial": "draft",
+    },
 }
 
 # 角色与预算上限(权限继承 & 预算约束)
@@ -52,6 +57,17 @@ ROLE_BUDGET = {
 
 # 可执行动作契约注册表
 ACTIONS: dict[str, ActionContract] = {
+    "inventory.reorder.shadow": ActionContract(
+        name="inventory.reorder.shadow",
+        title="库存补货只读影子分析",
+        object_type="simulation_run",
+        connector="internal",
+        required_fields={"snapshot_id": "number"},
+        required_roles=["operator", "manager", "director"],
+        from_states=["draft"],
+        to_state="completed",
+        high_risk=False,
+    ),
     "report.generate": ActionContract(
         name="report.generate",
         title="生成日报",
