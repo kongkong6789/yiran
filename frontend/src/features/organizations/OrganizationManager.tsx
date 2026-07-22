@@ -17,6 +17,11 @@ import {
   type OrganizationSummary,
 } from "../../api/client";
 import { authenticatedAvatarUrl } from "../../utils/avatar";
+import { formatPhoneMasked } from "../../utils/phone";
+import ManagementDetailModal, {
+  handleDetailRowKey,
+  isInteractiveTableTarget,
+} from "../../components/ManagementDetailModal";
 
 const ROLE_COLOR = { owner: "gold", admin: "blue", member: "default" } as const;
 const ROLE_ORDER = { owner: 3, admin: 2, member: 1 } as const;
@@ -47,6 +52,7 @@ export default function OrganizationManager({
   const { message, modal } = App.useApp();
   const [organization, setOrganization] = useState<OrganizationSummary | null>(null);
   const [members, setMembers] = useState<OrganizationMember[]>([]);
+  const [detailMember, setDetailMember] = useState<OrganizationMember | null>(null);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -69,6 +75,12 @@ export default function OrganizationManager({
     ),
     [assignmentOrganizationId, assignmentUsers],
   );
+const formatDetailTime = (value?: string | null) => value
+  ? new Date(value).toLocaleString("zh-CN", { hour12: false })
+  : "—";
+  const detailPlatformUser = detailMember
+    ? platformUsers.find((user) => user.id === detailMember.id)
+    : undefined;
 
   const load = async () => {
     setLoading(true);
@@ -312,6 +324,15 @@ export default function OrganizationManager({
           showTotal: (total) => `共 ${total} 位成员`,
         }}
         dataSource={members}
+        onRow={(member) => ({
+          className: "management-detail-row",
+          tabIndex: 0,
+          "aria-label": `查看${member.displayName || member.username}的企业成员详情`,
+          onClick: (event) => {
+            if (!isInteractiveTableTarget(event.target)) setDetailMember(member);
+          },
+          onKeyDown: (event) => handleDetailRowKey(event, () => setDetailMember(member)),
+        })}
         showSorterTooltip={{ title: "点击切换升序或降序" }}
         columns={[
           {
@@ -385,6 +406,56 @@ export default function OrganizationManager({
           },
         ]}
       />
+
+      {detailMember ? (
+        <ManagementDetailModal
+          open
+          onClose={() => setDetailMember(null)}
+          eyebrow="MEMBER DETAIL"
+          title={detailMember.displayName || detailMember.username}
+          subtitle={`@${detailMember.username}`}
+          avatarSrc={authenticatedAvatarUrl(detailMember.avatarUrl)}
+          avatarText={detailMember.displayName || detailMember.username}
+          badges={[
+            { label: detailMember.roleLabel, color: ROLE_COLOR[detailMember.role] },
+            { label: detailMember.isActive ? "已启用" : "已停用", color: detailMember.isActive ? "green" : undefined },
+          ]}
+          sections={[
+            {
+              title: "成员信息",
+              fields: [
+                { label: "用户名", value: `@${detailMember.username}` },
+                { label: "成员姓名", value: detailMember.displayName || "未填写" },
+                { label: "邮箱", value: detailPlatformUser?.email || "未填写" },
+                { label: "手机号", value: formatPhoneMasked(detailPlatformUser?.phone_masked, "未填写") },
+              ],
+            },
+            {
+              title: "企业与权限",
+              fields: [
+                { label: "当前企业", value: organization?.name || "—" },
+                { label: "企业角色", value: detailMember.roleLabel },
+                {
+                  label: "平台权限",
+                  value: detailPlatformUser?.is_superuser
+                    ? "超级管理员"
+                    : detailPlatformUser?.is_staff ? "平台管理员" : "普通用户",
+                },
+                { label: "可移出企业", value: detailMember.canRemove ? "是" : "否" },
+              ],
+            },
+            {
+              title: "账号活动",
+              fields: [
+                { label: "账号状态", value: detailMember.isActive ? "启用" : "停用" },
+                { label: "最近登录", value: formatDetailTime(detailPlatformUser?.last_login) },
+                { label: "加入平台", value: formatDetailTime(detailPlatformUser?.date_joined) },
+                { label: "成员 ID", value: detailMember.id },
+              ],
+            },
+          ]}
+        />
+      ) : null}
 
       <Modal
         title="企业设置"

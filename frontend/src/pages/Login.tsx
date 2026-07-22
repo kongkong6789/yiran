@@ -1,13 +1,21 @@
 import { useEffect, useState } from "react";
 import { App, Button, Card, Form, Input, Tabs, Typography } from "antd";
 import { useNavigate } from "react-router-dom";
-import { getMe, login, register, setAuthToken } from "../api/client";
+import { getMe, LOGIN_NOTICE_KEY, login, register, setAuthToken } from "../api/client";
 import BrandLogo from "../components/BrandLogo";
 
 export default function Login() {
   const nav = useNavigate();
   const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const notice = sessionStorage.getItem(LOGIN_NOTICE_KEY);
+    if (notice) {
+      sessionStorage.removeItem(LOGIN_NOTICE_KEY);
+      message.warning(notice);
+    }
+  }, [message]);
 
   useEffect(() => {
     if (!localStorage.getItem("liangce_auth_token")) return;

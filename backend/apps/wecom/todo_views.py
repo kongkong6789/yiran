@@ -460,16 +460,15 @@ def todos(request):
     )) if api_config else []
     if contact_ids and len(contacts) != len(contact_ids):
         return Response({"ok": False, "detail": "部分企业微信负责人不存在、已停用或不属于当前企业。"}, status=400)
-    linked_user_by_contact_id = {
-        contact.id: binding.platform_user_id
-        for contact in contacts
-        for binding in UserWeComBinding.objects.filter(
+    linked_user_by_contact_id = {}
+    for contact in contacts:
+        binding = UserWeComBinding.objects.filter(
             wecom_config=contact.config,
             wecom_userid=contact.wecom_userid,
-            platform_user_id__in=assignee_ids,
             status=UserWeComBinding.Status.MATCHED,
-        )[:1]
-    }
+        ).only("platform_user_id").first()
+        if binding:
+            linked_user_by_contact_id[contact.id] = binding.platform_user_id
     sync_group_id = uuid.uuid4()
     created = []
     with transaction.atomic():
@@ -524,18 +523,18 @@ def todos(request):
             result={"created": True, "sync_requested": sync_requested, "wecom_recipient_count": len(contacts)},
         )
     queued = any(row.sync_requested for row in WorkTodo.objects.filter(sync_group_id=sync_group_id))
-    sync_result = (
-        {"ok": True, "syncStatus": WorkTodo.SyncStatus.PENDING, "detail": "已进入企业微信待办同步队列。"}
-        if queued
-        else {"ok": True, "syncStatus": WorkTodo.SyncStatus.NOT_REQUESTED, "detail": "平台待办已创建。"}
-    )
+    if queued:
+        # 创建后立即同步，避免仅依赖后台队列时长时间停在「企微同步中」。
+        sync_result = sync_work_todo_group(sync_group_id, force=True)
+    else:
+        sync_result = {"ok": True, "syncStatus": WorkTodo.SyncStatus.NOT_REQUESTED, "detail": "平台待办已创建。"}
     return Response({
         "ok": True,
         "ids": created,
-        "syncStatus": sync_result["syncStatus"],
-        "syncDetail": sync_result["detail"],
+        "syncStatus": sync_result.get("syncStatus", WorkTodo.SyncStatus.PENDING),
+        "syncDetail": sync_result.get("detail", ""),
         "skippedPlatformAssigneeNames": [],
-        "detail": "平台待办已创建。" if not queued else "平台待办已创建，企业微信同步状态已记录。",
+        "detail": "平台待办已创建。" if not queued else sync_result.get("detail", "平台待办已创建，企业微信同步状态已记录。"),
     }, status=201)
 
 

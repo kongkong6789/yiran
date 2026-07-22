@@ -9,6 +9,7 @@ export const api = axios.create({
 });
 
 const TOKEN_KEY = "liangce_auth_token";
+export const LOGIN_NOTICE_KEY = "liangce_login_notice";
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
@@ -33,6 +34,10 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err?.response?.status === 401) {
+      const notice = String(err?.response?.data?.detail || "").trim();
+      if (notice) {
+        sessionStorage.setItem(LOGIN_NOTICE_KEY, notice);
+      }
       clearAuthToken();
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -320,6 +325,7 @@ export interface UserWeComBindingSummary {
   statusLabel: string;
   weComUserId: string;
   weComMember: string;
+  wecomContactId?: number | null;
   failureReason: string;
   statusHint?: string;
 }

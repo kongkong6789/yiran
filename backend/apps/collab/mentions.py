@@ -304,8 +304,22 @@ def reply_ai_mention(
                     llm_user,
                     history=history_for_skill,
                 )
+                try:
+                    from apps.wecom.skill_todo import try_execute_wecom_todo_skills
+
+                    wecom_blocks = try_execute_wecom_todo_skills(
+                        active_skills,
+                        trigger_content,
+                        llm_user,
+                        history=history_for_skill,
+                    )
+                    if wecom_blocks:
+                        script_blocks = list(script_blocks or []) + wecom_blocks
+                except Exception as wecom_exc:
+                    logger.exception("wecom todo skill failed: %s", wecom_exc)
+                    skill_diag = f"{skill_diag}\n企微待办技能异常：{wecom_exc}".strip()
                 script_output = format_script_outputs(script_blocks) or ""
-                skill_diag = diagnose_skill_execution(active_skills, trigger_content, script_blocks) or ""
+                skill_diag = diagnose_skill_execution(active_skills, trigger_content, script_blocks) or skill_diag
         except Exception as exc:
             logger.exception("collab skill resolve/execute failed: %s", exc)
             skill_diag = f"Skill 执行异常：{exc}"
