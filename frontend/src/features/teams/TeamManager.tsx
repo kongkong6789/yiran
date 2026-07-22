@@ -25,6 +25,10 @@ import {
   type TeamUserOption,
 } from "../../api/client";
 import { authenticatedAvatarUrl } from "../../utils/avatar";
+import ManagementDetailModal, {
+  handleDetailRowKey,
+  isInteractiveTableTarget,
+} from "../../components/ManagementDetailModal";
 
 const KIND_META: Record<TeamKind, { label: string; color: string; icon: JSX.Element; hint: string }> = {
   platform: {
@@ -56,6 +60,7 @@ export default function TeamManager({
 }: Props) {
   const { message, modal } = App.useApp();
   const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [detailTeam, setDetailTeam] = useState<TeamSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [kindFilter, setKindFilter] = useState<"all" | TeamKind>("all");
 
@@ -281,6 +286,15 @@ export default function TeamManager({
         rowKey="id"
         loading={loading}
         dataSource={visibleTeams}
+        onRow={(team) => ({
+          className: "management-detail-row",
+          tabIndex: 0,
+          "aria-label": `查看${team.name}的团队详情`,
+          onClick: (event) => {
+            if (!isInteractiveTableTarget(event.target)) setDetailTeam(team);
+          },
+          onKeyDown: (event) => handleDetailRowKey(event, () => setDetailTeam(team)),
+        })}
         locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无团队，点击右上角新建" /> }}
         pagination={{ defaultPageSize: 10, hideOnSinglePage: true, showTotal: (total) => `共 ${total} 个团队` }}
         expandable={{
@@ -386,6 +400,70 @@ export default function TeamManager({
           },
         ]}
       />
+
+      {detailTeam ? (
+        <ManagementDetailModal
+          open
+          onClose={() => setDetailTeam(null)}
+          eyebrow="TEAM DETAIL"
+          title={detailTeam.name}
+          subtitle={detailTeam.description || KIND_META[detailTeam.kind].hint}
+          icon={KIND_META[detailTeam.kind].icon}
+          badges={[
+            { label: detailTeam.kindLabel, color: KIND_META[detailTeam.kind].color },
+            { label: detailTeam.isActive ? "已启用" : "已停用", color: detailTeam.isActive ? "green" : undefined },
+          ]}
+          sections={[
+            {
+              title: "团队信息",
+              fields: [
+                { label: "团队类型", value: detailTeam.kindLabel },
+                { label: "所属企业", value: detailTeam.kind === "enterprise" ? detailTeam.organizationName || "—" : "跨企业" },
+                { label: "成员数量", value: `${detailTeam.memberCount} 人` },
+                { label: "创建时间", value: detailTeam.createdAt ? new Date(detailTeam.createdAt).toLocaleString("zh-CN", { hour12: false }) : "—" },
+                { label: "团队说明", value: detailTeam.description || "未填写", wide: true },
+              ],
+            },
+            {
+              title: "成员概况",
+              fields: [
+                {
+                  label: "负责人",
+                  value: detailTeam.members.some((member) => member.role === "lead")
+                    ? `${detailTeam.members.filter((member) => member.role === "lead").length} 人`
+                    : "未指定",
+                },
+                { label: "待绑定企微", value: detailTeam.kind === "enterprise" ? `${detailTeam.pendingWecomCount} 人` : "不适用" },
+                {
+                  label: `团队成员（${detailTeam.members.length}）`,
+                  wide: true,
+                  value: detailTeam.members.length ? (
+                    <div className="management-detail-member-list">
+                      {detailTeam.members.map((member) => (
+                        <div key={member.id} className="management-detail-member">
+                          <Avatar size={30} src={authenticatedAvatarUrl(member.avatarUrl)}>
+                            {(member.displayName || member.username).slice(0, 1).toUpperCase()}
+                          </Avatar>
+                          <span>
+                            <strong>{member.displayName || member.username}</strong>
+                            <small>@{member.username}</small>
+                          </span>
+                          {member.role === "lead" ? <Tag color="gold">负责人</Tag> : null}
+                          {detailTeam.kind === "enterprise" ? (
+                            <Tag color={member.wecomBound ? "green" : "orange"}>
+                              {member.wecomBound ? "企微已绑定" : "待绑定企微"}
+                            </Tag>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : "暂无成员",
+                },
+              ],
+            },
+          ]}
+        />
+      ) : null}
 
       <Modal
         className="team-create-modal"

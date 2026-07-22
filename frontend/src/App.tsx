@@ -13,6 +13,7 @@ import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
+import LoopsDiy from "./pages/LoopsDiy";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
@@ -47,7 +48,9 @@ export default function App() {
           <Route path="commerce" element={<CommerceHub />} />
           <Route path="commerce/bench" element={<CommerceFusion />} />
           <Route path="commerce/loops" element={<Loops />} />
+          <Route path="commerce/loops/diy" element={<LoopsDiy />} />
           <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
+          <Route path="loops/diy" element={<Navigate to="/commerce/loops/diy" replace />} />
           <Route path="work" element={<WorkHub />} />
           <Route path="console" element={<Navigate to="/work" replace />} />
           <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />

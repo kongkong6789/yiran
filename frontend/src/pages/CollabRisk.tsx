@@ -4,7 +4,7 @@ import {
 } from "antd";
 import type { TooltipPlacement } from "antd/es/tooltip";
 import {
-  AlertOutlined, ClearOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FileTextOutlined,
+  AlertOutlined, CheckSquareOutlined, ClearOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FileTextOutlined,
   CloseOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
   SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
   TeamOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
@@ -52,6 +52,7 @@ import {
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
+import ChatTodoModal from "../components/ChatTodoModal";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import XiaoceTaskList from "../components/XiaoceTaskList";
@@ -813,6 +814,8 @@ export default function CollabRisk({
   const [creatingXiaoce, setCreatingXiaoce] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [replyingTo, setReplyingTo] = useState<CollabMessage | null>(null);
+  const [todoSource, setTodoSource] = useState<CollabMessage | null>(null);
+  const [todoOpen, setTodoOpen] = useState(false);
   const [referencedRoom, setReferencedRoom] = useState<CollabRoom | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
@@ -3060,6 +3063,16 @@ export default function CollabRisk({
             void askAiAboutMessage(m);
           },
         },
+        {
+          key: "wecom-todo",
+          icon: <CheckSquareOutlined />,
+          label: "发起企微待办",
+          disabled: !isParticipant || activeRoom?.status === "closed",
+          onClick: () => {
+            setTodoSource(m);
+            setTodoOpen(true);
+          },
+        },
       );
     } else if (isSystem && !isRecalled) {
       items.push({
@@ -4367,6 +4380,16 @@ export default function CollabRisk({
           </button>
         </Tooltip>
       ) : null}
+
+      <ChatTodoModal
+        open={todoOpen}
+        source={todoSource}
+        participants={activeRoom?.participants || []}
+        onClose={() => {
+          setTodoOpen(false);
+          setTodoSource(null);
+        }}
+      />
 
       <Modal
         title="发起群聊"
