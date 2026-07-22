@@ -38,7 +38,6 @@ import {
 import {
   createAdminUser,
   deleteAdminUser,
-  getAuthToken,
   getMe,
   listAdminUsers,
   listOrganizations,
@@ -58,6 +57,7 @@ import ManagementDetailModal, {
   isInteractiveTableTarget,
 } from "../components/ManagementDetailModal";
 import { formatPhoneMasked, hasFilledPhone } from "../utils/phone";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 function AccountEditModalHead({
   icon,
@@ -1151,6 +1151,11 @@ export default function Accounts() {
                 className="account-platform-role-select-lg"
                 options={PLATFORM_ROLE_OPTIONS}
                 disabled={Boolean(target && target.id === selfUserId && platformRoleOf(target) === "superuser")}
+                disabled={Boolean(
+                  target
+                  && target.id === selfUserId
+                  && platformRoleOf(target) === "superuser",
+                )}
               />
             </Form.Item>
           )}

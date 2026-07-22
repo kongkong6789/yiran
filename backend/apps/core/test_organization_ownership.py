@@ -297,6 +297,20 @@ class OrganizationOwnershipApiTests(APITestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_me_only_lists_enterprises_the_platform_admin_joined(self):
+        outsider = User.objects.create_user("visible-scope-outsider", password="password123")
+        hidden = create_personal_organization(outsider, name="不应显示的企业").organization
+        platform_admin = User.objects.create_superuser("visible-scope-root", password="password123")
+        joined = create_personal_organization(platform_admin, name="已加入的企业").organization
+
+        self.client.force_authenticate(platform_admin)
+        response = self.client.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, 200)
+        enterprise_ids = {row["id"] for row in response.data["user"]["organizations"]}
+        self.assertEqual(enterprise_ids, {joined.id})
+        self.assertNotIn(hidden.id, enterprise_ids)
+
     def test_platform_account_row_contains_every_active_enterprise_membership(self):
         settings, _ = UserSettings.objects.get_or_create(user=self.owner)
         settings.avatar = "owner-avatar.png"
