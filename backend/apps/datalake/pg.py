@@ -595,17 +595,24 @@ class PgLake:
         return written
 
     def list_tables(self) -> list[dict]:
-        rows = self.query(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s ORDER BY table_name",
-            [self.schema],
-        )
-        result = []
-        for r in rows:
-            name = r["table_name"]
-            cnt = self.query(f'SELECT COUNT(*) AS c FROM {self.schema}."{name}"')[0]["c"]
-            result.append({"table": name, "rows": cnt})
-        return result
+        # 一个连接、两次查询完成目录和精确行数统计，避免逐表重新握手。
+        with self.connect() as con:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = %s ORDER BY table_name",
+                [self.schema],
+            )
+            names = [row[0] for row in cur.fetchall()]
+            if not names:
+                return []
+            count_sql = " UNION ALL ".join(
+                f'SELECT %s AS table_name, COUNT(*) AS row_count FROM {self.schema}."{name}"'
+                for name in names
+            )
+            cur.execute(count_sql, names)
+            counts = {row[0]: row[1] for row in cur.fetchall()}
+        return [{"table": name, "rows": counts.get(name, 0)} for name in names]
 
 
 class PgSession:

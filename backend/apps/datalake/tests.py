@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+from datetime import date
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -119,8 +120,8 @@ class GovernedSalesLedgerTests(APITestCase):
     ):
         list_tables_mock.return_value = [{"table": "daily_sales", "rows": 2}]
         query_mock.return_value = [
-            {"dt": "2026-07-21", "shop": "天猫", "gmv": 100},
-            {"dt": "2026-07-22", "shop": "抖音", "gmv": 200},
+            {"dt": date(2026, 7, 21), "shop": "天猫", "gmv": 100},
+            {"dt": date(2026, 7, 22), "shop": "抖音", "gmv": 200},
         ]
         response = self.client.post("/api/datalake/assets/publish/", {
             "table": "daily_sales",

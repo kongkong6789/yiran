@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Card, Table, Tag, Row, Col, Statistic, Space, Typography, Button, message,
-  Modal, Input, Select, Upload, Alert, Tabs, Empty, Checkbox, Drawer, Descriptions, Spin,
+  Modal, Input, Select, Upload, Alert, Empty, Checkbox, Drawer, Spin,
 } from "antd";
 import {
   DatabaseOutlined, CloudSyncOutlined, UploadOutlined, PlusOutlined, MergeCellsOutlined,
-  SafetyCertificateOutlined, RobotOutlined, WarningOutlined, InboxOutlined,
-  CheckCircleOutlined, ArrowRightOutlined,
-  EyeOutlined,
+  SafetyCertificateOutlined, RobotOutlined,
+  ArrowRightOutlined,
+  EyeOutlined, AuditOutlined, ContainerOutlined, ImportOutlined, CloseOutlined,
 } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import "./enterprise-data.css";
@@ -17,7 +17,19 @@ import {
   getReferenceMappings, getSourceSnapshots, publishDataAsset, reconcileRawImport, syncJackyun, uploadSalesLedger,
 } from "../../api/client";
 
-export default function EnterpriseData() {
+type EnterpriseDataProps = {
+  onBackToDocuments?: () => void;
+};
+
+function formatDrawerDateTime(value: string | null | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export default function EnterpriseData({ onBackToDocuments }: EnterpriseDataProps) {
   const navigate = useNavigate();
   const [tables, setTables] = useState<any[]>([]);
   const [metrics, setMetrics] = useState<any[]>([]);
@@ -49,23 +61,39 @@ export default function EnterpriseData() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<{ table: string; key: string; name: string; category: string; description: string } | null>(null);
   const [assetDetail, setAssetDetail] = useState<any>(null);
+  const [assetsLoading, setAssetsLoading] = useState(true);
+  const initialLoadRef = useRef(false);
 
-  const reload = () => {
-    getTables().then((d) => {
-      setTables(d.tables || []);
-      setSource(d.source || "");
-      setPath(d.path || "");
-    });
-    getMetrics().then((d) => setMetrics(d.results || []));
-    getAnomalies().then((d) => setAnomalies(d.results || []));
-    getSourceSnapshots().then((d) => setSnapshots(d.results || []));
-    getMetricContracts().then((d) => setContracts(d.results || []));
-    getRawImports().then((d) => setRawImports(d.results || []));
-    getImportContracts().then((d) => setImportContracts(d.results || []));
-    getReferenceMappings().then((d) => setReferenceMappings(d.results || []));
+  const reload = async () => {
+    setAssetsLoading(true);
+    const [tableResult, snapshotResult] = await Promise.allSettled([getTables(), getSourceSnapshots()]);
+    if (tableResult.status === "fulfilled") {
+      setTables(tableResult.value.tables || []);
+      setSource(tableResult.value.source || "");
+      setPath(tableResult.value.path || "");
+    } else {
+      message.error("业务数据资产加载失败");
+    }
+    if (snapshotResult.status === "fulfilled") setSnapshots(snapshotResult.value.results || []);
+    setAssetsLoading(false);
+
+    // 首屏先返回资产与可信状态，其余页签数据随后加载，避免争抢数据库连接。
+    const secondary = await Promise.allSettled([
+      getMetrics(), getAnomalies(), getMetricContracts(), getRawImports(), getImportContracts(), getReferenceMappings(),
+    ]);
+    if (secondary[0].status === "fulfilled") setMetrics(secondary[0].value.results || []);
+    if (secondary[1].status === "fulfilled") setAnomalies(secondary[1].value.results || []);
+    if (secondary[2].status === "fulfilled") setContracts(secondary[2].value.results || []);
+    if (secondary[3].status === "fulfilled") setRawImports(secondary[3].value.results || []);
+    if (secondary[4].status === "fulfilled") setImportContracts(secondary[4].value.results || []);
+    if (secondary[5].status === "fulfilled") setReferenceMappings(secondary[5].value.results || []);
   };
 
-  useEffect(() => { reload(); }, []);
+  useEffect(() => {
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
+    void reload();
+  }, []);
 
   const doSync = async () => {
     setSyncing(true);
@@ -231,6 +259,17 @@ export default function EnterpriseData() {
   };
 
   // 按建模分层给表分组上色
+  const iconTone = (table: string, category: string) => {
+    if (["anomaly", "error_book", "ads_anomaly"].includes(table) || category === "质量记录" || category === "治理记录") return "quality";
+    if (category === "指标口径") return "metric-def";
+    if (category === "指标数据") return "metric-data";
+    if (category === "动作留痕") return "event";
+    if (category === "基础档案" || category === "维度" || table.startsWith("dim_")) return "dimension";
+    if (category.includes("销售") || table.includes("sales")) return "sales";
+    if (category.includes("本体")) return "ontology";
+    return "default";
+  };
+
   const layerOf = (t: string) =>
     t.startsWith("dim_") ? "维度" :
     t.startsWith("dwd_") ? "明细" :
@@ -241,11 +280,6 @@ export default function EnterpriseData() {
   const governedSnapshots = snapshots.filter((row) => row.governance_status === "governed" && row.source_complete);
   const pendingMappings = referenceMappings.filter((row) => row.status === "candidate").length;
   const pendingImports = rawImports.filter((row) => row.reconciliation_status === "pending").length;
-  const pendingItems = pendingMappings + pendingImports + anomalies.length;
-  const latestUpdate = [
-    ...snapshots.map((row) => row.as_of),
-    ...metrics.map((row) => row.dt),
-  ].filter(Boolean).sort().reverse()[0];
 
   const assetMeta = (table: string) => {
     const known: Record<string, { name: string; key: string; description: string; category: string }> = {
@@ -342,39 +376,54 @@ export default function EnterpriseData() {
     },
   ];
 
+  const pendingImportCount = pendingMappings + pendingImports;
+  const workspaceTabs = [
+    { key: "assets", label: "数据资产" },
+    { key: "imports", label: "数据接入", badge: pendingImportCount || undefined },
+    { key: "trusted", label: "可用数据" },
+    { key: "quality", label: "数据质量", badge: anomalies.length || undefined, badgeTone: "alert" as const },
+  ];
+
   return (
     <Space className="enterprise-data-page" direction="vertical" size={16} style={{ width: "100%" }}>
-      <section className="enterprise-data-hero">
-        <div>
-          <div className="enterprise-data-eyebrow"><DatabaseOutlined /> 企业知识库 · 结构化数据</div>
-          <Typography.Title level={3}>企业数据</Typography.Title>
-          <Typography.Paragraph>
-            把销售、库存和经营指标整理成可信的数据资产，供团队查看，也供 AI 任务在权限范围内准确取数。
-          </Typography.Paragraph>
-        </div>
-        <Space wrap>
-          <Button icon={<CloudSyncOutlined />} onClick={reload}>刷新数据</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate("/connectors")}>管理数据连接</Button>
-        </Space>
-      </section>
+      <nav className="enterprise-data-breadcrumb" aria-label="面包屑">
+        {onBackToDocuments ? (
+          <button type="button" onClick={onBackToDocuments}>知识库</button>
+        ) : (
+          <span>知识库</span>
+        )}
+        <span>/</span>
+        <strong>企业数据</strong>
+      </nav>
 
       <Card className="enterprise-data-guide" bordered={false}>
         <div className="enterprise-data-guide-title">企业数据会怎样被使用？</div>
         <div className="enterprise-data-guide-flow">
-          <div><span>1</span><strong>接入数据</strong><small>连接业务系统或上传文件</small></div>
-          <ArrowRightOutlined />
-          <div><span>2</span><strong>发布可信版本</strong><small>选择已有资产并确认范围与更新时间</small></div>
-          <ArrowRightOutlined />
-          <div><span>3</span><strong>供任务使用</strong><small>AI 和团队只读取通过校验的数据版本</small></div>
+          <div className="enterprise-data-guide-step">
+            <span className="enterprise-data-guide-step-icon is-blue"><ImportOutlined /></span>
+            <strong>接入数据</strong>
+            <small>连接业务系统或上传文件</small>
+          </div>
+          <div className="enterprise-data-guide-arrow"><ArrowRightOutlined /></div>
+          <div className="enterprise-data-guide-step">
+            <span className="enterprise-data-guide-step-icon is-purple"><AuditOutlined /></span>
+            <strong>数据治理</strong>
+            <small>清洗、标准化与质量校验</small>
+          </div>
+          <div className="enterprise-data-guide-arrow"><ArrowRightOutlined /></div>
+          <div className="enterprise-data-guide-step">
+            <span className="enterprise-data-guide-step-icon is-teal"><ContainerOutlined /></span>
+            <strong>发布可用版本</strong>
+            <small>对外发布并生成可用版本</small>
+          </div>
+          <div className="enterprise-data-guide-arrow"><ArrowRightOutlined /></div>
+          <div className="enterprise-data-guide-step">
+            <span className="enterprise-data-guide-step-icon is-orange"><RobotOutlined /></span>
+            <strong>智能任务使用</strong>
+            <small>AI 应用与智能体调用数据</small>
+          </div>
         </div>
       </Card>
-
-      <Row gutter={[12, 12]} className="enterprise-data-summary">
-        <Col xs={12} lg={6}><Card bordered={false}><Statistic title="数据资产" value={tables.length} suffix="项" prefix={<InboxOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card bordered={false}><Statistic title="AI 可用数据版本" value={governedSnapshots.length} suffix="个" prefix={<RobotOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card bordered={false}><Statistic title="待处理事项" value={pendingItems} suffix="项" prefix={<WarningOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card bordered={false}><Statistic title="最近数据日期" value={latestUpdate || "暂无"} prefix={<CheckCircleOutlined />} /></Card></Col>
-      </Row>
 
       {governedSnapshots.length === 0 && tables.length > 0 && (
         <Alert
@@ -388,47 +437,88 @@ export default function EnterpriseData() {
       )}
 
       <Card className="enterprise-data-workspace" bordered={false}>
-        <Tabs
-          activeKey={activeSection}
-          onChange={setActiveSection}
-          items={[
-            {
-              key: "assets",
-              label: "数据资产",
-              children: (
+        <div className="enterprise-data-tabbar">
+          <div className="enterprise-data-tabbar-track" role="tablist" aria-label="企业数据分区">
+            {workspaceTabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={activeSection === tab.key}
+                className={`enterprise-data-tab${activeSection === tab.key ? " is-active" : ""}`}
+                onClick={() => setActiveSection(tab.key)}
+              >
+                <span>{tab.label}</span>
+                {tab.badge ? (
+                  <span className={`enterprise-data-tab-badge${tab.badgeTone === "alert" ? " is-alert" : ""}${activeSection === tab.key ? " is-active" : ""}`}>
+                    {tab.badge}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="enterprise-data-tabpanel">
+          {activeSection === "assets" && (
                 <div className="enterprise-data-section">
                   <div className="enterprise-data-section-heading">
-                    <div><Typography.Title level={5}>业务数据资产</Typography.Title><Typography.Text type="secondary">这里展示企业已经拥有的数据，以及它们能否被 AI 任务使用。</Typography.Text></div>
-                    <Tag>{source === "postgres" ? "企业主库" : "本地 DuckDB"}</Tag>
+                    <div>
+                      <Typography.Title level={5}>业务数据资产</Typography.Title>
+                      <Typography.Text type="secondary">展示企业已拥有的数据资产，以及它们能否被 AI 任务使用。</Typography.Text>
+                    </div>
+                    <Button className="enterprise-data-btn-create" type="primary" icon={<PlusOutlined />} onClick={() => setActiveSection("imports")}>
+                      新建数据资产
+                    </Button>
                   </div>
                   {tables.length ? (
                     <Table
                       className="enterprise-data-assets-table"
                       rowKey="table"
                       size="middle"
+                      loading={assetsLoading}
                       dataSource={assetRows}
                       pagination={{ pageSize: 10, showSizeChanger: false }}
                       onRow={(row) => ({ onClick: () => void openAssetDetail(row.table) })}
                       columns={[
                         {
                           title: "数据资产", key: "asset", width: "38%",
-                          render: (_: unknown, row: any) => (
-                            <div className="enterprise-data-list-name">
-                              <span className="enterprise-data-list-icon">{["anomaly", "error_book"].includes(row.table) ? <SafetyCertificateOutlined /> : <DatabaseOutlined />}</span>
-                              <span><Space size={6} wrap><Typography.Text strong>{row.name}</Typography.Text><Tag>{row.category}</Tag></Space><Typography.Text type="secondary">{row.description}</Typography.Text></span>
-                            </div>
-                          ),
+                          render: (_: unknown, row: any) => {
+                            const tone = iconTone(row.table, row.category);
+                            return (
+                              <div className="enterprise-data-list-name">
+                                <span className={`enterprise-data-list-icon is-${tone}`}>
+                                  {tone === "quality" ? <SafetyCertificateOutlined /> : <DatabaseOutlined />}
+                                </span>
+                                <span>
+                                  <Space size={6} wrap>
+                                    <Typography.Text strong>{row.name}</Typography.Text>
+                                    <Tag className="enterprise-data-tag-category">{row.category}</Tag>
+                                  </Space>
+                                  <Typography.Text type="secondary">{row.description}</Typography.Text>
+                                </span>
+                              </div>
+                            );
+                          },
                         },
                         { title: "数据标识", dataIndex: "key", render: (value: string) => <code>{value}</code> },
                         { title: "数据量", dataIndex: "rows", width: 110, render: (value: number) => `${value || 0} 行` },
-                        { title: "接入状态", key: "connected", width: 110, render: () => <Tag color="green">已接入</Tag> },
-                        { title: "AI 使用", key: "ai", width: 110, render: (_: unknown, row: any) => <Tag color={row.trustedVersion ? "green" : "default"}>{row.trustedVersion ? "可用" : "未发布"}</Tag> },
+                        { title: "接入状态", key: "connected", width: 110, render: () => <Tag className="enterprise-data-tag-success">已接入</Tag> },
                         {
-                          title: "操作", key: "action", width: 190,
+                          title: "AI 使用", key: "ai", width: 110,
+                          render: (_: unknown, row: any) => (
+                            row.trustedVersion
+                              ? <Tag className="enterprise-data-tag-success">可用</Tag>
+                              : <Tag className="enterprise-data-tag-muted">未发布</Tag>
+                          ),
+                        },
+                        {
+                          title: "操作", key: "action", width: 120,
                           render: (_: unknown, row: any) => (
                             <Space onClick={(event) => event.stopPropagation()}>
-                              <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => void openAssetDetail(row.table)}>查看详情</Button>
-                              {!row.trustedVersion && <Button size="small" onClick={() => openTrustAsset(row.table, row.key, row.name)}>设为可信</Button>}
+                              <Button className="enterprise-data-action-link" size="small" type="link" icon={<EyeOutlined />} onClick={() => void openAssetDetail(row.table)}>
+                                查看详情
+                              </Button>
                             </Space>
                           ),
                         },
@@ -440,12 +530,9 @@ export default function EnterpriseData() {
                     {path && <Typography.Text type="secondary" ellipsis>{path}</Typography.Text>}
                   </div>
                 </div>
-              ),
-            },
-            {
-              key: "imports",
-                  label: `数据接入${pendingMappings + pendingImports ? ` (${pendingMappings + pendingImports})` : ""}`,
-                  children: (
+          )}
+
+          {activeSection === "imports" && (
                     <div className="enterprise-data-section">
                       <div className="enterprise-data-section-heading">
                         <div><Typography.Title level={5}>接入新的企业数据</Typography.Title><Typography.Text type="secondary">通过业务系统连接器持续同步数据；销售账文件是现有的专项模板，不是唯一接入方式。</Typography.Text></div>
@@ -485,12 +572,9 @@ export default function EnterpriseData() {
                     { title: "操作", render: (_: unknown, row: any) => row.status === "candidate" ? <Button size="small" onClick={() => void confirmMapping(row.id)}>管理员确认</Button> : null },
                   ]} />
                 </div>
-              ),
-            },
-            {
-              key: "trusted",
-              label: "可信数据",
-              children: (
+          )}
+
+          {activeSection === "trusted" && (
                 <div className="enterprise-data-section">
                   <div className="enterprise-data-section-heading">
                     <div><Typography.Title level={5}>可追溯的数据版本</Typography.Title><Typography.Text type="secondary">每个版本都记录来源、数据截至时间、完整度和口径，供任务稳定复用。</Typography.Text></div>
@@ -511,12 +595,9 @@ export default function EnterpriseData() {
                     { title: "计算口径", dataIndex: "formula", render: (v: string) => v ? <code className="enterprise-data-formula">{v}</code> : "—" },
                   ]} />
                 </div>
-              ),
-            },
-            {
-              key: "quality",
-              label: `数据质量${anomalies.length ? ` (${anomalies.length})` : ""}`,
-              children: (
+          )}
+
+          {activeSection === "quality" && (
                 <div className="enterprise-data-section">
                   <div className="enterprise-data-section-heading"><div><Typography.Title level={5}>数据质量问题</Typography.Title><Typography.Text type="secondary">这里集中展示影响数据可信度的问题和触发规则。</Typography.Text></div></div>
                   <Table rowKey={(r) => `${r.scope}-${r.metric}-${r.dt}`} size="small" pagination={{ pageSize: 8 }} dataSource={anomalies} locale={{ emptyText: "当前没有数据质量异常" }} columns={[
@@ -526,81 +607,166 @@ export default function EnterpriseData() {
                     { title: "触发规则", dataIndex: "rule", render: (v: string) => v ? <code className="enterprise-data-formula">{v}</code> : "—" },
                   ]} />
                 </div>
-              ),
-            },
-          ]}
-        />
+          )}
+        </div>
       </Card>
 
       <Drawer
-        title="数据资产详情"
-        width="min(820px, 94vw)"
+        rootClassName="enterprise-data-detail-drawer"
+        placement="right"
+        width="min(760px, 92vw)"
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
-        extra={selectedAsset && !assetDetail?.trusted_versions?.length ? (
-          <Button type="primary" onClick={() => openTrustAsset(selectedAsset.table, selectedAsset.key, selectedAsset.name)}>设为可信数据</Button>
-        ) : undefined}
+        destroyOnClose
+        closable={false}
+        title={null}
+        footer={selectedAsset && !assetDetail?.trusted_versions?.length ? (
+          <div className="enterprise-data-detail-footer">
+            <Button onClick={() => setDetailOpen(false)}>关闭</Button>
+            <Button type="primary" className="enterprise-data-btn-create" onClick={() => openTrustAsset(selectedAsset.table, selectedAsset.key, selectedAsset.name)}>
+              发布为可信数据
+            </Button>
+          </div>
+        ) : (
+          <div className="enterprise-data-detail-footer is-single">
+            <Button type="primary" className="enterprise-data-btn-create" onClick={() => setDetailOpen(false)}>完成</Button>
+          </div>
+        )}
       >
-        <Spin spinning={detailLoading}>
-          {selectedAsset && (
-            <Space direction="vertical" size={18} style={{ width: "100%" }}>
-              <div className="enterprise-data-detail-heading">
-                <div className="enterprise-data-list-icon"><DatabaseOutlined /></div>
-                <div>
-                  <Space wrap><Typography.Title level={5}>{selectedAsset.name}</Typography.Title><Tag>{selectedAsset.category}</Tag></Space>
-                  <Typography.Text type="secondary">{selectedAsset.description}</Typography.Text>
+        <div className="enterprise-data-detail-shell">
+          <header className="enterprise-data-detail-header">
+            <div>
+              <span className="enterprise-data-detail-kicker">数据资产详情</span>
+              {selectedAsset ? (
+                <div className="enterprise-data-detail-title-row">
+                  <h3>{selectedAsset.name}</h3>
+                  <Tag className="enterprise-data-tag-category">{selectedAsset.category}</Tag>
                 </div>
+              ) : (
+                <h3>加载中…</h3>
+              )}
+              {selectedAsset ? <p>{selectedAsset.description}</p> : null}
+            </div>
+            <button type="button" className="enterprise-data-detail-close" aria-label="关闭" onClick={() => setDetailOpen(false)}>
+              <CloseOutlined />
+            </button>
+          </header>
+
+          <Spin spinning={detailLoading}>
+            {selectedAsset && (
+              <div className="enterprise-data-detail-body">
+                <div className="enterprise-data-detail-hero">
+                  <span className={`enterprise-data-list-icon is-${iconTone(selectedAsset.table, selectedAsset.category)}`}>
+                    {iconTone(selectedAsset.table, selectedAsset.category) === "quality"
+                      ? <SafetyCertificateOutlined />
+                      : <DatabaseOutlined />}
+                  </span>
+                  <div className="enterprise-data-detail-hero-copy">
+                    <strong>{selectedAsset.key}</strong>
+                    <span>{selectedAsset.table}</span>
+                  </div>
+                </div>
+
+                <div className="enterprise-data-detail-meta">
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>数据标识</span>
+                    <code>{selectedAsset.key}</code>
+                  </div>
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>物理表</span>
+                    <code>{selectedAsset.table}</code>
+                  </div>
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>数据来源</span>
+                    <strong>{assetDetail?.source === "postgres" ? "PostgreSQL 企业主库" : "DuckDB 本地数据"}</strong>
+                  </div>
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>数据量</span>
+                    <strong>{assetDetail?.row_count ?? 0} 行</strong>
+                  </div>
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>可信状态</span>
+                    {assetDetail?.trusted_versions?.length ? (
+                      <Tag className="enterprise-data-tag-success">已发布 {assetDetail.trusted_versions.length} 个版本</Tag>
+                    ) : (
+                      <Tag className="enterprise-data-tag-muted">未发布</Tag>
+                    )}
+                  </div>
+                  <div className="enterprise-data-detail-meta-item">
+                    <span>当前预览</span>
+                    <strong>{assetDetail?.preview_count ?? 0} 行</strong>
+                  </div>
+                </div>
+
+                <section className="enterprise-data-detail-panel">
+                  <div className="enterprise-data-detail-panel-head">
+                    <h4>字段结构</h4>
+                    <span>{assetDetail?.columns?.length ?? 0} 个字段</span>
+                  </div>
+                  <div className="enterprise-data-detail-fields">
+                    {assetDetail?.columns?.length ? assetDetail.columns.map((column: string) => (
+                      <span key={column} className="enterprise-data-detail-field-chip">{column}</span>
+                    )) : <Typography.Text type="secondary">暂无字段信息</Typography.Text>}
+                  </div>
+                </section>
+
+                <section className="enterprise-data-detail-panel">
+                  <div className="enterprise-data-detail-panel-head">
+                    <h4>数据预览</h4>
+                    <span>最多显示前 50 行，只读</span>
+                  </div>
+                  <Table
+                    className="enterprise-data-detail-preview-table"
+                    rowKey="__preview_key"
+                    size="small"
+                    scroll={{ x: "max-content" }}
+                    pagination={false}
+                    dataSource={(assetDetail?.rows || []).map((row: any, index: number) => ({ ...row, __preview_key: index }))}
+                    columns={(assetDetail?.columns || []).map((column: string) => ({
+                      title: column,
+                      dataIndex: column,
+                      key: column,
+                      ellipsis: true,
+                      width: column === "detail" ? 220 : 120,
+                      render: (value: unknown) => value != null && typeof value === "object" ? JSON.stringify(value) : String(value ?? "—"),
+                    }))}
+                    locale={{ emptyText: "该资产暂无可预览数据" }}
+                  />
+                </section>
+
+                <section className="enterprise-data-detail-panel">
+                  <div className="enterprise-data-detail-panel-head">
+                    <h4>可用版本</h4>
+                    <span>{assetDetail?.trusted_versions?.length ?? 0} 个版本</span>
+                  </div>
+                  <Table
+                    className="enterprise-data-detail-versions-table"
+                    rowKey="id"
+                    size="small"
+                    pagination={false}
+                    dataSource={assetDetail?.trusted_versions || []}
+                    columns={[
+                      { title: "版本", dataIndex: "snapshot_key", ellipsis: true },
+                      {
+                        title: "数据截至",
+                        dataIndex: "as_of",
+                        width: 168,
+                        render: (value: string) => formatDrawerDateTime(value),
+                      },
+                      { title: "数据量", dataIndex: "row_count", width: 90, render: (value: number) => `${value || 0} 行` },
+                      {
+                        title: "状态",
+                        width: 110,
+                        render: () => <Tag className="enterprise-data-tag-success"><RobotOutlined /> AI 可用</Tag>,
+                      },
+                    ]}
+                    locale={{ emptyText: "尚未发布可用版本" }}
+                  />
+                </section>
               </div>
-              <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered items={[
-                { key: "key", label: "数据标识", children: <code>{selectedAsset.key}</code> },
-                { key: "table", label: "物理表", children: <code>{selectedAsset.table}</code> },
-                { key: "source", label: "数据来源", children: assetDetail?.source === "postgres" ? "PostgreSQL 企业主库" : "DuckDB 本地数据" },
-                { key: "rows", label: "数据量", children: `${assetDetail?.row_count ?? 0} 行` },
-                { key: "trust", label: "可信状态", children: assetDetail?.trusted_versions?.length ? <Tag color="green">已发布 {assetDetail.trusted_versions.length} 个版本</Tag> : <Tag>未发布</Tag> },
-                { key: "preview", label: "当前预览", children: `${assetDetail?.preview_count ?? 0} 行` },
-              ]} />
-              <section>
-                <Typography.Title level={5} className="enterprise-data-detail-title">字段结构</Typography.Title>
-                <Space wrap>{assetDetail?.columns?.length ? assetDetail.columns.map((column: string) => <Tag key={column}>{column}</Tag>) : <Typography.Text type="secondary">暂无字段信息</Typography.Text>}</Space>
-              </section>
-              <section>
-                <div className="enterprise-data-detail-section-heading"><Typography.Title level={5} className="enterprise-data-detail-title">数据预览</Typography.Title><Typography.Text type="secondary">最多显示前 50 行，只读</Typography.Text></div>
-                <Table
-                  className="enterprise-data-preview-table"
-                  rowKey="__preview_key"
-                  size="small"
-                  scroll={{ x: "max-content", y: 360 }}
-                  pagination={false}
-                  dataSource={(assetDetail?.rows || []).map((row: any, index: number) => ({ ...row, __preview_key: index }))}
-                  columns={(assetDetail?.columns || []).map((column: string) => ({
-                    title: column,
-                    dataIndex: column,
-                    key: column,
-                    ellipsis: true,
-                    render: (value: unknown) => value != null && typeof value === "object" ? JSON.stringify(value) : String(value ?? "—"),
-                  }))}
-                  locale={{ emptyText: "该资产暂无可预览数据" }}
-                />
-              </section>
-              <section>
-                <Typography.Title level={5} className="enterprise-data-detail-title">可信版本</Typography.Title>
-                <Table
-                  rowKey="id"
-                  size="small"
-                  pagination={false}
-                  dataSource={assetDetail?.trusted_versions || []}
-                  columns={[
-                    { title: "版本", dataIndex: "snapshot_key", ellipsis: true },
-                    { title: "数据截至", dataIndex: "as_of" },
-                    { title: "数据量", dataIndex: "row_count", render: (value: number) => `${value || 0} 行` },
-                    { title: "状态", render: () => <Tag color="green">AI 可用</Tag> },
-                  ]}
-                  locale={{ emptyText: "尚未发布可信版本" }}
-                />
-              </section>
-            </Space>
-          )}
-        </Spin>
+            )}
+          </Spin>
+        </div>
       </Drawer>
 
       <Modal

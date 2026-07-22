@@ -43,7 +43,7 @@ def _step(state: RuntimeState, node: str, status: str, detail: str, data: dict |
 def _parse(state: RuntimeState) -> RuntimeState:
     from .graph import recognize_intent
 
-    intent, action = recognize_intent(state["text"])
+    intent, action = recognize_intent(state["text"], user=state.get("user"))
     update = {"intent": intent, "action": action}
     update.update(_step(state, "解析请求", "done" if action else "block", intent, {"action": action}))
     return update
@@ -64,6 +64,16 @@ def _scope(state: RuntimeState) -> RuntimeState:
 def _snapshot(state: RuntimeState) -> RuntimeState:
     if state.get("decision") == "block":
         return {}
+    if state.get("action") == "report.generate":
+        from .business_analysis import run_business_analysis
+
+        return {"legacy_result": run_business_analysis(
+            text=state["text"],
+            organization=state["organization"],
+            user=state["user"],
+            trace_id=state["trace_id"],
+            initial_steps=state.get("steps") or [],
+        )}
     if state.get("action") != "inventory.reorder.shadow":
         from .graph import run_sop_legacy
 

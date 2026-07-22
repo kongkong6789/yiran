@@ -27,7 +27,7 @@ from apps.core.models import AuditLog
 # 意图 -> 动作契约名 的规则映射(降级方案)
 _INTENT_RULES = [
     (["补货分析", "库存诊断", "库存补货分析", "reorder shadow"], "inventory.reorder.shadow"),
-    (["日报", "报告", "汇报", "report"], "report.generate"),
+    (["日报", "周报", "月报", "报告", "汇报", "复盘", "经营分析", "销售分析", "数据分析", "洞察", "report"], "report.generate"),
     (["改价", "调价", "价格", "price"], "price_change.apply"),
     (["采购", "补货", "进货", "purchase"], "purchase.create"),
     (["同步", "拉取", "吉客云", "jackyun"], "jackyun.sync"),
@@ -43,13 +43,18 @@ def recognize_intent_rules(text: str) -> tuple[str, str]:
     return ("未识别到明确动作", "")
 
 
-def recognize_intent(text: str) -> tuple[str, str]:
+def recognize_intent(text: str, user=None) -> tuple[str, str]:
     """优先 LLM 意图识别,失败则关键词规则。"""
     from apps.council import llm
 
+    # 已注册的明确业务词优先走确定性规则，避免模型把“周报”等请求误判为空动作。
+    rule_intent, rule_action = recognize_intent_rules(text)
+    if rule_action:
+        return rule_intent, rule_action
+
     action_names = list(ACTIONS.keys())
     catalog = "\n".join(f"- {a.name}: {a.title}" for a in ACTIONS.values())
-    if llm.llm_available():
+    if llm.llm_available(user):
         system = (
             "你是 SOP 意图识别器。根据用户请求选择唯一动作名。"
             "只输出 JSON: {\"action\":\"动作名或空串\",\"reason\":\"一句话\"}。"
@@ -57,7 +62,7 @@ def recognize_intent(text: str) -> tuple[str, str]:
         )
         out = llm.chat(
             system, f"用户请求:{text}",
-            temperature=0.1, max_tokens=120, model=llm.fast_model(), timeout=20,
+            temperature=0.1, max_tokens=120, model=llm.fast_model(user), timeout=20, llm_user=user,
         )
         if out:
             m = re.search(r"\{[\s\S]*\}", out)
@@ -72,7 +77,7 @@ def recognize_intent(text: str) -> tuple[str, str]:
                         return (reason or "LLM 未识别到明确动作", "")
                 except json.JSONDecodeError:
                     pass
-    return recognize_intent_rules(text)
+    return rule_intent, rule_action
 
 
 def _step(name, status, detail, data=None):

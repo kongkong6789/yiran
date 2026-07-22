@@ -32,6 +32,11 @@ def _pg_path() -> str:
     return pglake.endpoint()
 
 
+def _json_safe(value):
+    """将数据库返回的 date/datetime/Decimal 等值规范化为可持久化 JSON。"""
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
 @api_view(["GET"])
 def tables(request):
     if _use_pg():
@@ -121,13 +126,13 @@ def publish_asset(request):
         rows = pglake.query(f'SELECT * FROM {pglake.schema}."{table}"')
     else:
         rows = ducklake.query(f'SELECT * FROM "{table}"')
-    payload = {
+    payload = _json_safe({
         "asset_key": asset_key,
         "display_name": display_name,
         "table": table,
         "columns": list(rows[0].keys()) if rows else [],
         "rows": rows,
-    }
+    })
     content_hash = canonical_hash(payload)
     source_system = f"physical:{source}:{table}"[:64]
     existing = SourceSnapshot.objects.filter(

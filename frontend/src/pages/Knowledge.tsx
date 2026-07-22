@@ -1410,21 +1410,9 @@ export default function Knowledge() {
 
   if (searchParams.get("tab") === "enterprise-data") {
     return (
-      <div className="knowledge-console">
+      <div className="knowledge-console knowledge-console--enterprise-data">
         <style>{styles}</style>
-        <Card size="small" style={{ marginBottom: 16 }}>
-          <Segmented
-            value="enterprise-data"
-            options={[
-              { label: "文档知识", value: "documents" },
-              { label: "企业数据", value: "enterprise-data" },
-            ]}
-            onChange={(value) => {
-              if (value === "documents") setSearchParams({});
-            }}
-          />
-        </Card>
-        <EnterpriseData />
+        <EnterpriseData onBackToDocuments={() => setSearchParams({})} />
       </div>
     );
   }

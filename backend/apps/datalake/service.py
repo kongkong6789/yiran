@@ -33,15 +33,21 @@ class DuckLake:
             con.execute(sql, params or [])
 
     def list_tables(self):
-        rows = self.query(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
-        )
-        result = []
-        for r in rows:
-            name = r["table_name"]
-            cnt = self.query(f"SELECT COUNT(*) AS c FROM {name}")[0]["c"]
-            result.append({"table": name, "rows": cnt})
-        return result
+        with self.connect() as con:
+            names = [
+                row[0] for row in con.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema='main' ORDER BY table_name"
+                ).fetchall()
+            ]
+            if not names:
+                return []
+            count_sql = " UNION ALL ".join(
+                f'SELECT ? AS table_name, COUNT(*) AS row_count FROM "{name}"'
+                for name in names
+            )
+            counts = {row[0]: row[1] for row in con.execute(count_sql, names).fetchall()}
+        return [{"table": name, "rows": counts.get(name, 0)} for name in names]
 
     def seed(self):
         """初始化示例数据(幂等)。"""
