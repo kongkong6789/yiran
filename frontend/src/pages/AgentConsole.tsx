@@ -4,11 +4,11 @@ import {
   Space, Typography,
 } from "antd";
 import {
-  ArrowLeftOutlined, SaveOutlined,
+  ArrowLeftOutlined, LeftOutlined, RightOutlined, SaveOutlined,
 } from "@ant-design/icons";
 import {
-  api, getCatalog, runSop, resumeSop,
-  listAgents, type ActionContract, type Agent, type SopResult,
+  api, getCatalog, getReportOptions, getSop, getTaskTemplate, runSop, resumeSop,
+  listAgents, type ActionContract, type Agent, type SopResult, type TaskTemplateItem,
 } from "../api/client";
 import TaskAssignmentPanel from "../features/task-console/TaskAssignmentPanel";
 import ExecutionTimeline, {
@@ -36,7 +36,6 @@ import {
   type TaskAssignmentValue,
 } from "../features/task-console/mockWeCom";
 import { collectSubmitBlockers } from "../features/task-console/taskSubmitValidation";
-import { getTaskTemplate } from "../features/task-console/taskTemplates";
 import { createTaskTraceId } from "../utils/traceId";
 import { useSearchParams } from "react-router-dom";
 
@@ -67,7 +66,7 @@ const EXECUTION_TEMPLATE: Omit<ExecutionStep, "status" | "time">[] = [
   { key: "received", title: "已接收任务指令", detail: "任务内容已进入良策工作流。" },
   { key: "parse", title: "正在解析 SOP", detail: "正在识别任务意图与动作契约。" },
   { key: "fields", title: "信息补全完成", detail: "SOP 所需参数已完成校验。" },
-  { key: "sync", title: "数据同步处理中", detail: "正在准备业务数据与执行上下文。" },
+  { key: "sync", title: "业务数据与 AI 分析", detail: "正在读取可信数据版本并生成任务结果。" },
   { key: "created", title: "任务已创建", detail: "已生成任务记录和执行链路。" },
   { key: "matched", title: "已匹配负责人", detail: "正在核对平台账号与任务负责人。" },
   { key: "userid", title: "已确认通知成员", detail: "已确认负责人的企业微信通知身份。" },
@@ -105,6 +104,9 @@ export default function AgentConsole({
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [actions, setActions] = useState<ActionContract[]>([]);
+  const [recognizedAction, setRecognizedAction] = useState<ActionContract>();
+  const [reportBrands, setReportBrands] = useState<Array<{ label: string; value: string }>>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<TaskTemplateItem>();
   const [executionFields, setExecutionFields] = useState<ExecutionField[]>([]);
   const [result, setResult] = useState<SopResult | null>(null);
   const [executionFailure, setExecutionFailure] = useState<Record<string, unknown> | null>(null);
@@ -113,6 +115,7 @@ export default function AgentConsole({
   const [loading, setLoading] = useState(false);
   const [approving, setApproving] = useState(false);
   const [rightPanelTab, setRightPanelTab] = useState<"result" | "process">("process");
+  const [resultPanelCollapsed, setResultPanelCollapsed] = useState(false);
   const [businessResultContext, setBusinessResultContext] = useState<TaskBusinessResultContext>({});
 
   const selectedAgent = useMemo(
@@ -123,10 +126,6 @@ export default function AgentConsole({
   const submitBlockers = useMemo(
     () => collectSubmitBlockers({ text, selectedAgent, executionFields, assignment }),
     [assignment, executionFields, selectedAgent, text],
-  );
-  const commandRecognized = useMemo(
-    () => Boolean(text.trim() && executionFields.length > 0),
-    [executionFields.length, text],
   );
   const formattedBusinessResult = useMemo(() => {
     if (result) return formatTaskBusinessResult(result.result, {
@@ -147,14 +146,42 @@ export default function AgentConsole({
   useEffect(() => {
     if (formattedBusinessResult && !loading) {
       setRightPanelTab("result");
+      setResultPanelCollapsed(false);
     }
   }, [formattedBusinessResult, loading]);
 
   useEffect(() => {
     if (view !== "create") return;
-    const template = getTaskTemplate(templateKey);
-    if (template) setText(template.prompt);
+    if (!templateKey) {
+      setSelectedTemplate(undefined);
+      return;
+    }
+    let active = true;
+    getTaskTemplate(templateKey).then((template) => {
+      if (!active) return;
+      setSelectedTemplate(template);
+      setText(template.prompt);
+    }).catch(() => {
+      if (active) setSelectedTemplate(undefined);
+    });
+    return () => { active = false; };
   }, [view, templateKey]);
+
+  useEffect(() => {
+    if (view !== "create") return;
+    const sopKey = searchParams.get("sop");
+    if (!sopKey) return;
+    let active = true;
+    getSop(sopKey).then((detail) => {
+      if (!active) return;
+      const example = detail.version?.utteranceExamples?.[0] || detail.name;
+      setText(example);
+      setSelectedTemplate(undefined);
+    }).catch(() => {
+      if (active) message.warning("SOP 模板加载失败");
+    });
+    return () => { active = false; };
+  }, [searchParams, view, message]);
 
   useEffect(() => {
     if (view !== "create" || searchParams.get("intent") !== "inventory-reorder") return;
@@ -163,6 +190,7 @@ export default function AgentConsole({
 
   useEffect(() => {
     getCatalog().then((data) => setActions(data.actions)).catch(() => setActions([]));
+    getReportOptions().then((data) => setReportBrands(data.brands || [])).catch(() => setReportBrands([]));
   }, []);
 
   useEffect(() => {
@@ -184,18 +212,33 @@ export default function AgentConsole({
 
   useEffect(() => {
     const low = text.toLowerCase();
-    const guess = actions.find((action) => {
+    const guess = selectedTemplate
+      ? actions.find((action) => action.name === selectedTemplate.actionName)
+      : actions.find((action) => {
       const keyword = action.title + action.name;
       return ((low.includes("库存") && (low.includes("补货分析") || low.includes("库存诊断")))
           && action.name === "inventory.reorder.shadow")
-        || (low.includes("日报") && action.name === "report.generate")
+        || (["日报", "周报", "月报", "报告", "汇报", "复盘", "经营分析", "销售分析", "数据分析", "洞察"]
+          .some((keyword) => low.includes(keyword)) && action.name === "report.generate")
         || (low.includes("改价") && action.name === "price_change.apply")
         || ((low.includes("采购") || low.includes("补货")) && action.name === "purchase.create")
         || ((low.includes("吉客云") || low.includes("同步")) && action.name === "jackyun.sync")
         || low.includes(keyword);
-    });
+      });
     const nextFields = guess ? guess.required_fields : {};
-    const fields = buildExecutionFields(nextFields);
+    const fields = buildExecutionFields(nextFields, text, reportBrands);
+    if (selectedTemplate) {
+      const defaults = selectedTemplate.defaults || {};
+      fields.forEach((field) => {
+        if (!(field.key in defaults)) return;
+        const value = defaults[field.key];
+        if (value !== null && value !== undefined) {
+          field.value = Array.isArray(value) ? value.map(String) : String(value);
+          field.source = "default";
+          field.status = "default";
+        }
+      });
+    }
     const snapshotId = searchParams.get("snapshot_id");
     if (guess?.name === "inventory.reorder.shadow" && snapshotId) {
       const snapshotField = fields.find((field) => field.key === "snapshot_id");
@@ -207,8 +250,9 @@ export default function AgentConsole({
         });
       }
     }
+    setRecognizedAction(guess);
     setExecutionFields(fields);
-  }, [text, actions, searchParams]);
+  }, [text, actions, searchParams, reportBrands, selectedTemplate]);
 
   const updateStep = (index: number, status: ExecutionStep["status"], detail?: string) => {
     setExecutionSteps((current) => current.map((step, stepIndex) => (
@@ -475,7 +519,10 @@ export default function AgentConsole({
         message.success(`任务执行成功，企业微信已受理发给${notificationTarget}的通知`);
       }
     } catch (error: any) {
-      const errorMessage = String(error?.response?.data?.detail || error?.response?.data?.error || error?.message || "执行失败，请检查任务参数或后端服务");
+      const timedOut = error?.code === "ECONNABORTED" || String(error?.message || "").toLowerCase().includes("timeout");
+      const errorMessage = timedOut
+        ? "AI 分析超过 3 分钟仍未完成，请稍后重试或缩小数据范围。"
+        : String(error?.response?.data?.detail || error?.response?.data?.error || error?.message || "执行失败，请检查任务参数或后端服务");
       updateStep(Math.min(activeIndex, EXECUTION_TEMPLATE.length - 1), "failed", errorMessage);
       setExecutionFailure({ ok: false, error_code: "SOP_NODE_FAILED", technical_error: errorMessage });
       if (publishedTaskTrace) {
@@ -569,9 +616,16 @@ export default function AgentConsole({
             </Space>
           </div>
         </div>
-        <div className="task-create-layout">
+        <div className={`task-create-layout${resultPanelCollapsed ? " is-result-collapsed" : ""}`}>
           <main className="task-create-editor">
-            <TaskCommandSection value={text} onChange={setText} recognized={commandRecognized} />
+            <TaskCommandSection
+              value={text}
+              onChange={setText}
+              recognized={Boolean(recognizedAction)}
+              recognitionLabel={recognizedAction?.title}
+              recognitionCode={recognizedAction?.name}
+              configurationCount={executionFields.length}
+            />
             <TaskConfigSection
               agents={agents}
               agentId={agentId}
@@ -600,7 +654,20 @@ export default function AgentConsole({
                 onSubmit={() => void submit()}
               />
             ) : (
-          <Card className="task-console-card task-trace-card" title={(
+          <Card
+            className={`task-console-card task-trace-card${resultPanelCollapsed ? " is-collapsed" : ""}`}
+            extra={formattedBusinessResult && !loading ? (
+              <Button
+                type="text"
+                size="small"
+                className="task-result-collapse-button"
+                icon={resultPanelCollapsed ? <LeftOutlined /> : <RightOutlined />}
+                aria-label={resultPanelCollapsed ? "展开任务结果" : "折叠任务结果"}
+                title={resultPanelCollapsed ? "展开任务结果" : "折叠任务结果"}
+                onClick={() => setResultPanelCollapsed((value) => !value)}
+              />
+            ) : undefined}
+            title={(
             <div className="task-trace-title">
               <div className="task-card-heading">
                 <div>
@@ -610,7 +677,8 @@ export default function AgentConsole({
               </div>
               <WeComConnectionStatus />
             </div>
-          )}>
+          )}
+          >
             {formattedBusinessResult && !loading && (
               <div className="task-right-tabs">
                 <Segmented

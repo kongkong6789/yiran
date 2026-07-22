@@ -31,7 +31,7 @@ export default function ExecutionInfoPanel({ fields, onChange, embedded = false 
   const contentId = useId();
   const [expanded, setExpanded] = useState(pendingCount > 0);
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  const [draftValue, setDraftValue] = useState("");
+  const [draftValue, setDraftValue] = useState<string | string[]>("");
   const previousPendingCount = useRef(pendingCount);
 
   useEffect(() => {
@@ -66,12 +66,13 @@ export default function ExecutionInfoPanel({ fields, onChange, embedded = false 
   };
 
   const confirmEditing = (field: ExecutionField) => {
-    const value = draftValue.trim();
+    const value = Array.isArray(draftValue) ? draftValue : draftValue.trim();
+    const hasValue = Array.isArray(value) ? value.length > 0 : Boolean(value);
     onChange(fields.map((item) => item.key === field.key ? {
       ...item,
       value,
       source: "user",
-      status: value ? "recognized" : "missing",
+      status: hasValue ? "recognized" : (field.required ? "missing" : "default"),
     } : item));
     setEditingKey(null);
   };
@@ -125,11 +126,12 @@ export default function ExecutionInfoPanel({ fields, onChange, embedded = false 
                       <>
                         {field.options ? (
                           <Select
+                            mode={field.multiple ? "multiple" : undefined}
                             className="task-execution-field-control"
-                            value={draftValue || undefined}
+                            value={(Array.isArray(draftValue) ? draftValue : draftValue || undefined) as string | string[] | undefined}
                             placeholder={`请选择${field.label}`}
                             options={field.options}
-                            onChange={setDraftValue}
+                            onChange={(value) => setDraftValue(value)}
                             style={{ width: "100%" }}
                             getPopupContainer={(node) => node.parentElement || document.body}
                           />
@@ -137,7 +139,7 @@ export default function ExecutionInfoPanel({ fields, onChange, embedded = false 
                           <Input
                             className="task-execution-field-control"
                             type={field.type === "date" ? "date" : field.backendType === "number" ? "number" : "text"}
-                            value={draftValue}
+                            value={Array.isArray(draftValue) ? draftValue.join(",") : draftValue}
                             placeholder={`请输入${field.label}`}
                             onChange={(event) => setDraftValue(event.target.value)}
                           />

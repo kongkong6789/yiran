@@ -5,7 +5,7 @@ export type ExecutionFieldStatus = "recognized" | "default" | "needs_confirmatio
 export interface ExecutionField {
   key: string;
   label: string;
-  value: string;
+  value: string | string[];
   type: ExecutionFieldType;
   required: boolean;
   editable: boolean;
@@ -13,6 +13,8 @@ export interface ExecutionField {
   status: ExecutionFieldStatus;
   backendType: string;
   options?: Array<{ label: string; value: string }>;
+  multiple?: boolean;
+  emptyLabel?: string;
 }
 
 interface FieldMeta {
@@ -22,7 +24,7 @@ interface FieldMeta {
 }
 
 const FIELD_META: Record<string, FieldMeta> = {
-  dt: { label: "数据日期", type: "date" },
+  dt: { label: "数据截至日期", type: "date" },
   scope: {
     label: "数据范围",
     type: "select",
@@ -33,19 +35,14 @@ const FIELD_META: Record<string, FieldMeta> = {
       { label: "唯品会", value: "vip" },
     ],
   },
-  brand_id: {
-    label: "品牌",
-    type: "select",
-    options: [
-      { label: "ARENCIA", value: "arencia" },
-      { label: "LAUNDRYOU", value: "laundryou" },
-    ],
-  },
+  brand_ids: { label: "品牌范围", type: "select" },
   output_type: {
     label: "输出方式",
     type: "select",
     options: [
       { label: "运营日报", value: "daily_report" },
+      { label: "销售周报", value: "weekly_report" },
+      { label: "经营月报", value: "monthly_report" },
       { label: "数据明细", value: "data_detail" },
       { label: "管理摘要", value: "management_summary" },
     ],
@@ -83,7 +80,11 @@ function createField(key: string, backendType: string): ExecutionField {
   };
 }
 
-export function buildExecutionFields(schema: Record<string, string>): ExecutionField[] {
+export function buildExecutionFields(
+  schema: Record<string, string>,
+  requestText = "",
+  brandOptions: Array<{ label: string; value: string }> = [],
+): ExecutionField[] {
   const result = Object.entries(schema).map(([key, backendType]) => createField(key, backendType));
 
   const dateField = result.find((field) => field.key === "dt");
@@ -93,15 +94,29 @@ export function buildExecutionFields(schema: Record<string, string>): ExecutionF
   if (scopeField) Object.assign(scopeField, { value: "all", source: "default", status: "default" });
 
   if (dateField && scopeField) {
+    const low = requestText.toLowerCase();
+    const outputType = low.includes("周报")
+      ? "weekly_report"
+      : low.includes("月报")
+        ? "monthly_report"
+        : low.includes("摘要")
+          ? "management_summary"
+          : "daily_report";
     result.push({
       ...createField("output_type", "str"),
-      value: "daily_report",
+      value: outputType,
       source: "ai",
       status: "recognized",
     });
     result.push({
-      ...createField("brand_id", "str"),
-      status: "needs_confirmation",
+      ...createField("brand_ids", "list"),
+      value: [],
+      required: false,
+      source: "default",
+      status: "default",
+      options: brandOptions,
+      multiple: true,
+      emptyLabel: "全部品牌",
     });
   }
 
@@ -123,7 +138,11 @@ export function pendingFieldHint(field: ExecutionField): string {
 }
 
 export function executionFieldDisplayValue(field: ExecutionField) {
-  if (!field.value) return field.status === "missing" ? "尚未填写" : `请选择${field.label}`;
+  if (Array.isArray(field.value)) {
+    if (!field.value.length) return field.emptyLabel || "全部";
+    return field.value.map((value) => field.options?.find((option) => option.value === value)?.label || value).join("、");
+  }
+  if (!field.value) return field.status === "missing" ? "尚未填写" : (field.emptyLabel || `请选择${field.label}`);
   const optionLabel = field.options?.find((option) => option.value === field.value)?.label;
   if (optionLabel) return optionLabel;
   if (field.type === "date") {

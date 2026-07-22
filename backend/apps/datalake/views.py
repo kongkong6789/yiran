@@ -176,6 +176,92 @@ def publish_asset(request):
     return Response(_snapshot_payload(snapshot), status=status.HTTP_201_CREATED)
 
 
+_PLACEHOLDER_BRAND = re.compile(r"^(?:品牌|brand)[\s_-]*[a-z0-9]+$", re.IGNORECASE)
+
+
+def _is_real_brand(value: str) -> bool:
+    normalized = value.strip()
+    if not normalized or _PLACEHOLDER_BRAND.fullmatch(normalized):
+        return False
+    return normalized.casefold() not in {"demo", "fixture", "mock", "test", "测试品牌", "示例品牌"}
+
+
+def _contract_backed_inventory_brands(organization) -> set[str]:
+    """只返回已确认品牌契约且能在真实库存商品中找到证据的品牌。"""
+    if not _use_pg():
+        return set()
+    try:
+        inventory_rows = pglake.query(
+            """
+            SELECT goods_name
+            FROM dim_sku_inventory_map
+            WHERE source IN ('jackyun_inventory', 'manual_verified')
+              AND confidence >= 0.99
+              AND COALESCE(goods_name, '') <> ''
+            """
+        )
+    except Exception:
+        return set()
+    product_names = [str(row.get("goods_name") or "").casefold() for row in inventory_rows]
+    if not product_names:
+        return set()
+
+    contracts = ImportContract.objects.filter(
+        Q(organization=organization) | Q(organization__isnull=True),
+        signoff_status=ImportContract.SignoffStatus.CONFIRMED,
+    ).order_by("-organization_id", "contract_key", "-version")
+    brands: set[str] = set()
+    for contract in contracts:
+        aliases = [
+            str(value).strip()
+            for value in (contract.schema or {}).get("brand_aliases", [])
+            if str(value).strip()
+        ]
+        canonical = next((value for value in aliases if _is_real_brand(value)), "")
+        if canonical and any(alias.casefold() in name for alias in aliases for name in product_names):
+            brands.add(canonical)
+    return brands
+
+
+@api_view(["GET"])
+def report_options(request):
+    """从当前企业最新可信维度快照中提取报告筛选项。"""
+    organization = ensure_current_organization(request.user)
+    snapshots = SourceSnapshot.objects.filter(
+        organization=organization,
+        governance_status="governed",
+        source_mode=SourceSnapshot.SourceMode.LIVE,
+        complete=True,
+        source_complete=True,
+        boundary_covered=True,
+    ).order_by("-as_of", "-id")[:200]
+    latest: dict[str, SourceSnapshot] = {}
+    for snapshot in snapshots:
+        asset_key = str((snapshot.scope or {}).get("asset_key") or snapshot.source_system)
+        latest.setdefault(asset_key, snapshot)
+
+    brands: set[str] = set()
+    platforms: set[str] = set()
+    for asset_key, snapshot in latest.items():
+        if not any(token in asset_key.lower() for token in ("product", "shop")):
+            continue
+        for row in (snapshot.payload or {}).get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            brand = str(row.get("brand") or "").strip()
+            platform = str(row.get("platform") or "").strip().lower()
+            if _is_real_brand(brand):
+                brands.add(brand)
+            if platform:
+                platforms.add(platform)
+    brands.update(_contract_backed_inventory_brands(organization))
+    return Response({
+        "brands": [{"label": value, "value": value} for value in sorted(brands)],
+        "platforms": [{"label": value, "value": value} for value in sorted(platforms)],
+        "brand_source": "governed_snapshots_and_verified_inventory",
+    })
+
+
 @api_view(["GET"])
 def metrics(request):
     if _use_pg():

@@ -70,7 +70,7 @@ ACTIONS: dict[str, ActionContract] = {
     ),
     "report.generate": ActionContract(
         name="report.generate",
-        title="生成日报",
+        title="生成经营分析报告",
         object_type="report",
         connector="internal",
         required_fields={"dt": "date", "scope": "str"},

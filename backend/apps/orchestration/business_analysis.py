@@ -4,7 +4,7 @@ import json
 import hashlib
 import math
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -80,10 +80,132 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _profile_snapshot(snapshot: SourceSnapshot) -> dict:
+def _parse_row_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _requested_window(payload: dict) -> tuple[date | None, date | None]:
+    end = _parse_row_date(payload.get("dt"))
+    if not end:
+        return None, None
+    output_type = str(payload.get("output_type") or "").strip()
+    if output_type == "daily_report":
+        return end, end
+    if output_type == "weekly_report":
+        return end - timedelta(days=6), end
+    if output_type == "monthly_report":
+        return end.replace(day=1), end
+    return None, end
+
+
+def _shop_platform_map(snapshots: list[SourceSnapshot]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for snapshot in snapshots:
+        scope = snapshot.scope or {}
+        if "shop" not in str(scope.get("asset_key") or "").lower():
+            continue
+        for row in (snapshot.payload or {}).get("rows", []):
+            if isinstance(row, dict) and row.get("shop_id") and row.get("platform"):
+                result[str(row["shop_id"])] = str(row["platform"]).lower()
+    return result
+
+
+def _brand_maps(snapshots: list[SourceSnapshot]) -> dict[str, dict[str, str]]:
+    maps = {"sku": {}, "shop_id": {}, "shop_name": {}}
+    for snapshot in snapshots:
+        for row in (snapshot.payload or {}).get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            brand = str(row.get("brand") or "").strip()
+            if not brand:
+                continue
+            for key in maps:
+                value = str(row.get(key) or "").strip()
+                if value:
+                    maps[key][value] = brand
+    return maps
+
+
+def _row_matches_scope(row: dict, requested_scope: str, shop_platforms: dict[str, str]) -> bool:
+    if requested_scope in ("", "all"):
+        return True
+    platform = str(row.get("platform") or "").lower()
+    if platform:
+        return platform == requested_scope
+    shop_id = str(row.get("shop_id") or "")
+    if shop_id and shop_id in shop_platforms:
+        return shop_platforms[shop_id] == requested_scope
+    dim_type = str(row.get("dim_type") or "").lower()
+    if dim_type == "shop":
+        value = str(row.get("dim_value") or "").lower()
+        aliases = {"tmall": ("天猫", "tmall"), "douyin": ("抖音", "douyin"), "vip": ("唯品", "vip")}
+        return any(alias in value for alias in aliases.get(requested_scope, (requested_scope,)))
+    if dim_type:
+        return False
+    return True
+
+
+def _row_matches_brands(row: dict, requested_brands: set[str], brand_maps: dict[str, dict[str, str]]) -> bool:
+    if not requested_brands:
+        return True
+    direct_brand = str(row.get("brand") or "").strip()
+    if direct_brand:
+        return direct_brand in requested_brands
+    identifier_seen = False
+    for key in ("sku", "shop_id"):
+        value = str(row.get(key) or "").strip()
+        if not value:
+            continue
+        identifier_seen = True
+        mapped = brand_maps[key].get(value)
+        if mapped is None and value.startswith("JK-"):
+            mapped = brand_maps[key].get(value[3:])
+        if mapped is not None:
+            return mapped in requested_brands
+    if identifier_seen:
+        return False
+    dim_type = str(row.get("dim_type") or "").lower()
+    if dim_type == "shop":
+        value = str(row.get("dim_value") or "").strip()
+        return brand_maps["shop_name"].get(value) in requested_brands
+    if dim_type:
+        # 全站或其他聚合口径不能冒充品牌口径。
+        return False
+    return True
+
+
+def _profile_snapshot(snapshot: SourceSnapshot, *, payload_filters: dict | None = None,
+                      shop_platforms: dict[str, str] | None = None,
+                      brand_maps: dict[str, dict[str, str]] | None = None) -> dict:
     payload = snapshot.payload or {}
     rows = payload.get("rows", []) if isinstance(payload, dict) else []
     rows = rows if isinstance(rows, list) else []
+    original_rows = rows
+    payload_filters = payload_filters or {}
+    start, end = _requested_window(payload_filters)
+    requested_scope = str(payload_filters.get("scope") or "all").lower()
+    raw_brands = payload_filters.get("brand_ids") or []
+    if isinstance(raw_brands, str):
+        raw_brands = [value.strip() for value in raw_brands.split(",") if value.strip()]
+    requested_brands = {str(value).strip() for value in raw_brands if str(value).strip()}
+    filtered_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_dt = _parse_row_date(row.get("dt")) if "dt" in row else None
+        if row_dt and start and row_dt < start:
+            continue
+        if row_dt and end and row_dt > end:
+            continue
+        if not _row_matches_scope(row, requested_scope, shop_platforms or {}):
+            continue
+        if not _row_matches_brands(row, requested_brands, brand_maps or {"sku": {}, "shop_id": {}, "shop_name": {}}):
+            continue
+        filtered_rows.append(row)
+    rows = filtered_rows
     columns = list(payload.get("columns") or []) if isinstance(payload, dict) else []
     if not columns and rows and isinstance(rows[0], dict):
         columns = list(rows[0].keys())
@@ -125,6 +247,13 @@ def _profile_snapshot(snapshot: SourceSnapshot) -> dict:
         "display_name": scope.get("display_name") or scope.get("table") or snapshot.source_system,
         "as_of": snapshot.as_of.isoformat(),
         "row_count": snapshot.row_count,
+        "filtered_row_count": len(rows),
+        "filter_applied": {
+            "start_date": start.isoformat() if start else None,
+            "end_date": end.isoformat() if end else None,
+            "scope": requested_scope,
+            "brands": sorted(requested_brands),
+        },
         "content_hash": snapshot.content_hash,
         "columns": columns,
         "date_ranges": date_ranges,
@@ -133,6 +262,7 @@ def _profile_snapshot(snapshot: SourceSnapshot) -> dict:
         # 当前 UNOVE 表较小；仍设置上限，避免把大表整表送给模型。
         "rows": rows[:120],
         "rows_supplied": min(len(rows), 120),
+        "source_rows_before_filter": len(original_rows),
     }
 
 
@@ -191,8 +321,10 @@ def _write_audit(*, trace_id: str, user, organization, text: str, decision: str,
     )
 
 
-def run_business_analysis(*, text: str, organization, user, trace_id: str, initial_steps: list[dict] | None = None) -> dict:
+def run_business_analysis(*, text: str, organization, user, trace_id: str,
+                          initial_steps: list[dict] | None = None, payload: dict | None = None) -> dict:
     steps = list(initial_steps or [])
+    payload = payload or {}
     snapshots = select_trusted_snapshots(organization=organization, text=text)
     if not snapshots:
         message = "没有找到与任务相关的已发布可信数据版本。请先在“知识库 → 企业数据”发布对应业务数据。"
@@ -210,12 +342,35 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str, initi
             "steps": [*steps, {"node": "选择可信企业数据", "status": "block", "detail": message, "data": {}}],
         }
 
-    profiles = [_profile_snapshot(snapshot) for snapshot in snapshots]
+    shop_platforms = _shop_platform_map(snapshots)
+    brands = _brand_maps(snapshots)
+    profiles = [
+        _profile_snapshot(
+            snapshot, payload_filters=payload, shop_platforms=shop_platforms, brand_maps=brands,
+        )
+        for snapshot in snapshots
+    ]
     evidence = [{key: row[key] for key in ("snapshot_id", "asset_key", "display_name", "as_of", "row_count", "content_hash")} for row in profiles]
+    fact_profiles = [row for row in profiles if any(token in str(row["asset_key"]).lower() for token in ("sales", "metric.snapshot"))]
+    if payload.get("dt") and fact_profiles and not any(row["filtered_row_count"] for row in fact_profiles):
+        message = "所选日期和数据范围没有匹配到可信业务事实，请调整数据截至日期或数据范围。"
+        _write_audit(
+            trace_id=trace_id, user=user, organization=organization, text=text,
+            decision=AuditLog.Decision.BLOCK, evidence=evidence,
+            result={"ok": False, "error_code": "REQUESTED_DATA_NOT_AVAILABLE", "filters": payload},
+        )
+        return {
+            "trace_id": trace_id, "decision": "block", "action": "report.generate", "error": message,
+            "result": {
+                "ok": False, "error_code": "REQUESTED_DATA_NOT_AVAILABLE", "user_message": message,
+                "requested_scope": payload, "evidence": evidence,
+            },
+            "steps": [*steps, {"node": "按任务配置筛选数据", "status": "block", "detail": message, "data": payload}],
+        }
     steps.append({
         "node": "选择可信企业数据", "status": "done",
-        "detail": f"已绑定 {len(profiles)} 个不可变可信版本。",
-        "data": {"snapshot_ids": [row["snapshot_id"] for row in profiles]},
+        "detail": f"已绑定 {len(profiles)} 个不可变可信版本，并按任务配置筛选数据。",
+        "data": {"snapshot_ids": [row["snapshot_id"] for row in profiles], "filters": payload},
     })
 
     if not llm.llm_available(user):
@@ -248,7 +403,7 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str, initi
         evidence_json = json.dumps(compact, ensure_ascii=False, default=_json_default, separators=(",", ":"))
     llm_result = llm.chat_messages_result(
         system,
-        [{"role": "user", "content": f"任务：{text}\n\n可信数据：\n{evidence_json}"}],
+        [{"role": "user", "content": f"任务：{text}\n任务配置：{json.dumps(payload, ensure_ascii=False)}\n\n可信数据：\n{evidence_json}"}],
         temperature=0.15,
         max_tokens=2600,
         timeout=90,
@@ -296,6 +451,7 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str, initi
             "execution_mode": "ai_business_analysis",
             "report_markdown": report_markdown,
             "evidence": evidence,
+            "requested_scope": payload,
             "data_profiles": [{key: value for key, value in row.items() if key != "rows"} for row in profiles],
             "model": llm_result.get("model"),
             "external_write_performed": False,

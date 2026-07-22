@@ -7,12 +7,22 @@ interface Props {
   value: string;
   onChange: (value: string) => void;
   recognized?: boolean;
+  recognitionLabel?: string;
+  recognitionCode?: string;
+  configurationCount?: number;
 }
 
 const EXAMPLE = "帮我生成昨天的运营日报，并发送给运营负责人。";
 const QUICK_EXAMPLES = ["运营日报", "销售周报", "库存分析", "竞品监控"];
 
-export default function TaskCommandSection({ value, onChange, recognized }: Props) {
+export default function TaskCommandSection({
+  value,
+  onChange,
+  recognized,
+  recognitionLabel,
+  recognitionCode,
+  configurationCount = 0,
+}: Props) {
   return (
     <section className="task-editor-section task-description-section">
       <div className="task-editor-section-heading">
@@ -46,9 +56,19 @@ export default function TaskCommandSection({ value, onChange, recognized }: Prop
         {recognized && (
           <div className="task-understanding">
             <span className="task-understanding-icon"><BulbOutlined /></span>
-            <div>
-              <div><strong>AI 理解结果</strong><span><CheckCircleFilled /> 已识别</span></div>
-              <p>AI 将根据“{value.trim()}”匹配业务流程、读取所需数据，并按确认后的配置生成结果。</p>
+            <div className="task-understanding-content">
+              <div className="task-understanding-heading">
+                <div>
+                  <span className="task-understanding-kicker">AI 理解结果</span>
+                  <strong>{recognitionLabel || "已匹配业务流程"}</strong>
+                </div>
+                <span className="task-understanding-status"><CheckCircleFilled /> 已识别</span>
+              </div>
+              <p>将读取当前企业的可信数据，并按照下方任务配置生成结果。</p>
+              <div className="task-understanding-meta">
+                {recognitionCode && <span>业务动作：{recognitionCode}</span>}
+                <span>{configurationCount > 0 ? `已生成 ${configurationCount} 项必要配置` : "无需补充业务参数"}</span>
+              </div>
             </div>
           </div>
         )}

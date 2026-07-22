@@ -43,7 +43,11 @@ def _step(state: RuntimeState, node: str, status: str, detail: str, data: dict |
 def _parse(state: RuntimeState) -> RuntimeState:
     from .graph import recognize_intent
 
-    intent, action = recognize_intent(state["text"], user=state.get("user"))
+    if state.get("action"):
+        action = state["action"]
+        intent = f"SOP 版本绑定动作：{action}"
+    else:
+        intent, action = recognize_intent(state["text"], user=state.get("user"))
     update = {"intent": intent, "action": action}
     update.update(_step(state, "解析请求", "done" if action else "block", intent, {"action": action}))
     return update
@@ -73,6 +77,7 @@ def _snapshot(state: RuntimeState) -> RuntimeState:
             user=state["user"],
             trace_id=state["trace_id"],
             initial_steps=state.get("steps") or [],
+            payload=state.get("payload") or {},
         )}
     if state.get("action") != "inventory.reorder.shadow":
         from .graph import run_sop_legacy
@@ -228,15 +233,16 @@ def _writeback_task(state: RuntimeState, result: dict) -> None:
     task.save(update_fields=["timeline", "progress", "status", "updated_at"])
 
 
-def run_in_process_graph(*, text: str, payload: dict, role: str, trace_id: str | None, user, organization) -> dict:
+def run_fixed_pipeline(*, text: str, payload: dict, role: str, trace_id: str, user, organization, forced_action: str = "") -> dict:
     state: RuntimeState = {
         "text": text,
         "payload": payload,
         "role": role,
-        "trace_id": (trace_id or uuid.uuid4().hex[:12]).strip()[:64],
+        "trace_id": trace_id,
         "user": user,
         "organization": organization,
         "steps": [],
+        "action": forced_action,
     }
     final = _compiled_graph().invoke(state)
     if final.get("legacy_result"):
@@ -256,3 +262,17 @@ def run_in_process_graph(*, text: str, payload: dict, role: str, trace_id: str |
     }
     _writeback_task(final, result)
     return result
+
+
+def run_in_process_graph(*, text: str, payload: dict, role: str, trace_id: str | None, user, organization) -> dict:
+    resolved_trace_id = (trace_id or uuid.uuid4().hex[:12]).strip()[:64]
+    from .sop_runtime import execute_matching_sop
+
+    sop_result = execute_matching_sop(
+        text=text, payload=payload, role=role, trace_id=resolved_trace_id, user=user, organization=organization,
+    )
+    if sop_result is not None:
+        return sop_result
+    return run_fixed_pipeline(
+        text=text, payload=payload, role=role, trace_id=resolved_trace_id, user=user, organization=organization,
+    )

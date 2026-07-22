@@ -1103,6 +1103,28 @@ export interface ActionContract {
   high_risk: boolean;
 }
 
+export interface TaskTemplateItem {
+  id?: number;
+  key: string;
+  name: string;
+  description: string;
+  category: "report" | "operation" | "analysis" | "collab";
+  actionName: string;
+  prompt: string;
+  defaults: Record<string, unknown>;
+  outputConfig: Record<string, unknown>;
+  assignmentConfig: Record<string, unknown>;
+  tags: string[];
+  estimatedMinutes: number;
+  visibility: "personal" | "workspace";
+  builtin: boolean;
+  overridden: boolean;
+  canReset: boolean;
+  canEdit: boolean;
+  createdBy?: string | null;
+  updatedAt?: string | null;
+}
+
 // ---- API ?? ----
 export const agentChat = (body: {
   message: string;
@@ -1154,7 +1176,10 @@ export const runSop = (body: {
   agent_id?: number;
   trace_id?: string;
   mode?: "task_create";
-}) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
+}) => api.post<SopResult>("/orchestration/run/", body, {
+  // 经营分析需要读取可信快照并等待模型生成，不能沿用普通 API 的 20 秒超时。
+  timeout: 180_000,
+}).then((r) => r.data);
 
 export const resumeSop = (body: {
   approval_id: number;
@@ -1173,6 +1198,125 @@ export const resumeSop = (body: {
 
 export const getCatalog = () =>
   api.get<{ actions: ActionContract[] }>("/orchestration/catalog/").then((r) => r.data);
+
+export const listTaskTemplates = () =>
+  api.get<{ results: TaskTemplateItem[] }>("/task-templates/").then((r) => r.data);
+
+export const getTaskTemplate = (key: string) =>
+  api.get<TaskTemplateItem>(`/task-templates/${key}/`).then((r) => r.data);
+
+export const createTaskTemplate = (body: Partial<TaskTemplateItem>) =>
+  api.post<TaskTemplateItem>("/task-templates/", body).then((r) => r.data);
+
+export const updateTaskTemplate = (key: string, body: Partial<TaskTemplateItem>) =>
+  api.patch<TaskTemplateItem>(`/task-templates/${key}/`, body).then((r) => r.data);
+
+export const deleteTaskTemplate = (key: string) =>
+  api.delete(`/task-templates/${key}/`);
+
+export const duplicateTaskTemplate = (key: string) =>
+  api.post<TaskTemplateItem>(`/task-templates/${key}/duplicate/`, {}).then((r) => r.data);
+
+export interface SopGraphNode {
+  key: string;
+  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end";
+  title: string;
+  config: Record<string, unknown>;
+}
+
+export interface SopGraphEdge {
+  source: string;
+  target: string;
+  condition: string;
+  priority: number;
+}
+
+export interface SopVersionItem {
+  id: number;
+  version: string;
+  status: "draft" | "published" | "retired";
+  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  triggerIntents: string[];
+  utteranceExamples: string[];
+  contentHash: string;
+  changeSummary: string;
+  publishedAt?: string | null;
+  createdAt: string;
+}
+
+export interface SopDefinitionItem {
+  id: number;
+  key: string;
+  name: string;
+  businessDomain: string;
+  description: string;
+  actionName: string;
+  status: "draft" | "published" | "archived";
+  currentVersion: string;
+  system: boolean;
+  canEdit: boolean;
+  hasDraft: boolean;
+  draftVersion: string | null;
+  callCount: number;
+  successRate: number;
+  nodeCount: number;
+  updatedAt: string;
+  version?: SopVersionItem;
+}
+
+export const listSops = () =>
+  api.get<{ results: SopDefinitionItem[] }>("/orchestration/sops/").then((r) => r.data);
+
+export const getSop = (key: string) =>
+  api.get<SopDefinitionItem>(`/orchestration/sops/${key}/`).then((r) => r.data);
+
+export const createSop = (body: Record<string, unknown>) =>
+  api.post<SopDefinitionItem>("/orchestration/sops/", body).then((r) => r.data);
+
+export const updateSop = (key: string, body: Record<string, unknown>) =>
+  api.patch<SopDefinitionItem>(`/orchestration/sops/${key}/`, body).then((r) => r.data);
+
+export const duplicateSop = (key: string, body: { key: string; name?: string }) =>
+  api.post<SopDefinitionItem>(`/orchestration/sops/${key}/duplicate/`, body).then((r) => r.data);
+
+export const createSopVersion = (key: string, body: Record<string, unknown>) =>
+  api.post<SopVersionItem>(`/orchestration/sops/${key}/versions/`, body).then((r) => r.data);
+
+export const listSopVersions = (key: string) =>
+  api.get<{ results: SopVersionItem[] }>(`/orchestration/sops/${key}/versions/`).then((r) => r.data);
+
+export const getSopVersion = (key: string, version: string) =>
+  api.get<SopVersionItem>(`/orchestration/sops/${key}/versions/${version}/`).then((r) => r.data);
+
+export const updateSopVersion = (key: string, version: string, body: Record<string, unknown>) =>
+  api.patch<SopVersionItem>(`/orchestration/sops/${key}/versions/${version}/`, body).then((r) => r.data);
+
+export const publishSopVersion = (key: string, version: string) =>
+  api.post<SopDefinitionItem>(`/orchestration/sops/${key}/versions/${version}/publish/`, {}).then((r) => r.data);
+
+export interface SopDraftPayload {
+  key: string;
+  name: string;
+  businessDomain: string;
+  description: string;
+  actionName: string;
+  version: string;
+  triggerIntents: string[];
+  utteranceExamples: string[];
+  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+}
+
+export const rewriteSopWithAi = (body: {
+  instruction: string;
+  draft: SopDraftPayload;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+}) => api.post<{ assistant: string; draft: SopDraftPayload; model: string }>(
+  "/orchestration/sops/ai/rewrite/",
+  body,
+  { timeout: 90_000 },
+).then((r) => r.data);
 
 export const syncJackyun = () =>
   api.post<{
@@ -1211,6 +1355,11 @@ export const publishDataAsset = (body: {
   as_of: string;
   confirm_complete: boolean;
 }) => api.post("/datalake/assets/publish/", body).then((r) => r.data);
+export const getReportOptions = () =>
+  api.get<{
+    brands: Array<{ label: string; value: string }>;
+    platforms: Array<{ label: string; value: string }>;
+  }>("/datalake/report-options/").then((r) => r.data);
 export const getMetrics = () =>
   api.get("/datalake/metrics/").then((r) => r.data);
 export const getAnomalies = () =>

@@ -19,6 +19,7 @@ export default function WorkHub() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [todoCreateRequestId, setTodoCreateRequestId] = useState(0);
   const [automationCreateRequestId, setAutomationCreateRequestId] = useState(0);
+  const [templateCreateRequestId, setTemplateCreateRequestId] = useState(0);
   const [taskDetailOpen, setTaskDetailOpen] = useState(false);
   const isTodos = searchParams.get("tab") === "todos";
   const isAutomation = searchParams.get("tab") === "automation";
@@ -114,7 +115,7 @@ export default function WorkHub() {
                   新建自动化
                 </Button>
               ) : isTemplates ? (
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => changeSection("create")}>自定义任务</Button>
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setTemplateCreateRequestId((value) => value + 1)}>新建模板</Button>
               ) : (
                 <>
                   <Button icon={<FileTextOutlined />} onClick={() => changeSection("templates")}>模板中心</Button>
@@ -134,7 +135,7 @@ export default function WorkHub() {
             isAutomation
               ? <WorkAutomation createRequestId={automationCreateRequestId} />
               : isTemplates
-                ? <WorkTemplates onUseTemplate={useTaskTemplate} />
+                ? <WorkTemplates onUseTemplate={useTaskTemplate} createRequestId={templateCreateRequestId} />
                 : (
                   <AgentConsole
                     view={taskView}

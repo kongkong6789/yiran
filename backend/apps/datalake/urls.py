@@ -6,6 +6,7 @@ urlpatterns = [
     path("tables/", views.tables, name="dl-tables"),
     path("assets/<str:table>/preview/", views.asset_preview, name="dl-asset-preview"),
     path("assets/publish/", views.publish_asset, name="dl-asset-publish"),
+    path("report-options/", views.report_options, name="dl-report-options"),
     path("metrics/", views.metrics, name="dl-metrics"),
     path("anomalies/", views.anomalies, name="dl-anomalies"),
     path("query/", views.run_query, name="dl-query"),
