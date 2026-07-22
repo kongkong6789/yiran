@@ -44,6 +44,7 @@ from .traditional_rag import (
     TraditionalRagError,
     enqueue_file_reingest,
     enqueue_ingest_upload,
+    hybrid_search,
     keyword_search,
     read_stored_file,
     semantic_search,
@@ -252,11 +253,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         query = (request.query_params.get("q") or "").strip()
         try:
             limit = int(request.query_params.get("limit") or 10)
-            mode = (request.query_params.get("mode") or "keyword").strip().lower()
+            mode = (request.query_params.get("mode") or "hybrid").strip().lower()
             if mode == "semantic":
                 rows = semantic_search(query=query, knowledge_base_id=kb.id, limit=limit)
-            else:
+            elif mode == "keyword":
                 rows = keyword_search(query=query, knowledge_base_id=kb.id, limit=limit)
+            else:
+                mode = "hybrid"
+                rows = hybrid_search(query=query, knowledge_base_id=kb.id, limit=limit)
         except TraditionalRagError as error:
             return Response({"error": error.code, "message": error.message}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError:
@@ -508,15 +512,22 @@ class TraditionalRagSearchViewSet(viewsets.ViewSet):
             if selected_kb_id and selected_kb_id not in visible_ids:
                 raise PermissionDenied("You do not have permission to search this knowledge base")
             limit = int(request.query_params.get("limit") or 10)
-            mode = (request.query_params.get("mode") or "keyword").strip().lower()
+            mode = (request.query_params.get("mode") or "hybrid").strip().lower()
             if mode == "semantic":
                 rows = semantic_search(
                     query=query,
                     knowledge_base_id=selected_kb_id,
                     limit=limit,
                 )
-            else:
+            elif mode == "keyword":
                 rows = keyword_search(
+                    query=query,
+                    knowledge_base_id=selected_kb_id,
+                    limit=limit,
+                )
+            else:
+                mode = "hybrid"
+                rows = hybrid_search(
                     query=query,
                     knowledge_base_id=selected_kb_id,
                     limit=limit,
