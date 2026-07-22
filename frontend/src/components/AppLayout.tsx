@@ -14,6 +14,7 @@ import {
   FileSearchOutlined,
   FileTextOutlined,
   FlagOutlined,
+  FormOutlined,
   HomeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -123,6 +124,7 @@ const COMMERCE_GROUPS: NavGroup[] = [
     label: "业务经营",
     items: [
       { key: "commerce-loops", path: "/commerce/loops", icon: <SyncOutlined />, label: "经营回路", keywords: "经营 分析" },
+      { key: "commerce-loops-diy", path: "/commerce/loops/diy", icon: <FormOutlined />, label: "回路 DIY", keywords: "回路 画布 因果 证据" },
     ],
   },
 ];
@@ -195,6 +197,7 @@ const FULL_BLEED = new Set([
   "/connectors",
   "/tables",
   "/commerce/loops",
+  "/commerce/loops/diy",
 ]);
 
 function routeMatches(pathname: string, route: string) {
