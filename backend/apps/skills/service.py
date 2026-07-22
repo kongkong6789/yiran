@@ -5,6 +5,8 @@ import re
 from typing import Any
 
 from .models import UserSkill
+from .parser import parse_skill_markdown
+from .repository import find_shared_asset, load_asset_content
 
 MENTION_RE = re.compile(r"@([a-zA-Z0-9_\-\u4e00-\u9fff]+)")
 
@@ -38,12 +40,31 @@ def resolve_skills(
     by_name = {s.name: s for s in skills}
 
     picked: list[UserSkill] = []
-    seen: set[int] = set()
+    seen: set[str] = set()
     for key in explicit:
         row = by_id.get(key) or by_name.get(key)
-        if row and row.id not in seen:
+        if row and row.skill_id not in seen:
             picked.append(row)
-            seen.add(row.id)
+            seen.add(row.skill_id)
+            continue
+
+        # 共享技能可以按需使用，但只有显式“添加到我的技能”才创建 UserSkill。
+        asset = find_shared_asset(key)
+        if not asset or asset.skill_id in seen:
+            continue
+        content = load_asset_content(asset)
+        parsed = parse_skill_markdown(content, fallback_name=asset.name)
+        picked.append(UserSkill(
+            user=user,
+            skill_id=asset.skill_id,
+            name=parsed["name"] or asset.name,
+            description=parsed.get("description") or asset.description,
+            raw_content=parsed["raw_content"],
+            instructions=parsed["instructions"],
+            source_asset=asset,
+            enabled=True,
+        ))
+        seen.add(asset.skill_id)
     return picked
 
 
