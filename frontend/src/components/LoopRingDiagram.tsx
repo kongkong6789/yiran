@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Empty, Space, Typography } from "antd";
 import { PauseCircleOutlined, PlayCircleOutlined } from "@ant-design/icons";
 import type { FeedbackLoop, LoopMember } from "../api/client";
+import { useVisualizationTheme } from "../theme/visualization";
 
 const TYPE_META: Record<string, { label: string; ring: string }> = {
   R: { label: "增强 R", ring: "#cf1322" },
@@ -85,6 +86,7 @@ type Props = {
 
 /** 闭环环图 + 光点流动（与品牌 Stock–Flow / 代理回路同风格） */
 export default function LoopRingDiagram({ loop, compact }: Props) {
+  const visualTheme = useVisualizationTheme();
   const members = useMemo(
     () => [...(loop.members || [])].sort((a, b) => a.sequence - b.sequence),
     [loop.members],
@@ -173,7 +175,7 @@ export default function LoopRingDiagram({ loop, compact }: Props) {
           cx="220"
           cy="200"
           r="52"
-          fill="#fff"
+          fill={visualTheme.labelBg}
           stroke={meta.ring}
           strokeOpacity="0.35"
           strokeWidth="2"
@@ -185,7 +187,7 @@ export default function LoopRingDiagram({ loop, compact }: Props) {
         <text x="220" y="196" textAnchor="middle" fontSize="18" fontWeight="700" fill={meta.ring}>
           {loop.loop_type}
         </text>
-        <text x="220" y="216" textAnchor="middle" fontSize="11" fill="#5c6b84">
+        <text x="220" y="216" textAnchor="middle" fontSize="11" fill={visualTheme.mutedText}>
           {meta.label}
         </text>
 
@@ -229,10 +231,10 @@ export default function LoopRingDiagram({ loop, compact }: Props) {
                 width="68"
                 height="20"
                 rx="10"
-                fill="#fff"
+                fill={visualTheme.labelBg}
                 stroke={neg ? "#ffccc7" : "#d6e4ff"}
               />
-              <text x={mx} y={my + 4} textAnchor="middle" fontSize="10" fill={neg ? "#cf1322" : "#1a2740"}>
+              <text x={mx} y={my + 4} textAnchor="middle" fontSize="10" fill={neg ? "#ef8585" : visualTheme.labelText}>
                 {e.polarity}{e.label.slice(0, 6)}
               </text>
             </g>
@@ -254,9 +256,9 @@ export default function LoopRingDiagram({ loop, compact }: Props) {
 
         {nodes.map((n) => (
           <g key={n.id}>
-            <circle cx={n.x} cy={n.y} r="28" fill="#fff" stroke="#0B2144" strokeWidth="2" />
+            <circle cx={n.x} cy={n.y} r="28" fill={visualTheme.labelBg} stroke={visualTheme.tooltipBorder} strokeWidth="2" />
             <circle cx={n.x} cy={n.y} r="28" fill="rgba(196,146,74,0.08)" stroke="none" />
-            <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize="11" fontWeight="650" fill="#0B2144">
+            <text x={n.x} y={n.y + 4} textAnchor="middle" fontSize="11" fontWeight="650" fill={visualTheme.labelText}>
               {n.name.length > 5 ? `${n.name.slice(0, 4)}…` : n.name}
             </text>
           </g>

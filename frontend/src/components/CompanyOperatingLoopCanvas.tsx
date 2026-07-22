@@ -11,6 +11,7 @@ import {
 } from "@ant-design/icons";
 
 import type { FeedbackLoop, OntGraph, OntObject } from "../api/client";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 export type CompanyDomainKey =
   | "company"
@@ -205,10 +206,14 @@ function CompanyNode({ data, selected }: NodeProps) {
   const node = data as unknown as CompanyCardData;
   const meta = COMPANY_DOMAIN_META[node.key];
   const status = COMPANY_STATUS_META[node.status];
+  const visualTheme = useVisualizationTheme();
   return (
     <div
       className={`company-operating-node ${status.className}${selected ? " is-selected" : ""}${node.loopActive ? " is-loop-active" : ""}${node.loopMuted ? " is-loop-muted" : ""}`}
-      style={{ ["--company-node-accent" as string]: meta.color, ["--company-node-soft" as string]: meta.soft }}
+      style={{
+        ["--company-node-accent" as string]: meta.color,
+        ["--company-node-soft" as string]: semanticSoftColor(meta.color, visualTheme.mode, meta.soft),
+      }}
     >
       <Handle id="target-top" type="target" position={Position.Top} className="company-operating-handle" />
       <Handle id="target-right" type="target" position={Position.Right} className="company-operating-handle" />
@@ -344,6 +349,7 @@ type Props = {
 };
 
 function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKey, onSelectNode }: Props) {
+  const visualTheme = useVisualizationTheme();
   const model = useMemo(() => buildCompanyOperatingModel(graph), [graph]);
   const nodeMap = useMemo(() => new Map(model.map((node) => [node.key, node])), [model]);
   const loopSegments = useMemo(
@@ -405,7 +411,7 @@ function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKe
       labelShowBg: true,
       labelBgPadding: [6, 3] as [number, number],
       labelBgBorderRadius: 7,
-      labelBgStyle: { fill: "#ffffff", fillOpacity: 0.94 },
+      labelBgStyle: { fill: visualTheme.labelBg, fillOpacity: 0.94 },
       labelStyle: { fill: "#8b68d4", fontSize: 9.5, fontWeight: 550 },
       style: { stroke: "#9b79e5", strokeWidth: 1.8, strokeDasharray: "7 6", strokeOpacity: 0.62 },
       markerEnd: { type: "arrowclosed", color: "#9b79e5", width: 13, height: 13 } as unknown as Edge["markerEnd"],
@@ -422,7 +428,7 @@ function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKe
       labelShowBg: true,
       labelBgPadding: [5, 3] as [number, number],
       labelBgBorderRadius: 6,
-      labelBgStyle: { fill: "#ffffff", fillOpacity: 0.92 },
+      labelBgStyle: { fill: visualTheme.labelBg, fillOpacity: 0.92 },
       labelStyle: { fill: "#71809d", fontSize: 9.5, fontWeight: 550 },
       style: { stroke: "#7f8da8", strokeWidth: 1.45, strokeOpacity: 0.38 },
       markerEnd: { type: "arrowclosed", color: "#7f8da8", width: 12, height: 12 } as unknown as Edge["markerEnd"],
@@ -443,7 +449,7 @@ function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKe
         labelShowBg: true,
         labelBgPadding: [7, 4] as [number, number],
         labelBgBorderRadius: 7,
-        labelBgStyle: { fill: "#ffffff", fillOpacity: 0.98 },
+        labelBgStyle: { fill: visualTheme.labelBg, fillOpacity: 0.98 },
         labelStyle: { fill: color, fontSize: 11, fontWeight: 650 },
         style: { stroke: color, strokeWidth: 2.8, strokeOpacity: 0.92 },
         markerEnd: { type: "arrowclosed", color, width: 16, height: 16 } as unknown as Edge["markerEnd"],
@@ -451,7 +457,7 @@ function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKe
       } satisfies Edge;
     });
     return [...structureEdges, ...masterLoopEdges, ...aggregateEdges, ...selectedEdges];
-  }, [aggregateSegments, loopSegments, selectedLoop, showAllConnections]);
+  }, [aggregateSegments, loopSegments, selectedLoop, showAllConnections, visualTheme]);
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
   const { fitView } = useReactFlow();
@@ -481,14 +487,14 @@ function Canvas({ graph, loops, showAllConnections, selectedLoop, selectedNodeKe
       elementsSelectable
       proOptions={{ hideAttribution: true }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={28} size={1} color="#e3e7ed" />
+      <Background variant={BackgroundVariant.Dots} gap={28} size={1} color={visualTheme.grid} />
       <Controls showInteractive className="cflow-controls" />
       <MiniMap
         pannable
         zoomable
         nodeStrokeWidth={2}
         nodeColor={(node) => COMPANY_DOMAIN_META[(node.data as unknown as CompanyCardData).key].color}
-        maskColor="rgba(244,246,249,0.74)"
+        maskColor={visualTheme.loadingMask}
         className="cflow-minimap"
       />
       <Panel position="top-left" className="company-operating-legend">

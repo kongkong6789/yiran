@@ -1,0 +1,258 @@
+.xiaoce-task-section {
+  border-bottom: 1px solid var(--lc-border-light);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+
+.xiaoce-task-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  padding: 0 8px;
+  color: var(--lc-text-muted);
+  font-size: 12px;
+}
+
+.xiaoce-task-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border-radius: 10px;
+  color: var(--lc-ink);
+}
+
+.xiaoce-task-item:hover {
+  background: var(--lc-surface-raised);
+}
+
+.xiaoce-task-item.active {
+  background: var(--lc-selected);
+}
+
+.xiaoce-task-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 9px 36px 9px 8px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xiaoce-task-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 9px;
+}
+
+.xiaoce-task-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xiaoce-task-title,
+.xiaoce-task-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xiaoce-task-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.xiaoce-task-preview {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
+
+.xiaoce-task-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.xiaoce-task-state .ant-tag {
+  margin-inline-end: 0;
+}
+
+.xiaoce-task-menu {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--lc-text-muted);
+  background: transparent;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.xiaoce-task-menu:hover {
+  color: var(--lc-ink);
+  background: var(--lc-hover);
+}
+
+.xiaoce-task-main:focus-visible,
+.xiaoce-task-menu:focus-visible,
+.xiaoce-all-tasks-toggle:focus-visible,
+.xiaoce-all-tasks-head button:focus-visible {
+  outline: 2px solid var(--lc-accent-blue);
+  outline-offset: 2px;
+}
+
+.xiaoce-all-tasks-toggle {
+  display: flex;
+  align-items: center;
+  width: calc(100% - 16px);
+  min-height: 32px;
+  margin: 5px 8px 1px;
+  padding: 0 9px;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 9px;
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-raised);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
+}
+
+.xiaoce-all-tasks-toggle:hover,
+.xiaoce-all-tasks-toggle.is-open {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-strong);
+  background: var(--lc-hover);
+}
+
+.xiaoce-all-tasks-toggle > span:first-child {
+  flex: 1;
+  text-align: left;
+}
+
+.xiaoce-all-tasks-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  margin-right: 7px;
+  padding: 0 6px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--lc-text-secondary);
+  background: var(--lc-selected);
+  font-size: 11px;
+}
+
+.xiaoce-all-tasks-popover .ant-popover-inner {
+  width: min(380px, calc(100vw - 32px));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 14px;
+  color: var(--lc-ink);
+  background: var(--lc-surface-overlay);
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.28);
+}
+
+.xiaoce-all-tasks-popover .ant-popover-inner-content {
+  padding: 0;
+}
+
+.xiaoce-all-tasks-panel {
+  min-width: 0;
+}
+
+.xiaoce-all-tasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 54px;
+  padding: 10px 12px 10px 14px;
+  border-bottom: 1px solid var(--lc-border-light);
+  background: var(--lc-surface-raised);
+}
+
+.xiaoce-all-tasks-head > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xiaoce-all-tasks-head strong {
+  color: var(--lc-ink);
+  font-size: 14px;
+}
+
+.xiaoce-all-tasks-head span {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
+
+.xiaoce-all-tasks-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 8px;
+  color: var(--lc-text-secondary);
+  background: var(--lc-surface-input);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.xiaoce-all-tasks-head button:hover {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-strong);
+  background: var(--lc-hover);
+}
+
+.xiaoce-all-tasks-list {
+  max-height: min(520px, calc(100vh - 180px));
+  padding: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--lc-surface-overlay);
+}
+
+.xiaoce-all-tasks-list .xiaoce-task-item + .xiaoce-task-item {
+  margin-top: 3px;
+}
+
+.xiaoce-all-tasks-list .xiaoce-task-item:hover {
+  background: var(--lc-hover);
+}
+
+@media (max-width: 760px) {
+  .xiaoce-task-menu {
+    opacity: 1;
+  }
+
+  .xiaoce-all-tasks-popover .ant-popover-inner {
+    width: min(340px, calc(100vw - 20px));
+  }
+}

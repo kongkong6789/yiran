@@ -29,10 +29,12 @@ import {
 } from "antd";
 import {
   ArrowLeftOutlined,
+  ApartmentOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   EyeOutlined,
   FileExcelOutlined,
+  FileTextOutlined,
   FileSearchOutlined,
   InboxOutlined,
   LeftOutlined,
@@ -43,23 +45,32 @@ import {
   RightOutlined,
   SettingOutlined,
   SortAscendingOutlined,
+  TableOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
 import {
   createKnowledgeBase,
+  createSmartSheet,
   deleteKnowledgeBase,
   deleteKnowledgeFile,
+  deleteSmartSheet,
   downloadKnowledgeFile,
   getKnowledgeFileChunks,
   getKnowledgeJob,
   listKnowledgeBases,
   listKnowledgeFiles,
+  listSmartSheets,
   updateKnowledgeBase,
   uploadKnowledgeFile,
   type KnowledgeBaseItem,
   type KnowledgeChunkItem,
   type KnowledgeFileItem,
   type KnowledgeIngestJobItem,
+  type SmartSheetListItem,
 } from "../api/client";
+import SmartTable from "./SmartTable";
+import KnowledgeDocEditor from "../components/KnowledgeDocEditor";
+import KnowledgeMindEditor, { buildDefaultMindJson } from "../components/KnowledgeMindEditor";
 
 const { Title, Text, Paragraph } = Typography;
 const { Dragger } = Upload;
@@ -69,7 +80,21 @@ type Visibility = "private" | "team" | "company";
 type Engine = "naive-rag" | "graph-rag" | "hybrid-rag";
 type ReviewPolicy = "none" | "sample" | "required";
 
-type KnowledgeTemplateFile = { id?: number; backend?: KnowledgeFileItem; name: string; kind: string; source: string; status: "ready" | "suggested" | "review" | "failed" | "processing"; chunks: number; charCount?: number; recallCount?: number; uploadedAt?: string; downloadUrl?: string; };
+type KnowledgeTemplateFile = {
+  id?: number;
+  backend?: KnowledgeFileItem;
+  name: string;
+  kind: string;
+  source: string;
+  status: "ready" | "suggested" | "review" | "failed" | "processing";
+  chunks: number;
+  charCount?: number;
+  recallCount?: number;
+  uploadedAt?: string;
+  downloadUrl?: string;
+  assetKind?: "file" | "smart_sheet";
+  smartSheetId?: number;
+};
 
 type CreateUploadProgress = {
   percent: number;
@@ -443,6 +468,43 @@ function mapKnowledgeFile(file: KnowledgeFileItem): KnowledgeTemplateFile {
     charCount: file.char_count,
     recallCount: file.recall_count,
     uploadedAt: file.uploaded_at,
+    assetKind: "file",
+  };
+}
+
+function isEditableMarkdownDoc(file: KnowledgeTemplateFile) {
+  if (file.assetKind === "smart_sheet") return false;
+  if (isMindMapDoc(file)) return false;
+  const name = file.name || "";
+  const kind = (file.kind || "").toLowerCase();
+  return /\.(md|markdown|txt)$/i.test(name) || ["md", "markdown", "txt", "text"].includes(kind);
+}
+
+function isMindMapDoc(file: KnowledgeTemplateFile) {
+  const name = file.name || "";
+  const kind = (file.kind || "").toLowerCase();
+  return (
+    /\.mind\.json$/i.test(name)
+    || /\.xmind(\.md)?$/i.test(name)
+    || kind === "mindmap"
+    || kind === "mind"
+    || name.includes("导图")
+  );
+}
+
+function mapSmartSheetAsDoc(sheet: SmartSheetListItem): KnowledgeTemplateFile {
+  return {
+    id: sheet.id,
+    name: sheet.name,
+    kind: "智能表格",
+    source: "知识库文档",
+    status: "ready",
+    chunks: sheet.row_count || 0,
+    charCount: Math.max(sheet.row_count || 0, 1) * 48,
+    recallCount: 0,
+    uploadedAt: sheet.updated_at || sheet.created_at,
+    assetKind: "smart_sheet",
+    smartSheetId: sheet.id,
   };
 }
 
@@ -481,11 +543,22 @@ export default function Knowledge() {
   const [objective, setObjective] = useState("把制度、业务图谱、经营指标和会议资料配置成可追问、可审计、可复用的企业知识应用。");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+  const [createDocOpen, setCreateDocOpen] = useState(false);
+  const [createMindOpen, setCreateMindOpen] = useState(false);
+  const [createAssetName, setCreateAssetName] = useState("");
+  const [createAssetBody, setCreateAssetBody] = useState("");
+  const [creatingAsset, setCreatingAsset] = useState(false);
   const [createMode, setCreateMode] = useState(false);
   const [createSource, setCreateSource] = useState<"file" | "wecom" | "web">("file");
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
   const [detailTemplateId, setDetailTemplateId] = useState<string | null>(null);
+  const [openSheetId, setOpenSheetId] = useState<number | null>(null);
+  const [openDocFileId, setOpenDocFileId] = useState<number | null>(null);
+  const [openDocTitle, setOpenDocTitle] = useState<string>("");
+  const [openMindFileId, setOpenMindFileId] = useState<number | null>(null);
+  const [openMindTitle, setOpenMindTitle] = useState<string>("");
   const [detailSearch, setDetailSearch] = useState("");
   const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
   const [detailPageSize, setDetailPageSize] = useState(10);
@@ -497,6 +570,7 @@ export default function Knowledge() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
   const [baseLoading, setBaseLoading] = useState(true);
   const [detailFilesByBase, setDetailFilesByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
+  const [detailSheetsByBase, setDetailSheetsByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [fileLoading, setFileLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [createUploadProgress, setCreateUploadProgress] = useState<CreateUploadProgress | null>(null);
@@ -543,8 +617,12 @@ export default function Knowledge() {
   const detailTemplate = baseTemplates.find((item) => item.id === detailTemplateId) ?? null;
   const deletedNames = detailTemplate ? deletedTemplateFiles[detailTemplate.id] ?? [] : [];
   const backendDetailFiles = detailTemplate ? detailFilesByBase[detailTemplate.id] : undefined;
+  const backendDetailSheets = detailTemplate ? detailSheetsByBase[detailTemplate.id] ?? [] : [];
   const detailFiles: KnowledgeTemplateFile[] = detailTemplate
-    ? (backendDetailFiles ?? (templateFileDetails[detailTemplate.id] ?? [])).filter((file) => !deletedNames.includes(file.name))
+    ? [
+        ...backendDetailSheets,
+        ...(backendDetailFiles ?? (templateFileDetails[detailTemplate.id] ?? [])).filter((file) => !deletedNames.includes(file.name)),
+      ]
     : [];
   const detailTypeOptions = useMemo(() => ["全部", ...Array.from(new Set(detailFiles.map((file) => file.kind)))], [detailFiles]);
   const filteredDetailFiles = useMemo(() => {
@@ -558,6 +636,86 @@ export default function Knowledge() {
   const detailTotalChars = filteredDetailFiles.reduce((sum, file) => sum + (file.charCount ?? Math.max(file.chunks, 1) * 58), 0);
   const detailReadyCount = filteredDetailFiles.filter((file) => file.status === "ready").length;
   const selectedSourceObjects = sources.filter((item) => selectedSources.includes(item.id));
+  const usingDemoTemplates = knowledgeBases.length === 0;
+
+  function parseKnowledgeBaseId(raw?: string | number | null): number | null {
+    const id = Number(raw);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  }
+
+  /** 解析当前可写入的真实知识库 ID；示例模板会自动落成真实知识库。 */
+  async function ensureActiveKnowledgeBaseId(preferredName?: string): Promise<number | null> {
+    const existing =
+      parseKnowledgeBaseId(detailTemplateId)
+      ?? parseKnowledgeBaseId(detailTemplate?.id)
+      ?? (knowledgeBases[0] ? parseKnowledgeBaseId(knowledgeBases[0].id) : null)
+      ?? parseKnowledgeBaseId(selectedTemplate.id);
+    if (existing) {
+      if (detailTemplateId !== String(existing)) setDetailTemplateId(String(existing));
+      return existing;
+    }
+
+    const name = (preferredName || detailTemplate?.name || selectedTemplate.name || "未命名知识库").trim();
+    try {
+      const created = await createKnowledgeBase({
+        name,
+        description: detailTemplate?.headline || selectedTemplate.headline || "",
+        category: detailTemplate?.category || selectedTemplate.category || "Custom",
+        visibility: detailTemplate?.visibility || selectedTemplate.visibility || visibility,
+        retrieval_mode: detailTemplate?.strategy || selectedTemplate.strategy || engine,
+        review_policy: detailTemplate?.reviewPolicy || selectedTemplate.reviewPolicy || reviewPolicy,
+        status: "draft",
+        config: {
+          kind: detailTemplate?.kind || selectedTemplate.kind || "custom",
+          chunk_size: chunkSize,
+          chunk_overlap: chunkOverlap,
+          top_k: topK,
+          provisioned_from: "knowledge_docs",
+        },
+      });
+      await refreshKnowledgeBases();
+      setDetailTemplateId(String(created.id));
+      setTemplateId(String(created.id));
+      message.success(`已创建知识库「${created.name}」`);
+      return created.id;
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "创建知识库失败，请先在首页新建知识库"));
+      return null;
+    }
+  }
+
+  async function openKnowledgeBaseDetail(template: KnowledgeTemplate) {
+    const existing = parseKnowledgeBaseId(template.id);
+    if (existing) {
+      setDetailTemplateId(String(existing));
+      setTemplateId(String(existing));
+      return;
+    }
+    // 示例卡片：双击时落成真实知识库，避免文档里无法创建
+    setBaseLoading(true);
+    try {
+      const created = await createKnowledgeBase({
+        name: template.name,
+        description: template.headline,
+        category: template.category || "Custom",
+        visibility: template.visibility,
+        retrieval_mode: template.strategy,
+        review_policy: template.reviewPolicy,
+        status: "draft",
+        config: { kind: template.kind, provisioned_from: "demo_template" },
+      });
+      await refreshKnowledgeBases();
+      setTemplateId(String(created.id));
+      setDetailTemplateId(String(created.id));
+      message.success(`已从示例创建知识库「${created.name}」`);
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "创建知识库失败"));
+    } finally {
+      setBaseLoading(false);
+    }
+  }
 
   async function refreshKnowledgeBases() {
     setBaseLoading(true);
@@ -593,6 +751,25 @@ export default function Knowledge() {
     } finally {
       setFileLoading(false);
     }
+  }
+
+  async function refreshKnowledgeSheets(baseId: string) {
+    const numericId = Number(baseId);
+    if (!Number.isFinite(numericId)) return;
+    try {
+      const data = await listSmartSheets({ knowledge_base: numericId });
+      setDetailSheetsByBase((prev) => ({
+        ...prev,
+        [baseId]: (data.results || []).map(mapSmartSheetAsDoc),
+      }));
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "加载智能表格失败"));
+    }
+  }
+
+  async function refreshKnowledgeDocs(baseId: string) {
+    await Promise.all([refreshKnowledgeFiles(baseId), refreshKnowledgeSheets(baseId)]);
   }
 
   function upsertIngestProgress(items: IngestProgressItem[]) {
@@ -909,6 +1086,112 @@ export default function Knowledge() {
       setUploading(false);
     }
   }
+
+  function openCreateAsset(kind: "sheet" | "doc" | "mind") {
+    setCreateAssetName("");
+    setCreateAssetBody(
+      kind === "doc"
+        ? "# 未命名文档\n\n在这里开始写…"
+        : kind === "mind"
+          ? "中心主题\n  分支一\n    要点 A\n    要点 B\n  分支二\n    要点 C"
+          : "",
+    );
+    if (kind === "sheet") setCreateSheetOpen(true);
+    if (kind === "doc") setCreateDocOpen(true);
+    if (kind === "mind") setCreateMindOpen(true);
+  }
+
+  async function ingestTextAsset(
+    filename: string,
+    content: string,
+    mimeType = "text/markdown;charset=utf-8",
+  ) {
+    const targetId = await ensureActiveKnowledgeBaseId(createAssetName.trim() || undefined);
+    if (targetId == null) return null;
+    const file = new File([content], filename, { type: mimeType });
+    setCreatingAsset(true);
+    try {
+      const result = await uploadKnowledgeFile(targetId, file, {
+        segment_mode: "general",
+        chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap,
+      });
+      await refreshKnowledgeBases();
+      await refreshKnowledgeDocs(String(targetId));
+      setDetailTemplateId(String(targetId));
+      if (result.job_id) {
+        void pollIngestJobs(String(targetId), [{ id: result.job_id, fileName: filename }]);
+      }
+      message.success(`已创建：${filename}`);
+      return result.file;
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "创建失败"));
+      throw error;
+    } finally {
+      setCreatingAsset(false);
+    }
+  }
+
+  async function handleCreateSmartSheet() {
+    const title = createAssetName.trim() || "未命名表格";
+    setCreatingAsset(true);
+    try {
+      const targetId = await ensureActiveKnowledgeBaseId(title);
+      if (targetId == null) return;
+      const created = await createSmartSheet({
+        name: title,
+        description: `知识库文档`,
+        knowledge_base: targetId,
+      });
+      setCreateSheetOpen(false);
+      setDetailTemplateId(String(targetId));
+      await refreshKnowledgeSheets(String(targetId));
+      setOpenSheetId(created.id);
+      message.success(`已创建「${created.name || title}」`);
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "创建智能表格失败"));
+    } finally {
+      setCreatingAsset(false);
+    }
+  }
+
+  async function handleCreateSmartDoc() {
+    const title = createAssetName.trim() || "未命名文档";
+    const body = createAssetBody.trim() || `# ${title}\n\n`;
+    const filename = `${title.replace(/[\\/:*?"<>|]/g, "_")}.md`;
+    try {
+      const created = await ingestTextAsset(
+        filename,
+        body.startsWith("#") ? body : `# ${title}\n\n${body}`,
+      );
+      setCreateDocOpen(false);
+      if (created?.id) {
+        setOpenDocTitle(title);
+        setOpenDocFileId(created.id);
+      }
+    } catch {
+      /* handled */
+    }
+  }
+
+  async function handleCreateMindmap() {
+    const title = createAssetName.trim() || "未命名导图";
+    const filename = `${title.replace(/[\\/:*?"<>|]/g, "_")}.mind.json`;
+    const content = buildDefaultMindJson(title);
+    try {
+      const created = await ingestTextAsset(filename, content, "application/json;charset=utf-8");
+      setCreateMindOpen(false);
+      if (created?.id) {
+        setOpenMindTitle(title);
+        setOpenMindFileId(created.id);
+      }
+    } catch {
+      /* handled */
+    }
+  }
+
   async function downloadOriginalFile(file: KnowledgeTemplateFile) {
     if (!file.id) {
       message.info("Template sample files are not stored in the backend yet");
@@ -957,13 +1240,59 @@ export default function Knowledge() {
   }
 
   async function openChunkPage(file: KnowledgeTemplateFile) {
+    if (file.assetKind === "smart_sheet" && file.smartSheetId) {
+      setProcessedFile(null);
+      setChunkPageFile(null);
+      setOpenDocFileId(null);
+      setOpenMindFileId(null);
+      setOpenSheetId(file.smartSheetId);
+      return;
+    }
+    if (file.id && isMindMapDoc(file)) {
+      setProcessedFile(null);
+      setChunkPageFile(null);
+      setOpenSheetId(null);
+      setOpenDocFileId(null);
+      setOpenMindTitle(
+        file.name
+          .replace(/\.mind\.json$/i, "")
+          .replace(/\.xmind(\.md)?$/i, "")
+          .replace(/\.(md|markdown|json)$/i, "")
+        || file.name,
+      );
+      setOpenMindFileId(file.id);
+      return;
+    }
+    if (file.id && isEditableMarkdownDoc(file)) {
+      setProcessedFile(null);
+      setChunkPageFile(null);
+      setOpenSheetId(null);
+      setOpenMindFileId(null);
+      setOpenDocTitle(file.name.replace(/\.(md|markdown|txt)$/i, "") || file.name);
+      setOpenDocFileId(file.id);
+      return;
+    }
     setProcessedFile(null);
+    setOpenDocFileId(null);
+    setOpenMindFileId(null);
     setChunkCurrentPage(1);
     setChunkPageFile(file);
     await loadFileChunks(file, 1, chunkPageSize);
   }
 
   async function removeKnowledgeFile(file: KnowledgeTemplateFile) {
+    if (file.assetKind === "smart_sheet" && file.smartSheetId) {
+      try {
+        await deleteSmartSheet(file.smartSheetId);
+        if (detailTemplate) await refreshKnowledgeSheets(detailTemplate.id);
+        if (openSheetId === file.smartSheetId) setOpenSheetId(null);
+        message.success("已删除表格");
+      } catch (error) {
+        console.error(error);
+        message.error(apiErrorMessage(error, "删除表格失败"));
+      }
+      return;
+    }
     if (file.id) {
       try {
         await deleteKnowledgeFile(file.id);
@@ -998,8 +1327,11 @@ export default function Knowledge() {
   }, []);
 
   useEffect(() => {
-    if (detailTemplateId) void refreshKnowledgeFiles(detailTemplateId);
+    if (detailTemplateId) void refreshKnowledgeDocs(detailTemplateId);
     setChunkPageFile(null);
+    setOpenSheetId(null);
+    setOpenDocFileId(null);
+    setOpenMindFileId(null);
     setChunkCurrentPage(1);
     setChunkTotalCount(0);
   }, [detailTemplateId]);
@@ -1228,6 +1560,49 @@ export default function Knowledge() {
             </div>
           </div>
         </section>
+      ) : detailTemplate && openMindFileId != null ? (
+        <section className="knowledge-sheet-window">
+          <KnowledgeMindEditor
+            fileId={openMindFileId}
+            initialTitle={openMindTitle}
+            onBack={() => {
+              setOpenMindFileId(null);
+              void refreshKnowledgeDocs(detailTemplate.id);
+            }}
+            onSaved={() => {
+              void refreshKnowledgeDocs(detailTemplate.id);
+            }}
+          />
+        </section>
+      ) : detailTemplate && openDocFileId != null ? (
+        <section className="knowledge-sheet-window">
+          <KnowledgeDocEditor
+            fileId={openDocFileId}
+            initialTitle={openDocTitle}
+            onBack={() => {
+              setOpenDocFileId(null);
+              void refreshKnowledgeDocs(detailTemplate.id);
+            }}
+            onSaved={() => {
+              void refreshKnowledgeDocs(detailTemplate.id);
+            }}
+          />
+        </section>
+      ) : detailTemplate && openSheetId != null ? (
+        <section className="knowledge-sheet-window">
+          <SmartTable
+            embeddedSheetId={openSheetId}
+            knowledgeBaseId={Number(detailTemplate.id)}
+            onBack={() => {
+              setOpenSheetId(null);
+              void refreshKnowledgeSheets(detailTemplate.id);
+            }}
+            onSheetDeleted={() => {
+              setOpenSheetId(null);
+              void refreshKnowledgeSheets(detailTemplate.id);
+            }}
+          />
+        </section>
       ) : detailTemplate && chunkPageFile ? (
         <section className="knowledge-chunk-window">
           <div className="doc-window-topbar">
@@ -1367,6 +1742,11 @@ export default function Knowledge() {
           <div className="doc-window-header">
             <div>
               <Title level={3}>文档</Title>
+              {usingDemoTemplates ? (
+                <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                  当前还是示例知识库。添加文档/表格时会自动创建真实知识库。
+                </Paragraph>
+              ) : null}
             </div>
             <div className="doc-window-summary">
               <div><b>{filteredDetailFiles.length}</b><span>文件</span></div>
@@ -1387,7 +1767,41 @@ export default function Knowledge() {
             <Button icon={<SortAscendingOutlined />}>排序：上传时间</Button>
             <span className="doc-toolbar-spacer" />
             <Button icon={<SettingOutlined />}>元数据</Button>
-            <Button type="primary" icon={<PlusOutlined />} loading={fileLoading} onClick={() => setUploadOpen(true)}>添加文件</Button>
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "sheet",
+                    icon: <TableOutlined />,
+                    label: "智能表格",
+                    onClick: () => openCreateAsset("sheet"),
+                  },
+                  {
+                    key: "doc",
+                    icon: <FileTextOutlined />,
+                    label: "智能文档",
+                    onClick: () => openCreateAsset("doc"),
+                  },
+                  {
+                    key: "mind",
+                    icon: <ApartmentOutlined />,
+                    label: "思维导图",
+                    onClick: () => openCreateAsset("mind"),
+                  },
+                  { type: "divider" },
+                  {
+                    key: "upload",
+                    icon: <UploadOutlined />,
+                    label: "上传文件",
+                    onClick: () => setUploadOpen(true),
+                  },
+                ],
+              }}
+            >
+              <Button type="primary" icon={<PlusOutlined />} loading={fileLoading || creatingAsset}>
+                添加
+              </Button>
+            </Dropdown>
           </div>
 
           <div className="doc-table-wrap">
@@ -1411,26 +1825,57 @@ export default function Knowledge() {
                   const chars = file.charCount ?? Math.max(file.chunks, 1) * 58;
                   const recallCount = file.recallCount ?? 0;
                   return (
-                    <tr key={`${file.name}-${index}`}>
-                      <td className="check-col"><input type="checkbox" aria-label={`选择 ${file.name}`} /></td>
+                    <tr
+                      key={`${file.assetKind || "file"}-${file.id ?? file.name}-${index}`}
+                      className="doc-row-clickable"
+                      title="双击打开"
+                      onDoubleClick={(event) => {
+                        const target = event.target as HTMLElement;
+                        if (target.closest("input, button, a, .ant-switch, .ant-btn, .ant-tag")) return;
+                        void openChunkPage(file);
+                      }}
+                    >
+                      <td className="check-col" onDoubleClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" aria-label={`选择 ${file.name}`} />
+                      </td>
                       <td className="index-col">{index + 1}</td>
                       <td>
                         <button className="doc-name" onClick={() => void openChunkPage(file)}>
-                          <span className="file-type-icon"><FileExcelOutlined /></span>
+                          <span className="file-type-icon">
+                            {file.assetKind === "smart_sheet" || file.kind === "智能表格" ? <TableOutlined />
+                              : /\.(xlsx?|csv)$/i.test(file.name) ? <FileExcelOutlined />
+                              : /\.xmind(\.md)?$/i.test(file.name) || file.name.includes("导图") ? <ApartmentOutlined />
+                              : /\.md$/i.test(file.name) ? <FileTextOutlined />
+                              : <FileExcelOutlined />}
+                          </span>
                           <span>{file.name}</span>
                         </button>
-                        <div className="doc-source">{file.source}</div>
+                        <div className="doc-source">
+                          {file.assetKind === "smart_sheet"
+                            ? "多维表格 · 双击任意位置打开"
+                            : isMindMapDoc(file)
+                              ? "思维导图 · 双击打开画布编辑"
+                              : isEditableMarkdownDoc(file)
+                                ? "智能文档 · 双击打开编辑"
+                                : file.source}
+                        </div>
                       </td>
-                      <td><span className="segment-pill">通用</span></td>
+                      <td><span className="segment-pill">{file.assetKind === "smart_sheet" ? "多维表格" : isMindMapDoc(file) ? "思维导图" : isEditableMarkdownDoc(file) ? "智能文档" : "通用"}</span></td>
                       <td>{chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : chars}</td>
                       <td>{recallCount}</td>
                       <td>{formatDateTime(file.uploadedAt)}</td>
                       <td><span className={`doc-status ${file.status}`}>{statusText}</span></td>
-                      <td>
+                      <td onDoubleClick={(e) => e.stopPropagation()}>
                         <Space size={10}>
-                          <Switch size="small" checked={file.status !== "suggested"} />
-                          <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => void openProcessedFile(file)} />
-                          <Popconfirm title="从当前知识库配置中移除这个文件？" okText="移除" cancelText="取消" onConfirm={() => removeKnowledgeFile(file)}>
+                          {file.assetKind === "smart_sheet" ? (
+                            <Tag color="blue">表格</Tag>
+                          ) : (
+                            <Switch size="small" checked={file.status !== "suggested"} />
+                          )}
+                          {file.assetKind === "smart_sheet" ? null : (
+                            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => void openProcessedFile(file)} />
+                          )}
+                          <Popconfirm title={file.assetKind === "smart_sheet" ? "删除这张智能表格？" : "从当前知识库配置中移除这个文件？"} okText="移除" cancelText="取消" onConfirm={() => removeKnowledgeFile(file)}>
                             <Button size="small" type="text" danger icon={<DeleteOutlined />} />
                           </Popconfirm>
                           <Button size="small" type="text" icon={<MoreOutlined />} />
@@ -1503,8 +1948,8 @@ export default function Knowledge() {
                     key={template.id}
                     className={`dify-kb-card ${template.id === selectedTemplate.id ? "active" : ""}`}
                     onClick={() => applyTemplate(template.id)}
-                    onDoubleClick={() => setDetailTemplateId(template.id)}
-                    title="双击打开知识库文档"
+                    onDoubleClick={() => void openKnowledgeBaseDetail(template)}
+                    title={usingDemoTemplates ? "双击将创建真实知识库并打开文档" : "双击打开知识库文档"}
                   >
                     {template.canEdit === false ? null : (
                       <Dropdown
@@ -1771,11 +2216,11 @@ export default function Knowledge() {
             fileList={uploadFiles}
             beforeUpload={() => false}
             onChange={(info) => setUploadFiles(info.fileList)}
-            accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm"
+            accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm,.xmind"
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
             <p className="ant-upload-text">拖拽知识文件到这里，或点击选择文件</p>
-            <p className="ant-upload-hint">支持 PDF、Word、Markdown、TXT、表格、JSON、HTML、PPT。选择后点击上传并入库，会提交到后端解析、切块和向量化。</p>
+            <p className="ant-upload-hint">支持 PDF、Word、Markdown、TXT、表格、JSON、HTML、PPT、XMind。选择后点击上传并入库，会提交到后端解析、切块和向量化。</p>
           </Dragger>
           {renderIngestProgressPanel()}
           {uploadFiles.length ? (
@@ -1795,6 +2240,85 @@ export default function Knowledge() {
           ) : null}
         </Space>
       </Drawer>
+
+      <Modal
+        title="新建智能表格"
+        open={createSheetOpen}
+        onCancel={() => setCreateSheetOpen(false)}
+        onOk={() => void handleCreateSmartSheet()}
+        confirmLoading={creatingAsset}
+        okText="创建并打开"
+      >
+        <Form layout="vertical">
+          <Form.Item label="表格名称" required>
+            <Input
+              autoFocus
+              value={createAssetName}
+              placeholder="例如：库存跟进表"
+              onChange={(e) => setCreateAssetName(e.target.value)}
+              onPressEnter={() => void handleCreateSmartSheet()}
+            />
+          </Form.Item>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            创建后会出现在当前知识库「文档」列表中，并直接打开编辑（类似飞书多维表格）。
+          </Paragraph>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="新建智能文档"
+        open={createDocOpen}
+        onCancel={() => setCreateDocOpen(false)}
+        onOk={() => void handleCreateSmartDoc()}
+        confirmLoading={creatingAsset}
+        okText="创建并打开"
+        width={720}
+      >
+        <Form layout="vertical">
+          <Form.Item label="文档标题" required>
+            <Input
+              value={createAssetName}
+              placeholder="未命名文档"
+              onChange={(e) => setCreateAssetName(e.target.value)}
+            />
+          </Form.Item>
+          <Form.Item label="正文（Markdown，可稍后继续编辑）">
+            <Input.TextArea
+              rows={12}
+              value={createAssetBody}
+              onChange={(e) => setCreateAssetBody(e.target.value)}
+              placeholder="# 标题&#10;&#10;开始写作…"
+            />
+          </Form.Item>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            创建后会出现在「文档」列表，并打开类似飞书的文档编辑页（所见即所得，保存为 Markdown）。
+          </Paragraph>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="新建思维导图"
+        open={createMindOpen}
+        onCancel={() => setCreateMindOpen(false)}
+        onOk={() => void handleCreateMindmap()}
+        confirmLoading={creatingAsset}
+        okText="创建并打开"
+      >
+        <Form layout="vertical">
+          <Form.Item label="导图名称" required>
+            <Input
+              autoFocus
+              value={createAssetName}
+              placeholder="未命名导图"
+              onChange={(e) => setCreateAssetName(e.target.value)}
+              onPressEnter={() => void handleCreateMindmap()}
+            />
+          </Form.Item>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            创建后打开可视化思维导图画布（可拖拽、展开节点），保存为导图数据文件。
+          </Paragraph>
+        </Form>
+      </Modal>
     </div>
   );
 }
@@ -2714,6 +3238,12 @@ const styles = `
 }
 .doc-table tr:hover td {
   background: #fbfdff;
+}
+.doc-table tr.doc-row-clickable {
+  cursor: pointer;
+}
+.doc-table tr.doc-row-clickable:active td {
+  background: #f1f5ff;
 }
 .doc-table input[type="checkbox"] {
   width: 18px;

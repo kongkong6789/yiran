@@ -15,18 +15,40 @@ import urllib.request
 import uuid
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from django.conf import settings
 
 from .base import BaseConnector, MockConnector
+from .credentials import cfg_value
 
 
 def _cfg(name: str, default: str = "") -> str:
-    return (getattr(settings, name, None) or default or "").strip()
+    return cfg_value(name, default)
 
 
 def jackyun_configured() -> bool:
     return bool(_cfg("JACKYUN_APP_KEY") and _cfg("JACKYUN_APP_SECRET"))
+
+
+# 仅允许已核验的只读方法；库存校准等写操作一律拒绝。
+READONLY_METHODS = frozenset({
+    "erp.stockquantity.get",
+    "erp.stock.get",
+    "erp.stock.batch.get",
+    "erp.batchstockquantity.get",
+    "erp-stock.stock.skulist",
+    "erp.warehouse.get",
+    "erp-goods.goods.sku.search",
+    "erp.goods.listget",
+    "erp.storage.goodslist",
+    "oms.trade.fullinfoget",
+    "oms.trade.listget",
+})
+
+
+class JackyunError(RuntimeError):
+    """吉客云开放平台调用失败（不包含凭据内容）。"""
 
 
 class JackyunConnector(BaseConnector):
@@ -46,22 +68,48 @@ class JackyunConnector(BaseConnector):
 
 
 def _sign(params: dict[str, str], secret: str) -> str:
-    """吉客云常见签名:按 key 排序后 secret + k1v1k2v2... + secret 再 MD5 大写。"""
-    items = sorted((k, v) for k, v in params.items() if k != "sign" and v is not None)
+    """官方签名：排除保留字段，排序拼接，整体小写后计算 MD5 小写摘要。"""
+    excluded = {"sign", "contextid", "token"}
+    items = sorted(
+        (k, v) for k, v in params.items()
+        if k not in excluded and v is not None
+    )
     raw = secret + "".join(f"{k}{v}" for k, v in items) + secret
-    return hashlib.md5(raw.encode("utf-8")).hexdigest().upper()
+    return hashlib.md5(raw.lower().encode("utf-8")).hexdigest()
+
+
+def _validated_api_url() -> str:
+    base = _cfg("JACKYUN_BASE_URL", "https://open.jackyun.com/open/openapi/do")
+    parsed = urlparse(base)
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").lower() != "open.jackyun.com"
+        or parsed.path.rstrip("/") != "/open/openapi/do"
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.port not in (None, 443)
+    ):
+        raise JackyunError("JACKYUN_BASE_URL 必须是吉客云官方 HTTPS OpenAPI 地址")
+    return base
 
 
 def _api_call(method: str, biz: dict[str, Any]) -> dict:
+    if not jackyun_configured():
+        raise JackyunError("未配置 JACKYUN_APP_KEY / JACKYUN_APP_SECRET")
+    normalized = str(method or "").strip()
+    if normalized.casefold() not in {m.casefold() for m in READONLY_METHODS}:
+        raise JackyunError(f"拒绝非认证只读方法：{normalized or '<empty>'}")
     app_key = _cfg("JACKYUN_APP_KEY")
     secret = _cfg("JACKYUN_APP_SECRET")
-    base = _cfg("JACKYUN_BASE_URL", "https://open.jackyun.com/open/openapi/do")
+    base = _validated_api_url()
     params = {
-        "method": method,
+        "method": normalized,
         "appkey": app_key,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "version": "v1.0",
-        "format": "json",
+        "contenttype": "json",
         "bizcontent": json.dumps(biz, ensure_ascii=False),
     }
     params["sign"] = _sign(params, secret)
@@ -72,8 +120,302 @@ def _api_call(method: str, biz: dict[str, Any]) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    retries = max(1, int(getattr(settings, "JACKYUN_MAX_RETRIES", 2)))
+    timeout = max(5, int(getattr(settings, "JACKYUN_API_TIMEOUT", 30)))
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            code = str(result.get("code", ""))
+            if code not in ("10000", "200"):
+                raise JackyunError(
+                    f"{method} 返回失败：{result.get('msg') or '未知错误'} (code={code})"
+                )
+            return result
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt + 1 < retries:
+                time.sleep(0.5 * (2 ** attempt))
+    raise JackyunError(f"{method} 网络请求失败：{last_error}")
+
+
+def _extract_inventory_rows(raw: dict) -> list[dict]:
+    data = raw.get("result", {}).get("data", {})
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("goodsStockQuantity", [])
+    if isinstance(rows, dict):
+        return [rows] if rows else []
+    return rows if isinstance(rows, list) else []
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _norm_inventory(row: dict) -> dict:
+    """稳定库存字段，屏蔽吉客云历史拼写差异。"""
+    return {
+        "warehouse_code": str(row.get("warehouseCode") or ""),
+        "warehouse_name": str(row.get("warehouseName") or ""),
+        "goods_no": str(row.get("goodsNo") or ""),
+        "goods_name": str(row.get("goodsName") or ""),
+        "sku_name": str(row.get("skuName") or ""),
+        "sku_barcode": str(row.get("skuBarcode") or ""),
+        "unit_name": str(row.get("unitName") or ""),
+        "current_quantity": _number(row.get("currentQuantity")),
+        "available_quantity": _number(
+            row.get("useQuantity", row.get(
+                "availableQuantity", row.get("currentQuantity")
+            ))
+        ),
+        "locked_quantity": _number(
+            row.get("lockedQuantity", row.get("lockingQuantity"))
+        ),
+        "reserve_quantity": _number(row.get("reserveQuantity")),
+        "allocate_quantity": _number(row.get("allocateQuantity")),
+        "purchasing_quantity": _number(row.get("purchasingQuantity")),
+        "ordering_quantity": _number(
+            row.get("orderingQuantity", row.get("orderAbleQuantity"))
+        ),
+        "stock_in_quantity": _number(row.get("stockInQuantity")),
+        "stock_out_quantity": _number(
+            row.get("stockOutQuantity", row.get("stockOutuantity"))
+        ),
+        "defective_quantity": _number(row.get("defectiveQuanity")),
+        "cost_price": _number(row.get("costPrice")),
+    }
+
+
+_mapping_schema_ready = False
+
+
+def _cache_inventory_mappings(rows: list[dict], requested_key: str = "") -> None:
+    """把库存响应中的货号/条码缓存为可复用的 SKU 映射，不影响主查询。"""
+    if not rows:
+        return
+    try:
+        from apps.datalake.pg import pglake
+
+        global _mapping_schema_ready
+        if not _mapping_schema_ready:
+            pglake.init_schema()
+            _mapping_schema_ready = True
+        mappings: list[dict] = []
+        seen: set[str] = set()
+        for row in rows:
+            goods_no = str(row.get("goods_no") or "").strip()
+            barcode = str(row.get("sku_barcode") or "").strip()
+            if not goods_no:
+                continue
+            base = {
+                "goods_no": goods_no,
+                "sku_barcode": barcode,
+                "goods_name": row.get("goods_name") or "",
+            }
+            for alias in (goods_no, barcode):
+                if alias and alias not in seen:
+                    seen.add(alias)
+                    mappings.append({"sales_sku": alias, **base})
+        # 查询键与返回货号明确一一对应时，也缓存该别名。
+        canonical = {str(r.get("goods_no") or "").strip() for r in rows}
+        canonical.discard("")
+        key = str(requested_key or "").strip()
+        if key and len(canonical) == 1 and key not in seen:
+            first = rows[0]
+            mappings.append({
+                "sales_sku": key,
+                "goods_no": next(iter(canonical)),
+                "sku_barcode": first.get("sku_barcode") or "",
+                "goods_name": first.get("goods_name") or "",
+            })
+        pglake.upsert_sku_inventory_mappings(mappings)
+    except Exception:
+        # 映射缓存失败不能影响实时库存只读查询。
+        return
+
+
+def query_inventory(
+    *,
+    goods_no: str = "",
+    goods_name: str = "",
+    warehouse_code: str = "",
+    sku_barcode: str = "",
+    page_index: int = 0,
+    page_size: int = 50,
+) -> dict:
+    """只读查询实时库存，不执行库存校准或任何写操作。"""
+    return query_by_plan(
+        "inventory",
+        {
+            "goodsNo": goods_no,
+            "goodsName": goods_name,
+            "warehouseCode": warehouse_code,
+            "skuBarcode": sku_barcode,
+            "pageIndex": page_index,
+            "pageSize": page_size,
+            "isChannelReserve": 0,
+        },
+    )
+
+
+def _coerce_param(name: str, value: Any, spec: dict) -> Any:
+    if value is None or value == "":
+        if "default" in spec:
+            return spec["default"]
+        return None
+    ptype = (spec.get("type") or "string").lower()
+    if ptype == "int":
+        return int(value)
+    if ptype == "float":
+        return float(value)
+    return str(value).strip()
+
+
+def _truncate_payload(value: Any, *, max_rows: int = 30, max_chars: int = 12_000) -> Any:
+    """限制写入 prompt 的体积。"""
+    if isinstance(value, list):
+        clipped = value[:max_rows]
+        return [_truncate_payload(item, max_rows=max_rows, max_chars=max_chars) for item in clipped]
+    if isinstance(value, dict):
+        out = {}
+        for idx, (k, v) in enumerate(value.items()):
+            if idx >= 40:
+                out["…"] = f"另有 {len(value) - 40} 个字段已省略"
+                break
+            out[str(k)] = _truncate_payload(v, max_rows=max_rows, max_chars=max_chars)
+        return out
+    if isinstance(value, str) and len(value) > 500:
+        return value[:500] + "…"
+    return value
+
+
+def _extract_listish(raw: dict) -> list:
+    data = raw.get("result") or raw.get("data") or raw
+    if isinstance(data, dict):
+        data = data.get("data") or data
+    if not isinstance(data, dict):
+        return []
+    for key in (
+        "goodsStockQuantity",
+        "goods",
+        "trades",
+        "warehouses",
+        "warehouse",
+        "list",
+        "rows",
+    ):
+        rows = data.get(key)
+        if isinstance(rows, list):
+            return rows
+        if isinstance(rows, dict):
+            nested = rows.get("list") or rows.get("rows") or []
+            if isinstance(nested, list) and nested:
+                return nested
+    return []
+
+
+def query_by_plan(capability_id: str, params: dict | None = None) -> dict:
+    """按能力目录执行只读查询；非法能力/参数拒绝。"""
+    from .jackyun_catalog import CAPABILITIES, allowed_param_names
+
+    cid = (capability_id or "").strip()
+    meta = CAPABILITIES.get(cid)
+    if not meta:
+        raise JackyunError(f"未知吉客云能力：{cid or '<empty>'}")
+
+    allowed = allowed_param_names(cid)
+    raw_params = dict(params or {})
+    unknown = [k for k in raw_params if k not in allowed]
+    if unknown:
+        raise JackyunError(f"能力 {cid} 不支持参数：{', '.join(sorted(unknown))}")
+
+    biz: dict[str, Any] = {}
+    for name, spec in meta["params"].items():
+        if name in raw_params:
+            coerced = _coerce_param(name, raw_params[name], spec)
+        elif "default" in spec:
+            coerced = spec["default"]
+        else:
+            continue
+        if coerced is None or coerced == "":
+            continue
+        biz[name] = coerced
+
+    if "pageIndex" in meta["params"] and "pageIndex" not in biz:
+        biz["pageIndex"] = 0
+    if "pageSize" in meta["params"]:
+        size = int(biz.get("pageSize") or meta["params"]["pageSize"].get("default") or 50)
+        biz["pageSize"] = min(100, max(1, size))
+
+    setting_name = (meta.get("method_setting") or "").strip()
+    method = _cfg(setting_name, meta["method"]) if setting_name else meta["method"]
+
+    # 库存走专用规范化，便于 restock / 单测复用字段名。
+    if cid == "inventory":
+        if "isChannelReserve" not in biz:
+            biz["isChannelReserve"] = 0
+        rows = [_norm_inventory(row) for row in _extract_inventory_rows(_api_call(method, biz))]
+        _cache_inventory_mappings(
+            rows,
+            str(biz.get("goodsNo") or biz.get("skuBarcode") or ""),
+        )
+        return {
+            "ok": True,
+            "connector": "jackyun",
+            "mode": "live",
+            "capability": cid,
+            "method": method,
+            "page_index": biz.get("pageIndex", 0),
+            "page_size": biz.get("pageSize", 50),
+            "count": len(rows),
+            "summary": {
+                "current_quantity": sum(r["current_quantity"] for r in rows),
+                "available_quantity": sum(r["available_quantity"] for r in rows),
+                "locked_quantity": sum(r["locked_quantity"] for r in rows),
+                "purchasing_quantity": sum(r["purchasing_quantity"] for r in rows),
+                "allocate_quantity": sum(r["allocate_quantity"] for r in rows),
+            },
+            "results": rows,
+            "params": biz,
+        }
+
+    raw = _api_call(method, biz)
+    rows = _extract_listish(raw)
+    truncated_rows = _truncate_payload(rows, max_rows=30)
+    return {
+        "ok": True,
+        "connector": "jackyun",
+        "mode": "live",
+        "capability": cid,
+        "method": method,
+        "count": len(rows) if isinstance(rows, list) else 0,
+        "results": truncated_rows,
+        "raw_preview": _truncate_payload(raw, max_rows=20, max_chars=8_000),
+        "params": biz,
+    }
+
+
+def jackyun_status(*, probe: bool = False) -> dict:
+    configured = jackyun_configured()
+    result = {
+        "configured": configured,
+        "auth_type": "openapi_signature",
+        "read_only": True,
+        "reachable": None,
+    }
+    if probe and configured:
+        try:
+            query_inventory(page_size=1)
+            result["reachable"] = True
+        except Exception as exc:
+            result["reachable"] = False
+            result["error"] = str(exc)
+    return result
 
 
 def _fixture_goods() -> list[dict]:
@@ -137,10 +479,10 @@ def _fixture_trades() -> list[dict]:
     return rows
 
 
-def pull_goods() -> tuple[list[dict], str]:
-    """返回 (商品列表, source_mode: live|fixture)。"""
+def pull_goods() -> tuple[list[dict], str, str]:
+    """返回 (商品列表, source_mode, error)；已配置时绝不静默伪造样例。"""
     if not jackyun_configured():
-        return _fixture_goods(), "fixture"
+        return _fixture_goods(), "fixture", ""
     method = _cfg("JACKYUN_METHOD_GOODS", "erp.goods.listget")
     try:
         raw = _api_call(method, {"pageIndex": 0, "pageSize": 100})
@@ -150,15 +492,15 @@ def pull_goods() -> tuple[list[dict], str]:
         if isinstance(goods, dict):
             goods = goods.get("list") or goods.get("rows") or []
         if not goods:
-            return _fixture_goods(), "fixture_fallback"
-        return list(goods), "live"
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError):
-        return _fixture_goods(), "fixture_fallback"
+            return [], "live_empty", ""
+        return list(goods), "live", ""
+    except (JackyunError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        return [], "live_error", str(exc)
 
 
-def pull_trades() -> tuple[list[dict], str]:
+def pull_trades() -> tuple[list[dict], str, str]:
     if not jackyun_configured():
-        return _fixture_trades(), "fixture"
+        return _fixture_trades(), "fixture", ""
     method = _cfg("JACKYUN_METHOD_TRADE", "oms.trade.listget")
     try:
         raw = _api_call(method, {"pageIndex": 0, "pageSize": 100})
@@ -167,10 +509,10 @@ def pull_trades() -> tuple[list[dict], str]:
         if isinstance(trades, dict):
             trades = trades.get("list") or trades.get("rows") or []
         if not trades:
-            return _fixture_trades(), "fixture_fallback"
-        return list(trades), "live"
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError):
-        return _fixture_trades(), "fixture_fallback"
+            return [], "live_empty", ""
+        return list(trades), "live", ""
+    except (JackyunError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        return [], "live_error", str(exc)
 
 
 def _norm_goods(row: dict) -> dict:
@@ -203,8 +545,8 @@ def _norm_trade(row: dict) -> dict:
 
 def sync_to_datalake() -> dict:
     """拉取商品+订单汇总,写入 PG(优先)或 DuckDB,并重跑管道。"""
-    goods_raw, goods_mode = pull_goods()
-    trades_raw, trades_mode = pull_trades()
+    goods_raw, goods_mode, goods_error = pull_goods()
+    trades_raw, trades_mode, trades_error = pull_trades()
     goods = [_norm_goods(g) for g in goods_raw if _norm_goods(g)["sku"]]
     trades = [_norm_trade(t) for t in trades_raw if _norm_trade(t)["sku"]]
 
@@ -223,13 +565,18 @@ def sync_to_datalake() -> dict:
         written.update(duck.ingest_jackyun(goods, trades))
         written["backend"] = "duckdb"
 
+    has_live_error = goods_mode == "live_error" or trades_mode == "live_error"
     return {
-        "ok": True,
+        "ok": not has_live_error,
         "connector": "jackyun",
         "external_id": f"JACKYUN-SYNC-{uuid.uuid4().hex[:8]}",
-        "status": "synced",
+        "status": "partial" if has_live_error else "synced",
         "goods_mode": goods_mode,
         "trades_mode": trades_mode,
         "configured": jackyun_configured(),
+        "errors": {
+            "goods": goods_error,
+            "trades": trades_error,
+        },
         "written": written,
     }

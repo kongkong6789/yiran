@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { Button, Segmented, Space, Tag, Typography } from "antd";
 import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { FlowEdge, LevelModel, NamedLoop, StockNode } from "../loopsHierarchy/types";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 type PosMap = Record<string, { x: number; y: number }>;
 type Particle = { flowId: string; t: number; speed: number };
@@ -62,6 +63,7 @@ function clampPos(x: number, y: number, w: number, h: number, viewW: number, vie
 }
 
 export default function HierarchyLoopDiagram({ model, entityName, onStockActivate }: Props) {
+  const visualTheme = useVisualizationTheme();
   const [playing, setPlaying] = useState(true);
   const [chain, setChain] = useState("all");
   const [focusLoop, setFocusLoop] = useState<string | null>(model.loops[0]?.code ?? null);
@@ -277,8 +279,8 @@ export default function HierarchyLoopDiagram({ model, entityName, onStockActivat
           >
             <defs>
               <linearGradient id={`${uid}-bg`} x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#f8fafc" />
-                <stop offset="100%" stopColor="#eef2f7" />
+                <stop offset="0%" stopColor={visualTheme.canvas} />
+                <stop offset="100%" stopColor={visualTheme.labelBg} />
               </linearGradient>
               <marker id={`${uid}-arrow`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 1.2 L 8 5 L 0 8.8 Z" fill="#7d8aa0" />
@@ -314,7 +316,7 @@ export default function HierarchyLoopDiagram({ model, entityName, onStockActivat
                     cx={(a.x + b.x) / 2 * 0 + (cx + a.x + b.x) / 3}
                     cy={(cy + a.y + b.y) / 3}
                     r="9"
-                    fill="#fff"
+                    fill={visualTheme.labelBg}
                     stroke={stroke}
                     strokeWidth="1"
                   />
@@ -333,7 +335,7 @@ export default function HierarchyLoopDiagram({ model, entityName, onStockActivat
                       x={(cx + a.x + b.x) / 3 + 14}
                       y={(cy + a.y + b.y) / 3 + 3}
                       fontSize="9"
-                      fill="#8b96a8"
+                      fill={visualTheme.mutedText}
                     >
                       //
                     </text>
@@ -379,15 +381,15 @@ export default function HierarchyLoopDiagram({ model, entityName, onStockActivat
                     width={s.w}
                     height={s.h}
                     rx="10"
-                    fill={s.soft}
+                    fill={semanticSoftColor(s.color, visualTheme.mode, s.soft)}
                     stroke={isSel ? "#C4924A" : s.color}
                     strokeWidth={isSel ? 2.4 : 1.6}
                     filter={`url(#${uid}-shadow)`}
                   />
                   <text x={10} y={20} fontSize="11" fontWeight="700" fill={s.color}>{s.code}</text>
-                  <text x={10} y={38} fontSize="12" fontWeight="650" fill="#172033">{s.label}</text>
+                  <text x={10} y={38} fontSize="12" fontWeight="650" fill={visualTheme.labelText}>{s.label}</text>
                   {s.sub ? (
-                    <text x={10} y={54} fontSize="10" fill="#5c6b84">{s.sub}</text>
+                    <text x={10} y={54} fontSize="10" fill={visualTheme.mutedText}>{s.sub}</text>
                   ) : null}
                   {canDrill ? (
                     <text x={s.w - 8} y={s.h - 8} textAnchor="end" fontSize="9" fill="#C4924A">↓</text>

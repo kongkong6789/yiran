@@ -258,13 +258,13 @@ def chat_messages_result(
     )
     if personal_auth_failed:
         raise_if_cancelled(cancel_check)
-        fallback_kwargs = {
+        completion_kwargs = {
             **completion_kwargs,
             "api_key": global_key,
             "base_url": global_base,
             "used_model": global_model or used_model,
         }
-        fallback = completion(system, messages, **fallback_kwargs)
+        fallback = completion(system, messages, **completion_kwargs)
         fallback["credential_fallback"] = "global"
         if not fallback.get("content") and fallback.get("error"):
             fallback["error"] = (
@@ -272,6 +272,17 @@ def chat_messages_result(
                 f"{fallback['error']}"
             )
         result = fallback
+
+    # 网关 channel 下线时按备用模型重试（model_not_found / No available channel）
+    result = _retry_with_fallback_models(
+        system,
+        messages,
+        result=result,
+        completion=completion,
+        completion_kwargs=completion_kwargs,
+        cancel_check=cancel_check,
+    )
+
     if (
         allow_images
         and not result.get("content")
@@ -279,6 +290,58 @@ def chat_messages_result(
     ):
         result["vision_unsupported"] = True
     return result
+
+
+def _is_model_unavailable_error(err: str) -> bool:
+    e = (err or "").lower()
+    return (
+        "model_not_found" in e
+        or "no available channel" in e
+        or "model_not_available" in e
+        or ("is not supported by any configured account" in e)
+    )
+
+
+def _fallback_model_names(primary: str) -> list[str]:
+    ordered: list[str] = []
+    for name in getattr(settings, "LLM_MODEL_FALLBACKS", None) or []:
+        n = (name or "").strip()
+        if n and n not in ordered:
+            ordered.append(n)
+    for name in (
+        (getattr(settings, "LLM_MODEL", "") or "").strip(),
+        (getattr(settings, "LLM_MODEL_FAST", "") or "").strip(),
+    ):
+        if name and name not in ordered:
+            ordered.append(name)
+    primary = (primary or "").strip()
+    return [m for m in ordered if m and m != primary]
+
+
+def _retry_with_fallback_models(
+    system: str,
+    messages: list[dict],
+    *,
+    result: dict,
+    completion,
+    completion_kwargs: dict,
+    cancel_check=None,
+) -> dict:
+    if result.get("content") or not _is_model_unavailable_error(str(result.get("error") or "")):
+        return result
+    tried = {(completion_kwargs.get("used_model") or "").strip()}
+    last = result
+    for alt in _fallback_model_names(completion_kwargs.get("used_model") or ""):
+        if alt in tried:
+            continue
+        tried.add(alt)
+        raise_if_cancelled(cancel_check)
+        alt_kwargs = {**completion_kwargs, "used_model": alt}
+        last = completion(system, messages, **alt_kwargs)
+        last["model_fallback"] = alt
+        if last.get("content") or not _is_model_unavailable_error(str(last.get("error") or "")):
+            return last
+    return last
 
 
 def _completion_messages(

@@ -305,17 +305,7 @@ export default function AgentMemoryPage() {
                     </Popconfirm>
                   ) : null}
                 </Space>
-                <pre
-                  style={{
-                    margin: 0,
-                    fontSize: 12,
-                    maxHeight: 480,
-                    overflow: "auto",
-                    background: "var(--ant-color-fill-quaternary, #f5f5f5)",
-                    padding: 12,
-                    borderRadius: 8,
-                  }}
-                >
+                <pre className="agent-memory-debug">
                   {debug ? JSON.stringify(debug, null, 2) : "尚未加载"}
                 </pre>
               </Card>

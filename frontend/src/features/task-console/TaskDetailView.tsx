@@ -16,6 +16,7 @@ import { openArtifactPreview } from "./openArtifactPreview";
 import type { PublishedTask, TaskArtifact, TaskView } from "./mockTasks";
 import type { TaskBusinessResult } from "./taskBusinessResult";
 import TaskStatusBadge from "./TaskStatusBadge";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const fmtTime = (value?: string | null) => value
   ? new Date(value).toLocaleString("zh-CN", {
@@ -262,12 +263,17 @@ export default function TaskDetailView({
         <div className="task-detail-members">
           <span>相关成员</span>
           <div>
-            {(task.assignees.length ? task.assignees : [task.sender]).map((name) => (
-              <span className="task-detail-member" key={name}>
-                <Avatar size={26} icon={<UserOutlined />} />
-                {name}
+            {task.assigneeMembers?.length ? task.assigneeMembers.map((member) => (
+              <span className="task-detail-member" key={member.id}>
+                <Avatar size={26} src={authenticatedAvatarUrl(member.avatarUrl)} icon={!member.avatarUrl ? <UserOutlined /> : undefined} />
+                {member.name}
               </span>
-            ))}
+            )) : (
+              <span className="task-detail-member">
+                <Avatar size={26} src={authenticatedAvatarUrl(task.senderAvatar)} icon={!task.senderAvatar ? <UserOutlined /> : undefined} />
+                {task.sender}
+              </span>
+            )}
           </div>
         </div>
       </aside>
@@ -294,9 +300,17 @@ export default function TaskDetailView({
     <section className="task-detail-tab-panel">
       <Typography.Title level={5}>协作记录</Typography.Title>
       <div className="task-collaboration-list">
-        <div><Avatar icon={<UserOutlined />} /><span><strong>{task.sender}</strong> 创建了任务<small>{fmtTime(task.createdAt)}</small></span></div>
+        <div><Avatar src={authenticatedAvatarUrl(task.senderAvatar)} icon={!task.senderAvatar ? <UserOutlined /> : undefined} /><span><strong>{task.sender}</strong> 创建了任务<small>{fmtTime(task.createdAt)}</small></span></div>
         {task.assignees.length > 0 && (
-          <div><Avatar icon={<UserOutlined />} /><span><strong>{task.assignees.join("、")}</strong> 被设为负责人<small>{fmtTime(task.createdAt)}</small></span></div>
+          <div>
+            <Avatar.Group size={32} max={{ count: 3 }}>
+              {(task.assigneeMembers || []).map((member) => (
+                <Avatar key={member.id} src={authenticatedAvatarUrl(member.avatarUrl)} icon={!member.avatarUrl ? <UserOutlined /> : undefined} />
+              ))}
+              {!task.assigneeMembers?.length && <Avatar icon={<UserOutlined />} />}
+            </Avatar.Group>
+            <span><strong>{task.assignees.join("、")}</strong> 被设为负责人<small>{fmtTime(task.createdAt)}</small></span>
+          </div>
         )}
         {task.notificationStatus && task.notificationStatus !== "skipped" && (
           <div><Avatar icon={<SendOutlined />} /><span><strong>良策任务助手</strong> 更新了企业微信通知状态<small>{fmtTime(task.updatedAt)}</small></span></div>

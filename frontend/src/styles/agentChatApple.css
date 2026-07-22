@@ -23,17 +23,17 @@
 
 .agent-chat-shell[data-chat-theme="dark"] {
   color-scheme: dark;
-  --chat-canvas: #000000;
-  --chat-rail: #171717;
-  --chat-surface: #272729;
-  --chat-ink: #ffffff;
-  --chat-muted: #cccccc;
-  --chat-line: #333333;
-  --chat-soft-line: #252527;
-  --chat-chip: #272729;
-  --chat-hover: #2a2a2c;
-  --chat-action: #ffffff;
-  --chat-action-text: #000000;
+  --chat-canvas: var(--lc-canvas);
+  --chat-rail: var(--lc-surface);
+  --chat-surface: var(--lc-surface-raised);
+  --chat-ink: var(--lc-ink);
+  --chat-muted: var(--lc-muted);
+  --chat-line: var(--lc-line);
+  --chat-soft-line: var(--lc-border-light);
+  --chat-chip: var(--lc-surface-input);
+  --chat-hover: var(--lc-hover);
+  --chat-action: var(--lc-own-bg);
+  --chat-action-text: var(--lc-own-ink);
 }
 
 .agent-chat-shell .agent-chat-history,

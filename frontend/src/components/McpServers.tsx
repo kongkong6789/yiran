@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Drawer, Tag, Button, Space, Typography, List, message, Tooltip,
-  Form, Input, Switch, Divider, Alert, Empty, Segmented, Skeleton,
+  Drawer, Tag, Button, Space, Typography, message, Tooltip,
+  Form, Input, Switch, Empty, Segmented, Skeleton, Alert,
 } from "antd";
 import {
   AccountBookOutlined,
@@ -55,6 +55,7 @@ const STATUS_TAG: Record<string, { color: string; text: string }> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   personal: "个人配置",
+  organization: "企业配置",
   ui: "界面配置",
   env: ".env 默认",
   none: "未配置",
@@ -64,6 +65,7 @@ const TRANSPORT_LABEL: Record<string, string> = {
   streamable_http: "HTTP",
   sse: "SSE",
   stdio: "stdio",
+  openapi: "OpenAPI",
 };
 
 const WECOM_JSON_TEMPLATE = `{
@@ -88,10 +90,21 @@ type FormValues = {
   args?: string;
   env?: string;
   paste_json?: string;
+  // 吉客云
+  app_key?: string;
+  app_secret?: string;
+  base_url?: string;
+  method_inventory?: string;
+  // 金蝶
+  acct_id?: string;
+  username?: string;
+  password?: string;
+  lcid?: string;
 };
 
 type StatusFilter = "all" | "configured" | "reachable" | "attention";
 type NasDrawerMode = "files" | "settings";
+type ConfigInputMode = "direct" | "import";
 
 const LAYER_DESC: Record<string, string> = {
   协作: "文档、消息与团队协作服务",
@@ -120,6 +133,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [nasDrawerMode, setNasDrawerMode] = useState<NasDrawerMode>("files");
+  const [configInputMode, setConfigInputMode] = useState<ConfigInputMode>("direct");
   const [form] = Form.useForm<FormValues>();
 
   const load = useCallback(() => {
@@ -137,6 +151,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     const nasPath = [...(d.args || [])]
       .reverse()
       .find((value) => value && !value.startsWith("-") && !value.startsWith("@")) || "";
+    const native = d.native || {};
     form.setFieldsValue({
       enabled: d.enabled !== false,
       nas_path: d.id === "nas" ? nasPath : "",
@@ -147,11 +162,15 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         ? JSON.stringify(d.env, null, 2)
         : "",
       paste_json: "",
+      app_key: native.app_key || "",
+      app_secret: "",
+      base_url: native.base_url || ph.base_url || "",
+      method_inventory: native.method_inventory || ph.method_inventory || "erp.stockquantity.get",
+      acct_id: native.acct_id || ph.acct_id || "",
+      username: native.username || "",
+      password: "",
+      lcid: native.lcid || ph.lcid || "2052",
     });
-    // 未配置时用占位提示(不写入 form 正式值,靠 placeholder 展示)
-    if (!d.command && !d.url && ph.command) {
-      // keep empty so user can see placeholders
-    }
   }, [form]);
 
   const applyDetail = (saved: McpServerDetail, id: string) => {
@@ -165,6 +184,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const openServer = async (id: string) => {
     if (id === "nas") setNasDrawerMode("files");
+    setConfigInputMode("direct");
     setOpenId(id);
     try {
       const d = await getMcpServer(id);
@@ -178,9 +198,37 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const doSave = async () => {
     if (!openId) return;
+    if (detail?.can_manage === false) {
+      message.warning("仅当前企业的所有者或管理员可以修改连接器");
+      return;
+    }
     const values = await form.validateFields();
     setSaving(true);
     try {
+      if (openId === "jackyun" || openId === "kingdee") {
+        const native = openId === "jackyun"
+          ? {
+              app_key: values.app_key?.trim() || "",
+              app_secret: values.app_secret?.trim() || "",
+              base_url: values.base_url?.trim() || "",
+              method_inventory: values.method_inventory?.trim() || "erp.stockquantity.get",
+            }
+          : {
+              base_url: values.base_url?.trim() || "",
+              acct_id: values.acct_id?.trim() || "",
+              username: values.username?.trim() || "",
+              password: values.password?.trim() || "",
+              lcid: values.lcid?.trim() || "2052",
+            };
+        const saved = await saveMcpServer(openId, {
+          enabled: values.enabled,
+          native,
+          ...native,
+        });
+        applyDetail(saved, openId);
+        message.success(`${openId === "jackyun" ? "吉客云" : "金蝶"}配置已保存`);
+        return;
+      }
       const nasPath = values.nas_path?.trim() || "";
       const saved = await saveMcpServer(openId, {
         enabled: values.enabled,
@@ -207,6 +255,10 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const doImport = async () => {
     if (!openId) return;
+    if (detail?.can_manage === false) {
+      message.warning("仅当前企业的所有者或管理员可以导入连接器配置");
+      return;
+    }
     const raw = (form.getFieldValue("paste_json") || "").trim();
     if (!raw) {
       message.warning("请先粘贴 Cursor mcp.json 片段");
@@ -276,7 +328,8 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const renderCard = (item: McpServer) => {
     const color = COLORS[item.id] || "#59c2ff";
-    const st = STATUS_TAG[mcpStatus(item)] || STATUS_TAG.unconfigured;
+    const status = mcpStatus(item);
+    const st = STATUS_TAG[status] || STATUS_TAG.unconfigured;
     return (
       <button
         key={item.id}
@@ -289,7 +342,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         <b>{item.name}</b>
         <em>{item.desc}</em>
         <span className="mcp-card-meta">
-          <Tag color={st.color} bordered={false} style={{ margin: 0, fontSize: 10 }}>
+          <Tag
+            className={`mcp-status-tag mcp-status-tag--${status}`}
+            color={st.color}
+            bordered={false}
+            style={{ margin: 0, fontSize: 10 }}
+          >
             {st.text}
           </Tag>
           <i>{TRANSPORT_LABEL[item.transport] || item.transport}</i>
@@ -321,7 +379,13 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         <span className="mcp-card-copy">
           <span className="mcp-card-title-row">
             <b>{item.name}</b>
-            <Tag color={st.color} bordered={false}>{st.text}</Tag>
+            <Tag
+              className={`mcp-status-tag mcp-status-tag--${status}`}
+              color={st.color}
+              bordered={false}
+            >
+              {st.text}
+            </Tag>
           </span>
           <em>{item.desc}</em>
           <span className="mcp-card-meta">
@@ -340,7 +404,8 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const renderRow = (item: McpServer) => {
     const color = COLORS[item.id] || "#59c2ff";
-    const st = STATUS_TAG[mcpStatus(item)] || STATUS_TAG.unconfigured;
+    const status = mcpStatus(item);
+    const st = STATUS_TAG[status] || STATUS_TAG.unconfigured;
     return (
       <button
         key={item.id}
@@ -353,7 +418,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           {ICONS[item.id]}
         </span>
         <span className="mcp-name">{item.name}</span>
-        <Tag color={st.color} bordered={false} style={{ margin: 0, fontSize: 10, lineHeight: "16px" }}>
+        <Tag
+          className={`mcp-status-tag mcp-status-tag--${status}`}
+          color={st.color}
+          bordered={false}
+          style={{ margin: 0, fontSize: 10, lineHeight: "16px" }}
+        >
           {st.text}
         </Tag>
       </button>
@@ -362,8 +432,11 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
   const isWecom = openId === "wecom";
   const isNas = openId === "nas";
-  const showStdio = !isWecom && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
-  const showUrl = !isWecom && (
+  const isJackyun = openId === "jackyun";
+  const isKingdee = openId === "kingdee";
+  const isNativeOpenApi = isJackyun || isKingdee;
+  const showStdio = !isWecom && !isNativeOpenApi && (detail?.declared_transport === "stdio" || detail?.transport === "stdio");
+  const showUrl = !isWecom && !isNativeOpenApi && (
     detail?.declared_transport === "streamable_http"
     || detail?.declared_transport === "sse"
     || !!detail?.url
@@ -530,11 +603,17 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
       <Drawer
         title={detail ? (isNas ? (
           <span className="nas-drawer-title"><HddOutlined /> NAS 文件资源管理器</span>
-        ) : `${detail.name} · MCP 配置`) : "MCP 配置"}
+        ) : isNativeOpenApi ? `${detail.name} · 连接配置` : `${detail.name} · MCP 配置`) : "连接配置"}
         open={!!openId}
-        onClose={() => { setOpenId(null); setDetail(null); setNasDrawerMode("files"); form.resetFields(); }}
+        onClose={() => {
+          setOpenId(null);
+          setDetail(null);
+          setNasDrawerMode("files");
+          setConfigInputMode("direct");
+          form.resetFields();
+        }}
         width={isNas ? "min(1180px, calc(100vw - 24px))" : 560}
-        className={isNas ? "nas-explorer-drawer" : undefined}
+        className={isNas ? "nas-explorer-drawer" : "mcp-config-drawer"}
         extra={
           detail && isNas && nasDrawerMode === "files" ? (
             <Space>
@@ -544,11 +623,17 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           ) : detail && isNas ? (
             <Space>
               <Button onClick={() => setNasDrawerMode("files")}>返回文件库</Button>
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>连接并打开</Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={detail.can_manage === false} onClick={doSave}>连接并打开</Button>
             </Space>
           ) : detail ? (
-            <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={doSave}>
-              保存
+            <Button
+              type="primary"
+              icon={configInputMode === "import" ? <ImportOutlined /> : <SaveOutlined />}
+              loading={configInputMode === "import" ? importing : saving}
+              disabled={detail.can_manage === false}
+              onClick={configInputMode === "import" ? doImport : doSave}
+            >
+              {configInputMode === "import" ? "导入并保存" : "保存"}
             </Button>
           ) : null
         }
@@ -560,53 +645,84 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
             onOpenSettings={() => setNasDrawerMode("settings")}
           />
         ) : detail && (
-          <Space
-            direction="vertical"
-            size={16}
-            style={{ width: "100%" }}
-            className={isNas ? "nas-settings-panel" : undefined}
-          >
-            <div>
-              <Typography.Text type="secondary">{detail.desc}</Typography.Text>
-              <div style={{ marginTop: 8 }}>
-                <Tag>{detail.layer}</Tag>
-                <Tag color="blue">{TRANSPORT_LABEL[detail.transport]}</Tag>
-                <Tag color={detail.config_source === "personal" || detail.config_source === "ui" ? "success" : "default"}>
-                  {SOURCE_LABEL[detail.config_source] || detail.config_source}
-                </Tag>
-              </div>
-            </div>
+          <div className={`mcp-config-shell${isNas ? " nas-settings-panel" : ""}`}>
+            <Form form={form} layout="vertical" requiredMark={false} className="mcp-config-form" disabled={detail.can_manage === false}>
+              <section className="mcp-config-summary">
+                <span
+                  className="mcp-config-summary-icon"
+                  style={{ "--accent": COLORS[detail.id] || "#315efb" } as React.CSSProperties}
+                >
+                  {ICONS[detail.id] || <ApiOutlined />}
+                </span>
+                <div className="mcp-config-summary-copy">
+                  <strong>{detail.name}</strong>
+                  <span>{detail.desc}</span>
+                  <small>
+                    {detail.layer} · {TRANSPORT_LABEL[detail.transport] || detail.transport} · {SOURCE_LABEL[detail.config_source] || detail.config_source}
+                  </small>
+                </div>
+                <Form.Item name="enabled" valuePropName="checked" noStyle>
+                  <Switch size="small" aria-label="启用连接器" />
+                </Form.Item>
+              </section>
 
-            {!!detail.hints?.length && (
               <Alert
-                type="info"
+                type={detail.can_manage === false ? "info" : "success"}
                 showIcon
-                message={isWecom ? "企业微信 MCP 填写说明" : "配置说明"}
-                description={
-                  <ul style={{ margin: 0, paddingLeft: 18 }}>
-                    {detail.hints.map((h) => <li key={h}>{h}</li>)}
-                  </ul>
-                }
+                style={{ marginBottom: 12 }}
+                message={`当前企业：${detail.organization_name || "未加入企业"}`}
+                description={detail.can_manage === false
+                  ? "该连接由企业管理员统一维护，你可以使用但不能修改。"
+                  : "此处保存的连接配置只对当前企业生效，切换企业后会加载对应企业的配置。"}
               />
-            )}
 
-            <Form form={form} layout="vertical" requiredMark={false}>
-              <Form.Item label="启用" name="enabled" valuePropName="checked">
-                <Switch checkedChildren="开" unCheckedChildren="关" />
-              </Form.Item>
+              {!!detail.hints?.length && (
+                <details className="mcp-config-help">
+                  <summary>
+                    <span>{isWecom ? "企业微信配置说明" : "配置说明"}</span>
+                    <small>{detail.hints.length} 条</small>
+                  </summary>
+                  <ul>
+                    {detail.hints.map((hint) => <li key={hint}>{hint}</li>)}
+                  </ul>
+                </details>
+              )}
+
+              {!isNas && !isNativeOpenApi && (
+                <div className="mcp-config-modebar">
+                  <Segmented<ConfigInputMode>
+                    value={configInputMode}
+                    onChange={setConfigInputMode}
+                    options={[
+                      { value: "direct", label: isWecom ? "连接地址" : "直接配置" },
+                      { value: "import", label: "JSON 导入" },
+                    ]}
+                  />
+                  <Button size="small" type="text" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
+                    检查连接
+                  </Button>
+                </div>
+              )}
+
+              {isNativeOpenApi && (
+                <div className="mcp-config-modebar">
+                  <Typography.Text type="secondary">OpenAPI 企业配置</Typography.Text>
+                  <Button size="small" type="text" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
+                    检查连接
+                  </Button>
+                </div>
+              )}
 
               {isNas ? (
-                <>
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="输入 NAS 网络路径即可连接"
-                    description="支持直接填写服务器根路径（如 \\\\192.168.0.188），连接后会列出当前 Windows 账户可访问的共享文件夹。"
-                  />
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>NAS 网络路径</strong>
+                      <span>支持服务器根路径、盘符或绝对目录</span>
+                    </div>
+                  </div>
                   <Form.Item
-                    label="NAS 网络路径"
                     name="nas_path"
-                    extra="使用运行良策后端的 Windows 账户访问；如果资源管理器已登录该 NAS，通常无需再次输入账号密码。"
                     rules={[
                       { required: true, whitespace: true, message: "请输入 NAS 网络路径" },
                       {
@@ -622,139 +738,153 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                   >
                     <Input size="large" placeholder="\\\\192.168.0.188" allowClear autoFocus />
                   </Form.Item>
-                </>
-              ) : isWecom ? (
-                <>
+                  <p className="mcp-config-note">使用运行良策后端的 Windows 账户访问；已在资源管理器登录时通常无需再次输入密码。</p>
+                </section>
+              ) : isJackyun ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>吉客云开放平台</strong>
+                      <span>AppKey / AppSecret 按当前企业保存</span>
+                    </div>
+                  </div>
+                  <Form.Item label="AppKey" name="app_key" rules={[{ required: true, message: "请填写 AppKey" }]}>
+                    <Input placeholder={ph.app_key || "开放平台 AppKey"} allowClear />
+                  </Form.Item>
                   <Form.Item
-                    label="StreamableHttp URL"
-                    name="url"
-                    extra="从企微 MCP 配置页复制 StreamableHttp URL,粘贴后点右上角「保存」"
+                    label="AppSecret"
+                    name="app_secret"
+                    extra={detail.native?.app_secret_set ? "已保存密钥；留空则保持不变" : "请填写 AppSecret"}
                   >
+                    <Input.Password placeholder={detail.native?.app_secret_set ? "******（留空保持不变）" : (ph.app_secret || "开放平台 AppSecret")} />
+                  </Form.Item>
+                  <Form.Item label="OpenAPI 地址" name="base_url">
+                    <Input placeholder={ph.base_url || "https://open.jackyun.com/open/openapi/do"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="库存方法" name="method_inventory">
+                    <Input placeholder={ph.method_inventory || "erp.stockquantity.get"} allowClear />
+                  </Form.Item>
+                </section>
+              ) : isKingdee ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>金蝶云星空 K3Cloud</strong>
+                      <span>地址 / 账套 / 账号 / LCID 可在此手动配置</span>
+                    </div>
+                  </div>
+                  <Form.Item label="服务器地址" name="base_url" rules={[{ required: true, message: "请填写 K3Cloud 地址" }]}>
+                    <Input placeholder={ph.base_url || "http://159.75.104.61/k3cloud"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="账套 ID" name="acct_id" rules={[{ required: true, message: "请填写账套 ID" }]}>
+                    <Input placeholder={ph.acct_id || "65405d0ec432ee"} allowClear />
+                  </Form.Item>
+                  <Form.Item label="账号" name="username" rules={[{ required: true, message: "请填写登录账号" }]}>
+                    <Input placeholder={ph.username || "金蝶登录账号"} allowClear autoComplete="username" />
+                  </Form.Item>
+                  <Form.Item
+                    label="密码"
+                    name="password"
+                    extra={detail.native?.password_set ? "已保存密码；留空则保持不变" : "请填写登录密码"}
+                  >
+                    <Input.Password
+                      placeholder={detail.native?.password_set ? "******（留空保持不变）" : (ph.password || "金蝶登录密码")}
+                      autoComplete="current-password"
+                    />
+                  </Form.Item>
+                  <Form.Item label="LCID（语言）" name="lcid" extra="简体中文一般为 2052">
+                    <Input placeholder={ph.lcid || "2052"} allowClear />
+                  </Form.Item>
+                </section>
+              ) : configInputMode === "direct" && isWecom ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>StreamableHttp URL</strong>
+                      <span>从企业微信 MCP 配置页复制完整地址</span>
+                    </div>
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={copyUrl}>复制</Button>
+                  </div>
+                  <Form.Item name="url">
                     <Input.TextArea
-                      rows={3}
+                      autoSize={{ minRows: 2, maxRows: 4 }}
                       placeholder={ph.url || "https://qyapi.weixin.qq.com/mcp/robot-doc?apikey=..."}
                       allowClear
                     />
                   </Form.Item>
-                  <Button size="small" icon={<CopyOutlined />} onClick={copyUrl} style={{ marginBottom: 12 }}>
-                    复制 URL
-                  </Button>
-
-                  <Divider style={{ margin: "4px 0 12px" }}>JSON Config</Divider>
-
-                  <Form.Item
-                    label="JSON Config"
-                    name="paste_json"
-                    extra='从企微 MCP 配置页复制 JSON Config,粘贴后点「导入并保存」'
-                  >
+                  <p className="mcp-config-note">地址可能包含 apikey，仅保存在当前账号配置中，请勿转发或截图分享。</p>
+                </section>
+              ) : configInputMode === "import" ? (
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>JSON Config</strong>
+                      <span>支持完整 mcp.json 或单个 server 对象</span>
+                    </div>
+                    {isWecom && <Button size="small" type="text" onClick={fillWecomTemplate}>填入模板</Button>}
+                  </div>
+                  <Form.Item name="paste_json">
                     <Input.TextArea
-                      rows={10}
-                      placeholder={WECOM_JSON_TEMPLATE}
+                      rows={7}
+                      placeholder={isWecom ? WECOM_JSON_TEMPLATE : '{\n  "mcpServers": {\n    "...": { "command": "npx", "args": [], "env": {} }\n  }\n}'}
                     />
                   </Form.Item>
-                  <Space wrap>
-                    <Button onClick={fillWecomTemplate}>填入模板</Button>
-                    <Button
-                      type="primary"
-                      ghost
-                      icon={<ImportOutlined />}
-                      loading={importing}
-                      onClick={doImport}
-                    >
-                      导入并保存
-                    </Button>
-                  </Space>
-                </>
+                  <p className="mcp-config-note">确认内容后，点击右上角“导入并保存”。</p>
+                </section>
               ) : (
-                <>
+                <section className="mcp-config-section">
+                  <div className="mcp-config-section-head">
+                    <div>
+                      <strong>连接参数</strong>
+                      <span>{showStdio ? "配置本机启动命令与参数" : "填写 MCP 服务地址"}</span>
+                    </div>
+                  </div>
                   {showStdio && (
                     <>
-                      <Form.Item
-                        label="command"
-                        name="command"
-                        extra="stdio 启动命令"
-                      >
+                      <Form.Item label="command" name="command">
                         <Input placeholder={ph.command || "npx"} allowClear />
                       </Form.Item>
-                      <Form.Item
-                        label="args"
-                        name="args"
-                        extra='JSON 数组'
-                      >
+                      <Form.Item label="args" name="args">
                         <Input.TextArea
                           rows={2}
                           placeholder={ph.args || '["-y","@modelcontextprotocol/server-filesystem","/mnt/nas"]'}
                         />
                       </Form.Item>
-                      <Form.Item
-                        label="env"
-                        name="env"
-                        extra='JSON 对象(可选)'
-                      >
-                        <Input.TextArea rows={4} placeholder='{"KEY":"value"}' />
+                      <Form.Item label="env" name="env">
+                        <Input.TextArea rows={3} placeholder='{"KEY":"value"}' />
                       </Form.Item>
                     </>
                   )}
-
                   {showUrl && (
-                    <Form.Item label="MCP URL" name="url" extra="HTTP / SSE 端点">
+                    <Form.Item label="MCP URL" name="url">
                       <Input placeholder={ph.url || "http://127.0.0.1:3101/mcp"} allowClear />
                     </Form.Item>
                   )}
-
-                  <Divider style={{ margin: "4px 0 12px" }}>或粘贴 Cursor mcp.json</Divider>
-
-                  <Form.Item label="粘贴导入" name="paste_json" extra="支持完整 mcp.json 或单个 server 对象">
-                    <Input.TextArea
-                      rows={8}
-                      placeholder={'{\n  "mcpServers": {\n    "...": { "command": "npx", "args": [], "env": {} }\n  }\n}'}
-                    />
-                  </Form.Item>
-                  <Button
-                    type="primary"
-                    ghost
-                    icon={<ImportOutlined />}
-                    loading={importing}
-                    onClick={doImport}
-                  >
-                    导入并保存
-                  </Button>
-                </>
+                </section>
               )}
             </Form>
 
             {!isNas && (
-              <>
-                <div>
-                  <Typography.Text strong>可用工具</Typography.Text>
-                  <List
-                    size="small"
-                    dataSource={detail.tools}
-                    renderItem={(t) => <List.Item style={{ padding: "4px 0" }}><code>{t}</code></List.Item>}
-                  />
-                </div>
-
-                <Divider style={{ margin: "4px 0" }} />
-
-                <div>
-                  <Space style={{ marginBottom: 8 }} wrap>
-                    <Typography.Text strong>当前 Cursor mcp.json</Typography.Text>
-                    <Button size="small" icon={<CopyOutlined />} onClick={copyConfig}>复制</Button>
-                    <Button size="small" icon={<RadarChartOutlined />} loading={probing} onClick={doProbe}>
-                      探测连接
-                    </Button>
-                  </Space>
+              <details className="mcp-config-advanced">
+                <summary>
+                  <span>工具与当前配置</span>
+                  <small>{detail.tools.length} 个工具</small>
+                </summary>
+                <div className="mcp-config-advanced-body">
+                  {!!detail.tools.length && (
+                    <div className="mcp-config-tools">
+                      {detail.tools.map((tool) => <code key={tool}>{tool}</code>)}
+                    </div>
+                  )}
+                  <div className="mcp-config-json-head">
+                    <strong>当前 mcp.json</strong>
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={copyConfig}>复制</Button>
+                  </div>
                   <pre className="mcp-json">{detail.cursor_json}</pre>
                 </div>
-
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
-                  {isWecom
-                    ? "与企微后台一致: 填 StreamableHttp URL 或粘贴 JSON Config。配置含 apikey,请勿泄露。"
-                    : "填写后点右上角「保存」,或粘贴 mcp.json 后「导入并保存」。"}
-                </Typography.Paragraph>
-              </>
+              </details>
             )}
-          </Space>
+          </div>
         )}
       </Drawer>
     </>

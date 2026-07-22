@@ -6,6 +6,7 @@ import {
   SafetyCertificateOutlined, ShopOutlined, SyncOutlined,
   TeamOutlined, ThunderboltOutlined,
 } from "@ant-design/icons";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 type Feature = {
   key: string;
@@ -101,6 +102,7 @@ const GROUPS: { title: string; keys: string[] }[] = [
 
 export default function CommerceHub() {
   const nav = useNavigate();
+  const visualTheme = useVisualizationTheme();
 
   return (
     <div className="commerce-hub">
@@ -129,7 +131,10 @@ export default function CommerceHub() {
                     className="commerce-hub-card"
                     onClick={() => nav(f.path)}
                   >
-                    <div className="commerce-hub-card-icon" style={{ background: `${f.color}14`, color: f.color }}>
+                    <div className="commerce-hub-card-icon" style={{
+                      background: semanticSoftColor(f.color, visualTheme.mode, `${f.color}14`),
+                      color: f.color,
+                    }}>
                       {f.icon}
                     </div>
                     <div className="commerce-hub-card-body">

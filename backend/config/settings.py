@@ -93,52 +93,13 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# Django 主库:配置 POSTGRES_HOST/POSTGRES_DB 时使用 PostgreSQL;否则回退 SQLite。
-if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "HOST": os.getenv("POSTGRES_HOST"),
-            "PORT": os.getenv("POSTGRES_PORT", "5432"),
-            "NAME": os.getenv("POSTGRES_DB"),
-            "USER": os.getenv("POSTGRES_USER", "postgres"),
-            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-        }
-    }
-else:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
-    }
-# ??/?? WebSocket?????????????????? Redis?
+# Channels / WebSocket（开发默认内存层；生产可换 Redis）
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",
     }
 }
 
-# Django main database uses SQLite by default; the knowledge app uses PostgreSQL through a router.
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
-if os.getenv("POSTGRES_HOST") and os.getenv("POSTGRES_DB"):
-    DATABASES["knowledge"] = {
-        "ENGINE": "django.db.backends.postgresql",
-        "HOST": os.getenv("POSTGRES_HOST"),
-        "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        "NAME": os.getenv("POSTGRES_DB"),
-        "USER": os.getenv("POSTGRES_USER", "postgres"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-    }
-else:
-    DATABASES["knowledge"] = DATABASES["default"]
-
-DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 # DuckDB 数据底座文件路径
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(BASE_DIR / "data" / "datalake.duckdb"))
 
@@ -212,32 +173,71 @@ PG_USER = _pg_env("POSTGRES_USER", "PG_USER", default="postgres")
 PG_PASSWORD = _pg_env("POSTGRES_PASSWORD", "PG_PASSWORD")
 PG_SCHEMA = _pg_env("POSTGRES_SCHEMA", "PG_SCHEMA", default="lake")
 
-# PostgreSQL is the Django ORM primary database whenever it is configured.
-# SQLite remains available only as an explicit local fallback.
+# 知识库可单独指定库（KNOWLEDGE_POSTGRES_*）；未设时回退 POSTGRES_*
+KNOWLEDGE_PG_HOST = _pg_env("KNOWLEDGE_POSTGRES_HOST", "KNOWLEDGE_PG_HOST", default=PG_HOST)
+KNOWLEDGE_PG_PORT = int(_pg_env("KNOWLEDGE_POSTGRES_PORT", "KNOWLEDGE_PG_PORT", default=str(PG_PORT)))
+KNOWLEDGE_PG_DB = _pg_env("KNOWLEDGE_POSTGRES_DB", "KNOWLEDGE_PG_DB", default=PG_DB)
+KNOWLEDGE_PG_USER = _pg_env("KNOWLEDGE_POSTGRES_USER", "KNOWLEDGE_PG_USER", default=PG_USER)
+KNOWLEDGE_PG_PASSWORD = _pg_env("KNOWLEDGE_POSTGRES_PASSWORD", "KNOWLEDGE_PG_PASSWORD", default=PG_PASSWORD)
+
+# 主库选择（只在这里赋值一次，避免多处 DATABASES 互相覆盖）：
+# - DATABASE_ENGINE=sqlite → 业务/账号走本地 SQLite（推荐本地开发）
+# - DATABASE_ENGINE=postgres → 业务也走 PostgreSQL
+# - 未设且配置了 POSTGRES_* → 兼容旧行为，业务走 PostgreSQL
+# 知识库始终优先走独立 knowledge 别名（可连另一台 PG）
 DATABASE_ENGINE = os.getenv("DATABASE_ENGINE", "").strip().lower()
 USE_POSTGRESQL = DATABASE_ENGINE in {"postgres", "postgresql"} or (
     DATABASE_ENGINE == "" and bool(PG_HOST and PG_DB)
 )
+
+
+def _postgres_db_config(*, name: str, user: str, password: str, host: str, port: int) -> dict:
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": name,
+        "USER": user,
+        "PASSWORD": password,
+        "HOST": host,
+        "PORT": port,
+        "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "0")),
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
+        },
+    }
+
+
 if USE_POSTGRESQL:
     DATABASES = {
+        "default": _postgres_db_config(
+            name=PG_DB,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            host=PG_HOST,
+            port=PG_PORT,
+        )
+    }
+else:
+    DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": PG_DB,
-            "USER": PG_USER,
-            "PASSWORD": PG_PASSWORD,
-            "HOST": PG_HOST,
-            "PORT": PG_PORT,
-            # 本地 runserver 会为并发请求创建线程；默认不复用连接，避免低连接数
-            # PostgreSQL 在页面并发加载时出现 "too many clients"。生产环境可显式调大。
-            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "0")),
-            "CONN_HEALTH_CHECKS": True,
-            "OPTIONS": {
-                "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT", "5")),
-            },
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
         }
     }
-    # apps.knowledge 通过 KnowledgeDatabaseRouter 固定走 knowledge 别名
+
+# apps.knowledge 经 KnowledgeDatabaseRouter 固定走 knowledge 别名
+USE_KNOWLEDGE_POSTGRES = bool(KNOWLEDGE_PG_HOST and KNOWLEDGE_PG_DB)
+if USE_KNOWLEDGE_POSTGRES:
+    DATABASES["knowledge"] = _postgres_db_config(
+        name=KNOWLEDGE_PG_DB,
+        user=KNOWLEDGE_PG_USER,
+        password=KNOWLEDGE_PG_PASSWORD,
+        host=KNOWLEDGE_PG_HOST,
+        port=KNOWLEDGE_PG_PORT,
+    )
+else:
     DATABASES["knowledge"] = DATABASES["default"]
+DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 
 # LightRAG / AGE 图谱
 # AGE 可与业务库分主机：AGE_POSTGRES_HOST / AGE_POSTGRES_PORT / AGE_POSTGRES_DB ...
@@ -254,6 +254,12 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # 圆桌发言/上下文压缩用的"快模型";最终方案仍用 LLM_MODEL(更强)。
 LLM_MODEL_FAST = os.getenv("LLM_MODEL_FAST", LLM_MODEL)
+# 主模型 channel 不可用时按序重试（逗号分隔）
+LLM_MODEL_FALLBACKS = [
+    m.strip()
+    for m in (os.getenv("LLM_MODEL_FALLBACKS", "") or "").split(",")
+    if m.strip()
+]
 # Traditional RAG embedding. Default format matches the local /v1/embeddings service:
 # {"inputs": [{"text": "..."}], "normalize": true, "pooling": "mean"}
 EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
@@ -293,6 +299,19 @@ JACKYUN_BASE_URL = os.getenv(
 )
 JACKYUN_METHOD_GOODS = os.getenv("JACKYUN_METHOD_GOODS", "erp.goods.listget")
 JACKYUN_METHOD_TRADE = os.getenv("JACKYUN_METHOD_TRADE", "oms.trade.listget")
+JACKYUN_METHOD_INVENTORY = os.getenv(
+    "JACKYUN_METHOD_INVENTORY", "erp.stockquantity.get"
+)
+JACKYUN_API_TIMEOUT = int(os.getenv("JACKYUN_API_TIMEOUT", "30"))
+JACKYUN_MAX_RETRIES = int(os.getenv("JACKYUN_MAX_RETRIES", "2"))
+
+# 金蝶云星空 K3Cloud（只读）
+KINGDEE_BASE_URL = os.getenv("KINGDEE_BASE_URL", "")
+KINGDEE_ACCT_ID = os.getenv("KINGDEE_ACCT_ID", "")
+KINGDEE_USERNAME = os.getenv("KINGDEE_USERNAME", "")
+KINGDEE_PASSWORD = os.getenv("KINGDEE_PASSWORD", "")
+KINGDEE_LCID = os.getenv("KINGDEE_LCID", "2052")
+KINGDEE_API_TIMEOUT = int(os.getenv("KINGDEE_API_TIMEOUT", "30"))
 
 # MCP 业务系统接入(HTTP/SSE 填 URL;stdio 填 COMMAND + ARGS)
 MCP_WECOM_URL = os.getenv("MCP_WECOM_URL", "")
@@ -310,6 +329,8 @@ TENCENT_COS_REGION = os.getenv("TENCENT_COS_REGION", "ap-guangzhou")
 TENCENT_COS_CUSTOM_DOMAIN = os.getenv("TENCENT_COS_CUSTOM_DOMAIN", "")
 TENCENT_COS_SCHEME = os.getenv("TENCENT_COS_SCHEME", "https")
 TENCENT_COS_LOCATION = os.getenv("TENCENT_COS_LOCATION", "media")
+TENCENT_COS_AVATAR_LOCATION = os.getenv("TENCENT_COS_AVATAR_LOCATION", "media/avatars")
+TENCENT_COS_AVATAR_ACL = os.getenv("TENCENT_COS_AVATAR_ACL", "private")
 TENCENT_COS_ACL = os.getenv("TENCENT_COS_ACL", "public-read")
 # Skill 专用:可单独建桶;未配置则复用主桶但使用独立路径前缀 skills/
 TENCENT_COS_SKILLS_BUCKET = os.getenv("TENCENT_COS_SKILLS_BUCKET", "")

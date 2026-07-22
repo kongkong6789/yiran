@@ -1,5 +1,5 @@
 class KnowledgeDatabaseRouter:
-    """Route the knowledge app to PostgreSQL while the rest of Django uses SQLite."""
+    """Route the knowledge app to the `knowledge` DB alias (often a dedicated PostgreSQL)."""
 
     knowledge_app_label = "knowledge"
     knowledge_db = "knowledge"

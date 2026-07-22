@@ -168,6 +168,7 @@
     </p>
     <div class="toolbar">
       <a href="./project-overview.html">详细版概览</a>
+      <a href="./project-mindmap.xmind">下载 XMind</a>
       <button type="button" onclick="window.print()">打印 / PDF</button>
     </div>
   </header>
@@ -197,7 +198,7 @@ mindmap
       Context记忆
       经营回路工作台
       任务待办自动化
-      智能表格连接器
+      工作区含连接与智能表格
     近期完成
       agentctx记忆
       Skill进程沙箱
@@ -215,47 +216,74 @@ mindmap
       <div class="map-card">
         <pre class="mermaid">
 mindmap
-  root((落地实施))
-    M1可信对话约1周
-      P0记忆可见可删
-        技术 agentctx加React标签
-        效果 用户可控跨会话记忆
-      P0黄金问答回归
-        技术 Django测试加CI
-        效果 改代码不静默掉点
-      P0run_chat耗时
-        技术 meta结构化日志
-        效果 定位慢在哪一层
-    M2能执行约2周
-      P0一条SOP端到端
+  root((可落地待做清单))
+    已完成可复用
+      Context记忆MVP
+      Skill沙箱白名单
+      自动化API补齐
+      回路团队合并
+    P0必须先做
+      记忆可见与一键忘记
+        技术 agentctx加气泡Tags
+        效果 用户可控记忆
+      黄金问答回归20条
+        技术 Django test加CI
+        效果 改代码不掉点
+      一条SOP端到端
         技术 编排闸机Connector
-        效果 真能改业务数据
-      P1异步队列
-        技术 Redis加Celery
-        效果 长任务可扩展可取消
-      P1沙箱二期
-        技术 runner资源限额
-        效果 更安全仍免Docker
-    M3提质约2到3周
-      P1向量检索升级
-        技术 rag接口加pgvector
-        效果 少幻觉可测命中率
-      P1LLM记忆抽取
-        技术 快模型加确认写入
+        效果 可演示真执行
+      run_chat分段耗时
+        技术 meta结构化日志
+        效果 定位谁慢
+      知识库PG别名稳态
+        技术 settings knowledge
+        效果 小策检索不挂
+      自动化调度上线
+        技术 scheduler命令加文档
+        效果 启用就能按时跑
+    P1体验与工程
+      异步队列Celery
+        效果 长任务可取消
+      LLM记忆抽取确认
         效果 偏好召回更高
-      P2组织级记忆
-        技术 organization字段
-        效果 同店共享经营事实
-      P2表格双向同步
-        技术 smarttable加Baserow
-        效果 减少双端拷贝
+      沙箱CPU内存限额
+        效果 失控脚本可杀
+      向量检索替换骨架
+        效果 少幻觉可测命中
+      回复引用面板
+        效果 答案可溯源
+      协作大房性能
+        效果 切房不卡
+      闸机审批UI打通
+        效果 高风险有人审
+      Connector生产级一个
+        效果 幂等重试可恢复
+    P2扩面按需
+      组织级共享记忆
+      表格Baserow同步
+      多租户配额
+      模型意图分流
+      SSO稳态
+      提示注入防护
+    验证必过
+      多轮记住偏好
+      小策带会话摘要
+      非法Skill被拒
+      自动化有run记录
+      SOP三路径演示
+      黄金集CI全绿
+    本季度不做
+      完整Docker沙箱
+      默认跨用户共享记忆
+      替换Harness主流程
+      一次上齐全部Connector
         </pre>
       </div>
       <p class="hint">
-        <span class="tag p0">P0</span>先做
+        <span class="tag p0">P0</span>必须先做
         <span class="tag p1">P1</span>加固
         <span class="tag p2">P2</span>扩面
-        · 每个叶子都是「技术栈 → 达成效果」
+        · 每项在 XMind 里还有「技术栈 / 达成效果」叶子
       </p>
     </div>
 

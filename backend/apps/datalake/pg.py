@@ -180,6 +180,19 @@ class PgLake:
         spu VARCHAR, product_name VARCHAR, category VARCHAR,
         brand VARCHAR, cost_price DOUBLE PRECISION, list_price DOUBLE PRECISION
     );
+    CREATE TABLE IF NOT EXISTS {s}.dim_sku_inventory_map (
+        sales_sku VARCHAR PRIMARY KEY,
+        goods_no VARCHAR NOT NULL,
+        sku_barcode VARCHAR,
+        goods_name VARCHAR,
+        source VARCHAR NOT NULL DEFAULT 'jackyun_inventory',
+        confidence DOUBLE PRECISION NOT NULL DEFAULT 1,
+        updated_at TIMESTAMP NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_sku_inventory_map_goods_no
+        ON {s}.dim_sku_inventory_map(goods_no);
+    CREATE INDEX IF NOT EXISTS idx_sku_inventory_map_barcode
+        ON {s}.dim_sku_inventory_map(sku_barcode);
 
     -- 明细
     CREATE TABLE IF NOT EXISTS {s}.dwd_sales_detail (
@@ -537,6 +550,49 @@ class PgLake:
                 sales += 1
             con.commit()
         return {"products": products, "shops": shops, "sales": sales}
+
+    def upsert_sku_inventory_mappings(
+        self,
+        mappings: list[dict],
+        *,
+        source: str = "jackyun_inventory",
+        confidence: float = 1.0,
+    ) -> int:
+        """写入销售 SKU → 吉客云货号/条码映射；同一销售 SKU 幂等更新。"""
+        written = 0
+        with self.connect() as con:
+            cur = con.cursor()
+            for item in mappings:
+                sales_sku = str(item.get("sales_sku") or "").strip()
+                goods_no = str(item.get("goods_no") or "").strip()
+                if not sales_sku or not goods_no:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO dim_sku_inventory_map
+                        (sales_sku, goods_no, sku_barcode, goods_name,
+                         source, confidence, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,now())
+                    ON CONFLICT (sales_sku) DO UPDATE SET
+                        goods_no = EXCLUDED.goods_no,
+                        sku_barcode = EXCLUDED.sku_barcode,
+                        goods_name = EXCLUDED.goods_name,
+                        source = EXCLUDED.source,
+                        confidence = EXCLUDED.confidence,
+                        updated_at = now()
+                    """,
+                    [
+                        sales_sku,
+                        goods_no,
+                        str(item.get("sku_barcode") or "").strip(),
+                        str(item.get("goods_name") or "").strip(),
+                        source,
+                        float(item.get("confidence") or confidence),
+                    ],
+                )
+                written += 1
+            con.commit()
+        return written
 
     def list_tables(self) -> list[dict]:
         rows = self.query(

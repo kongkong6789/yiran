@@ -10,7 +10,10 @@ from django.http import HttpResponse
 from django.utils import timezone
 from xml.etree import ElementTree
 
-from .binding_service import create_sync_job, dispatch_sync_job, manual_bind, match_user, resolve_binding_config, run_sync_job
+from .binding_service import (
+    create_sync_job, dispatch_sync_job, manual_bind, match_user,
+    requeue_not_configured_bindings, resolve_binding_config, run_sync_job,
+)
 from .models import UserWeComBinding, WeComApiConfig, WeComBindingAuditLog, WeComBindingSyncJob, WeComContact
 from .serializers import (
     BindingAuditLogSerializer, BindingSyncJobSerializer, ManualBindingSerializer,
@@ -42,13 +45,12 @@ def api_config(request):
     can_manage_org = is_organization_admin(request.user, organization)
     config = resolve_accessible_config(request.user, require_manage=request.method != "GET")
     if not config and can_manage_org:
+        # 按 (用户, 企业) 维度取用配置：每个企业各自保存一套自建应用凭据，
+        # 切换企业时互不覆盖，也不会把别的企业的配置串号显示过来。
         config, _ = WeComApiConfig.objects.get_or_create(
             user=request.user,
-            defaults={"organization": organization},
+            organization=organization,
         )
-        if not config.organization_id and organization:
-            config.organization = organization
-            config.save(update_fields=["organization", "updated_at"])
     if not config:
         if request.method != "GET":
             return Response({"ok": False, "detail": "仅企业管理员可修改企业微信配置。"}, status=403)
@@ -80,6 +82,9 @@ def api_config(request):
     )
     serializer.is_valid(raise_exception=True)
     saved = serializer.save()
+    retry_job = requeue_not_configured_bindings(config=saved, actor=request.user)
+    if retry_job:
+        dispatch_sync_job(retry_job.id)
     return Response({"ok": True, **WeComApiConfigSerializer(saved, context={"request": request}).data})
 
 

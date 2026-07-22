@@ -10,6 +10,7 @@ import {
   ShopOutlined, TagsOutlined,
 } from "@ant-design/icons";
 import type { FeedbackLoop, OntGraph, OntObject } from "../api/client";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 import { filterCommerceObjects } from "../utils/commerceGraphFilter";
 
 type Level = "company" | "brand" | "platform" | "channel" | "link" | "sku" | "fact";
@@ -65,10 +66,14 @@ function preferred(objects: OntObject[], keyOf: (o: OntObject) => string) {
 function CommerceNode({ data, selected }: NodeProps) {
   const d = data as unknown as CardData;
   const meta = LEVEL_META[d.level];
+  const visualTheme = useVisualizationTheme();
   return (
     <div
       className={`cflow-node${selected || d.focused ? " is-active" : ""}${d.dimmed ? " is-dim" : ""}`}
-      style={{ ["--cflow-accent" as string]: meta.color, ["--cflow-soft" as string]: meta.soft }}
+      style={{
+        ["--cflow-accent" as string]: meta.color,
+        ["--cflow-soft" as string]: semanticSoftColor(meta.color, visualTheme.mode, meta.soft),
+      }}
     >
       <Handle type="target" position={Position.Top} className="cflow-handle" />
       <span className="cflow-node-badge">{meta.icon}</span>
@@ -283,6 +288,7 @@ type Props = {
 };
 
 function FlowInner({ graph, loops, selectedLoop, selectedNodeKey, onSelectNode }: Props) {
+  const visualTheme = useVisualizationTheme();
   const built = useMemo(() => buildFlow(graph, loops, selectedLoop), [graph, loops, selectedLoop]);
   const [visibleLevels, setVisibleLevels] = useState<Set<Level>>(new Set(LEVELS));
   const hasSelectedLoop = !!selectedLoop;
@@ -334,7 +340,7 @@ function FlowInner({ graph, loops, selectedLoop, selectedNodeKey, onSelectNode }
           labelShowBg: true,
           labelBgPadding: [6, 3] as [number, number],
           labelBgBorderRadius: 6,
-          labelBgStyle: { fill: "#ffffff", fillOpacity: 0.94 },
+          labelBgStyle: { fill: visualTheme.labelBg, fillOpacity: 0.94 },
           labelStyle: {
             fill: isLoop ? loopColor : hierColor,
             fontSize: 11,
@@ -347,7 +353,7 @@ function FlowInner({ graph, loops, selectedLoop, selectedNodeKey, onSelectNode }
           markerEnd: { type: "arrowclosed", color: isLoop ? loopColor : hierColor, width: 15, height: 15 } as unknown as Edge["markerEnd"],
         } satisfies Edge;
       })
-  ), [built, visibleLevels, hasSelectedLoop]);
+  ), [built, visibleLevels, hasSelectedLoop, visualTheme]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
@@ -388,13 +394,13 @@ function FlowInner({ graph, loops, selectedLoop, selectedNodeKey, onSelectNode }
       elementsSelectable
       defaultEdgeOptions={{ type: "smoothstep" }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="#e2e7ee" />
+      <Background variant={BackgroundVariant.Dots} gap={26} size={1} color={visualTheme.grid} />
       <MiniMap
         pannable
         zoomable
         nodeStrokeWidth={2}
         nodeColor={(n) => LEVEL_META[(n.data as unknown as CardData).level].color}
-        maskColor="rgba(244,246,249,0.72)"
+        maskColor={visualTheme.loadingMask}
         className="cflow-minimap"
       />
       <Controls showInteractive className="cflow-controls" />
@@ -413,7 +419,10 @@ function FlowInner({ graph, loops, selectedLoop, selectedNodeKey, onSelectNode }
                 aria-pressed={on}
               >
                 <span className="cflow-legend-check" style={{ borderColor: meta.color, background: on ? meta.color : "transparent" }} />
-                <span className="cflow-legend-icon" style={{ color: meta.color, background: meta.soft }}>{meta.icon}</span>
+                <span className="cflow-legend-icon" style={{
+                  color: meta.color,
+                  background: semanticSoftColor(meta.color, visualTheme.mode, meta.soft),
+                }}>{meta.icon}</span>
                 <span className="cflow-legend-label">{meta.label}</span>
               </button>
             );

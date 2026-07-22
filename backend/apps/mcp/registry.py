@@ -1,7 +1,7 @@
 """
 MCP(Model Context Protocol) 服务注册表。
 
-登录用户的 MCP 配置仅存于个人账号,不读全局 .env,互不共享。
+MCP 配置按当前企业保存与读取，不跨企业共享。
 """
 from __future__ import annotations
 
@@ -79,13 +79,36 @@ REGISTRY: list[McpServerDef] = [
     ),
     McpServerDef(
         id="kingdee", name="金蝶云", desc="财务 · 对账 · 凭证 · 应收",
-        layer="感知", transport="streamable_http", url_env="MCP_KINGDEE_URL",
+        layer="感知", transport="openapi", url_env="MCP_KINGDEE_URL",
         tools=["query_voucher", "query_receivable", "query_balance", "sync_gl"],
+        placeholders={
+            "base_url": "http://159.75.104.61/k3cloud",
+            "acct_id": "65405d0ec432ee",
+            "lcid": "2052",
+            "username": "金蝶登录账号",
+            "password": "金蝶登录密码",
+        },
+        hints=[
+            "在连接中心填写 K3Cloud 地址、账套、账号密码与 LCID（简体中文一般为 2052）",
+            "配置按当前企业隔离；保存后可用「探测连通」验证登录",
+            "未填密码时会保留原密码；全局 .env 仅作兜底",
+        ],
     ),
     McpServerDef(
         id="jackyun", name="吉客云", desc="订单 · 库存 · 商品 · 发货",
-        layer="感知", transport="streamable_http", url_env="MCP_JACKYUN_URL",
+        layer="感知", transport="openapi", url_env="MCP_JACKYUN_URL",
         tools=["list_goods", "list_trades", "query_stock", "sync_orders"],
+        placeholders={
+            "base_url": "https://open.jackyun.com/open/openapi/do",
+            "app_key": "开放平台 AppKey",
+            "app_secret": "开放平台 AppSecret",
+            "method_inventory": "erp.stockquantity.get",
+        },
+        hints=[
+            "填写吉客云开放平台 AppKey / AppSecret；库存方法默认 erp.stockquantity.get",
+            "配置按当前企业隔离；小策与协作 @AI 会自动使用企业配置",
+            "未填 Secret 时会保留原 Secret；全局 .env 仅作兜底",
+        ],
     ),
     McpServerDef(
         id="nas", name="NAS 文件库", desc="合同 · 归档 · 附件检索",
@@ -99,11 +122,15 @@ def get_def(server_id: str) -> McpServerDef | None:
     return next((s for s in REGISTRY if s.id == server_id), None)
 
 
-def _db_row(server_id: str, user=None):
+def _db_row(server_id: str, user=None, organization=None):
     from .models import McpServerConfig
+    from apps.core.organizations import current_organization
     if user is None or not getattr(user, "is_authenticated", False):
         return None
-    return McpServerConfig.objects.filter(user=user, server_id=server_id).first()
+    organization = organization or current_organization(user)
+    if organization is None:
+        return None
+    return McpServerConfig.objects.filter(organization=organization, server_id=server_id).first()
 
 
 def _effective_transport(defn: McpServerDef, url: str, command: str) -> str:
@@ -114,15 +141,23 @@ def _effective_transport(defn: McpServerDef, url: str, command: str) -> str:
     return defn.transport
 
 
-def resolve_config(defn: McpServerDef, user=None) -> dict[str, Any]:
-    """解析配置: 登录用户仅读个人 UI 配置;未登录不读任何 MCP。"""
+def resolve_config(defn: McpServerDef, user=None, organization=None) -> dict[str, Any]:
+    """解析当前企业配置；未登录或未加入企业时不返回 MCP 密钥。"""
+    from apps.core.organizations import current_organization, is_organization_admin
+    from apps.connectors.credentials import (
+        is_native_configured,
+        load_merged_secrets,
+        native_fields_for_response,
+    )
+
+    organization = organization or current_organization(user)
     url = command = ""
     args: list[str] = []
     env: dict[str, str] = {}
     source = "none"
     enabled = True
 
-    row = _db_row(defn.id, user)
+    row = _db_row(defn.id, user, organization=organization)
     if row:
         enabled = row.enabled
         url = (row.url or "").strip()
@@ -131,7 +166,45 @@ def resolve_config(defn: McpServerDef, user=None) -> dict[str, Any]:
         raw_env = row.env if isinstance(row.env, dict) else {}
         env = {str(k): str(v) for k, v in raw_env.items()}
         if url or command or env:
-            source = "personal"
+            source = "organization"
+
+    # 金蝶/吉客云：合并 .env 兜底后的完整凭据用于「是否已配置」判断与表单回填
+    if defn.id in ("jackyun", "kingdee"):
+        merged = load_merged_secrets(defn.id, user=user)
+        if merged and source == "none":
+            source = "env"
+        display_env = dict(merged)
+        # 表单优先展示企业已存字段；密钥不回传明文
+        if row and isinstance(row.env, dict):
+            for k, v in row.env.items():
+                if v is not None and str(v).strip():
+                    display_env[str(k)] = str(v)
+        native = native_fields_for_response(defn.id, display_env)
+        configured = bool(enabled and is_native_configured(defn.id, merged))
+        return {
+            "id": defn.id,
+            "name": defn.name,
+            "desc": defn.desc,
+            "layer": defn.layer,
+            "transport": "openapi",
+            "declared_transport": defn.transport,
+            "configured": configured,
+            "enabled": enabled,
+            "url": "",
+            "command": "",
+            "args": [],
+            "env": {},  # 不把密钥明文塞给前端
+            "native": native,
+            "tools": defn.tools,
+            "config_source": source,
+            "env_keys": list(merged.keys()),
+            "placeholders": defn.placeholders,
+            "hints": defn.hints,
+            "updated_at": row.updated_at.isoformat() if row else None,
+            "organization_id": organization.id if organization else None,
+            "organization_name": organization.name if organization else "",
+            "can_manage": bool(organization and is_organization_admin(user, organization)),
+        }
 
     transport = _effective_transport(defn, url, command)
 
@@ -140,7 +213,6 @@ def resolve_config(defn: McpServerDef, user=None) -> dict[str, Any]:
     elif transport in ("streamable_http", "sse"):
         configured = bool(url)
     else:
-        # stdio: 有 command 即可;企微还需 env 里有 webhook 才算完整,但不强制阻断
         configured = bool(command)
 
     return {
@@ -162,6 +234,9 @@ def resolve_config(defn: McpServerDef, user=None) -> dict[str, Any]:
         "placeholders": defn.placeholders,
         "hints": defn.hints,
         "updated_at": row.updated_at.isoformat() if row else None,
+        "organization_id": organization.id if organization else None,
+        "organization_name": organization.name if organization else "",
+        "can_manage": bool(organization and is_organization_admin(user, organization)),
     }
 
 
@@ -307,7 +382,14 @@ def save_config(server_id: str, data: dict[str, Any], user=None) -> dict[str, An
     if not defn:
         raise ValueError(f"未知 MCP Server: {server_id}")
     if user is None or not getattr(user, "is_authenticated", False):
-        raise ValueError("请先登录后再保存个人 MCP 配置")
+        raise ValueError("请先登录后再保存企业 MCP 配置")
+
+    from apps.core.organizations import current_organization, is_organization_admin
+    organization = current_organization(user)
+    if organization is None:
+        raise ValueError("当前账号尚未加入企业")
+    if not is_organization_admin(user, organization):
+        raise PermissionError("仅当前企业的所有者或管理员可以修改连接器配置")
 
     from .models import McpServerConfig
 
@@ -329,10 +411,28 @@ def save_config(server_id: str, data: dict[str, Any], user=None) -> dict[str, An
         args = []
         env = {}
 
+    # 金蝶 / 吉客云：把表单原生字段写入 env
+    if server_id in ("jackyun", "kingdee"):
+        from apps.connectors.credentials import merge_native_into_env
+
+        existing = {}
+        row = McpServerConfig.objects.filter(
+            organization=organization, server_id=server_id
+        ).first()
+        if row and isinstance(row.env, dict):
+            existing = row.env
+        # 允许 data.native 或扁平字段
+        native_data = data.get("native") if isinstance(data.get("native"), dict) else data
+        env = merge_native_into_env(server_id, native_data, existing)
+        url = ""
+        command = ""
+        args = []
+
     McpServerConfig.objects.update_or_create(
-        user=user,
+        organization=organization,
         server_id=server_id,
         defaults={
+            "user": user,
             "url": url,
             "command": command,
             "args": args,
@@ -340,4 +440,4 @@ def save_config(server_id: str, data: dict[str, Any], user=None) -> dict[str, An
             "enabled": bool(data.get("enabled", True)),
         },
     )
-    return resolve_config(defn, user=user)
+    return resolve_config(defn, user=user, organization=organization)

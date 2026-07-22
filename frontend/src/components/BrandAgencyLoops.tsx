@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { Button, Segmented, Space, Tag, Typography } from "antd";
 import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { semanticSoftColor, useVisualizationTheme } from "../theme/visualization";
 
 type StockId = "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7" | "s8";
 type ChainId = "all" | "A" | "B" | "C" | "D" | "E";
@@ -171,6 +172,7 @@ function chainColor(chain: ChainId) {
 }
 
 export default function BrandAgencyLoops() {
+  const visualTheme = useVisualizationTheme();
   const [playing, setPlaying] = useState(true);
   const [levels, setLevels] = useState<Levels>(INITIAL);
   const [positions, setPositions] = useState<PosMap>(initialPositions);
@@ -357,8 +359,8 @@ export default function BrandAgencyLoops() {
           >
             <defs>
               <linearGradient id="ba-bg" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#f8fafc" />
-                <stop offset="100%" stopColor="#eef2f7" />
+                <stop offset="0%" stopColor={visualTheme.canvas} />
+                <stop offset="100%" stopColor={visualTheme.labelBg} />
               </linearGradient>
               <marker id="ba-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 1.2 L 8 5 L 0 8.8 Z" fill="#7d8aa0" />
@@ -393,8 +395,8 @@ export default function BrandAgencyLoops() {
                   />
                   {active && flow.label && (
                     <g transform={`translate(${lx}, ${ly})`}>
-                      <rect x={-28} y={-9} width={56} height={18} rx={9} fill="rgba(255,255,255,0.92)" stroke="rgba(148,163,184,0.35)" />
-                      <text textAnchor="middle" y={4} className="brand-sfd-flow-label" fill={neg ? "#b42318" : "#475569"}>
+                      <rect x={-28} y={-9} width={56} height={18} rx={9} fill={visualTheme.labelBg} stroke={visualTheme.tooltipBorder} />
+                      <text textAnchor="middle" y={4} className="brand-sfd-flow-label" fill={neg ? "#ef8585" : visualTheme.mutedText}>
                         {flow.polarity}{flow.delay ? "//" : ""}{flow.label}
                       </text>
                     </g>
@@ -439,7 +441,7 @@ export default function BrandAgencyLoops() {
                       width={s.w}
                       height={s.h}
                       rx={14}
-                      fill="#ffffff"
+                      fill={visualTheme.labelBg}
                       stroke={isDrag ? "#c4924a" : s.color}
                       strokeWidth={isDrag ? 2.2 : 1.6}
                     />
@@ -449,7 +451,7 @@ export default function BrandAgencyLoops() {
                       width={s.w - 3}
                       height={fillH}
                       rx={12}
-                      fill={s.soft}
+                      fill={semanticSoftColor(s.color, visualTheme.mode, s.soft)}
                       style={{ pointerEvents: "none" }}
                     />
                     <text
@@ -466,7 +468,7 @@ export default function BrandAgencyLoops() {
                       y={s.y + 36}
                       textAnchor="middle"
                       className="brand-sfd-stock-title"
-                      fill="#172033"
+                      fill={visualTheme.labelText}
                       style={{ pointerEvents: "none" }}
                     >
                       {s.label}
@@ -476,7 +478,7 @@ export default function BrandAgencyLoops() {
                       y={s.y + 52}
                       textAnchor="middle"
                       className="brand-sfd-stock-sub"
-                      fill="#94a3b8"
+                      fill={visualTheme.mutedText}
                       style={{ pointerEvents: "none" }}
                     >
                       {s.sub}

@@ -16,7 +16,7 @@
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+  grid-template-columns: minmax(280px, 1fr) auto;
   align-items: center;
   gap: 20px;
   min-height: var(--team-bar-height);
@@ -210,6 +210,10 @@
 
 .team-workspace-content {
   position: relative;
+  isolation: isolate;
+  contain: paint;
+  container-name: team-content;
+  container-type: inline-size;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -227,10 +231,371 @@
   border: 0;
 }
 
-.team-workspace-content .collab-empty > .crt,
-.team-workspace-content .collab-empty > .crt .crt-stage {
-  width: 320px;
-  height: 320px;
+.team-workspace .collab-page {
+  grid-template-columns:
+    clamp(236px, 15vw, 270px)
+    minmax(0, 1fr)
+    clamp(336px, 22vw, 382px);
+}
+
+.team-workspace .collab-page.collab-page--summary-hidden {
+  grid-template-columns: clamp(236px, 15vw, 270px) minmax(0, 1fr);
+}
+
+.team-workspace .collab-ai.collab-intelligence {
+  min-width: 336px;
+  overflow: hidden;
+}
+
+.team-workspace .collab-monitor,
+.team-workspace .collab-summary-panel {
+  scrollbar-gutter: stable;
+}
+
+.team-workspace .collab-monitor-block,
+.team-workspace .collab-kpi,
+.team-workspace .collab-alert-row {
+  min-width: 0;
+}
+
+.team-workspace .collab-main {
+  position: relative;
+  overflow: hidden;
+}
+
+/* 消息主场永不展示圆桌舞台，避免视图切换时产生内容重叠错觉。 */
+.team-workspace--chat .collab-main > .collab-empty > .crt {
+  display: none;
+}
+
+.team-workspace .collab-welcome-stage {
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+  padding: clamp(24px, 5vw, 72px);
+  background:
+    linear-gradient(rgba(61, 111, 168, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 111, 168, 0.035) 1px, transparent 1px),
+    radial-gradient(540px 320px at 50% 45%, rgba(61, 111, 168, 0.1), transparent 72%),
+    var(--lc-bg-elevated);
+  background-size: 32px 32px, 32px 32px, auto, auto;
+}
+
+.team-workspace .collab-welcome {
+  --spotlight-x: 50%;
+  --spotlight-y: 24%;
+  width: min(100%, 680px);
+  overflow: hidden;
+  padding: clamp(26px, 3vw, 38px);
+  border: 1px solid rgba(155, 174, 204, 0.38);
+  border-radius: 24px;
+  color: var(--lc-text);
+  background:
+    radial-gradient(
+      420px circle at var(--spotlight-x) var(--spotlight-y),
+      rgba(84, 137, 213, 0.16),
+      transparent 64%
+    ),
+    radial-gradient(320px 180px at 0 0, rgba(196, 146, 74, 0.12), transparent 72%),
+    rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 24px 70px rgba(22, 41, 72, 0.11),
+    0 2px 8px rgba(22, 41, 72, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  transition:
+    border-color 220ms ease,
+    box-shadow 220ms ease,
+    transform 220ms var(--team-spring);
+}
+
+.team-workspace .collab-welcome:hover {
+  border-color: rgba(91, 126, 178, 0.5);
+  box-shadow:
+    0 30px 82px rgba(22, 41, 72, 0.14),
+    0 3px 10px rgba(22, 41, 72, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transform: translateY(-2px);
+}
+
+.team-workspace .collab-welcome-heading {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.team-workspace .collab-welcome-icon {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 16px;
+  place-items: center;
+  border: 1px solid rgba(61, 111, 168, 0.2);
+  border-radius: 18px;
+  color: #fff;
+  font-size: 23px;
+  background: linear-gradient(145deg, #2f619b, #0b2144);
+  box-shadow:
+    0 12px 28px rgba(20, 54, 94, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.team-workspace .collab-welcome-kicker {
+  color: var(--lc-gold);
+  font-size: 0.67rem;
+  font-weight: 760;
+  letter-spacing: 0.16em;
+}
+
+.team-workspace .collab-welcome h2 {
+  margin: 7px 0 8px;
+  color: var(--lc-navy);
+  font-size: clamp(1.42rem, 2.2vw, 1.8rem);
+  font-weight: 770;
+  line-height: 1.18;
+  letter-spacing: -0.035em;
+}
+
+.team-workspace .collab-welcome-heading > p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--lc-text-muted);
+  font-size: 0.86rem;
+  line-height: 1.7;
+}
+
+.team-workspace .collab-welcome-features {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.team-workspace .collab-welcome-features article {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 13px 12px;
+  border: 1px solid rgba(207, 218, 234, 0.78);
+  border-radius: 15px;
+  text-align: left;
+  background: rgba(251, 253, 255, 0.76);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.team-workspace .collab-welcome-features article:hover {
+  border-color: rgba(91, 126, 178, 0.36);
+  background: rgba(255, 255, 255, 0.94);
+  transform: translateY(-2px);
+}
+
+.team-workspace .collab-welcome-features article > span {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 10px;
+  color: #315f94;
+  font-size: 15px;
+  background: rgba(61, 111, 168, 0.1);
+}
+
+.team-workspace .collab-welcome-features strong {
+  display: block;
+  margin: 1px 0 3px;
+  color: var(--lc-navy);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.team-workspace .collab-welcome-features p {
+  margin: 0;
+  color: var(--lc-text-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.team-workspace .collab-welcome-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.team-workspace .collab-welcome-action {
+  position: relative;
+  display: inline-flex;
+  min-height: 44px;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  color: var(--lc-navy);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 680;
+  cursor: pointer;
+  transition:
+    transform 120ms ease-out,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+  touch-action: manipulation;
+}
+
+.team-workspace .collab-welcome-action::before {
+  position: absolute;
+  top: -80%;
+  left: -45%;
+  width: 36%;
+  height: 260%;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.38), transparent);
+  transform: rotate(18deg);
+  transition: left 430ms ease;
+}
+
+.team-workspace .collab-welcome-action:hover::before {
+  left: 118%;
+}
+
+.team-workspace .collab-welcome-action.is-primary {
+  color: #fff;
+  background: linear-gradient(145deg, #27598f, #0b2144);
+  box-shadow: 0 10px 24px rgba(11, 33, 68, 0.2);
+}
+
+.team-workspace .collab-welcome-action.is-primary:hover {
+  box-shadow: 0 14px 30px rgba(11, 33, 68, 0.25);
+  transform: translateY(-2px);
+}
+
+.team-workspace .collab-welcome-action.is-secondary {
+  border-color: rgba(166, 183, 207, 0.54);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 5px 14px rgba(22, 41, 72, 0.06);
+}
+
+.team-workspace .collab-welcome-action.is-secondary:hover {
+  border-color: rgba(61, 111, 168, 0.38);
+  background: #fff;
+  transform: translateY(-2px);
+}
+
+.team-workspace .collab-welcome-action:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.team-workspace .collab-welcome-action:focus-visible {
+  outline: 3px solid rgba(61, 111, 168, 0.28);
+  outline-offset: 3px;
+}
+
+.team-workspace .collab-welcome-action .anticon,
+.team-workspace .collab-welcome-action-arrow {
+  transition: transform 180ms var(--team-spring);
+}
+
+.team-workspace .collab-welcome-action:hover .anticon,
+.team-workspace .collab-welcome-action:hover .collab-welcome-action-arrow {
+  transform: translateX(3px);
+}
+
+.team-workspace .collab-welcome-ai-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 18px 0 0;
+  color: var(--lc-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.team-workspace .collab-welcome-ai-note .anticon {
+  color: var(--lc-gold);
+}
+
+.team-workspace .collab-summary-empty-state {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 14px;
+  padding: 24px 20px;
+  border: 1px solid rgba(181, 197, 220, 0.52);
+  border-radius: 18px;
+  text-align: center;
+  background:
+    radial-gradient(260px 180px at 50% 28%, rgba(61, 111, 168, 0.13), transparent 70%),
+    rgba(255, 255, 255, 0.66);
+}
+
+.team-workspace .collab-summary-empty-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 14px;
+  place-items: center;
+  border: 1px solid rgba(61, 111, 168, 0.18);
+  border-radius: 15px;
+  color: #315f94;
+  font-size: 20px;
+  background: rgba(61, 111, 168, 0.1);
+  box-shadow: 0 10px 24px rgba(29, 61, 105, 0.1);
+}
+
+.team-workspace .collab-summary-empty-state > strong {
+  color: var(--lc-navy);
+  font-size: 0.88rem;
+}
+
+.team-workspace .collab-summary-empty-state > p {
+  max-width: 250px;
+  margin: 7px 0 18px;
+  color: var(--lc-text-muted);
+  font-size: 0.72rem;
+  line-height: 1.6;
+}
+
+.team-workspace .collab-summary-empty-state ul {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-workspace .collab-summary-empty-state li {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid rgba(215, 224, 236, 0.74);
+  border-radius: 10px;
+  color: var(--lc-text-muted);
+  font-size: 0.7rem;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.team-workspace .collab-summary-empty-state li .anticon {
+  color: var(--lc-gold);
 }
 
 .team-workspace-content > .council-page {
@@ -261,6 +626,42 @@
   background: rgba(255, 255, 255, 0.76);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   backdrop-filter: blur(18px) saturate(150%);
+}
+
+.team-workspace .collab-sider-head .ant-btn-primary {
+  border: 1px solid rgba(61, 111, 168, 0.18);
+  border-radius: 10px;
+  color: #244f82;
+  background: rgba(61, 111, 168, 0.1);
+  box-shadow: none;
+}
+
+.team-workspace .collab-sider-head .ant-btn-primary:hover {
+  border-color: rgba(61, 111, 168, 0.32);
+  color: #173f70;
+  background: rgba(61, 111, 168, 0.15);
+}
+
+.team-workspace .collab-tabs {
+  gap: 5px;
+  padding: 7px 10px 9px;
+  border-color: rgba(215, 224, 236, 0.72);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.team-workspace .collab-tabs button {
+  border-radius: 9px;
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 100ms ease-out;
+}
+
+.team-workspace .collab-tabs button.active {
+  color: #244f82;
+  background: rgba(231, 239, 251, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(61, 111, 168, 0.08);
 }
 
 .team-workspace .collab-main-head {
@@ -363,24 +764,22 @@
 }
 
 :root[data-theme="dark"] .team-workspace {
-  background:
-    radial-gradient(700px 280px at 72% -80px, rgba(108, 155, 210, 0.12), transparent 68%),
-    var(--lc-bg-layout);
+  background: var(--lc-canvas);
 }
 
 :root[data-theme="dark"] .team-workspace-bar {
-  border-color: rgba(42, 54, 80, 0.85);
-  background: rgba(14, 20, 32, 0.76);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
 }
 
 :root[data-theme="dark"] .team-workspace-tabs {
-  border-color: rgba(42, 54, 80, 0.9);
-  background: rgba(8, 13, 22, 0.65);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-input);
 }
 
 :root[data-theme="dark"] .team-workspace-tab-indicator {
-  border-color: rgba(108, 155, 210, 0.18);
-  background: rgba(35, 46, 67, 0.94);
+  border-color: var(--lc-border);
+  background: var(--lc-surface-raised);
 }
 
 :root[data-theme="dark"] .team-workspace-action.is-secondary,
@@ -389,13 +788,114 @@
 :root[data-theme="dark"] .team-workspace .collab-main-head,
 :root[data-theme="dark"] .team-workspace .council-live-topbar,
 :root[data-theme="dark"] .team-workspace .council-live-controls {
-  background: rgba(21, 29, 44, 0.84);
+  background: var(--lc-surface-raised);
 }
 
 :root[data-theme="dark"] .team-workspace .collab-sider,
 :root[data-theme="dark"] .team-workspace .collab-ai {
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
+}
+
+:root[data-theme="dark"] .team-workspace .collab-room-item:hover {
+  border-color: var(--lc-border-light);
+  background: var(--lc-hover);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .collab-room-item.active {
   border-color: var(--lc-border);
-  background: rgba(18, 25, 40, 0.88);
+  background: var(--lc-selected);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .collab-roundtable-action,
+:root[data-theme="dark"] .team-workspace .collab-roundtable-action:hover {
+  color: var(--lc-status-warning);
+  border-color: color-mix(in srgb, var(--lc-status-warning) 42%, transparent);
+  background: var(--lc-status-warning-bg);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .collab-welcome-stage {
+  background:
+    linear-gradient(rgba(108, 155, 210, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(108, 155, 210, 0.04) 1px, transparent 1px),
+    radial-gradient(540px 320px at 50% 45%, rgba(79, 128, 190, 0.14), transparent 72%),
+    var(--lc-bg-elevated);
+  background-size: 32px 32px, 32px 32px, auto, auto;
+}
+
+:root[data-theme="dark"] .team-workspace .collab-welcome {
+  border-color: rgba(84, 112, 153, 0.48);
+  background:
+    radial-gradient(
+      420px circle at var(--spotlight-x) var(--spotlight-y),
+      rgba(84, 137, 213, 0.18),
+      transparent 64%
+    ),
+    radial-gradient(320px 180px at 0 0, rgba(196, 146, 74, 0.1), transparent 72%),
+    rgba(20, 28, 43, 0.92);
+  box-shadow:
+    0 26px 76px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .team-workspace .collab-welcome-features article,
+:root[data-theme="dark"] .team-workspace .collab-summary-empty-state li {
+  border-color: rgba(67, 85, 116, 0.72);
+  background: rgba(27, 37, 56, 0.78);
+}
+
+:root[data-theme="dark"] .team-workspace .collab-welcome-action.is-secondary {
+  border-color: rgba(76, 98, 132, 0.8);
+  background: rgba(28, 39, 59, 0.9);
+}
+
+:root[data-theme="dark"] .team-workspace .collab-summary-empty-state {
+  border-color: rgba(67, 85, 116, 0.72);
+  background:
+    radial-gradient(260px 180px at 50% 28%, rgba(79, 128, 190, 0.14), transparent 70%),
+    rgba(20, 28, 43, 0.72);
+}
+
+/* 全局二级导航展开时，团队页面按实际可用宽度重排，而不是只看浏览器宽度。 */
+@container team-content (max-width: 1120px) {
+  .team-workspace .collab-page {
+    grid-template-columns: 210px minmax(0, 1fr) 292px;
+  }
+
+  .team-workspace .collab-page.collab-page--summary-hidden {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+
+  .team-workspace .collab-ai.collab-intelligence {
+    min-width: 292px;
+  }
+
+  .team-workspace .collab-welcome-stage {
+    padding: 20px;
+  }
+
+  .team-workspace .collab-welcome {
+    padding: 24px;
+  }
+
+  .team-workspace .collab-welcome-icon {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 12px;
+    border-radius: 15px;
+  }
+
+  .team-workspace .collab-welcome-features {
+    grid-template-columns: 1fr;
+    margin-top: 20px;
+  }
+
+  .team-workspace .collab-welcome-features article {
+    align-items: center;
+  }
 }
 
 @media (max-width: 980px) {
@@ -425,6 +925,23 @@
     min-height: 0;
   }
 
+  .team-workspace .collab-page {
+    grid-template-columns: 210px minmax(0, 1fr) 270px;
+  }
+
+  .team-workspace .collab-welcome-stage {
+    padding: 24px;
+  }
+
+  .team-workspace .collab-welcome {
+    padding: 24px;
+  }
+
+  .team-workspace .collab-welcome-features {
+    grid-template-columns: 1fr;
+    margin-top: 20px;
+  }
+
   .team-workspace-content > .council-live {
     height: auto;
   }
@@ -449,6 +966,52 @@
 
   .team-workspace-content > .collab-page {
     height: auto;
+  }
+
+  .team-workspace .collab-page {
+    grid-template-columns: 1fr;
+  }
+
+  .team-workspace .collab-page.collab-page--summary-hidden {
+    grid-template-columns: 1fr;
+  }
+
+  .team-workspace-content > .collab-page {
+    position: relative;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .team-workspace .collab-page > .collab-ai {
+    position: absolute;
+    z-index: 60;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(370px, calc(100% - 24px));
+    max-height: none;
+    border-left: 1px solid rgba(216, 222, 233, 0.92);
+    background: rgba(251, 252, 254, 0.97);
+    box-shadow: -18px 0 54px rgba(25, 38, 64, 0.18);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(24px) saturate(150%);
+    animation: team-summary-drawer-in 260ms var(--team-spring);
+  }
+
+  :root[data-theme="dark"] .team-workspace .collab-page > .collab-ai {
+    border-left-color: rgba(64, 76, 96, 0.86);
+    background: rgba(16, 21, 31, 0.97);
+    box-shadow: -18px 0 54px rgba(0, 0, 0, 0.44);
+  }
+
+  @keyframes team-summary-drawer-in {
+    from { opacity: 0; transform: translate3d(28px, 0, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+
+  .team-workspace .collab-welcome-stage {
+    min-height: 520px;
   }
 }
 
@@ -475,10 +1038,23 @@
     padding: 16px 12px 28px;
   }
 
-  .team-workspace-content .collab-empty > .crt,
-  .team-workspace-content .collab-empty > .crt .crt-stage {
-    width: 280px;
-    height: 280px;
+  .team-workspace .collab-welcome-stage {
+    min-height: 480px;
+    padding: 16px;
+  }
+
+  .team-workspace .collab-welcome {
+    padding: 22px 18px;
+    border-radius: 20px;
+  }
+
+  .team-workspace .collab-welcome-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .team-workspace .collab-welcome-action {
+    width: 100%;
   }
 }
 
@@ -518,4 +1094,150 @@
   .team-workspace .council-card {
     border-color: currentColor;
   }
+}
+
+/* Round-table dark surfaces: the embedded component still ships light defaults. */
+:root[data-theme="dark"] .team-workspace .council-page {
+  color: var(--lc-ink);
+  background: transparent;
+}
+
+:root[data-theme="dark"] .team-workspace .council-hero h3,
+:root[data-theme="dark"] .team-workspace .council-create-title,
+:root[data-theme="dark"] .team-workspace .council-create-members-head h2,
+:root[data-theme="dark"] .team-workspace .council-meeting-title-row b,
+:root[data-theme="dark"] .team-workspace .council-member-tile-text b,
+:root[data-theme="dark"] .team-workspace .council-pick-row b,
+:root[data-theme="dark"] .team-workspace .council-agent-card b,
+:root[data-theme="dark"] .team-workspace .council-history-title,
+:root[data-theme="dark"] .team-workspace .council-desc-row b,
+:root[data-theme="dark"] .team-workspace .council-agenda .is-current,
+:root[data-theme="dark"] .team-workspace .council-mention-item b,
+:root[data-theme="dark"] .team-workspace .council-bubble:not(.is-mine) {
+  color: var(--lc-ink);
+}
+
+:root[data-theme="dark"] .team-workspace .council-hero .ant-typography-secondary,
+:root[data-theme="dark"] .team-workspace .council-back-link,
+:root[data-theme="dark"] .team-workspace .council-create-lead,
+:root[data-theme="dark"] .team-workspace .council-field > span,
+:root[data-theme="dark"] .team-workspace .council-create-members-head p,
+:root[data-theme="dark"] .team-workspace .council-selected-empty,
+:root[data-theme="dark"] .team-workspace .council-create-hint,
+:root[data-theme="dark"] .team-workspace .council-member-tile-text em,
+:root[data-theme="dark"] .team-workspace .council-meeting-sub,
+:root[data-theme="dark"] .team-workspace .council-meeting-meta,
+:root[data-theme="dark"] .team-workspace .council-pick-head,
+:root[data-theme="dark"] .team-workspace .council-pick-row em,
+:root[data-theme="dark"] .team-workspace .council-agent-card em,
+:root[data-theme="dark"] .team-workspace .council-desc-row span,
+:root[data-theme="dark"] .team-workspace .council-rules,
+:root[data-theme="dark"] .team-workspace .council-agenda,
+:root[data-theme="dark"] .team-workspace .council-agent-chips-label,
+:root[data-theme="dark"] .team-workspace .council-mention-item em,
+:root[data-theme="dark"] .team-workspace .council-live-member em,
+:root[data-theme="dark"] .team-workspace .council-bubble-meta {
+  color: var(--lc-text-secondary);
+}
+
+:root[data-theme="dark"] .team-workspace .council-card,
+:root[data-theme="dark"] .team-workspace .council-create-members,
+:root[data-theme="dark"] .team-workspace .council-meeting-row,
+:root[data-theme="dark"] .team-workspace .council-agent-card,
+:root[data-theme="dark"] .team-workspace .council-history-item {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-meeting-row:hover,
+:root[data-theme="dark"] .team-workspace .council-history-item:hover,
+:root[data-theme="dark"] .team-workspace .council-agent-card:hover {
+  border-color: var(--lc-border-strong);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-create-aside {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background:
+    radial-gradient(ellipse at 20% 0%, var(--lc-status-warning-bg), transparent 58%),
+    var(--lc-surface);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-empty,
+:root[data-theme="dark"] .team-workspace .council-selected-chip,
+:root[data-theme="dark"] .team-workspace .council-member-tile,
+:root[data-theme="dark"] .team-workspace .council-pick-pane,
+:root[data-theme="dark"] .team-workspace .council-agent-chip,
+:root[data-theme="dark"] .team-workspace .council-bubble:not(.is-mine) {
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-raised);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-chip.is-agent,
+:root[data-theme="dark"] .team-workspace .council-member-tile.is-on,
+:root[data-theme="dark"] .team-workspace .council-agent-card.is-on,
+:root[data-theme="dark"] .team-workspace .council-agent-chip.is-all {
+  color: var(--lc-status-warning);
+  border-color: color-mix(in srgb, var(--lc-status-warning) 42%, transparent);
+  background: var(--lc-status-warning-bg);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .team-workspace .council-member-tile:hover,
+:root[data-theme="dark"] .team-workspace .council-pick-row:hover,
+:root[data-theme="dark"] .team-workspace .council-agent-chip:hover,
+:root[data-theme="dark"] .team-workspace .council-mention-item:hover,
+:root[data-theme="dark"] .team-workspace .council-mention-item.is-active {
+  border-color: var(--lc-border);
+  background: var(--lc-hover);
+}
+
+:root[data-theme="dark"] .team-workspace .council-selected-chip i,
+:root[data-theme="dark"] .team-workspace .council-face-sm {
+  background: var(--lc-surface-overlay);
+}
+
+:root[data-theme="dark"] .team-workspace .council-pick-head,
+:root[data-theme="dark"] .team-workspace .council-desc-row,
+:root[data-theme="dark"] .team-workspace .council-agent-chips,
+:root[data-theme="dark"] .team-workspace .council-chat-input,
+:root[data-theme="dark"] .team-workspace .council-live-topbar,
+:root[data-theme="dark"] .team-workspace .council-live-controls {
+  border-color: var(--lc-border-light);
+}
+
+:root[data-theme="dark"] .team-workspace .council-agent-chips,
+:root[data-theme="dark"] .team-workspace .council-chat-input,
+:root[data-theme="dark"] .team-workspace .council-live-topbar,
+:root[data-theme="dark"] .team-workspace .council-live-controls {
+  background: var(--lc-surface-raised);
+}
+
+:root[data-theme="dark"] .team-workspace .council-agent-chip.is-human {
+  color: var(--lc-status-info);
+  border-color: color-mix(in srgb, var(--lc-status-info) 42%, transparent);
+  background: var(--lc-status-info-bg);
+}
+
+:root[data-theme="dark"] .team-workspace .council-mention-pop {
+  color: var(--lc-ink);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface-overlay);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+}
+
+:root[data-theme="dark"] .team-workspace .council-chat-list,
+:root[data-theme="dark"] .team-workspace .council-live-center {
+  color: var(--lc-text-secondary);
+  border-color: var(--lc-border-light);
+  background: var(--lc-surface);
+}
+
+:root[data-theme="dark"] .team-workspace .council-live-stage {
+  background:
+    radial-gradient(ellipse at 50% 40%, var(--lc-status-warning-bg), transparent 58%),
+    var(--lc-surface-input);
 }

@@ -14,6 +14,7 @@ daphne>=4.1,<5
 duckdb>=1.1
 psycopg2-binary>=2.9
 openpyxl>=3.1
+xlrd>=2.0.1
 
 # 说明:
 # 第2层 LightRAG、第4层 LangGraph 目前用轻量自研接口占位(见 apps/rag、apps/orchestration),

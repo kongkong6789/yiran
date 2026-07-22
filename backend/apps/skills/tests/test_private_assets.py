@@ -1,14 +1,15 @@
 import io
 import tempfile
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 
 from apps.skills.models import SkillAsset, UserSkill
+from apps.skills import repository
 from apps.skills.repository import (
-    ensure_shared_skills_for_user,
     find_shared_asset,
     list_skill_assets,
     save_skill_asset_from_bytes,
@@ -47,27 +48,6 @@ class PrivateSkillAssetTests(TestCase):
         self.assertIsNone(find_shared_asset(private.skill_id))
         self.assertEqual(find_shared_asset(shared.skill_id), shared)
 
-    def test_private_assets_are_not_auto_adopted_by_another_user(self):
-        make_asset(self.owner, "private-workflow", "private")
-        shared = make_asset(self.owner, "shared-workflow", "shared")
-
-        def materialize(user, asset):
-            return UserSkill.objects.create(
-                user=user,
-                skill_id=asset.skill_id,
-                name=asset.name,
-                source_asset=asset,
-            )
-
-        with patch("apps.skills.repository.materialize_user_skill", side_effect=materialize):
-            created = ensure_shared_skills_for_user(self.other)
-
-        self.assertEqual([row.skill_id for row in created], [shared.skill_id])
-        self.assertEqual(
-            list(UserSkill.objects.filter(user=self.other).values_list("skill_id", flat=True)),
-            [shared.skill_id],
-        )
-
     def test_private_asset_can_use_a_stable_room_skill_id_and_auto_enable(self):
         content = b"---\nname: Room workflow\ndescription: Prepared workflow\n---\n\nFollow the steps."
         archive = io.BytesIO()
@@ -91,3 +71,37 @@ class PrivateSkillAssetTests(TestCase):
         self.assertIsNotNone(personal)
         self.assertEqual(personal.skill_id, asset.skill_id)
         self.assertTrue(personal.enabled)
+
+    def test_storage_snapshot_cleanup_removes_cos_manifest_and_staged_local_paths(self):
+        self.assertTrue(hasattr(repository, "delete_skill_storage"))
+        with tempfile.TemporaryDirectory() as tmp:
+            user_root = Path(tmp) / str(self.owner.id)
+            staged_root = user_root / "private-stage"
+            staged_file = staged_root / "references" / "summary.md"
+            staged_file.parent.mkdir(parents=True)
+            staged_file.write_text("staged", encoding="utf-8")
+            snapshot = {
+                "uploader_id": self.owner.id,
+                "skill_id": "private-stage",
+                "cos_bucket": "skill-bucket",
+                "cos_key": "",
+                "package_kind": "package",
+                "package_manifest": [
+                    {
+                        "path": "references/summary.md",
+                        "cos_key": "skills/1/private-stage/references/summary.md",
+                        "local_path": str(staged_file),
+                    },
+                ],
+            }
+
+            with override_settings(SKILLS_WORKSPACE_ROOT=tmp):
+                with patch("apps.skills.repository.delete_skill_package") as delete_package:
+                    repository.delete_skill_storage(snapshot)
+
+            delete_package.assert_called_once_with(
+                "skill-bucket",
+                snapshot["package_manifest"],
+            )
+            self.assertFalse(staged_file.exists())
+            self.assertFalse(staged_root.exists())

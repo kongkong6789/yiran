@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 
 from apps.council import llm
 from apps.core.agent_chat import _selected_knowledge_context
+from apps.skills.analytics import record_skill_usage
 from apps.skills.service import build_skill_system_block, resolve_skills
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -82,6 +83,14 @@ def get_xiaoce_bot_user():
     except Exception:
         logger.exception("ensure xiaoce bot profile failed")
     return user
+
+
+def get_collab_bot_user(bot_id: str):
+    """用稳定 bot_id 解析协作智能体，避免业务入口依赖可变的用户名。"""
+    normalized = str(bot_id or "").strip().casefold()
+    if normalized == "xiaoce":
+        return get_xiaoce_bot_user()
+    raise ValueError("目标 bot 不存在或未启用")
 
 
 def is_xiaoce_bot_user(user) -> bool:
@@ -280,6 +289,7 @@ def reply_ai_mention(
         try:
             active_skills = resolve_skills(trigger_content, llm_user)
             if active_skills:
+                record_skill_usage(active_skills, llm_user, source="collab")
                 history_for_skill = [
                     {
                         "role": "user" if (m.get("msg_type") or "user") == "user" else "assistant",
@@ -315,15 +325,27 @@ def reply_ai_mention(
         except Exception as exc:
             logger.exception("collab @AI knowledge retrieval failed: %s", exc)
 
+    # 与小策对齐：汇聚 RAG / 图谱 / 吉客云等连接器证据，避免只能查用户知识库切片
+    business_context = ""
+    try:
+        from apps.council.knowledge import gather_knowledge
+
+        business_context = gather_knowledge(trigger_content, top_k=4, user=llm_user) or ""
+    except Exception as exc:
+        logger.exception("collab @AI gather_knowledge failed: %s", exc)
+
     system = (
         "你是「良策AI」，在企业协作风控会话中被成员召唤。用中文直接回答，简洁专业、可执行。\n"
         "能力说明（必须按此回答，不要编造相反规则）：\n"
         "1) 召唤应答：有人 @AI，或消息中 @ 了 Skill 时，你会立刻在聊天里回复（本条就是）。\n"
-        "2) \u77e5\u8bc6\u5e93\uff1a\u88ab @AI \u65f6\uff0c\u5e73\u53f0\u4f1a\u81ea\u52a8\u68c0\u7d22\u5f53\u524d\u7528\u6237\u53ef\u89c1\u7684\u77e5\u8bc6\u5e93\uff1b\u82e5\u4e0b\u65b9\u6709\u3010\u77e5\u8bc6\u5e93\u53c2\u8003\u8d44\u6599\u3011\uff0c"
-        "\u5fc5\u987b\u4f18\u5148\u7ed3\u5408\u8fd9\u4e9b\u771f\u5b9e\u5207\u7247\u56de\u7b54\uff0c\u5e76\u5728\u4e0d\u786e\u5b9a\u65f6\u8bf4\u660e\u6ca1\u6709\u68c0\u7d22\u5230\u8db3\u591f\u8bc1\u636e\u3002\n"
-        "3) Skill\uff1a\u7528\u6237\u53ef\u901a\u8fc7\u9524\u5b50\u6309\u94ae\u6216 @skill-id \u52a0\u8f7d\u6280\u80fd\uff1b\u5e73\u53f0\u53ef\u80fd\u5df2\u81ea\u52a8\u6267\u884c\u5176\u4e2d\u7684 python \u811a\u672c\uff0c"
-        "\u4f60\u5fc5\u987b\u6309\u4e0b\u65b9 Skill \u8bf4\u660e\u4e0e\u811a\u672c\u7ed3\u679c\u5904\u7406\u4efb\u52a1\uff0c\u4e0d\u8981\u8ba9\u7528\u6237\u53bb\u672c\u5730\u7ec8\u7aef\u91cd\u8dd1\u3002\n"
-        "4) \u76d1\u63a7\u63d2\u5634\uff1a\u5f00\u5173"
+        "2) 知识库：被 @AI 时，平台会自动检索当前用户可见的知识库；若下方有【知识库参考资料】，"
+        "必须优先结合这些真实切片回答，并在不确定时说明没有检索到足够证据。\n"
+        "3) 连接器与业务数据：若下方有【业务系统/数据底座参考】或【吉客云·…】【金蝶·…】等证据块，"
+        "必须据此回答库存/订单/财务等问题，不要说「请去连接器页面查询」。"
+        "用户也可在输入框用连接器快捷提示（吉客云/金蝶/企微/NAS）。\n"
+        "4) Skill：用户可通过锤子按钮或 @skill-id 加载技能；平台可能已自动执行其中的 python 脚本，"
+        "你必须按下方案 Skill 说明与脚本结果处理任务，不要让用户去本地终端重跑。\n"
+        "5) 监控插嘴：开关"
         f"为{interject_state}并过冷却时，仅黄/红风险会发【监控提醒/警告】；"
         "怎么做、方案、流程图等日常问答只在被 @AI 时回答，不会每条都插嘴。\n"
         "回答风格：怎么做要给步骤；剖析/分析某人给特征·意图·风险·建议；违法请求拒绝。\n"
@@ -367,7 +389,9 @@ def reply_ai_mention(
         ref_parts.append(f"已加载 Skill：{skill_names}")
 
     if knowledge_context:
-        ref_parts.append(f"\u3010\u77e5\u8bc6\u5e93\u53c2\u8003\u8d44\u6599\u3011\n{knowledge_context}")
+        ref_parts.append(f"【知识库参考资料】\n{knowledge_context}")
+    if business_context:
+        ref_parts.append(f"【业务系统/数据底座参考】\n{business_context}")
 
     ref_block = ("\n\n".join(ref_parts) + "\n\n") if ref_parts else ""
 

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Button, Empty, Select, Tag, Tooltip, Typography } from "antd";
+import { Button, Select, Tag, Tooltip, Typography } from "antd";
 import {
   BarChartOutlined,
   BulbOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
+  CloseOutlined,
   FileTextOutlined,
   ReloadOutlined,
   RobotOutlined,
@@ -28,6 +29,7 @@ type Props = {
   onRefresh?: () => void;
   onSummarize?: (windowMode: SummaryWindow) => void;
   onJumpEvidence?: (messageId: number) => void;
+  onClose?: () => void;
 };
 
 function MiniBars({ hourly }: { hourly: CollabRoomStats["hourly"] }) {
@@ -94,6 +96,7 @@ export default function CollabMonitorBoard({
   onRefresh,
   onSummarize,
   onJumpEvidence,
+  onClose,
 }: Props) {
   const [panel, setPanel] = useState<"summary" | "data">("summary");
   const [summaryWindow, setSummaryWindow] = useState<SummaryWindow>("auto");
@@ -105,16 +108,34 @@ export default function CollabMonitorBoard({
 
   if (!room) {
     return (
-      <aside className="collab-ai">
+      <aside className="collab-ai collab-ai--empty">
         <div className="collab-ai-head">
           <div>
             <Typography.Text strong>
               <FileTextOutlined /> 智能纪要
             </Typography.Text>
-            <div className="collab-ai-sub">选择会话后，可智能判断总结范围</div>
+            <div className="collab-ai-sub">选择会话后，AI 会判断总结范围</div>
           </div>
+          {onClose ? (
+            <Tooltip title="隐藏智能纪要">
+              <Button type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="隐藏智能纪要" />
+            </Tooltip>
+          ) : null}
         </div>
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择会话后查看总结" />
+        <div className="collab-summary-empty-state">
+          <span className="collab-summary-empty-icon" aria-hidden="true">
+            <RobotOutlined />
+          </span>
+          <strong>让 AI 帮你收拢重点</strong>
+          <p>
+            选择左侧会话后，这里会结合最近话题、消息间隔和时间范围生成纪要。
+          </p>
+          <ul>
+            <li><BulbOutlined /> 智能提醒总结时机</li>
+            <li><ClockCircleOutlined /> 自动选取连续讨论</li>
+            <li><CheckCircleOutlined /> 提取结论与待办</li>
+          </ul>
+        </div>
       </aside>
     );
   }
@@ -141,16 +162,24 @@ export default function CollabMonitorBoard({
             {panel === "summary" ? "按上下文智能取段，不必总结全部历史" : "发言、已读与阅读耗时"}
           </div>
         </div>
-        {panel === "data" ? (
-          <Tooltip title="重新分析风险">
-            <Button
-              type="text"
-              icon={<ReloadOutlined />}
-              loading={loading}
-              onClick={onRefresh}
-            />
-          </Tooltip>
-        ) : null}
+        <div className="collab-intelligence-head-actions">
+          {panel === "data" ? (
+            <Tooltip title="重新分析风险">
+              <Button
+                type="text"
+                icon={<ReloadOutlined />}
+                loading={loading}
+                onClick={onRefresh}
+                aria-label="重新分析风险"
+              />
+            </Tooltip>
+          ) : null}
+          {onClose ? (
+            <Tooltip title="隐藏智能纪要">
+              <Button type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="隐藏智能纪要" />
+            </Tooltip>
+          ) : null}
+        </div>
       </div>
 
       <div className="collab-intelligence-tabs" role="tablist" aria-label="右侧工作区">

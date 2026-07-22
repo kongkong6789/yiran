@@ -18,6 +18,7 @@ import {
   splitObject, mergeObjects, extractGraph, importFromAge, importFromDb, getAgeLiveGraph, getObjectData,
   type OntGraph, type OntObject, type OntRelation, type ObjectData,
 } from "../api/client";
+import { graphTooltipStyle, useVisualizationTheme } from "../theme/visualization";
 import { findSimpleLoops, pickLoopBatch, enumerateConnectedBatches } from "../utils/graphCycles";
 
 const PALETTE = [
@@ -85,6 +86,7 @@ function thinDenseHubEdges(relations: OntRelation[], maxSpokesPerHub = 10): OntR
 
 export default function OntologyGraph() {
   const { message } = App.useApp();
+  const visualTheme = useVisualizationTheme();
   const [graph, setGraph] = useState<OntGraph | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [mode, setMode] = useState<"select" | "connect">("select");
@@ -367,24 +369,24 @@ export default function OntologyGraph() {
   const nodeColorFn = useCallback(
     (node: GNode) => {
       const dimmed = neighborIds ? !neighborIds.has(node.id) : false;
-      if (dimmed) return "#8a96c8";
+      if (dimmed) return visualTheme.nodeDimmed;
       if (connectFrom === node.id) return "#ffcc55";
       if (selected === node.id) return "#ff70d0";
-      if (hoverNode?.id === node.id) return "#ffffff";
+      if (hoverNode?.id === node.id) return visualTheme.nodeHover;
       return node.color;
     },
-    [neighborIds, connectFrom, selected, hoverNode],
+    [neighborIds, connectFrom, selected, hoverNode, visualTheme],
   );
 
   const linkColorFn = useCallback(
     (link: GLink) => {
-      if (!neighborIds) return "rgba(184, 200, 255, 0.32)";
+      if (!neighborIds) return visualTheme.edge;
       const s = typeof link.source === "object" ? link.source.id : link.source;
       const t = typeof link.target === "object" ? link.target.id : link.target;
-      if (neighborIds.has(s) && neighborIds.has(t)) return "#ffffff";
-      return "rgba(158, 180, 232, 0.22)";
+      if (neighborIds.has(s) && neighborIds.has(t)) return visualTheme.edgeActive;
+      return visualTheme.edgeMuted;
     },
-    [neighborIds],
+    [neighborIds, visualTheme],
   );
 
   const linkWidthFn = useCallback(
@@ -676,9 +678,10 @@ export default function OntologyGraph() {
   };
 
   return (
-    <Row gutter={16}>
+    <Row className="ontology-page" gutter={16}>
       <Col xs={24} lg={16}>
         <Card
+          className="ontology-graph-card"
           size="small"
           title={
             <Space size={8}>
@@ -727,7 +730,7 @@ export default function OntologyGraph() {
             </Space>
           }
         >
-          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--lc-border)", background: "#f8fafc" }}>
+          <div className="ontology-toolbar" style={{ padding: "10px 12px", borderBottom: "1px solid var(--lc-border)" }}>
             <Space wrap size={[12, 8]} style={{ width: "100%" }}>
               <Statistic
                 title={<span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>PG 本图</span>}
@@ -737,7 +740,7 @@ export default function OntologyGraph() {
                     顶点 · {pgEdges} 边
                   </span>
                 }
-                valueStyle={{ fontSize: 18, color: "var(--lc-navy)" }}
+                valueStyle={{ fontSize: 18, color: "var(--lc-ink)" }}
               />
               <Statistic
                 title={<span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>Cypher 本图</span>}
@@ -774,7 +777,7 @@ export default function OntologyGraph() {
               <Input
                 size="small"
                 allowClear
-                prefix={<FilterOutlined style={{ color: "#6b7194" }} />}
+                prefix={<FilterOutlined style={{ color: "var(--lc-muted)" }} />}
                 placeholder="搜索名称/类型"
                 style={{ width: 160 }}
                 value={searchText}
@@ -862,7 +865,7 @@ export default function OntologyGraph() {
             )}
           </div>
           {mode === "connect" && (
-            <div style={{ padding: "6px 12px", background: "rgba(184,134,59,0.12)", color: "#8a6a35", fontSize: 12 }}>
+            <div className="ontology-connect-banner" style={{ padding: "6px 12px", fontSize: 12 }}>
               连线模式:先点起点,再点终点 —— {connectFrom ? `已选「${objById(connectFrom)?.name}」` : "请点起点"}
             </div>
           )}
@@ -872,7 +875,7 @@ export default function OntologyGraph() {
               position: "relative",
               height: "calc(100vh - 300px)",
               minHeight: 560,
-              background: "linear-gradient(180deg, #f4f7fb 0%, #e8eef6 100%)",
+              background: visualTheme.canvas,
               overflow: "hidden",
             }}
           >
@@ -880,19 +883,15 @@ export default function OntologyGraph() {
               aria-hidden
               style={{
                 position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0,
-                background: `
-                  radial-gradient(ellipse 80% 60% at 50% 50%, rgba(61,111,168,0.08) 0%, transparent 70%),
-                  linear-gradient(rgba(26,39,64,0.04) 1px, transparent 1px),
-                  linear-gradient(90deg, rgba(26,39,64,0.04) 1px, transparent 1px)
-                `,
-                backgroundSize: "auto, 48px 48px, 48px 48px",
+                background: `linear-gradient(${visualTheme.grid} 1px, transparent 1px), linear-gradient(90deg, ${visualTheme.grid} 1px, transparent 1px)`,
+                backgroundSize: "48px 48px",
               }}
             />
             {loading && (
               <div style={{
                 position: "absolute", inset: 0, zIndex: 2,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: "rgba(245,247,251,0.72)",
+                background: visualTheme.loadingMask,
               }}>
                 <Spin tip="加载图谱…" />
               </div>
@@ -919,16 +918,16 @@ export default function OntologyGraph() {
                   width={size.w}
                   height={size.h}
                   graphData={fgData}
-                  backgroundColor="transparent"
+                  backgroundColor={visualTheme.canvas}
                   enableNodeDrag={fgData.nodes.length < 200}
                   nodeId="id"
                   nodeColor={nodeColorFn}
                   nodeVal={nodeValFn}
                   nodeLabel={(n) => {
                     const node = n as GNode;
-                    return `<div style="padding:6px 10px;background:#fff;border:1px solid #d7e0ec;border-radius:8px;font-size:12px;color:#1a2740;max-width:240px;box-shadow:0 4px 16px rgba(26,39,64,0.12);">
-                      <b style="color:#0b2144">${node.name}</b><br/><span style="color:#5c6b84">${node.otype}</span>
-                      ${node.degree ? `<br/><span style="color:#3d6fa8">连接 ${node.degree}</span>` : ""}
+                    return `<div style="${graphTooltipStyle(visualTheme)}">
+                      <b style="color:${visualTheme.tooltipText}">${node.name}</b><br/><span style="color:${visualTheme.mutedText}">${node.otype}</span>
+                      ${node.degree ? `<br/><span style="color:${visualTheme.particle}">连接 ${node.degree}</span>` : ""}
                     </div>`;
                   }}
                   linkColor={linkColorFn}
@@ -937,7 +936,7 @@ export default function OntologyGraph() {
                   linkDirectionalParticles={particleCountFn}
                   linkDirectionalParticleWidth={2}
                   linkDirectionalParticleSpeed={0.004}
-                  linkDirectionalParticleColor={() => "#c8e8ff"}
+                  linkDirectionalParticleColor={() => visualTheme.particle}
                   linkDirectionalArrowLength={displayMode === "batch" ? 3.5 : 4}
                   linkDirectionalArrowRelPos={0.92}
                   linkDirectionalArrowColor={(link: GLink) => linkColorFn(link)}

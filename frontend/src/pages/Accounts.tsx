@@ -1,14 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   App,
   Avatar,
   Button,
   Card,
-  Dropdown,
   Empty,
   Form,
   Input,
   Modal,
+  Popover,
   Select,
   Space,
   Switch,
@@ -16,33 +16,65 @@ import {
   Tabs,
   Tag,
   Typography,
+  Upload,
 } from "antd";
 import {
   BankOutlined,
+  CameraOutlined,
   DeleteOutlined,
-  KeyOutlined,
+  EditOutlined,
   LockOutlined,
-  MoreOutlined,
+  MailOutlined,
+  MinusCircleOutlined,
   PhoneOutlined,
   PlusOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  StarOutlined,
   TeamOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import {
   createAdminUser,
   deleteAdminUser,
+  getAuthToken,
   getMe,
   listAdminUsers,
+  listOrganizations,
+  switchCurrentOrganization,
   updateAdminUser,
+  uploadUserAvatar,
   type AdminUserRow,
+  type OrganizationSummary,
 } from "../api/client";
 import WeComBindingManager from "../features/wecom-bindings/WeComBindingManager";
 import WeComNotificationManager from "../features/wecom-bindings/WeComNotificationManager";
 import OrganizationManager from "../features/organizations/OrganizationManager";
 import TeamManager from "../features/teams/TeamManager";
+import { AvatarPreview } from "../components/AvatarPreview";
+
+function AccountEditModalHead({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: ReactNode;
+  title: string;
+  subtitle?: string;
+}) {
+  return (
+    <div className="account-edit-modal-head">
+      <div className="account-modal-title account-edit-modal-title">
+        <span>{icon}</span>
+        <div>
+          <strong>{title}</strong>
+          {subtitle ? <small>{subtitle}</small> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function fmtTime(v?: string | null) {
   if (!v) return "—";
@@ -74,19 +106,58 @@ const compareText = (left?: string | null, right?: string | null) =>
 
 const organizationRoleOrder = { owner: 3, admin: 2, member: 1, "": 0 } as const;
 
+type PlatformRole = "user" | "staff" | "superuser";
+
+const platformRoleOf = (row: Pick<AdminUserRow, "is_superuser" | "is_staff">): PlatformRole => {
+  if (row.is_superuser) return "superuser";
+  if (row.is_staff) return "staff";
+  return "user";
+};
+
+const PLATFORM_ROLE_OPTIONS: { value: PlatformRole; label: ReactNode }[] = [
+  { value: "user", label: "普通用户" },
+  {
+    value: "staff",
+    label: (
+      <span className="account-platform-role-option">
+        <SafetyCertificateOutlined />
+        平台管理员
+      </span>
+    ),
+  },
+  {
+    value: "superuser",
+    label: (
+      <span className="account-platform-role-option is-super">
+        <StarOutlined />
+        超级管理员
+      </span>
+    ),
+  },
+];
+
+const authenticatedAvatarUrl = (url?: string) => {
+  if (!url) return undefined;
+  const token = getAuthToken();
+  if (!token) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+};
+
 export default function Accounts() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<AdminUserRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [pwdOpen, setPwdOpen] = useState(false);
-  const [phoneOpen, setPhoneOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [target, setTarget] = useState<AdminUserRow | null>(null);
+  const [editAvatarUrl, setEditAvatarUrl] = useState("");
+  const [createAvatarFile, setCreateAvatarFile] = useState<File | null>(null);
+  const [createAvatarPreview, setCreateAvatarPreview] = useState("");
+  const [avatarUploading, setAvatarUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createForm] = Form.useForm();
-  const [pwdForm] = Form.useForm();
-  const [phoneForm] = Form.useForm();
+  const [editForm] = Form.useForm();
   const [isStaffSelf, setIsStaffSelf] = useState(false);
   const [isSuperuserSelf, setIsSuperuserSelf] = useState(false);
   const [isPlatformAdminSelf, setIsPlatformAdminSelf] = useState(false);
@@ -94,11 +165,42 @@ export default function Accounts() {
   const [currentOrgName, setCurrentOrgName] = useState("");
   const [selfUserId, setSelfUserId] = useState<number>();
   const [activeTab, setActiveTab] = useState("accounts");
+  const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
+  const [accountOrganizationId, setAccountOrganizationId] = useState(0);
+  const [managementOrganizationId, setManagementOrganizationId] = useState<number>();
 
-  const load = async (q = keyword) => {
+  const handleManagementOrganizationChange = async (organizationId: number) => {
+    setManagementOrganizationId(organizationId);
+    const selected = organizations.find((item) => item.id === organizationId);
+    if (!selected?.canSwitch || selected.isCurrent) return;
+    try {
+      await switchCurrentOrganization(organizationId);
+      message.success(`已切换至${selected.name}`);
+      // 企业上下文会影响连接器、企业微信和任务数据，刷新可避免保留上一企业的缓存状态。
+      window.location.reload();
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "切换企业失败");
+    }
+  };
+
+  const handleAccountOrganizationChange = async (organizationId: number) => {
+    setAccountOrganizationId(organizationId);
+    if (!organizationId) {
+      await load(keyword, 0);
+      return;
+    }
+    const selected = organizations.find((item) => item.id === organizationId);
+    if (selected?.canSwitch && !selected.isCurrent) {
+      await handleManagementOrganizationChange(organizationId);
+      return;
+    }
+    await load(keyword, organizationId);
+  };
+
+  const load = async (q = keyword, organizationId = accountOrganizationId) => {
     setLoading(true);
     try {
-      const data = await listAdminUsers(q.trim() || undefined);
+      const data = await listAdminUsers(q.trim() || undefined, organizationId || undefined);
       setRows(data.results || []);
     } catch (e: any) {
       message.error(e?.response?.data?.error || "加载账号失败（需管理员）");
@@ -110,15 +212,34 @@ export default function Accounts() {
 
   useEffect(() => {
     getMe()
-      .then((res) => {
-        const canManage = !!(res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage);
+      .then(async (res) => {
+        const canManage = !!(
+          res.user.can_manage_accounts
+          ?? (res.user.is_staff || res.user.is_superuser || res.user.organization?.canManage)
+        );
         setIsStaffSelf(canManage);
         setIsSuperuserSelf(!!res.user.is_superuser);
         setIsPlatformAdminSelf(!!(res.user.is_staff || res.user.is_superuser));
-        setCanManageOrgSelf(!!res.user.organization?.canManage);
+        setCanManageOrgSelf(!!(
+          res.user.can_manage_accounts
+          || res.user.organization?.canManage
+        ));
         setCurrentOrgName(res.user.organization?.name || "");
         setSelfUserId(res.user.id);
-        if (canManage) void load();
+        if (canManage) {
+          const organizationResponse = await listOrganizations();
+          const available = organizationResponse.results || [];
+          setOrganizations(available);
+          const preferred =
+            available.find((item) => item.id === res.user.organization?.id && item.canManage)
+            || available.find((item) => item.canManage)
+            || available.find((item) => item.isCurrent)
+            || available[0];
+          const currentOrganizationId = preferred?.id || 0;
+          setAccountOrganizationId(currentOrganizationId);
+          setManagementOrganizationId(currentOrganizationId || undefined);
+          await load("", currentOrganizationId);
+        }
       })
       .catch(() => setIsStaffSelf(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -139,22 +260,83 @@ export default function Accounts() {
     });
   };
 
+  const manageableOrganizations = isPlatformAdminSelf
+    ? organizations
+    : organizations.filter((item) => item.canManage);
+
+  const organizationSelectOptions = manageableOrganizations.map((item) => ({
+    value: item.id,
+    label: item.name,
+  }));
+
+  const editOrganizationOptions = (() => {
+    const map = new Map(organizationSelectOptions.map((item) => [item.value, item]));
+    for (const org of target?.organizations || []) {
+      if (!map.has(org.id)) map.set(org.id, { value: org.id, label: org.name });
+    }
+    return Array.from(map.values());
+  })();
+
+  const editMemberships = Form.useWatch("organizations", editForm) as Array<{ id?: number; role?: string }> | undefined;
+  const createDisplayName = Form.useWatch("display_name", createForm) as string | undefined;
+
+  const revokeCreateAvatarPreview = (url: string) => {
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+  };
+
+  const clearCreateAvatar = () => {
+    if (createAvatarPreview) revokeCreateAvatarPreview(createAvatarPreview);
+    setCreateAvatarFile(null);
+    setCreateAvatarPreview("");
+  };
+
+  const resetCreateModal = () => {
+    setCreateOpen(false);
+    createForm.resetFields();
+    clearCreateAvatar();
+  };
+
+  const handleCreateAvatarSelect = (file: File) => {
+    if (createAvatarPreview) revokeCreateAvatarPreview(createAvatarPreview);
+    setCreateAvatarFile(file);
+    setCreateAvatarPreview(URL.createObjectURL(file));
+    return false;
+  };
+
   const handleCreate = async () => {
     const values = await createForm.validateFields();
     setSaving(true);
     try {
+      const memberships = (values.organizations || [])
+        .filter((item: { id?: number }) => item?.id)
+        .map((item: { id: number; role: "admin" | "member" }) => ({
+          id: item.id,
+          role: item.role || "member",
+        }));
       const res = await createAdminUser({
         username: values.username.trim(),
         password: values.password,
         email: values.email || "",
         display_name: values.display_name || "",
         phone: values.phone || "",
-        is_staff: !!values.is_staff,
-        organization_role: values.organization_role || "member",
+        platform_role: values.platform_role || "user",
+        is_staff: values.platform_role === "staff" || values.platform_role === "superuser",
+        is_superuser: values.platform_role === "superuser",
+        organizations: memberships.length
+          ? memberships
+          : undefined,
+        organization_id: memberships[0]?.id || managementOrganizationId,
+        organization_role: memberships[0]?.role || "member",
       });
+      if (createAvatarFile) {
+        try {
+          await uploadUserAvatar(createAvatarFile, res.user.id);
+        } catch {
+          message.warning("账号已创建，但头像上传失败");
+        }
+      }
       message.success("账号已创建");
-      setCreateOpen(false);
-      createForm.resetFields();
+      resetCreateModal();
       if (res.password_once) showPasswordOnce(res.user.username, res.password_once);
       await load();
     } catch (e: any) {
@@ -164,56 +346,80 @@ export default function Accounts() {
     }
   };
 
-  const handleResetPwd = async () => {
+  const openEditModal = (row: AdminUserRow) => {
+    setTarget(row);
+    setEditAvatarUrl(row.avatar_url || "");
+    const memberships = (row.organizations || []).map((item) => ({
+      id: item.id,
+      role: item.role,
+    }));
+    editForm.setFieldsValue({
+      display_name: row.display_name || "",
+      email: row.email || "",
+      phone: "",
+      password: "",
+      organizations: memberships.length
+        ? memberships
+        : [{ id: row.organization_id || managementOrganizationId, role: row.organization_role || "member" }],
+      platform_role: platformRoleOf(row),
+      is_active: row.is_active,
+    });
+    setEditOpen(true);
+  };
+
+  const handleEditAvatar = async (file: File) => {
+    if (!target) return false;
+    setAvatarUploading(true);
+    try {
+      const res = await uploadUserAvatar(file, target.id);
+      setEditAvatarUrl(res.avatar_url || "");
+      if (res.admin_user) setTarget(res.admin_user);
+      message.success("头像已更新");
+      await load();
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || "头像上传失败");
+    } finally {
+      setAvatarUploading(false);
+    }
+    return false;
+  };
+
+  const handleEdit = async () => {
     if (!target) return;
-    const values = await pwdForm.validateFields();
+    const values = await editForm.validateFields();
     setSaving(true);
     try {
-      const res = await updateAdminUser(target.id, { password: values.password });
-      message.success("密码已重置");
-      setPwdOpen(false);
-      pwdForm.resetFields();
-      if (res.password_once) showPasswordOnce(target.username, res.password_once);
+      const organizationsPayload = (values.organizations || [])
+        .filter((item: { id?: number }) => item?.id)
+        .map((item: { id: number; role: "owner" | "admin" | "member" }) => ({
+          id: item.id,
+          role: item.role || "member",
+        }));
+
+      const payload: Parameters<typeof updateAdminUser>[1] = {
+        display_name: values.display_name || "",
+        email: values.email || "",
+        is_active: !!values.is_active,
+        organizations: organizationsPayload,
+      };
+      if (values.phone?.trim()) payload.phone = values.phone.trim();
+      if (values.password?.trim()) payload.password = values.password.trim();
+      if (isSuperuserSelf) {
+        payload.platform_role = values.platform_role || "user";
+      }
+      const res = await updateAdminUser(target.id, payload);
+      message.success("账号已更新");
+      setEditOpen(false);
       setTarget(null);
+      setEditAvatarUrl("");
+      editForm.resetFields();
+      if (res.password_once) showPasswordOnce(target.username, res.password_once);
+      await load();
     } catch (e: any) {
-      message.error(e?.response?.data?.error || "重置失败");
+      message.error(e?.response?.data?.error || "保存失败");
     } finally {
       setSaving(false);
     }
-  };
-
-  if (!isStaffSelf) {
-    return (
-      <div className="account-admin-page account-admin-denied">
-        <Card>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={(
-              <div>
-                <Typography.Title level={5}>暂无账号管理权限</Typography.Title>
-                <Typography.Text type="secondary">仅企业所有者、企业管理员或平台管理员可以访问。</Typography.Text>
-              </div>
-            )}
-          />
-        </Card>
-      </div>
-    );
-  }
-
-  const enabledCount = rows.filter((row) => row.is_active).length;
-  const organizationAdminCount = rows.filter((row) => ["owner", "admin"].includes(row.organization_role)).length;
-  const unboundPhoneCount = rows.filter((row) => !row.phone_masked).length;
-
-  const openPasswordModal = (row: AdminUserRow) => {
-    setTarget(row);
-    pwdForm.resetFields();
-    setPwdOpen(true);
-  };
-
-  const openPhoneModal = (row: AdminUserRow) => {
-    setTarget(row);
-    phoneForm.resetFields();
-    setPhoneOpen(true);
   };
 
   const confirmDeleteAccount = (row: AdminUserRow) => {
@@ -238,6 +444,8 @@ export default function Accounts() {
         try {
           await deleteAdminUser(row.id);
           message.success("平台账号已删除");
+          setEditOpen(false);
+          setTarget(null);
           await load();
         } catch (error: any) {
           message.error(error?.response?.data?.error || "账号删除失败");
@@ -245,6 +453,35 @@ export default function Accounts() {
       },
     });
   };
+
+  if (!isStaffSelf) {
+    return (
+      <div className="account-admin-page account-admin-denied">
+        <Card>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={(
+              <div>
+                <Typography.Title level={5}>暂无账号管理权限</Typography.Title>
+                <Typography.Text type="secondary">仅企业所有者、企业管理员或平台管理员可以访问。</Typography.Text>
+              </div>
+            )}
+          />
+        </Card>
+      </div>
+    );
+  }
+
+  const enabledCount = rows.filter((row) => row.is_active).length;
+  const organizationAdminCount = rows.filter((row) => ["owner", "admin"].includes(row.organization_role)).length;
+  const unboundPhoneCount = rows.filter((row) => !row.phone_masked).length;
+
+  const canDeleteAccount = (row: AdminUserRow) => !(
+    row.id === selfUserId
+    || row.is_superuser
+    || row.organization_role === "owner"
+    || (row.is_staff && !isSuperuserSelf)
+  );
 
   return (
     <div className="account-admin-page">
@@ -256,7 +493,17 @@ export default function Accounts() {
             <Typography.Text>管理本企业的平台账号、成员角色和企业微信绑定关系</Typography.Text>
           </div>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建成员账号</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => {
+          clearCreateAvatar();
+          createForm.setFieldsValue({
+            platform_role: "user",
+            organizations: [{
+              id: managementOrganizationId || accountOrganizationId || organizations[0]?.id,
+              role: "member",
+            }],
+          });
+          setCreateOpen(true);
+        }}>新建成员账号</Button>
       </header>
 
       <Card className="account-admin-workspace" styles={{ body: { padding: 0 } }}>
@@ -285,10 +532,17 @@ export default function Accounts() {
                 />
               )
               : activeTab === "organization" ? (
-                <OrganizationManager
-                  isSuperuser={isSuperuserSelf}
-                  platformUsers={rows}
-                  onOrganizationCreated={() => load()}
+                  <OrganizationManager
+                    isSuperuser={isSuperuserSelf}
+                    platformUsers={rows}
+                    organizationId={managementOrganizationId}
+                    availableOrganizations={organizations}
+                    onOrganizationChange={(organizationId) => void handleManagementOrganizationChange(organizationId)}
+                    onOrganizationCreated={async () => {
+                      const response = await listOrganizations();
+                      setOrganizations(response.results || []);
+                      await load();
+                    }}
                 />
               )
                 : <>
@@ -305,6 +559,17 @@ export default function Accounts() {
                       <Typography.Text type="secondary">平台权限和企业角色分别管理，密码不会在页面回显。</Typography.Text>
                     </div>
                     <Space wrap>
+                      <Select
+                        className="account-organization-filter"
+                        value={accountOrganizationId}
+                        onChange={(value) => void handleAccountOrganizationChange(Number(value))}
+                        options={[
+                          ...(isPlatformAdminSelf ? [{ value: 0, label: "全部企业" }] : []),
+                          ...organizations
+                            .filter((item) => isPlatformAdminSelf || item.canManage)
+                            .map((item) => ({ value: item.id, label: item.name })),
+                        ]}
+                      />
                       <Input
                         allowClear
                         prefix={<SearchOutlined />}
@@ -346,7 +611,12 @@ export default function Accounts() {
                         render: (_: unknown, row) => {
                           const displayName = row.display_name || row.username;
                           return <div className="account-member-cell">
-                            <Avatar>{displayName.slice(0, 1).toUpperCase()}</Avatar>
+                            <Avatar
+                              src={authenticatedAvatarUrl(row.avatar_url)}
+                              alt={`${displayName}的头像`}
+                            >
+                              {displayName.slice(0, 1).toUpperCase()}
+                            </Avatar>
                             <span>
                               <strong>{displayName}</strong>
                               <small>@{row.username}</small>
@@ -373,44 +643,64 @@ export default function Accounts() {
                           compareText(left.organization_name, right.organization_name)
                           || organizationRoleOrder[left.organization_role] - organizationRoleOrder[right.organization_role]
                         ),
-                        render: (_: unknown, row) => <div className="account-role-cell">
-                          <span>{row.organization_name || "未分配企业"}</span>
-                          {row.organization_role
-                            ? <Tag color={organizationRoleColor[row.organization_role]}>{organizationRoleLabel[row.organization_role]}</Tag>
-                            : <Tag>未分配</Tag>}
-                        </div>,
+                        render: (_: unknown, row) => {
+                          const orgs = row.organizations || [];
+                          if (!orgs.length) return <Tag>未分配</Tag>;
+
+                          const fullList = (
+                            <div className="account-org-popover-list">
+                              {orgs.map((item) => (
+                                <div key={item.id} className="account-org-popover-item">
+                                  <span title={item.name}>{item.name}</span>
+                                  <Tag color={organizationRoleColor[item.role]}>{organizationRoleLabel[item.role]}</Tag>
+                                </div>
+                              ))}
+                            </div>
+                          );
+
+                          const primary = orgs[0];
+                          const extra = orgs.length - 1;
+
+                          return (
+                            <Popover
+                              content={fullList}
+                              title={`全部企业身份（${orgs.length}）`}
+                              trigger="click"
+                              placement="bottomLeft"
+                            >
+                              <button type="button" className="account-role-cell account-role-cell--compact" title="点击查看全部企业">
+                                <span className="account-role-primary">
+                                  <span>{primary.name}</span>
+                                  <Tag color={organizationRoleColor[primary.role]}>{organizationRoleLabel[primary.role]}</Tag>
+                                </span>
+                                {extra > 0 ? <span className="account-role-more">… +{extra}</span> : null}
+                              </button>
+                            </Popover>
+                          );
+                        },
                       },
                       {
                         title: "平台权限",
-                        width: 130,
+                        width: 120,
                         sorter: (left, right) => (
                           Number(left.is_superuser) * 2 + Number(left.is_staff)
                         ) - (
                           Number(right.is_superuser) * 2 + Number(right.is_staff)
                         ),
-                        render: (_: unknown, row) => row.is_superuser
-                          ? <Tag color="purple">超级管理员</Tag>
-                          : row.is_staff ? <Tag color="geekblue">平台管理员</Tag> : <span className="account-muted">普通用户</span>,
+                        render: (_: unknown, row) => {
+                          const role = platformRoleOf(row);
+                          if (role === "superuser") return <Tag color="purple">超级管理员</Tag>;
+                          if (role === "staff") return <Tag color="blue">平台管理员</Tag>;
+                          return <span className="account-muted">普通用户</span>;
+                        },
                       },
                       {
                         title: "账号状态",
-                        width: 120,
+                        width: 100,
                         sorter: (left, right) => Number(left.is_active) - Number(right.is_active),
-                        render: (_: unknown, row) => <Switch
-                          size="small"
-                          checked={row.is_active}
-                          checkedChildren="启用"
-                          unCheckedChildren="停用"
-                          onChange={async (checked) => {
-                            try {
-                              await updateAdminUser(row.id, { is_active: checked });
-                              message.success(checked ? "账号已启用" : "账号已停用");
-                              await load();
-                            } catch (error: any) {
-                              message.error(error?.response?.data?.error || "状态更新失败");
-                            }
-                          }}
-                        />,
+                        render: (_: unknown, row) => row.is_active
+                          ? <Tag color="success">启用</Tag>
+                          : <Tag>停用</Tag>,
                       },
                       {
                         title: "最近登录",
@@ -424,37 +714,20 @@ export default function Accounts() {
                         render: (value: string | null) => <span className="account-muted">{fmtTime(value)}</span>,
                       },
                       {
-                        title: "",
+                        title: "操作",
                         fixed: "right",
-                        width: 64,
+                        width: 88,
                         align: "center",
-                        render: (_: unknown, row) => <Dropdown
-                          trigger={["click"]}
-                          menu={{
-                            items: [
-                              { key: "phone", icon: <PhoneOutlined />, label: "修改手机号" },
-                              { key: "password", icon: <KeyOutlined />, label: "重置密码" },
-                              { type: "divider" },
-                              {
-                                key: "delete",
-                                icon: <DeleteOutlined />,
-                                label: "删除账号",
-                                danger: true,
-                                disabled: row.id === selfUserId
-                                  || row.is_superuser
-                                  || row.organization_role === "owner"
-                                  || (row.is_staff && !isSuperuserSelf),
-                              },
-                            ],
-                            onClick: ({ key }) => {
-                              if (key === "phone") openPhoneModal(row);
-                              else if (key === "password") openPasswordModal(row);
-                              else if (key === "delete") confirmDeleteAccount(row);
-                            },
-                          }}
-                        >
-                          <Button type="text" icon={<MoreOutlined />} aria-label={`管理 ${row.username}`} />
-                        </Dropdown>,
+                        render: (_: unknown, row) => (
+                          <Button
+                            type="link"
+                            size="small"
+                            icon={<EditOutlined />}
+                            onClick={() => openEditModal(row)}
+                          >
+                            编辑
+                          </Button>
+                        ),
                       },
                     ]}
                   />
@@ -463,18 +736,65 @@ export default function Accounts() {
       </Card>
 
       <Modal
-        className="account-admin-modal"
-        title={<div className="account-modal-title"><span><PlusOutlined /></span><div><strong>新建成员账号</strong><small>账号创建后将自动加入当前企业</small></div></div>}
+        className="account-admin-modal account-edit-modal"
+        title={null}
         open={createOpen}
-        onCancel={() => setCreateOpen(false)}
+        onCancel={resetCreateModal}
         onOk={() => void handleCreate()}
         confirmLoading={saving}
         okText="创建"
         cancelText="取消"
-        width={680}
+        width={640}
+        centered
         destroyOnHidden
       >
-        <Form form={createForm} layout="vertical" initialValues={{ is_staff: false, organization_role: "member" }}>
+        <AccountEditModalHead
+          icon={<PlusOutlined />}
+          title="新建成员账号"
+          subtitle="可同时加入多个企业"
+        />
+        <Form
+          form={createForm}
+          layout="vertical"
+          className="account-edit-form"
+          requiredMark="optional"
+          initialValues={{
+            platform_role: "user",
+            organizations: [{ id: managementOrganizationId || organizations[0]?.id, role: "member" }],
+          }}
+        >
+          <section className="account-edit-avatar-card">
+            {createAvatarPreview ? (
+              <AvatarPreview
+                src={createAvatarPreview}
+                size={56}
+                className="account-edit-avatar-preview"
+                alt={`${createDisplayName || "新成员"}的头像`}
+              />
+            ) : (
+              <Avatar
+                size={56}
+                icon={<UserOutlined />}
+                className="account-edit-avatar"
+              >
+                {(createDisplayName || "?").slice(0, 1)}
+              </Avatar>
+            )}
+            <div className="account-edit-avatar-copy">
+              <strong>头像</strong>
+              <span>支持 png / jpg / gif / webp，不超过 5MB</span>
+            </div>
+            <Upload
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              showUploadList={false}
+              beforeUpload={handleCreateAvatarSelect}
+            >
+              <Button icon={<CameraOutlined />} className="account-edit-avatar-btn">
+                {createAvatarPreview ? "更换头像" : "选择头像"}
+              </Button>
+            </Upload>
+          </section>
+
           <div className="account-form-grid">
             <Form.Item label="登录用户名" name="username" rules={[{ required: true, message: "请输入用户名" }]}>
               <Input placeholder="用于登录，不建议使用中文" autoComplete="off" />
@@ -497,60 +817,258 @@ export default function Accounts() {
           >
             <Input.Password prefix={<LockOutlined />} placeholder="至少 8 位，创建后仅展示一次" autoComplete="new-password" />
           </Form.Item>
-          <div className="account-form-grid">
-            <Form.Item label="企业角色" name="organization_role" extra="企业管理员可管理本企业成员和连接授权">
-              <Select options={[
-                { value: "member", label: "企业成员" },
-                { value: "admin", label: "企业管理员" },
-              ]} />
-            </Form.Item>
-            {isSuperuserSelf && <Form.Item label="平台管理权限" name="is_staff" valuePropName="checked" extra="可访问平台级后台功能">
-              <Switch checkedChildren="平台管理员" unCheckedChildren="普通用户" />
-            </Form.Item>}
+
+          <div className="account-org-list-head">
+            <strong>所属企业</strong>
+            <Typography.Text type="secondary">可添加多个企业并分别设置角色</Typography.Text>
           </div>
+          <Form.List
+            name="organizations"
+            rules={[{
+              validator: async (_, value) => {
+                if (!value?.length) throw new Error("至少选择一个所属企业");
+              },
+            }]}
+          >
+            {(fields, { add, remove }, { errors }) => (
+              <>
+                {fields.map((field) => (
+                  <div className="account-org-row" key={field.key}>
+                    <Form.Item
+                      {...field}
+                      name={[field.name, "id"]}
+                      rules={[{ required: true, message: "请选择企业" }]}
+                      style={{ flex: 1, marginBottom: 0 }}
+                    >
+                      <Select
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="选择企业"
+                        options={organizationSelectOptions}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      {...field}
+                      name={[field.name, "role"]}
+                      rules={[{ required: true, message: "请选择角色" }]}
+                      style={{ width: 140, marginBottom: 0 }}
+                    >
+                      <Select options={[
+                        { value: "member", label: "企业成员" },
+                        { value: "admin", label: "企业管理员" },
+                      ]} />
+                    </Form.Item>
+                    {fields.length > 1 ? (
+                      <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                    ) : <span style={{ width: 32 }} />}
+                  </div>
+                ))}
+                <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add({ role: "member" })} style={{ marginTop: 8 }}>
+                  添加企业
+                </Button>
+                <Form.ErrorList errors={errors} />
+              </>
+            )}
+          </Form.List>
+
+          {isSuperuserSelf && (
+            <Form.Item label="平台管理权限" name="platform_role" extra="超级管理员拥有全部后台权限，平台管理员可管理账号与企业" style={{ marginTop: 16 }}>
+              <Select options={PLATFORM_ROLE_OPTIONS} />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
       <Modal
-        className="account-admin-modal"
-        title={target ? `重置密码 · ${target.display_name || target.username}` : "重置密码"}
-        open={pwdOpen}
-        onCancel={() => { setPwdOpen(false); setTarget(null); }}
-        onOk={() => void handleResetPwd()}
+        className="account-admin-modal account-edit-modal"
+        title={null}
+        open={editOpen}
+        onCancel={() => { setEditOpen(false); setTarget(null); setEditAvatarUrl(""); editForm.resetFields(); }}
+        onOk={() => void handleEdit()}
         confirmLoading={saving}
-        okText="确认重置"
+        okText="保存"
         cancelText="取消"
+        width={640}
+        centered
         destroyOnHidden
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <div className={`account-edit-footer${target && canDeleteAccount(target) ? " has-delete" : ""}`}>
+            {target && canDeleteAccount(target) ? (
+              <Button type="link" danger onClick={() => confirmDeleteAccount(target)}>
+                删除账号
+              </Button>
+            ) : null}
+            <Space size={10} className="account-edit-footer-actions">
+              <CancelBtn />
+              <OkBtn />
+            </Space>
+          </div>
+        )}
       >
-        <Form form={pwdForm} layout="vertical">
-          <Form.Item
-            label="新密码"
-            name="password"
-            rules={[
-              { required: true, message: "请输入新密码" },
-              { min: 8, message: "至少 8 位" },
-            ]}
-          >
-            <Input.Password placeholder="重置后对方需用新密码登录" autoComplete="new-password" />
-          </Form.Item>
-          <div className="account-modal-notice">重置后该成员现有登录令牌会立即失效，需要使用新密码重新登录。</div>
-        </Form>
-      </Modal>
+        <AccountEditModalHead
+          icon={<EditOutlined />}
+          title="编辑账号"
+          subtitle={target ? `@${target.username}` : undefined}
+        />
+        <Form form={editForm} layout="vertical" className="account-edit-form" requiredMark="optional">
+          <section className="account-edit-avatar-card">
+            {authenticatedAvatarUrl(editAvatarUrl) ? (
+              <AvatarPreview
+                src={authenticatedAvatarUrl(editAvatarUrl)!}
+                size={56}
+                className="account-edit-avatar-preview"
+                alt={`${target?.display_name || target?.username || "用户"}的头像`}
+              />
+            ) : (
+              <Avatar
+                size={56}
+                icon={<UserOutlined />}
+                className="account-edit-avatar"
+              >
+                {(target?.display_name || target?.username || "?").slice(0, 1)}
+              </Avatar>
+            )}
+            <div className="account-edit-avatar-copy">
+              <strong>头像</strong>
+              <span>支持 png / jpg / gif / webp，不超过 5MB</span>
+            </div>
+            <Upload
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                void handleEditAvatar(file);
+                return false;
+              }}
+            >
+              <Button icon={<CameraOutlined />} loading={avatarUploading} className="account-edit-avatar-btn">
+                更换头像
+              </Button>
+            </Upload>
+          </section>
 
-      <Modal className="account-admin-modal" title={target ? `修改手机号 · ${target.display_name || target.username}` : "修改手机号"} open={phoneOpen}
-        onCancel={() => { setPhoneOpen(false); setTarget(null); }} okText="保存并匹配"
-        onOk={async () => {
-          if (!target) return;
-          const values = await phoneForm.validateFields();
-          setSaving(true);
-          try { await updateAdminUser(target.id, { phone: values.phone || "" }); message.success("手机号已保存，匹配任务已触发"); setPhoneOpen(false); setTarget(null); await load(); }
-          catch (e: any) { message.error(e?.response?.data?.error || "保存失败"); }
-          finally { setSaving(false); }
-        }} confirmLoading={saving} cancelText="取消" destroyOnHidden>
-        <Form form={phoneForm} layout="vertical">
-          <Form.Item name="phone" label="手机号" help="保存后会异步匹配同企业的企业微信成员；页面和日志仅展示脱敏号码">
-            <Input prefix={<PhoneOutlined />} placeholder="13800000000 或 +8613800000000" />
+          <div className="account-form-grid">
+            <Form.Item label="成员姓名" name="display_name" required rules={[{ required: true, message: "请输入成员姓名" }]}>
+              <Input prefix={<UserOutlined />} placeholder="在任务和协作中展示" />
+            </Form.Item>
+            <Form.Item label="邮箱" name="email">
+              <Input prefix={<MailOutlined />} placeholder="选填" />
+            </Form.Item>
+            <Form.Item
+              label="手机号"
+              name="phone"
+              help={target?.phone_masked ? `当前：${target.phone_masked}（填写新号码才会更新）` : "填写后用于匹配企业微信成员"}
+            >
+              <Input prefix={<PhoneOutlined />} placeholder="留空则不修改" />
+            </Form.Item>
+            <Form.Item label="账号状态" name="is_active" valuePropName="checked" className="account-edit-status-item">
+              <Switch
+                checkedChildren="启用"
+                unCheckedChildren="停用"
+                disabled={target?.id === selfUserId}
+              />
+            </Form.Item>
+          </div>
+
+          <Form.Item
+            label="重置密码"
+            name="password"
+            rules={[{ min: 8, message: "至少 8 位" }]}
+            extra="留空表示不修改密码；填写后将立即失效旧登录态"
+          >
+            <Input.Password prefix={<LockOutlined />} placeholder="可选，填写则重置" autoComplete="new-password" />
           </Form.Item>
+
+          <div className="account-org-list-head">
+            <strong>所属企业</strong>
+            <span>支持多个企业；所有者身份需通过所有权转移调整</span>
+          </div>
+          <Form.List
+            name="organizations"
+            rules={[{
+              validator: async (_, value) => {
+                if (!value?.length) throw new Error("至少保留一个所属企业");
+              },
+            }]}
+          >
+            {(fields, { add, remove }, { errors }) => (
+              <div className="account-org-list">
+                {fields.map((field) => {
+                  const rowRole = editMemberships?.[field.name]?.role;
+                  const isOwner = rowRole === "owner";
+                  return (
+                    <div className="account-org-card" key={field.key}>
+                      <span className="account-org-card-icon"><BankOutlined /></span>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, "id"]}
+                        rules={[{ required: true, message: "请选择企业" }]}
+                        className="account-org-card-org"
+                      >
+                        <Select
+                          showSearch
+                          optionFilterProp="label"
+                          placeholder="选择企业"
+                          disabled={isOwner}
+                          variant="borderless"
+                          options={editOrganizationOptions}
+                          suffixIcon={null}
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        {...field}
+                        name={[field.name, "role"]}
+                        rules={[{ required: true, message: "请选择角色" }]}
+                        className="account-org-card-role"
+                      >
+                        <Select
+                          disabled={isOwner}
+                          options={isOwner
+                            ? [{ value: "owner", label: "企业所有者" }]
+                            : [
+                              { value: "member", label: "企业成员" },
+                              { value: "admin", label: "企业管理员" },
+                            ]}
+                        />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        className="account-org-card-remove"
+                        disabled={isOwner || fields.length <= 1}
+                        icon={<DeleteOutlined />}
+                        onClick={() => remove(field.name)}
+                        aria-label="移出企业"
+                      />
+                    </div>
+                  );
+                })}
+                <Button
+                  type="dashed"
+                  block
+                  className="account-org-add-btn"
+                  icon={<PlusOutlined />}
+                  onClick={() => add({ role: "member" })}
+                >
+                  添加企业
+                </Button>
+                <Form.ErrorList errors={errors} />
+              </div>
+            )}
+          </Form.List>
+
+          {isSuperuserSelf && (
+            <Form.Item
+              label="平台管理权限"
+              name="platform_role"
+              extra="超级管理员拥有全部后台权限"
+              className="account-edit-platform-item"
+            >
+              <Select
+                className="account-platform-role-select-lg"
+                options={PLATFORM_ROLE_OPTIONS}
+                disabled={target?.id === selfUserId && platformRoleOf(target) === "superuser"}
+              />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
     </div>

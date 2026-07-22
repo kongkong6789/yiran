@@ -10,6 +10,7 @@ import {
 import { getPublishedTasks, type PublishedTask, type TaskView } from "./mockTasks";
 import TaskDetailView from "./TaskDetailView";
 import TaskStatusBadge from "./TaskStatusBadge";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const PAGE_SIZE = 10;
 const fmtTime = (value?: string | null) => value
@@ -216,7 +217,15 @@ export default function TaskTrackingPanel({
                           <span>{task.sopId || "通用任务"}</span>
                         </div>
                         <div className="task-center-item-meta">
-                          <span><Avatar size={20} icon={<UserOutlined />} /> {task.assignees.join("、") || "未指定负责人"}</span>
+                          <span>
+                            <Avatar.Group size={20} max={{ count: 3 }}>
+                              {(task.assigneeMembers || []).map((member) => (
+                                <Avatar key={member.id} src={authenticatedAvatarUrl(member.avatarUrl)} icon={!member.avatarUrl ? <UserOutlined /> : undefined} />
+                              ))}
+                              {!task.assigneeMembers?.length && <Avatar icon={<UserOutlined />} />}
+                            </Avatar.Group>{" "}
+                            {task.assignees.join("、") || "未指定负责人"}
+                          </span>
                           <span className={overdue ? "is-overdue" : ""}><ClockCircleOutlined /> {fmtTime(task.deadline)}</span>
                           <span>来源：{task.taskSource === "received" ? task.sender : "我发起"}</span>
                           {task.notificationStatus === "accepted" && <span className="task-center-wecom-synced">已同步企业微信</span>}

@@ -24,6 +24,7 @@ import {
   type TeamSummary,
   type TeamUserOption,
 } from "../../api/client";
+import { authenticatedAvatarUrl } from "../../utils/avatar";
 
 const KIND_META: Record<TeamKind, { label: string; color: string; icon: JSX.Element; hint: string }> = {
   platform: {
@@ -304,7 +305,9 @@ export default function TeamManager({
                 <div className="team-member-chips">
                   {team.members.map((member) => (
                     <span className="team-member-chip" key={member.id}>
-                      <Avatar size={22}>{(member.displayName || member.username).slice(0, 1).toUpperCase()}</Avatar>
+                      <Avatar size={22} src={authenticatedAvatarUrl(member.avatarUrl)}>
+                        {(member.displayName || member.username).slice(0, 1).toUpperCase()}
+                      </Avatar>
                       <span className="team-member-chip-name">
                         {member.displayName}
                         <small>@{member.username}</small>
@@ -473,7 +476,9 @@ export default function TeamManager({
               {selectedCreateMembers.length > 0 && (
                 <div className="team-member-avatars">
                   {selectedCreateMembers.slice(0, 6).map((member) => (
-                    <Avatar key={member.id} size={28}>{(member.displayName || member.username).slice(0, 1).toUpperCase()}</Avatar>
+                    <Avatar key={member.id} size={28} src={authenticatedAvatarUrl(member.avatarUrl)}>
+                      {(member.displayName || member.username).slice(0, 1).toUpperCase()}
+                    </Avatar>
                   ))}
                   {selectedCreateMembers.length > 6 && <Avatar size={28}>+{selectedCreateMembers.length - 6}</Avatar>}
                 </div>

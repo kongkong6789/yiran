@@ -186,12 +186,18 @@ def _orders_block(question: str) -> str:
 
 
 def _inventory_block(question: str) -> str:
-    """库存意图：当前库无独立库存快照时明确告知，避免模型瞎编。"""
+    """库存意图的 DataLake 快照兜底（实时库存已由 jackyun_block 统一覆盖）。"""
     q = (question or "").lower()
-    if not any(k in q for k in ("库存", "在库", "在途", "warehouse", "inventory", "stock")):
+    if not any(
+        k in q
+        for k in (
+            "库存", "在库", "在途", "warehouse", "inventory", "stock",
+            "补货", "缺货", "断货", "备货",
+        )
+    ):
         return ""
     if not _pg_ready():
-        return "【库存】当前未接入库存快照表，无法给出在库数量。"
+        return ""
     try:
         tables = {
             r["table_name"]
@@ -223,14 +229,10 @@ def _inventory_block(question: str) -> str:
                     for r in rows
                 ]
                 return f"【库存快照(PostgreSQL·{name})】\n" + "\n".join(lines)
-    return (
-        "【库存】DataLake 尚未接入库存快照表"
-        "（期望 dwd_inventory_snapshot / inventory_snapshot）。"
-        "请先同步库存数据；当前仅有销售明细与指标，不能代替库存数量。"
-    )
+    return ""
 
 
-def gather_knowledge(question: str, top_k: int = 3) -> str:
+def gather_knowledge(question: str, top_k: int = 3, *, user=None) -> str:
     """围绕会议问题汇聚 RAG + 数据底座 + 本体图谱资料,返回可直接注入 prompt 的文本(无资料返回空串)。"""
     blocks: list[str] = []
 
@@ -251,13 +253,37 @@ def gather_knowledge(question: str, top_k: int = 3) -> str:
     if rb:
         blocks.append(rb)
 
-    # 业务意图：订单 / 库存
+    # 吉客云 / 金蝶：使用当前用户企业配置（界面优先）
+    from apps.connectors.credentials import use_connector_secrets
+    from .jackyun_planner import jackyun_block
+    with use_connector_secrets("jackyun", user=user):
+        jy = jackyun_block(question)
+    if jy:
+        blocks.append(jy)
+
+    try:
+        from apps.connectors.kingdee import kingdee_block
+        with use_connector_secrets("kingdee", user=user):
+            kd = kingdee_block(question)
+        if kd:
+            blocks.append(kd)
+    except Exception:
+        pass
+
+    # 业务意图：订单 / 库存快照兜底
     ob = _orders_block(question)
     if ob:
         blocks.append(ob)
     ib = _inventory_block(question)
     if ib:
         blocks.append(ib)
+
+    # 业务意图：紧急补货（销量速度 × 实时库存 → 可售天数）
+    from .restock import restock_block
+    with use_connector_secrets("jackyun", user=user):
+        rsb = restock_block(question)
+    if rsb:
+        blocks.append(rsb)
 
     # 第1层 数据底座:关键指标(PG 优先,带口径)
     mb = _metrics_block()

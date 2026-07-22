@@ -8,6 +8,7 @@ import AgentChat from "./pages/AgentChat";
 import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
 import Audit from "./pages/Audit";
+import Logs from "./pages/Logs";
 import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
@@ -15,7 +16,6 @@ import Loops from "./pages/Loops";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
-import SmartTable from "./pages/SmartTable";
 import SkillsPage from "./pages/SkillsPage";
 import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
@@ -35,7 +35,7 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<RequireAuth />}>
         <Route element={<AppLayout />}>
-          <Route index element={<Navigate to="/home" replace />} />
+          <Route index element={<Navigate to="/collab" replace />} />
           <Route path="home" element={<Home />} />
           <Route path="agent" element={<AgentChat />} />
           <Route path="collab" element={<TeamCollaboration />} />
@@ -51,9 +51,10 @@ export default function App() {
           <Route path="work" element={<WorkHub />} />
           <Route path="console" element={<Navigate to="/work" replace />} />
           <Route path="todos" element={<Navigate to="/work?tab=todos" replace />} />
+          <Route path="work/templates" element={<Navigate to="/work?tab=templates" replace />} />
           <Route path="connectors" element={<Connectors />} />
-          <Route path="tables" element={<SmartTable />} />
-          <Route path="nocodb" element={<Navigate to="/tables" replace />} />
+          <Route path="tables" element={<Navigate to="/knowledge" replace />} />
+          <Route path="nocodb" element={<Navigate to="/knowledge" replace />} />
           <Route path="datalake" element={<DataLake />} />
           <Route path="my/knowledge" element={(
             <SectionHub
@@ -82,6 +83,7 @@ export default function App() {
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="audit" element={<Audit />} />
+          <Route path="logs" element={<Logs />} />
         </Route>
       </Route>
     </Routes>

@@ -11,6 +11,7 @@ from django.utils.text import slugify
 FRONTMATTER_RE = re.compile(r"^---\s*\r?\n(.*?)\r?\n---\s*\r?\n", re.DOTALL)
 MAX_SKILL_BYTES = 512_000
 MAX_SKILL_ZIP_BYTES = 20 * 1024 * 1024
+MAX_SKILL_PACKAGE_FILES = 200
 SKIP_ZIP_PREFIXES = ("__MACOSX/", ".DS_Store", "Thumbs.db")
 SKIP_ZIP_SUFFIXES = (".DS_Store",)
 
@@ -61,8 +62,12 @@ def parse_skill_markdown(text: str, *, fallback_name: str = "") -> dict[str, Any
 
 
 def _normalize_zip_path(name: str) -> str:
-    path = name.replace("\\", "/").lstrip("/")
+    path = name.replace("\\", "/")
+    if path.startswith("/") or re.match(r"^[A-Za-z]:/", path):
+        raise ValueError("Skill 包含不安全的绝对路径")
     parts = [p for p in path.split("/") if p and p != "."]
+    if any(part == ".." for part in parts):
+        raise ValueError("Skill 包含不安全的上级目录路径")
     return "/".join(parts)
 
 
@@ -104,13 +109,21 @@ def extract_zip_package(data: bytes) -> tuple[dict[str, Any], list[tuple[str, by
     skill_md_path = ""
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for raw_name in zf.namelist():
-            norm = _normalize_zip_path(raw_name)
-            if _should_skip_zip_entry(norm):
-                continue
-            payload = zf.read(raw_name)
+        file_infos = [
+            info
+            for info in zf.infolist()
+            if not info.is_dir() and not _should_skip_zip_entry(_normalize_zip_path(info.filename))
+        ]
+        if len(file_infos) > MAX_SKILL_PACKAGE_FILES:
+            raise ValueError(f"Skill 包文件过多,上限 {MAX_SKILL_PACKAGE_FILES} 个")
+        total_size = sum(info.file_size for info in file_infos)
+        if total_size > MAX_SKILL_ZIP_BYTES:
+            raise ValueError(f"Skill 目录过大,上限 {MAX_SKILL_ZIP_BYTES // (1024 * 1024)}MB")
+        for info in file_infos:
+            norm = _normalize_zip_path(info.filename)
+            payload = zf.read(info)
             files.append((norm, payload))
-            if norm.lower().endswith("skill.md"):
+            if norm.rsplit("/", 1)[-1].lower() == "skill.md":
                 if not skill_md_path or norm.count("/") < skill_md_path.count("/"):
                     skill_md_path = norm
 
@@ -126,10 +139,48 @@ def extract_zip_package(data: bytes) -> tuple[dict[str, Any], list[tuple[str, by
     return parsed, files
 
 
+def build_skill_folder_archive(files: list[tuple[str, bytes]]) -> tuple[str, bytes]:
+    """把浏览器目录选择器提交的相对路径安全封装为 Skill zip。"""
+    if not files:
+        raise ValueError("请选择包含 SKILL.md 的技能文件夹")
+    if len(files) > MAX_SKILL_PACKAGE_FILES:
+        raise ValueError(f"Skill 文件夹文件过多,上限 {MAX_SKILL_PACKAGE_FILES} 个")
+
+    normalized: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    total_size = 0
+    for raw_path, payload in files:
+        path = _normalize_zip_path(raw_path)
+        if _should_skip_zip_entry(path):
+            continue
+        if path in seen:
+            raise ValueError(f"技能文件夹包含重复路径: {path}")
+        seen.add(path)
+        total_size += len(payload)
+        if total_size > MAX_SKILL_ZIP_BYTES:
+            raise ValueError(f"Skill 目录过大,上限 {MAX_SKILL_ZIP_BYTES // (1024 * 1024)}MB")
+        normalized.append((path, payload))
+
+    if not any(path.rsplit("/", 1)[-1].lower() == "skill.md" for path, _ in normalized):
+        raise ValueError("文件夹中未找到 SKILL.md,请选择完整的技能目录")
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        for path, payload in normalized:
+            package.writestr(path, payload)
+
+    root = normalized[0][0].split("/", 1)[0]
+    filename = f"{root if '/' in normalized[0][0] else 'skill-folder'}.zip"
+    return filename, archive.getvalue()
+
+
 def extract_skill_from_upload(filename: str, data: bytes) -> dict[str, Any]:
     lower = (filename or "").lower()
     if lower.endswith(".zip"):
-        parsed, files = extract_zip_package(data)
+        try:
+            parsed, files = extract_zip_package(data)
+        except zipfile.BadZipFile as exc:
+            raise ValueError("zip 文件无效或已损坏") from exc
         return {
             **parsed,
             "package_files": files,

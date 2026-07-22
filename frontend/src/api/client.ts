@@ -52,6 +52,8 @@ export interface AuthUser {
   avatar_url?: string;
   is_staff?: boolean;
   is_superuser?: boolean;
+  /** 是否可进入账号管理：平台管理员，或任一企业的所有者/管理员 */
+  can_manage_accounts?: boolean;
   organization?: {
     id: number;
     name: string;
@@ -93,6 +95,7 @@ export interface AdminUserRow {
   username: string;
   email: string;
   display_name: string;
+  avatar_url: string;
   is_active: boolean;
   is_staff: boolean;
   is_superuser: boolean;
@@ -103,12 +106,20 @@ export interface AdminUserRow {
   organization_id: number | null;
   organization_name: string;
   organization_role: "owner" | "admin" | "member" | "";
+  organizations: Array<{
+    id: number;
+    name: string;
+    role: "owner" | "admin" | "member";
+    roleLabel: string;
+    isCurrent: boolean;
+  }>;
 }
 
 export interface OrganizationMember {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "owner" | "admin" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -123,32 +134,40 @@ export interface OrganizationSummary {
   memberCount: number;
   role: "owner" | "admin" | "member" | "";
   canManage: boolean;
+  isCurrent: boolean;
+  canSwitch: boolean;
   createdAt: string | null;
 }
 
-export const getCurrentOrganization = () =>
+export const getCurrentOrganization = (organizationId?: number) =>
   api.get<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
+    { params: organizationId ? { organizationId } : {} },
   ).then((r) => r.data);
-export const updateCurrentOrganization = (name: string) =>
+export const switchCurrentOrganization = (organizationId: number) =>
+  api.post<{ ok: boolean; organization: OrganizationSummary; user: AuthUser }>(
+    "/auth/organization/switch/",
+    { organizationId },
+  ).then((r) => r.data);
+export const updateCurrentOrganization = (name: string, organizationId?: number) =>
   api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
     "/auth/organization/",
-    { name },
+    { name, organizationId },
   ).then((r) => r.data);
-export const transferOrganizationOwnership = (targetUserId: number) =>
+export const transferOrganizationOwnership = (targetUserId: number, organizationId?: number) =>
   api.post<{
     ok: boolean;
     organization: OrganizationSummary;
     previousOwner: { id: number; username: string; role: "admin" };
     newOwner: { id: number; username: string; role: "owner" };
     transferredAt: string;
-  }>("/auth/organization/transfer-ownership/", { targetUserId }).then((r) => r.data);
-export const removeOrganizationMember = (userId: number) =>
+  }>("/auth/organization/transfer-ownership/", { targetUserId, organizationId }).then((r) => r.data);
+export const removeOrganizationMember = (userId: number, organizationId?: number) =>
   api.delete<{
     ok: boolean;
     organization: OrganizationSummary;
     removedUser: { id: number; username: string };
-  }>(`/auth/organization/members/${userId}/`).then((r) => r.data);
+  }>(`/auth/organization/members/${userId}/`, { params: organizationId ? { organizationId } : {} }).then((r) => r.data);
 export const createOrganization = (body: { name: string; ownerUserId: number }) =>
   api.post<{
     ok: boolean;
@@ -168,7 +187,9 @@ export const assignUsersToOrganization = (body: {
     ok: boolean;
     organization: OrganizationSummary;
     assignedCount: number;
-    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member" }>;
+    assignedUsers: Array<{ id: number; username: string; role: "admin" | "member"; isCurrent: boolean }>;
+    skippedCount: number;
+    skippedUsers: Array<{ id: number; username: string }>;
   }>("/auth/admin/organizations/assign-users/", body).then((r) => r.data);
 
 export type TeamKind = "platform" | "enterprise";
@@ -177,6 +198,7 @@ export interface TeamMemberRow {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   role: "lead" | "member";
   roleLabel: string;
   isActive: boolean;
@@ -203,6 +225,7 @@ export interface TeamUserOption {
   id: number;
   username: string;
   displayName: string;
+  avatarUrl: string;
   wecomBound: boolean;
 }
 
@@ -240,9 +263,9 @@ export const listTeamUserOptions = (params: { kind: TeamKind; organizationId?: n
     params: params.organizationId ? { kind: params.kind, organizationId: params.organizationId } : { kind: params.kind },
   }).then((r) => r.data);
 
-export const listAdminUsers = (q?: string) =>
-  api.get<{ ok: boolean; count: number; results: AdminUserRow[] }>("/auth/admin/users/", {
-    params: q ? { q } : {},
+export const listAdminUsers = (q?: string, organizationId?: number) =>
+  api.get<{ ok: boolean; count: number; organization?: OrganizationSummary | null; results: AdminUserRow[] }>("/auth/admin/users/", {
+    params: { ...(q ? { q } : {}), ...(organizationId ? { organizationId } : {}) },
   }).then((r) => r.data);
 
 export const createAdminUser = (body: {
@@ -251,9 +274,12 @@ export const createAdminUser = (body: {
   email?: string;
   display_name?: string;
   is_staff?: boolean;
+  is_superuser?: boolean;
+  platform_role?: "user" | "staff" | "superuser";
   phone?: string;
   organization_id?: number;
   organization_role?: "owner" | "admin" | "member";
+  organizations?: Array<{ id: number; role: "owner" | "admin" | "member" }>;
 }) =>
   api.post<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
     "/auth/admin/users/",
@@ -268,9 +294,12 @@ export const updateAdminUser = (
     display_name?: string;
     is_active?: boolean;
     is_staff?: boolean;
+    is_superuser?: boolean;
+    platform_role?: "user" | "staff" | "superuser";
     phone?: string;
     organization_id?: number;
     organization_role?: "owner" | "admin" | "member";
+    organizations?: Array<{ id: number; role: "owner" | "admin" | "member" }>;
   },
 ) =>
   api.patch<{ ok: boolean; user: AdminUserRow; password_once?: string; error?: string }>(
@@ -292,6 +321,7 @@ export interface UserWeComBindingSummary {
   weComUserId: string;
   weComMember: string;
   failureReason: string;
+  statusHint?: string;
 }
 
 export interface UserProfileSettings {
@@ -312,6 +342,7 @@ export interface WeComBindingRow {
   id: number;
   platformUserId: number;
   platformUser: string;
+  platformAvatar: string;
   phoneMasked: string;
   weComUserId: string;
   weComMember: string;
@@ -385,11 +416,18 @@ export const updateUserSettings = (
     avatar_url?: string;
   }>("/auth/settings/", body).then((r) => r.data);
 
-export const uploadUserAvatar = (file: File) => {
+export const uploadUserAvatar = (file: File, userId?: number) => {
   const form = new FormData();
   form.append("file", file);
+  if (userId) form.append("user_id", String(userId));
   return api
-    .post<{ ok: boolean; avatar: string; avatar_url: string; user: AuthUser }>(
+    .post<{
+      ok: boolean;
+      avatar: string;
+      avatar_url: string;
+      user?: AuthUser | null;
+      admin_user?: AdminUserRow | null;
+    }>(
       "/auth/avatar/",
       form,
       { headers: { "Content-Type": "multipart/form-data" } },
@@ -520,6 +558,22 @@ export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number;
 export const downloadKnowledgeFile = (fileId: number) =>
   api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);
 
+export const getKnowledgeFileContent = (fileId: number) =>
+  api.get<{ content: string; encoding?: string; file: KnowledgeFileItem }>(`/knowledge/files/${fileId}/content/`)
+    .then((r) => r.data);
+
+export const saveKnowledgeFileContent = (
+  fileId: number,
+  body: { content: string; title?: string; reingest?: boolean },
+) =>
+  api.put<{
+    ok: boolean;
+    content: string;
+    file: KnowledgeFileItem;
+    job?: KnowledgeIngestJobItem;
+    job_id?: number;
+  }>(`/knowledge/files/${fileId}/content/`, body).then((r) => r.data);
+
 export const deleteKnowledgeFile = (fileId: number) =>
   api.delete(`/knowledge/files/${fileId}/`);
 
@@ -544,18 +598,111 @@ export const uploadSkill = (file: File, adopt = false) => {
   }).then((r) => r.data);
 };
 
-export const uploadSkillAsset = (file: File, adopt = true) => {
+export const uploadSkillAsset = (
+  file: File,
+  adopt = true,
+  category: SkillAssetCategory = "general",
+  onUploadProgress?: (event: AxiosProgressEvent) => void,
+) => {
   const form = new FormData();
   form.append("file", file);
+  form.append("category", category);
   if (adopt) form.append("adopt", "1");
+  return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+    onUploadProgress,
+  }).then((r) => r.data);
+};
+
+export const uploadSkillAssetFolder = (
+  files: File[],
+  adopt = true,
+  category: SkillAssetCategory = "general",
+  onUploadProgress?: (event: AxiosProgressEvent) => void,
+) => {
+  const form = new FormData();
+  files.forEach((file) => {
+    form.append("files", file, file.name);
+    form.append("paths", file.webkitRelativePath || file.name);
+  });
+  form.append("category", category);
+  if (adopt) form.append("adopt", "1");
+  return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+    onUploadProgress,
+  }).then((r) => r.data);
+};
+
+export const createSkillAsset = (body: {
+  skill_id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  category: SkillAssetCategory;
+  adopt?: boolean;
+}) => {
+  const safeName = body.name.replace(/[\r\n]+/g, " ").replace(/"/g, "'").trim();
+  const safeDescription = body.description.replace(/[\r\n]+/g, " ").replace(/"/g, "'").trim();
+  const content = `---\nname: "${safeName}"\ndescription: "${safeDescription}"\n---\n\n${body.instructions.trim()}\n`;
+  const form = new FormData();
+  form.append("filename", "SKILL.md");
+  form.append("skill_id", body.skill_id);
+  form.append("content", content);
+  form.append("category", body.category);
+  if (body.adopt !== false) form.append("adopt", "1");
   return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
     headers: { "Content-Type": "multipart/form-data" },
   }).then((r) => r.data);
 };
 
+export const searchSkillHub = (params: {
+  q?: string;
+  page?: number;
+  page_size?: number;
+  sort_by?: SkillHubSortKey;
+  source?: SkillHubSourceFilter;
+  category?: SkillHubCategoryFilter;
+  api_key?: SkillHubApiKeyFilter;
+}) =>
+  api.get<SkillHubSearchResponse>("/skills/skillhub/search/", { params }).then((r) => r.data);
+
+export const getSkillHubDetail = (slug: string) =>
+  api.get<{ ok: boolean; skill: SkillHubSkillItem }>(`/skills/skillhub/${encodeURIComponent(slug)}/`)
+    .then((r) => r.data);
+
+export const importSkillHubSkill = (body: { slug: string; version?: string; category: SkillAssetCategory; adopt?: boolean }) =>
+  api.post<{ ok: boolean; asset: SkillAssetItem; personal?: UserSkillItem; adopted: boolean; verification: { verified: boolean; status: string } }>(
+    "/skills/skillhub/import/",
+    { adopt: true, ...body },
+    { timeout: 60_000 },
+  ).then((r) => r.data);
+
 export const getSkillAssets = () =>
   api.get<{ count: number; results: SkillAssetItem[]; cos_enabled: boolean }>("/skills/assets/")
     .then((r) => r.data);
+
+export const getSkillAnalytics = (params?: { trend_start?: string; trend_end?: string }) =>
+  api.get<SkillAnalyticsResponse>("/skills/analytics/", { params }).then((r) => r.data);
+
+export const getSkillAssetUsage = (assetId: number, params?: { page?: number; page_size?: number }) =>
+  api.get<SkillUsageHistoryResponse>(`/skills/assets/id/${assetId}/usage/`, { params }).then((r) => r.data);
+
+export const updateSkillAssetOwner = (assetId: number, ownerId: number | null) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/owner/`, {
+    owner_id: ownerId,
+  }).then((r) => r.data);
+
+export const updateSkillAssetCategory = (assetId: number, category: SkillAssetCategory) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/category/`, {
+    category,
+  }).then((r) => r.data);
+
+export const updateSkillAssetVisibility = (assetId: number, visibility: "shared" | "private") =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem; revoked_count: number }>(`/skills/assets/id/${assetId}/visibility/`, {
+    visibility,
+  }).then((r) => r.data);
 
 export const adoptSkillAsset = (skillId: string) =>
   api.post<{ ok: boolean; personal: UserSkillItem; asset: SkillAssetItem }>(`/skills/assets/${skillId}/adopt/`)
@@ -724,11 +871,75 @@ export interface UserSkillItem {
   updated_at: string;
   raw_content?: string;
   instructions?: string;
+  owner_id?: number | null;
+  owner?: string;
+}
+
+export type SkillAssetCategory = "business" | "analysis" | "content" | "automation" | "general";
+export type SkillHubSortKey = "score" | "curated_score" | "rank" | "downloads" | "stars" | "updated_at";
+export type SkillHubSourceFilter = "" | "clawhub" | "community";
+export type SkillHubApiKeyFilter = "" | "required" | "not_required";
+export type SkillHubCategoryFilter = ""
+  | "office-efficiency"
+  | "content-creation"
+  | "dev-programming"
+  | "data-analysis"
+  | "design-media"
+  | "ai-agent"
+  | "knowledge-management"
+  | "business-ops"
+  | "education"
+  | "professional"
+  | "it-ops-security"
+  | "life-service";
+
+export interface SkillHubSecurityReport {
+  status: string;
+  status_text: string;
+  report_url: string;
+}
+
+export interface SkillHubSkillItem {
+  slug: string;
+  name: string;
+  description: string;
+  version: string;
+  category: string;
+  sub_categories: Array<{ key: string; name: string }>;
+  owner: string;
+  source: string;
+  source_url: string;
+  icon_url: string;
+  downloads: number;
+  stars: number;
+  score: number;
+  verified: boolean;
+  requires_api_key: boolean;
+  detail_url: string;
+  security_reports?: Record<string, SkillHubSecurityReport>;
+  changelog?: string;
+}
+
+export interface SkillHubSearchResponse {
+  ok: boolean;
+  keyword: string;
+  page: number;
+  page_size: number;
+  total: number;
+  results: SkillHubSkillItem[];
 }
 
 export interface SkillAssetItem {
   id: number;
   skill_id: string;
+  source: "upload" | "skillhub";
+  source_url: string;
+  source_version: string;
+  source_verified: boolean;
+  source_metadata?: Record<string, unknown>;
+  content_hash?: string;
+  category: SkillAssetCategory;
+  visibility: "shared" | "private";
   name: string;
   description: string;
   original_filename: string;
@@ -741,8 +952,108 @@ export interface SkillAssetItem {
   package_file_count?: number;
   has_scripts?: boolean;
   storage: "cos" | "local";
+  uploader?: string;
+  is_uploader?: boolean;
+  owner_id?: number | null;
+  owner?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface SkillAnalyticsSummary {
+  total_skills: number;
+  total_invocations: number;
+  invocations_30d: number;
+  active_skills_30d: number;
+  utilization_rate: number;
+  shared_skills: number;
+  shared_adoptions: number;
+  owner_count: number;
+  responsibility_coverage: number;
+}
+
+export interface SkillAnalyticsRow {
+  asset_id: number;
+  skill_id: string;
+  name: string;
+  description: string;
+  visibility: "shared" | "private";
+  owner_id: number | null;
+  owner: string;
+  owner_team: string;
+  uploader: string;
+  is_uploader: boolean;
+  adoption_count: number;
+  enabled_count: number;
+  usage_count_30d: number;
+  unique_users_30d: number;
+  last_used_at: string | null;
+  last_used_by: string;
+  last_source: string;
+  recent_usage: SkillUsageEventItem[];
+  updated_at: string;
+}
+
+export interface SkillUsageEventItem {
+  id: number;
+  skill_id: string;
+  skill_name: string;
+  user_id: number | null;
+  user: string;
+  source: "agent" | "collab" | "direct";
+  source_label: string;
+  used_at: string;
+}
+
+export interface SkillUsageHistoryResponse {
+  ok: boolean;
+  asset: { id: number; skill_id: string; name: string };
+  page: number;
+  page_size: number;
+  count: number;
+  results: SkillUsageEventItem[];
+}
+
+export interface SkillPeopleRankingItem {
+  user_id: number;
+  user: string;
+  team: string;
+  usage_count_30d: number;
+  skill_count_30d: number;
+  last_used_at: string | null;
+}
+
+export interface SkillTrendPoint {
+  date: string;
+  label: string;
+  count: number;
+  unique_users: number;
+  active_skills: number;
+}
+
+export interface SkillTrendSeries {
+  points: SkillTrendPoint[];
+  total: number;
+  unique_users: number;
+  active_skills: number;
+  daily_average: number;
+  peak_date: string | null;
+  peak_label: string;
+  peak_count: number;
+}
+
+export interface SkillAnalyticsResponse {
+  scope_label: string;
+  can_manage: boolean;
+  summary: SkillAnalyticsSummary;
+  skills: SkillAnalyticsRow[];
+  ranking: SkillAnalyticsRow[];
+  people_ranking: SkillPeopleRankingItem[];
+  trend: SkillTrendPoint[];
+  trend_range: { start: string; end: string; days: number };
+  trend_by_category: Record<string, SkillTrendSeries>;
+  recent_usage: SkillUsageEventItem[];
+  owner_options: Array<{ id: number; name: string; username: string }>;
 }
 
 export interface SopStep {
@@ -852,6 +1163,22 @@ export const syncJackyun = () =>
     error?: string;
   }>("/connectors/jackyun/sync/", {}, { timeout: 120_000 }).then((r) => r.data);
 
+export const queryJackyun = (body: {
+  question?: string;
+  capability?: string;
+  params?: Record<string, unknown>;
+}) =>
+  api
+    .post<{
+      ok: boolean;
+      plan?: Record<string, unknown>;
+      result?: Record<string, unknown>;
+      block?: string;
+      capabilities?: Array<Record<string, unknown>>;
+      error?: string;
+    }>("/connectors/jackyun/query/", body, { timeout: 60_000 })
+    .then((r) => r.data);
+
 export const getTables = () =>
   api.get("/datalake/tables/").then((r) => r.data);
 export const getMetrics = () =>
@@ -862,25 +1189,91 @@ export const getAnomalies = () =>
 export const getAuditLogs = () =>
   api.get("/audit-logs/").then((r) => r.data);
 
+export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
+export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
+export interface AuditTrendPoint { date: string; count: number }
+export interface AuditDistribution { key: string; label: string; count: number; pct: number }
+export interface AuditTopUser { name: string; roleLabel: string; avatarUrl?: string; actor: string; count: number }
+export interface AuditRow {
+  id: number;
+  time: string;
+  user: { name: string; roleLabel: string; avatarUrl?: string };
+  operationType: { key: string; label: string };
+  content: string;
+  detail: string;
+  resourceType: string;
+  resourceName: string;
+  ip: string;
+  status: { key: string; label: string };
+  traceId: string;
+}
+export interface AuditOverview {
+  ok: boolean;
+  range: { start: string; end: string };
+  kpis: {
+    totalOps: AuditKpi;
+    totalUsers: AuditKpi;
+    errorOps: AuditKpi;
+    sensitiveOps: AuditKpi;
+    activeUsers: AuditKpi;
+  };
+  trend: AuditTrendPoint[];
+  distribution: AuditDistribution[];
+  topUsers: AuditTopUser[];
+  rows: AuditRow[];
+  pagination: { page: number; pageSize: number; total: number };
+  filters: {
+    operationTypes: { value: string; label: string }[];
+    statuses: { value: string; label: string }[];
+    users: { value: string; label: string }[];
+  };
+}
+export const getAuditOverview = (params: {
+  category?: AuditLogCategory;
+  start?: string;
+  end?: string;
+  type?: string;
+  status?: string;
+  user?: string;
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) =>
+  api.get<AuditOverview>("/audit/overview/", { params }).then((r) => r.data);
+
 // ================= MCP ?????? =================
 export interface McpServer {
   id: string;
   name: string;
   desc: string;
   layer: string;
-  transport: "streamable_http" | "sse" | "stdio";
-  declared_transport?: "streamable_http" | "sse" | "stdio";
+  transport: "streamable_http" | "sse" | "stdio" | "openapi";
+  declared_transport?: "streamable_http" | "sse" | "stdio" | "openapi";
   configured: boolean;
   enabled: boolean;
   url: string;
   command: string;
   args: string[];
   env?: Record<string, string>;
+  native?: {
+    native_type?: string;
+    app_key?: string;
+    app_secret_set?: boolean;
+    base_url?: string;
+    method_inventory?: string;
+    acct_id?: string;
+    username?: string;
+    password_set?: boolean;
+    lcid?: string;
+  };
   tools: string[];
   env_keys: string[];
   placeholders?: Record<string, string>;
   hints?: string[];
-  config_source: "none" | "ui" | "env" | "personal";
+  config_source: "none" | "ui" | "env" | "personal" | "organization";
+  organization_id?: number | null;
+  organization_name?: string;
+  can_manage?: boolean;
   updated_at?: string | null;
   status: "unconfigured" | "configured" | "reachable" | "unreachable" | "error" | "disabled";
 }
@@ -904,6 +1297,15 @@ export const saveMcpServer = (id: string, body: {
   env?: Record<string, string> | string;
   enabled?: boolean;
   import_json?: string;
+  native?: Record<string, unknown>;
+  app_key?: string;
+  app_secret?: string;
+  base_url?: string;
+  method_inventory?: string;
+  acct_id?: string;
+  username?: string;
+  password?: string;
+  lcid?: string;
 }) => api.put<McpServerDetail>(`/mcp/servers/${id}/`, body).then((r) => r.data);
 
 export const importMcpServer = (id: string, cursor_json: string) =>
@@ -1625,8 +2027,13 @@ export interface LoopDetectDiagnostics {
   }[];
 }
 
-export const listLoops = (status?: string) =>
-  api.get<{ results: FeedbackLoop[] }>("/loops/", { params: status ? { status } : {} }).then((r) => r.data);
+export const listLoops = (params?: { status?: string; includeMembers?: boolean }) =>
+  api.get<{ results: FeedbackLoop[] }>("/loops/", {
+    params: {
+      ...(params?.status ? { status: params.status } : {}),
+      ...(params?.includeMembers ? { include_members: 1 } : {}),
+    },
+  }).then((r) => r.data);
 export const getLoop = (id: number) =>
   api.get<FeedbackLoop>(`/loops/${id}/`).then((r) => r.data);
 export const createLoop = (body: {
@@ -1753,6 +2160,13 @@ export interface CollabRoom {
   active_xiaoce_run?: XiaoceRun | null;
 }
 
+export interface CollabContextRoomRef {
+  id: string;
+  title: string;
+  message_count?: number;
+  last_message_id?: number | null;
+}
+
 export interface CollabMessage {
   id: number;
   room_id: string;
@@ -1777,6 +2191,7 @@ export interface CollabMessage {
     error_message?: string;
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
+    context_rooms?: CollabContextRoomRef[];
     [key: string]: unknown;
   };
   msg_type?: "user" | "system" | "ai";
@@ -1897,13 +2312,21 @@ export const listCollabRooms = (params?: { status?: string }) =>
 export const createCollabRoom = (body: {
   title?: string;
   peer_username?: string;
+  peer_bot_id?: string;
   peer_usernames?: string[];
   room_kind?: "dm" | "group";
 }) =>
   api.post<CollabRoom>("/collab/rooms/", body).then((r) => r.data);
 
-export const getCollabRoom = (id: string) =>
-  api.get<CollabRoom>(`/collab/rooms/${id}/`).then((r) => r.data);
+export const createXiaoceTask = (body: { title?: string } = {}) =>
+  api.post<CollabRoom>("/collab/xiaoce-tasks/", body).then((response) => response.data);
+
+export const getCollabRoom = (id: string, opts?: { includeMessages?: boolean }) =>
+  api.get<CollabRoom>(`/collab/rooms/${id}/`, {
+    params: {
+      include_messages: opts?.includeMessages ? "1" : "0",
+    },
+  }).then((r) => r.data);
 
 export const updateCollabRoom = (
   id: string,
@@ -2021,8 +2444,15 @@ export type CollabSyncEvent = {
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
   xiaoce_runs?: XiaoceRun[];
+  read_receipts?: CollabReadReceipt[];
   after_id?: number;
   after_insight_id?: number;
+};
+
+export type CollabReadReceipt = {
+  user_id: number;
+  last_read_message_id: number;
+  read_at: string;
 };
 
 /** ???? WebSocket??????? :8000? */
@@ -2155,6 +2585,7 @@ export const sendCollabMessage = (
   files?: File[],
   replyToId?: number,
   runId?: string,
+  contextRoomIds?: string[],
 ) => {
   if (files?.length) {
     const form = new FormData();
@@ -2162,6 +2593,7 @@ export const sendCollabMessage = (
     form.append("analyze", analyze ? "1" : "0");
     if (replyToId) form.append("reply_to_id", String(replyToId));
     if (runId) form.append("run_id", runId);
+    if (contextRoomIds?.length) form.append("context_room_ids", JSON.stringify(contextRoomIds));
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -2193,6 +2625,7 @@ export const sendCollabMessage = (
         analyze: analyze ? "1" : "0",
         ...(replyToId ? { reply_to_id: replyToId } : {}),
         ...(runId ? { run_id: runId } : {}),
+        ...(contextRoomIds?.length ? { context_room_ids: contextRoomIds } : {}),
       },
       { timeout: 120_000 },
     )
@@ -2509,6 +2942,11 @@ export type SmartSheetListItem = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  knowledge_base?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   column_count: number;
   row_count: number;
   created_at: string;
@@ -2519,6 +2957,11 @@ export type SmartSheetDetail = {
   id: number;
   name: string;
   description: string;
+  owner_name?: string;
+  organization_id?: number | null;
+  knowledge_base?: number | null;
+  can_manage?: boolean;
+  is_mine?: boolean;
   columns: SmartColumn[];
   rows: SmartRow[];
   views: SmartView[];
@@ -2527,7 +2970,7 @@ export type SmartSheetDetail = {
   updated_at: string;
 };
 
-export type SmartViewType = "grid" | "kanban" | "form";
+export type SmartViewType = "grid" | "kanban" | "form" | "dashboard";
 
 export type SmartView = {
   id: number;
@@ -2550,10 +2993,14 @@ export type SmartAutomation = {
   updated_at: string;
 };
 
-export const listSmartSheets = () =>
-  api.get<{ results: SmartSheetListItem[] }>("/smarttable/sheets/").then((r) => r.data);
+export const listSmartSheets = (params?: { knowledge_base?: number }) =>
+  api.get<{ results: SmartSheetListItem[] }>("/smarttable/sheets/", { params }).then((r) => r.data);
 
-export const createSmartSheet = (body: { name?: string; description?: string }) =>
+export const createSmartSheet = (body: {
+  name?: string;
+  description?: string;
+  knowledge_base?: number;
+}) =>
   api.post<SmartSheetDetail>("/smarttable/sheets/", body).then((r) => r.data);
 
 export const getSmartSheet = (id: number) =>
@@ -2630,4 +3077,27 @@ export const exportSmartSheetCsv = (sheetId: number) =>
   api.get<Blob>(`/smarttable/sheets/${sheetId}/export.csv`, { responseType: "blob" }).then((r) => r.data);
 
 export const importSmartSheetCsv = (sheetId: number, csvText: string) =>
-  api.post<{ ok: boolean; created: number }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+  api.post<{ ok: boolean; created: number; source?: string }>(`/smarttable/sheets/${sheetId}/import.csv`, { csv: csvText }).then((r) => r.data);
+
+export const importSmartSheetFile = (sheetId: number, file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api
+    .post<{ ok: boolean; created: number; source?: string; error?: string }>(
+      `/smarttable/sheets/${sheetId}/import.csv`,
+      form,
+    )
+    .then((r) => r.data);
+};
+
+export const importSmartSheetNew = (file: File, name?: string) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (name?.trim()) form.append("name", name.trim());
+  return api
+    .post<SmartSheetDetail & { import_meta?: { source?: string; row_count?: number; column_count?: number } }>(
+      "/smarttable/sheets/import/",
+      form,
+    )
+    .then((r) => r.data);
+};

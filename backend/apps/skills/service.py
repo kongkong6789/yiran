@@ -10,7 +10,7 @@ MENTION_RE = re.compile(r"@([a-zA-Z0-9_\-\u4e00-\u9fff]+)")
 
 
 def list_user_skills(user, *, enabled_only: bool = False) -> list[UserSkill]:
-    qs = UserSkill.objects.filter(user=user).select_related("source_asset")
+    qs = UserSkill.objects.filter(user=user).select_related("source_asset", "source_asset__owner")
     if enabled_only:
         qs = qs.filter(enabled=True)
     return list(qs.order_by("-updated_at"))

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Empty, Space, Spin, Tag, Typography } from "antd";
 import { EyeOutlined, ReloadOutlined } from "@ant-design/icons";
 import { getLoop, listLoops, type FeedbackLoop } from "../api/client";
+import { useVisualizationTheme } from "../theme/visualization";
 import LoopRingDiagram from "./LoopRingDiagram";
 
 const TYPE_COLOR: Record<string, string> = { R: "red", B: "blue", comp: "purple" };
@@ -11,6 +12,7 @@ type Props = {
 };
 
 export default function GraphDemoLoops({ onOpenDetail }: Props) {
+  const visualTheme = useVisualizationTheme();
   const [loops, setLoops] = useState<FeedbackLoop[]>([]);
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -63,7 +65,7 @@ export default function GraphDemoLoops({ onOpenDetail }: Props) {
   const current = loops[active] || loops[0];
 
   return (
-    <div style={{ padding: "4px 4px 8px" }}>
+    <div className="graph-demo-loops" style={{ padding: "4px 4px 8px", background: visualTheme.canvas }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
         <div>
           <Typography.Text strong>全部闭环 · 共 {loops.length} 条</Typography.Text>

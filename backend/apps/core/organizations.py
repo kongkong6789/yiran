@@ -39,9 +39,20 @@ def is_organization_admin(user, organization: Organization | None = None) -> boo
     )
     if organization is not None:
         qs = qs.filter(organization=organization)
-    else:
-        qs = qs.filter(is_primary=True)
     return qs.exists()
+
+
+def default_managed_organization(user) -> Organization | None:
+    """优先返回用户可管理的当前企业；否则回退到其任意可管理企业。"""
+    primary = current_organization(user)
+    if primary and is_organization_admin(user, primary):
+        return primary
+    admin_ids = admin_organization_ids(user)
+    if admin_ids:
+        return Organization.objects.filter(id=admin_ids[0], is_active=True).first()
+    if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+        return primary
+    return None
 
 
 def admin_organization_ids(user) -> list[int]:
@@ -93,12 +104,28 @@ def assign_user_to_organization(
     organization: Organization,
     *,
     role: str = OrganizationMembership.Role.MEMBER,
+    make_primary: bool = True,
 ) -> OrganizationMembership:
-    OrganizationMembership.objects.filter(user=user, is_primary=True).update(is_primary=False)
+    existing = OrganizationMembership.objects.select_for_update().filter(
+        organization=organization,
+        user=user,
+    ).first()
+    if make_primary:
+        OrganizationMembership.objects.filter(user=user, is_primary=True).exclude(
+            pk=existing.pk if existing else None,
+        ).update(is_primary=False)
+        is_primary = True
+    else:
+        has_primary = OrganizationMembership.objects.filter(
+            user=user,
+            is_active=True,
+            is_primary=True,
+        ).exclude(pk=existing.pk if existing else None).exists()
+        is_primary = bool(existing and existing.is_primary) or not has_primary
     membership, _ = OrganizationMembership.objects.update_or_create(
         organization=organization,
         user=user,
-        defaults={"role": role, "is_active": True, "is_primary": True},
+        defaults={"role": role, "is_active": True, "is_primary": is_primary},
     )
     return membership
 

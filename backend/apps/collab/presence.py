@@ -11,9 +11,17 @@ from .models import CollabPresence
 ONLINE_WINDOW_SECONDS = 75
 
 
+# 心跳写入节流：远程库上每次 UPDATE 很贵，短时间内重复 touch 直接复用
+TOUCH_MIN_INTERVAL_SECONDS = 20
+
+
 def touch_presence(user) -> CollabPresence:
-    row, _ = CollabPresence.objects.get_or_create(user=user)
-    # auto_now 需显式 save 才会刷新
+    row, created = CollabPresence.objects.get_or_create(user=user)
+    if created:
+        return row
+    # auto_now 需显式 save 才会刷新；未过节流窗口则跳过写库
+    if row.last_seen and row.last_seen >= timezone.now() - timedelta(seconds=TOUCH_MIN_INTERVAL_SECONDS):
+        return row
     row.save(update_fields=["last_seen"])
     return row
 

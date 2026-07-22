@@ -1,6 +1,7 @@
 """账号注册 / 登录 / 个人信息 API。"""
 from __future__ import annotations
 
+import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -20,11 +21,19 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from .models import AuditLog, Organization, OrganizationMembership, UserSettings
+from .avatar_storage import (
+    AvatarStorageError,
+    delete as delete_avatar_object,
+    fetch as fetch_avatar_object,
+    is_cos_token,
+    upload as upload_avatar_object,
+)
 from .organizations import (
     assign_user_to_organization,
     create_organization_with_owner,
     create_personal_organization,
     current_organization,
+    default_managed_organization,
     is_organization_admin,
     primary_membership,
     transfer_organization_ownership,
@@ -35,6 +44,7 @@ User = get_user_model()
 
 AVATAR_MAX_BYTES = 5 * 1024 * 1024
 AVATAR_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+logger = logging.getLogger(__name__)
 
 
 def _profiles_root() -> Path:
@@ -54,6 +64,7 @@ def _wecom_binding_summary(user) -> dict:
             "weComUserId": "",
             "weComMember": "",
             "failureReason": "",
+            "statusHint": "尚未建立企业微信成员绑定。",
         }
     wecom_member = ""
     if binding.wecom_config_id and binding.wecom_userid:
@@ -62,12 +73,22 @@ def _wecom_binding_summary(user) -> dict:
             wecom_userid=binding.wecom_userid,
         ).only("name").first()
         wecom_member = contact.name if contact else ""
+    awaiting_reverification = bool(
+        binding.status == UserWeComBinding.Status.PENDING
+        and binding.wecom_config_id
+        and binding.wecom_userid
+    )
     return {
         "status": binding.status,
-        "statusLabel": binding.get_status_display(),
+        "statusLabel": "待重新验证" if awaiting_reverification else binding.get_status_display(),
         "weComUserId": binding.wecom_userid or "",
         "weComMember": wecom_member,
         "failureReason": binding.failure_reason or "",
+        "statusHint": (
+            "手机号已更新，系统正在确认是否仍对应当前企业微信成员；原绑定关系会保留。"
+            if awaiting_reverification
+            else ""
+        ),
     }
 
 
@@ -92,6 +113,9 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
         settings, _ = UserSettings.objects.get_or_create(user=user)
     display = (settings.display_name or "").strip() or user.username
     membership = primary_membership(user)
+    can_manage_accounts = bool(
+        user.is_staff or user.is_superuser or is_organization_admin(user)
+    )
     return {
         "id": user.id,
         "username": user.username,
@@ -102,6 +126,7 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
         "avatar_url": settings.avatar_url,
         "is_staff": bool(user.is_staff or user.is_superuser),
         "is_superuser": bool(user.is_superuser),
+        "can_manage_accounts": can_manage_accounts,
         "organization": {
             "id": membership.organization_id,
             "name": membership.organization.name,
@@ -113,6 +138,28 @@ def _user_payload(user, settings: UserSettings | None = None) -> dict:
             },
         } if membership else None,
     }
+
+
+def _client_ip(request) -> str:
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR") or ""
+
+
+def _write_auth_audit(request, *, actor: str, action: str, intent: str, decision: str, result: dict | None = None) -> None:
+    try:
+        AuditLog.objects.create(
+            trace_id=f"{action}-{int(timezone.now().timestamp() * 1000)}",
+            actor=actor or "unknown",
+            intent=intent,
+            action=action,
+            payload={"ip": _client_ip(request)},
+            decision=decision,
+            result=result or {},
+        )
+    except Exception:  # noqa: BLE001 审计写入失败不应影响主流程
+        logging.getLogger(__name__).exception("write auth audit failed: %s", action)
 
 
 @api_view(["POST"])
@@ -135,6 +182,7 @@ def register(request):
     UserSettings.objects.create(user=user, phone=phone)
     create_personal_organization(user, name=f"{username}的企业")
     token, _ = Token.objects.get_or_create(user=user)
+    _write_auth_audit(request, actor=user.username, action="auth.register", intent="用户注册", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True, "token": token.key, "user": _user_payload(user)}, status=201)
 
 
@@ -145,18 +193,25 @@ def login(request):
     password = str(request.data.get("password") or "")
     user = authenticate(request, username=username, password=password)
     if not user:
+        _write_auth_audit(
+            request, actor=username, action="auth.login_failed", intent="登录失败",
+            decision=AuditLog.Decision.BLOCK, result={"reason": "invalid_credentials"},
+        )
         return Response({"ok": False, "error": "用户名或密码错误"}, status=400)
     UserSettings.objects.get_or_create(user=user)
     if not primary_membership(user):
         create_personal_organization(user)
     token, _ = Token.objects.get_or_create(user=user)
+    _write_auth_audit(request, actor=user.username, action="auth.login", intent="用户登录", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True, "token": token.key, "user": _user_payload(user)})
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def logout(request):
+    actor = request.user.username
     Token.objects.filter(user=request.user).delete()
+    _write_auth_audit(request, actor=actor, action="auth.logout", intent="用户登出", decision=AuditLog.Decision.ALLOW)
     return Response({"ok": True})
 
 
@@ -187,24 +242,38 @@ def user_settings(request):
         return Response(_settings_payload(settings))
 
     body = request.data or {}
+    update_fields: list[str] = ["updated_at"]
     if body.get("display_name") is not None:
         settings.display_name = str(body.get("display_name") or "").strip()[:64]
+        update_fields.append("display_name")
     if body.get("bio") is not None:
         settings.bio = str(body.get("bio") or "").strip()[:200]
+        update_fields.append("bio")
     if body.get("methodology") is not None:
         settings.methodology = str(body.get("methodology") or "").strip()[:4000]
+        update_fields.append("methodology")
     if "llm_api_key" in body and body.get("llm_api_key") not in (None, "", "***"):
         settings.llm_api_key = str(body.get("llm_api_key") or "").strip()
+        update_fields.append("llm_api_key")
     if body.get("llm_base_url") is not None:
         settings.llm_base_url = str(body.get("llm_base_url") or "").strip()
+        update_fields.append("llm_base_url")
     if body.get("llm_model") is not None:
         settings.llm_model = str(body.get("llm_model") or "").strip()
-    phone_updated = False
-    if "phone" in body:
+        update_fields.append("llm_model")
+
+    phone_in_payload = "phone" in body
+    if phone_in_payload:
         settings.phone = str(body.get("phone") or "").strip()[:32]
-        phone_updated = True
-    settings.save()
-    wecom_sync_triggered = phone_updated and bool(getattr(settings, "_wecom_phone_changed", False))
+
+    if phone_in_payload:
+        # 手机号走完整 save，便于信号写入 phone_hash / phone_updated_at；
+        # 是否触发企微绑定仍由信号按「号码是否真实变化」决定。
+        settings.save()
+    else:
+        settings.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    wecom_sync_triggered = phone_in_payload and bool(getattr(settings, "_wecom_phone_changed", False))
     return Response({
         "ok": True,
         "configured": bool(settings.llm_api_key),
@@ -218,7 +287,7 @@ def user_settings(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def upload_avatar(request):
-    """上传个人头像。"""
+    """上传个人头像；管理员可为被管理账号代传。"""
     upload = request.FILES.get("file") or request.FILES.get("avatar")
     if not upload:
         return Response({"ok": False, "error": "请选择图片文件"}, status=400)
@@ -230,27 +299,59 @@ def upload_avatar(request):
     if len(data) > AVATAR_MAX_BYTES:
         return Response({"ok": False, "error": "头像不能超过 5MB"}, status=400)
 
-    settings, _ = UserSettings.objects.get_or_create(user=request.user)
-    stored = f"u{request.user.id}_{uuid.uuid4().hex[:12]}{ext}"
-    path = _profiles_root() / stored
-    path.write_bytes(data)
+    target_user = request.user
+    raw_user_id = request.data.get("user_id") or request.query_params.get("user_id")
+    if raw_user_id not in (None, ""):
+        denied = _require_staff(request.user)
+        if denied:
+            return denied
+        try:
+            target_user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return Response({"ok": False, "error": "用户无效"}, status=400)
+        target_user = User.objects.filter(id=target_user_id).first()
+        if not target_user:
+            return Response({"ok": False, "error": "用户不存在"}, status=404)
+        if not _actor_can_manage_user(request.user, target_user):
+            return Response({"ok": False, "error": "不能为该用户上传头像"}, status=403)
 
-    # 清理旧文件
-    if settings.avatar:
-        old = _profiles_root() / settings.avatar
-        if old.is_file() and old.name.startswith(f"u{request.user.id}_"):
-            try:
-                old.unlink()
-            except OSError:
-                pass
+    settings, _ = UserSettings.objects.get_or_create(user=target_user)
+    content_type = str(getattr(upload, "content_type", "") or "")
+    if content_type and not content_type.startswith("image/"):
+        return Response({"ok": False, "error": "上传文件不是有效图片"}, status=400)
 
-    settings.avatar = stored
+    filename = f"u{target_user.id}_{uuid.uuid4().hex[:12]}{ext}"
+    try:
+        stored = upload_avatar_object(filename, data, content_type=content_type)
+    except AvatarStorageError:
+        logger.exception("用户 %s 上传头像到 COS 失败", target_user.id)
+        return Response({"ok": False, "error": "头像上传服务暂时不可用，请稍后重试"}, status=503)
+
+    old_avatar = settings.avatar
+    settings.avatar = stored.token
     settings.save(update_fields=["avatar", "updated_at"])
+
+    # 新对象与数据库均保存成功后，再尽力清理旧头像。
+    if old_avatar:
+        if is_cos_token(old_avatar):
+            try:
+                delete_avatar_object(old_avatar)
+            except AvatarStorageError:
+                logger.warning("用户 %s 的旧 COS 头像清理失败", target_user.id, exc_info=True)
+        else:
+            old = _profiles_root() / old_avatar
+            if old.is_file() and old.name.startswith(f"u{target_user.id}_"):
+                try:
+                    old.unlink()
+                except OSError:
+                    logger.warning("用户 %s 的旧本地头像清理失败", target_user.id, exc_info=True)
+
     return Response({
         "ok": True,
-        "avatar": stored,
+        "avatar": stored.token,
         "avatar_url": settings.avatar_url,
-        "user": _user_payload(request.user, settings),
+        "user": _user_payload(target_user, settings) if target_user.id == request.user.id else None,
+        "admin_user": _admin_user_row(target_user) if target_user.id != request.user.id else None,
     })
 
 
@@ -258,19 +359,56 @@ def _require_staff(user) -> Response | None:
     if not user or not getattr(user, "is_authenticated", False):
         return Response({"ok": False, "error": "未登录"}, status=401)
     if not (user.is_staff or user.is_superuser or is_organization_admin(user)):
-        return Response({"ok": False, "error": "仅企业管理员可管理账号"}, status=403)
+        return Response({"ok": False, "error": "仅企业所有者、企业管理员或平台管理员可管理账号"}, status=403)
     return None
 
 
-def _admin_user_row(user) -> dict:
+def _actor_can_manage_user(actor, target, organization: Organization | None = None) -> bool:
+    """非超管能否管理目标用户：企业管理员管本企业成员，平台管理员可管非超管。"""
+    if not actor or not target:
+        return False
+    if getattr(actor, "is_superuser", False):
+        return True
+    if getattr(target, "is_superuser", False):
+        return False
+    if organization is not None:
+        if is_organization_admin(actor, organization) and OrganizationMembership.objects.filter(
+            user=target, organization=organization, is_active=True,
+        ).exists():
+            return True
+    else:
+        admin_org_ids = list(
+            OrganizationMembership.objects.filter(
+                user=actor,
+                is_active=True,
+                role__in={OrganizationMembership.Role.OWNER, OrganizationMembership.Role.ADMIN},
+                organization__is_active=True,
+            ).values_list("organization_id", flat=True)
+        )
+        if admin_org_ids and OrganizationMembership.objects.filter(
+            user=target,
+            organization_id__in=admin_org_ids,
+            is_active=True,
+        ).exists():
+            return True
+    return bool(getattr(actor, "is_staff", False))
+
+
+def _admin_user_row(user, organization: Organization | None = None) -> dict:
     settings, _ = UserSettings.objects.get_or_create(user=user)
     display = (settings.display_name or "").strip() or user.username
-    membership = primary_membership(user)
+    memberships = list(
+        OrganizationMembership.objects.select_related("organization")
+        .filter(user=user, is_active=True, organization__is_active=True)
+        .order_by("-is_primary", "organization__name", "organization_id")
+    )
+    membership = next((row for row in memberships if row.organization_id == organization.id), None) if organization else (memberships[0] if memberships else None)
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email or "",
         "display_name": display,
+        "avatar_url": settings.avatar_url,
         "is_active": bool(user.is_active),
         "is_staff": bool(user.is_staff or user.is_superuser),
         "is_superuser": bool(user.is_superuser),
@@ -281,7 +419,38 @@ def _admin_user_row(user) -> dict:
         "organization_id": membership.organization_id if membership else None,
         "organization_name": membership.organization.name if membership else "",
         "organization_role": membership.role if membership else "",
+        "organizations": [
+            {
+                "id": row.organization_id,
+                "name": row.organization.name,
+                "role": row.role,
+                "roleLabel": row.get_role_display(),
+                "isCurrent": row.is_primary,
+            }
+            for row in memberships
+        ],
     }
+
+
+def _organization_from_request(request, *, body: bool = False) -> Organization | None:
+    source = request.data if body else request.query_params
+    organization_id = source.get("organizationId") or source.get("organization_id")
+    if not organization_id:
+        return current_organization(request.user)
+    try:
+        organization_id = int(organization_id)
+    except (TypeError, ValueError):
+        return None
+    organization = Organization.objects.filter(id=organization_id, is_active=True).first()
+    if not organization:
+        return None
+    if request.user.is_superuser or request.user.is_staff:
+        return organization
+    if OrganizationMembership.objects.filter(
+        organization=organization, user=request.user, is_active=True,
+    ).exists():
+        return organization
+    return None
 
 
 @api_view(["GET", "POST"])
@@ -293,29 +462,70 @@ def admin_users(request):
         return denied
 
     if request.method == "GET":
+        requested_organization_id = request.query_params.get("organizationId") or request.query_params.get("organization_id")
+        organization = (
+            _organization_from_request(request)
+            if requested_organization_id or not request.user.is_superuser
+            else None
+        )
+        if requested_organization_id and organization is None:
+            return Response({"ok": False, "error": "企业不存在或无权访问"}, status=403)
         if request.user.is_superuser:
             qs = User.objects.all().order_by("id")
         else:
-            organization = current_organization(request.user)
-            qs = User.objects.filter(
+            organization = organization or default_managed_organization(request.user)
+            can_admin_org = bool(organization and is_organization_admin(request.user, organization))
+            if can_admin_org:
+                qs = User.objects.filter(
+                    organization_memberships__organization=organization,
+                    organization_memberships__is_active=True,
+                ).distinct().order_by("id")
+            elif request.user.is_staff:
+                organization = organization or current_organization(request.user)
+                if organization:
+                    qs = User.objects.filter(
+                        organization_memberships__organization=organization,
+                        organization_memberships__is_active=True,
+                    ).distinct().order_by("id")
+                else:
+                    qs = User.objects.all().order_by("id")
+            else:
+                return Response({"ok": False, "error": "无权管理该企业账号"}, status=403)
+        if organization:
+            qs = qs.filter(
                 organization_memberships__organization=organization,
                 organization_memberships__is_active=True,
-            ).distinct().order_by("id")
+            ).distinct()
         qs = qs.filter(Q(settings__isnull=True) | Q(settings__deleted_at__isnull=True))
         q = str(request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(Q(username__icontains=q) | Q(email__icontains=q))
-        rows = [_admin_user_row(u) for u in qs[:500]]
-        return Response({"ok": True, "count": len(rows), "results": rows})
+        rows = [_admin_user_row(u, organization) for u in qs[:500]]
+        return Response({
+            "ok": True,
+            "count": len(rows),
+            "organization": _organization_payload(organization, request.user) if organization else None,
+            "results": rows,
+        })
 
     username = str(request.data.get("username") or "").strip()
     password = str(request.data.get("password") or "")
     email = str(request.data.get("email") or "").strip()
-    is_staff = bool(request.data.get("is_staff")) if request.user.is_superuser else False
+    platform_role = str(request.data.get("platform_role") or "").strip()
+    if request.user.is_superuser and platform_role in {"user", "staff", "superuser"}:
+        is_superuser = platform_role == "superuser"
+        is_staff = platform_role in {"staff", "superuser"}
+    elif request.user.is_superuser:
+        is_superuser = bool(request.data.get("is_superuser"))
+        is_staff = bool(request.data.get("is_staff")) or is_superuser
+    else:
+        is_superuser = False
+        is_staff = False
     display_name = str(request.data.get("display_name") or "").strip()[:64]
     phone = str(request.data.get("phone") or "").strip()[:32]
     organization_id = request.data.get("organization_id")
     organization_role = str(request.data.get("organization_role") or OrganizationMembership.Role.MEMBER)
+    organizations_payload = request.data.get("organizations")
     if organization_role == OrganizationMembership.Role.OWNER:
         return Response({"ok": False, "error": "企业所有者只能通过创建企业或所有权转移接口设置"}, status=400)
     if not username or not password:
@@ -327,19 +537,42 @@ def admin_users(request):
     except ValidationError as exc:
         return Response({"ok": False, "error": " ".join(exc.messages)}, status=400)
 
+    if not organizations_payload:
+        organization = None
+        if organization_id:
+            try:
+                organization = Organization.objects.filter(id=int(organization_id), is_active=True).first()
+            except (TypeError, ValueError):
+                organization = None
+            if not organization:
+                return Response({"ok": False, "error": "企业不存在"}, status=404)
+            if not request.user.is_superuser and not (
+                is_organization_admin(request.user, organization) or request.user.is_staff
+            ):
+                return Response({"ok": False, "error": "无权在该企业下创建账号"}, status=403)
+        else:
+            organization = default_managed_organization(request.user) or current_organization(request.user)
+        organizations_payload = (
+            [{"id": organization.id, "role": organization_role}]
+            if organization else []
+        )
+
     user = User.objects.create_user(
         username=username,
         password=password,
         email=email,
         is_staff=is_staff,
     )
+    if is_superuser:
+        user.is_superuser = True
+        user.is_staff = True
+        user.save(update_fields=["is_superuser", "is_staff"])
     settings = UserSettings.objects.create(user=user, display_name=display_name, phone=phone)
-    if request.user.is_superuser and organization_id:
-        organization = Organization.objects.filter(id=organization_id, is_active=True).first()
-    else:
-        organization = current_organization(request.user)
-    if organization:
-        assign_user_to_organization(user, organization, role=organization_role)
+    if organizations_payload:
+        sync_error = _sync_user_organizations(request.user, user, organizations_payload, replace=True)
+        if sync_error:
+            user.delete()
+            return sync_error
     else:
         create_personal_organization(user)
     row = _admin_user_row(user)
@@ -365,13 +598,15 @@ def admin_user_detail(request, user_id: int):
     if not target:
         return Response({"ok": False, "error": "用户不存在"}, status=404)
     if not request.user.is_superuser:
-        actor_organization = current_organization(request.user)
-        target_current_membership = primary_membership(target)
-        if (
-            not actor_organization
-            or not target_current_membership
-            or target_current_membership.organization_id != actor_organization.id
-        ):
+        requested_id = request.data.get("organization_id") if request.method == "PATCH" else None
+        actor_organization = None
+        if requested_id:
+            try:
+                actor_organization = Organization.objects.filter(id=int(requested_id), is_active=True).first()
+            except (TypeError, ValueError):
+                actor_organization = None
+        actor_organization = actor_organization or default_managed_organization(request.user)
+        if not _actor_can_manage_user(request.user, target, actor_organization):
             return Response({"ok": False, "error": "不能管理其他企业的用户"}, status=403)
     if target.is_superuser and not request.user.is_superuser:
         return Response({"ok": False, "error": "不能修改超级管理员"}, status=403)
@@ -485,13 +720,33 @@ def admin_user_detail(request, user_id: int):
     if "is_active" in body:
         target.is_active = bool(body.get("is_active"))
         update_fields.append("is_active")
-    if "is_staff" in body:
+    if "is_staff" in body or "is_superuser" in body or "platform_role" in body:
         if not request.user.is_superuser:
             return Response({"ok": False, "error": "仅超级管理员可调整平台管理权限"}, status=403)
-        if target.is_superuser:
-            return Response({"ok": False, "error": "超级管理员角色不可降级"}, status=400)
-        target.is_staff = bool(body.get("is_staff"))
-        update_fields.append("is_staff")
+
+        platform_role = str(body.get("platform_role") or "").strip()
+        if platform_role in {"user", "staff", "superuser"}:
+            next_superuser = platform_role == "superuser"
+            next_staff = platform_role in {"staff", "superuser"}
+        else:
+            next_superuser = bool(body["is_superuser"]) if "is_superuser" in body else bool(target.is_superuser)
+            if "is_staff" in body:
+                next_staff = bool(body.get("is_staff")) or next_superuser
+            else:
+                next_staff = bool(target.is_staff) or next_superuser
+            if next_superuser:
+                next_staff = True
+
+        if target.is_superuser and not next_superuser:
+            other_supers = User.objects.filter(is_superuser=True).exclude(id=target.id).count()
+            if other_supers < 1:
+                return Response({"ok": False, "error": "不能取消唯一的超级管理员"}, status=400)
+            if target.id == request.user.id:
+                return Response({"ok": False, "error": "不能取消自己的超级管理员权限"}, status=400)
+
+        target.is_superuser = next_superuser
+        target.is_staff = next_staff
+        update_fields.extend(["is_superuser", "is_staff"])
 
     password_once = None
     if body.get("password"):
@@ -513,26 +768,27 @@ def admin_user_detail(request, user_id: int):
     if "phone" in body:
         settings, _ = UserSettings.objects.get_or_create(user=target)
         settings.phone = str(body.get("phone") or "").strip()[:32]
-        # 使用完整 save，确保手机号标准化和绑定事件同步执行。
+        # 完整 save 以持久化 phone_hash；绑定仅在号码真实变化时触发。
         settings.save()
-    if "organization_id" in body or "organization_role" in body:
-        if not request.user.is_superuser and not is_organization_admin(request.user):
-            return Response({"ok": False, "error": "仅企业管理员可调整成员归属"}, status=403)
+    if "organizations" in body:
+        sync_error = _sync_user_organizations(request.user, target, body.get("organizations"))
+        if sync_error:
+            return sync_error
+    elif "organization_id" in body or "organization_role" in body:
         current = primary_membership(target)
         organization_id = body.get("organization_id") or (current.organization_id if current else None)
         organization = Organization.objects.filter(id=organization_id, is_active=True).first()
         if not organization:
             return Response({"ok": False, "error": "企业不存在"}, status=404)
-        if not request.user.is_superuser and organization != current_organization(request.user):
-            return Response({"ok": False, "error": "不能将成员分配到其他企业"}, status=403)
-        role = str(body.get("organization_role") or (current.role if current else OrganizationMembership.Role.MEMBER))
-        if role not in OrganizationMembership.Role.values:
-            return Response({"ok": False, "error": "企业角色无效"}, status=400)
-        if role == OrganizationMembership.Role.OWNER:
-            return Response({"ok": False, "error": "请使用企业所有权转移功能设置新的所有者"}, status=400)
-        if current and current.role == OrganizationMembership.Role.OWNER and role != current.role:
-            return Response({"ok": False, "error": "当前所有者不能直接降级，请先转移企业所有权"}, status=400)
-        assign_user_to_organization(target, organization, role=role)
+        role = str(body.get("organization_role") or OrganizationMembership.Role.MEMBER)
+        sync_error = _sync_user_organizations(
+            request.user,
+            target,
+            [{"id": organization.id, "role": role}],
+            replace=False,
+        )
+        if sync_error:
+            return sync_error
 
     if update_fields:
         target.save(update_fields=list(dict.fromkeys(update_fields)))
@@ -543,8 +799,129 @@ def admin_user_detail(request, user_id: int):
     return Response(resp)
 
 
+def _sync_user_organizations(actor, target, organizations, *, replace: bool = True) -> Response | None:
+    """同步用户的多企业身份。replace=True 时移出未列出的非所有者成员关系。"""
+    if organizations is None:
+        return Response({"ok": False, "error": "企业列表无效"}, status=400)
+    if not isinstance(organizations, list):
+        return Response({"ok": False, "error": "企业列表格式错误"}, status=400)
+    if replace and not organizations:
+        return Response({"ok": False, "error": "至少保留一个所属企业"}, status=400)
+
+    desired: list[tuple[Organization, str]] = []
+    seen_ids: set[int] = set()
+    for item in organizations:
+        if not isinstance(item, dict):
+            return Response({"ok": False, "error": "企业列表项无效"}, status=400)
+        try:
+            organization_id = int(item.get("id") or item.get("organization_id") or 0)
+        except (TypeError, ValueError):
+            return Response({"ok": False, "error": "企业 ID 无效"}, status=400)
+        if not organization_id or organization_id in seen_ids:
+            return Response({"ok": False, "error": "企业不能重复"}, status=400)
+        organization = Organization.objects.filter(id=organization_id, is_active=True).first()
+        if not organization:
+            return Response({"ok": False, "error": f"企业不存在：{organization_id}"}, status=404)
+        if not actor.is_superuser and not (
+            is_organization_admin(actor, organization) or actor.is_staff
+        ):
+            return Response({"ok": False, "error": f"不能管理企业「{organization.name}」的成员"}, status=403)
+        role = str(item.get("role") or OrganizationMembership.Role.MEMBER)
+        if role not in OrganizationMembership.Role.values:
+            return Response({"ok": False, "error": "企业角色无效"}, status=400)
+        if role == OrganizationMembership.Role.OWNER:
+            existing_owner = OrganizationMembership.objects.filter(
+                user=target,
+                organization=organization,
+                is_active=True,
+                role=OrganizationMembership.Role.OWNER,
+            ).exists()
+            if not existing_owner:
+                return Response({"ok": False, "error": "请使用企业所有权转移功能设置新的所有者"}, status=400)
+        seen_ids.add(organization_id)
+        desired.append((organization, role))
+
+    desired_ids = {organization.id for organization, _ in desired}
+    existing = list(
+        OrganizationMembership.objects.select_related("organization").filter(
+            user=target,
+            is_active=True,
+            organization__is_active=True,
+        )
+    )
+
+    with transaction.atomic():
+        for membership in existing:
+            if membership.organization_id in desired_ids:
+                continue
+            if not replace:
+                continue
+            if membership.role == OrganizationMembership.Role.OWNER:
+                return Response(
+                    {"ok": False, "error": f"不能移出「{membership.organization.name}」的企业所有者，请先转移所有权"},
+                    status=400,
+                )
+            if not actor.is_superuser and not (
+                is_organization_admin(actor, membership.organization) or actor.is_staff
+            ):
+                return Response(
+                    {"ok": False, "error": f"不能移出企业「{membership.organization.name}」的成员"},
+                    status=403,
+                )
+            membership.is_active = False
+            membership.is_primary = False
+            membership.save(update_fields=["is_active", "is_primary", "updated_at"])
+
+        primary_kept = False
+        current_primary = next((row for row in existing if row.is_primary and row.is_active), None)
+        for index, (organization, role) in enumerate(desired):
+            selected = next(
+                (row for row in existing if row.organization_id == organization.id and row.is_active),
+                None,
+            )
+            if selected and selected.role == OrganizationMembership.Role.OWNER:
+                # 所有者身份保持不变，仅保留在企业中
+                if selected.is_primary:
+                    primary_kept = True
+                continue
+            make_primary = False
+            if current_primary and current_primary.organization_id == organization.id:
+                make_primary = True
+                primary_kept = True
+            elif not primary_kept and index == 0 and (
+                not current_primary or current_primary.organization_id not in desired_ids
+            ):
+                make_primary = True
+                primary_kept = True
+            assign_user_to_organization(
+                target,
+                organization,
+                role=role,
+                make_primary=make_primary,
+            )
+
+        # 若主企业已被移出，确保仍有一个主企业
+        if not OrganizationMembership.objects.filter(user=target, is_active=True, is_primary=True).exists():
+            first = (
+                OrganizationMembership.objects.filter(user=target, is_active=True)
+                .order_by("id")
+                .first()
+            )
+            if first:
+                first.is_primary = True
+                first.save(update_fields=["is_primary", "updated_at"])
+
+    return None
+
+
 def _organization_payload(organization: Organization, actor=None) -> dict:
-    membership = primary_membership(actor) if actor else None
+    membership = (
+        OrganizationMembership.objects.filter(
+            organization=organization, user=actor, is_active=True,
+        ).first()
+        if actor and getattr(actor, "is_authenticated", False)
+        else None
+    )
     return {
         "id": organization.id,
         "code": str(organization.code),
@@ -553,6 +930,8 @@ def _organization_payload(organization: Organization, actor=None) -> dict:
         "memberCount": organization.memberships.filter(is_active=True, user__is_active=True).count(),
         "role": membership.role if membership and membership.organization_id == organization.id else "",
         "canManage": is_organization_admin(actor, organization) if actor else False,
+        "isCurrent": bool(membership and membership.is_primary),
+        "canSwitch": bool(membership),
         "createdAt": organization.created_at.isoformat() if organization.created_at else None,
     }
 
@@ -560,8 +939,11 @@ def _organization_payload(organization: Organization, actor=None) -> dict:
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def current_organization_view(request):
-    organization = current_organization(request.user)
+    organization = _organization_from_request(request, body=request.method == "PATCH")
     if not organization:
+        requested = (request.data if request.method == "PATCH" else request.query_params).get("organizationId")
+        if requested:
+            return Response({"ok": False, "error": "企业不存在或无权访问"}, status=403)
         membership = create_personal_organization(request.user)
         organization = membership.organization
     if request.method == "PATCH":
@@ -587,6 +969,7 @@ def current_organization_view(request):
                     getattr(getattr(membership.user, "settings", None), "display_name", "")
                     or membership.user.username
                 ),
+                "avatarUrl": getattr(getattr(membership.user, "settings", None), "avatar_url", "") or "",
                 "role": membership.role,
                 "roleLabel": membership.get_role_display(),
                 "isActive": membership.user.is_active,
@@ -601,10 +984,65 @@ def current_organization_view(request):
     })
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def switch_current_organization_view(request):
+    """将用户已加入的企业持久化为当前企业。"""
+    try:
+        organization_id = int(request.data.get("organizationId") or 0)
+    except (TypeError, ValueError):
+        organization_id = 0
+    if not organization_id:
+        return Response({"ok": False, "error": "请选择要切换的企业"}, status=400)
+
+    memberships = list(
+        OrganizationMembership.objects.select_for_update()
+        .select_related("organization")
+        .filter(
+            user=request.user,
+            is_active=True,
+            organization__is_active=True,
+        )
+    )
+    membership = next(
+        (row for row in memberships if row.organization_id == organization_id),
+        None,
+    )
+    if not membership:
+        return Response({"ok": False, "error": "你尚未加入该企业或企业已停用"}, status=403)
+
+    previous = next((row for row in memberships if row.is_primary), None)
+    OrganizationMembership.objects.filter(
+        user=request.user,
+        is_active=True,
+        is_primary=True,
+    ).exclude(pk=membership.pk).update(is_primary=False)
+    if not membership.is_primary:
+        membership.is_primary = True
+        membership.save(update_fields=["is_primary", "updated_at"])
+
+    AuditLog.objects.create(
+        trace_id=f"organization-switch-{request.user.id}-{int(timezone.now().timestamp())}",
+        actor=request.user.username,
+        intent="切换当前企业",
+        action="organization.switch",
+        payload={
+            "previous_organization_id": previous.organization_id if previous else None,
+            "organization_id": membership.organization_id,
+        },
+    )
+    return Response({
+        "ok": True,
+        "organization": _organization_payload(membership.organization, request.user),
+        "user": _user_payload(request.user),
+    })
+
+
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def remove_organization_member_view(request, user_id: int):
-    organization = current_organization(request.user)
+    organization = _organization_from_request(request)
     if not organization:
         return Response({"ok": False, "error": "当前账号尚未加入企业"}, status=404)
     if not is_organization_admin(request.user, organization):
@@ -657,16 +1095,23 @@ def remove_organization_member_view(request, user_id: int):
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def admin_organizations(request):
-    if not request.user.is_superuser:
+    if not (request.user.is_superuser or request.user.is_staff):
         if request.method == "POST":
             return Response({"ok": False, "error": "仅超级管理员可以创建企业"}, status=403)
-        organization = current_organization(request.user)
-        if not organization:
+        memberships = OrganizationMembership.objects.filter(
+            user=request.user,
+            is_active=True,
+            organization__is_active=True,
+        ).select_related("organization").order_by("-is_primary", "organization__name", "organization_id")
+        organizations = [membership.organization for membership in memberships]
+        if not organizations:
             return Response({"ok": True, "count": 0, "results": []})
-        return Response({"ok": True, "count": 1, "results": [_organization_payload(organization, request.user)]})
+        return Response({"ok": True, "count": len(organizations), "results": [_organization_payload(organization, request.user) for organization in organizations]})
     if request.method == "GET":
         rows = Organization.objects.all().order_by("name", "id")
         return Response({"ok": True, "count": rows.count(), "results": [_organization_payload(row, request.user) for row in rows]})
+    if not request.user.is_superuser:
+        return Response({"ok": False, "error": "仅超级管理员可以创建企业"}, status=403)
     name = str(request.data.get("name") or "").strip()
     if not name:
         return Response({"ok": False, "error": "企业名称不能为空"}, status=400)
@@ -720,49 +1165,39 @@ def assign_organization_users(request):
     if len(users) != len(user_ids):
         return Response({"ok": False, "error": "部分用户不存在或已停用，请刷新后重试"}, status=400)
 
-    owner_rows = list(
-        OrganizationMembership.objects.filter(
-            user_id__in=user_ids,
-            role=OrganizationMembership.Role.OWNER,
-            is_active=True,
-        ).select_related("user", "organization")
-    )
-    if owner_rows:
-        names = "、".join(row.user.username for row in owner_rows)
-        return Response({
-            "ok": False,
-            "error": f"{names} 仍是企业所有者，请先完成所有权转移",
-        }, status=400)
-
     with transaction.atomic():
         locked_users = list(User.objects.select_for_update().filter(id__in=user_ids).order_by("id"))
-        OrganizationMembership.objects.filter(
-            user_id__in=user_ids,
-            is_active=True,
-        ).exclude(organization=organization).update(is_active=False, is_primary=False)
+        existing_active_user_ids = set(
+            OrganizationMembership.objects.select_for_update().filter(
+                organization=organization,
+                user_id__in=user_ids,
+                is_active=True,
+            ).values_list("user_id", flat=True)
+        )
 
         assigned = []
+        skipped = []
         for user in locked_users:
-            OrganizationMembership.objects.filter(user=user, is_primary=True).update(is_primary=False)
-            membership, _ = OrganizationMembership.objects.update_or_create(
-                organization=organization,
-                user=user,
-                defaults={
-                    "role": role,
-                    "is_active": True,
-                    "is_primary": True,
-                },
+            if user.id in existing_active_user_ids:
+                skipped.append({"id": user.id, "username": user.username})
+                continue
+            membership = assign_user_to_organization(
+                user,
+                organization,
+                role=role,
+                make_primary=False,
             )
             assigned.append({
                 "id": user.id,
                 "username": user.username,
                 "role": membership.role,
+                "isCurrent": membership.is_primary,
             })
 
         AuditLog.objects.create(
             trace_id=f"organization-assign-{organization.id}-{uuid.uuid4().hex[:8]}",
             actor=request.user.username,
-            intent="批量分配企业成员",
+            intent="批量添加企业成员关系",
             action="organization.assign_users",
             payload={
                 "organization_id": organization.id,
@@ -770,7 +1205,11 @@ def assign_organization_users(request):
                 "role": role,
             },
             decision=AuditLog.Decision.ALLOW,
-            result={"assigned_count": len(assigned)},
+            result={
+                "assigned_count": len(assigned),
+                "skipped_count": len(skipped),
+                "preserved_existing_memberships": True,
+            },
         )
 
     return Response({
@@ -778,13 +1217,15 @@ def assign_organization_users(request):
         "organization": _organization_payload(organization, request.user),
         "assignedCount": len(assigned),
         "assignedUsers": assigned,
+        "skippedCount": len(skipped),
+        "skippedUsers": skipped,
     })
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def transfer_organization_ownership_view(request):
-    organization = current_organization(request.user)
+    organization = _organization_from_request(request, body=True)
     if not organization:
         return Response({"ok": False, "error": "当前账号尚未加入企业"}, status=404)
     target_user_id = request.data.get("targetUserId")
@@ -867,6 +1308,18 @@ def serve_avatar(request, stored_id: str):
     if user is None or not getattr(user, "is_authenticated", False):
         return Response({"ok": False, "error": "未登录"}, status=401)
 
+    if is_cos_token(stored_id):
+        try:
+            stream, mime, size = fetch_avatar_object(stored_id)
+        except AvatarStorageError:
+            raise Http404()
+        if request.method == "HEAD":
+            response = HttpResponse(status=200, content_type=mime)
+            response["Content-Length"] = str(size)
+            return response
+        return FileResponse(stream, as_attachment=False, filename=stored_id[4:], content_type=mime)
+
+    # 兼容迁移前的本地头像；新上传不会再写入本地目录。
     safe = Path(stored_id).name
     if safe != stored_id or ".." in stored_id:
         raise Http404()
