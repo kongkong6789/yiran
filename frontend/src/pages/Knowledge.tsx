@@ -71,6 +71,8 @@ import {
 import SmartTable from "./SmartTable";
 import KnowledgeDocEditor from "../components/KnowledgeDocEditor";
 import KnowledgeMindEditor, { buildDefaultMindJson } from "../components/KnowledgeMindEditor";
+import EnterpriseData from "../features/knowledge/EnterpriseData";
+import { useSearchParams } from "react-router-dom";
 
 const { Title, Text, Paragraph } = Typography;
 const { Dragger } = Upload;
@@ -525,6 +527,7 @@ function displayStatus(status: KnowledgeTemplateFile["status"]) {
 
 export default function Knowledge() {
   const { message, modal } = AntApp.useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [editForm] = Form.useForm<{ name: string; description: string; visibility: Visibility }>();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
@@ -1405,9 +1408,44 @@ export default function Knowledge() {
   }
 
 
+  if (searchParams.get("tab") === "enterprise-data") {
+    return (
+      <div className="knowledge-console">
+        <style>{styles}</style>
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Segmented
+            value="enterprise-data"
+            options={[
+              { label: "文档知识", value: "documents" },
+              { label: "企业数据", value: "enterprise-data" },
+            ]}
+            onChange={(value) => {
+              if (value === "documents") setSearchParams({});
+            }}
+          />
+        </Card>
+        <EnterpriseData />
+      </div>
+    );
+  }
+
   return (
     <div className="knowledge-console">
       <style>{styles}</style>
+      {!createMode && !detailTemplateId ? (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Segmented
+            value="documents"
+            options={[
+              { label: "文档知识", value: "documents" },
+              { label: "企业数据", value: "enterprise-data" },
+            ]}
+            onChange={(value) => {
+              if (value === "enterprise-data") setSearchParams({ tab: "enterprise-data" });
+            }}
+          />
+        </Card>
+      ) : null}
       {createMode ? (
         <section className="kb-create-page">
           <div className="create-topbar">

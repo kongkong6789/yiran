@@ -22,6 +22,11 @@ import { authenticatedAvatarUrl } from "../utils/avatar";
 const errorText = (error: unknown) =>
   (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "操作失败，请稍后重试。";
 
+type TodoListCacheEntry = { items: WorkTodoItem[]; total: number };
+const todoListCache = new Map<string, TodoListCacheEntry>();
+let todoConfigCache: { value: WeComCliConfig | null; loaded: boolean } = { value: null, loaded: false };
+const invalidateTodoListCache = () => { todoListCache.clear(); };
+
 const syncTag = (item: WorkTodoItem) => {
   if (item.syncStatus === "failed") return <Tag color="error">企微同步失败</Tag>;
   if (item.syncStatus === "pending") return <Tag color="processing">企微同步中</Tag>;
@@ -87,8 +92,6 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
   const navigate = useNavigate();
   const [view, setView] = useState<"assigned" | "created">("assigned");
   const [status, setStatus] = useState<"pending" | "completed" | "all">("pending");
-  const [items, setItems] = useState<WorkTodoItem[]>([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [keyword, setKeyword] = useState("");
@@ -101,14 +104,30 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
   const [editForm] = Form.useForm();
   const requestSequence = useRef(0);
   const pollAttempts = useRef(0);
+  const listQueryKey = useMemo(() => JSON.stringify({
+    view,
+    status,
+    keyword,
+    priorityFilter: priorityFilter || "",
+    dateFrom: dateRange?.[0]?.format("YYYY-MM-DD") || "",
+    dateTo: dateRange?.[1]?.format("YYYY-MM-DD") || "",
+    page,
+    pageSize,
+  }), [dateRange, keyword, page, pageSize, priorityFilter, status, view]);
+  const cachedList = todoListCache.get(listQueryKey);
   const [members, setMembers] = useState<WeComTodoMember[]>([]);
+  const [membersLoaded, setMembersLoaded] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
   const [weComContacts, setWeComContacts] = useState<WeComMember[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
   const [contactsLoaded, setContactsLoaded] = useState(false);
   const [contactsError, setContactsError] = useState("");
-  const [config, setConfig] = useState<WeComCliConfig | null>(null);
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [config, setConfig] = useState<WeComCliConfig | null>(() => todoConfigCache.value);
+  const [configLoaded, setConfigLoaded] = useState(() => todoConfigCache.loaded);
+  const [items, setItems] = useState<WorkTodoItem[]>(() => cachedList?.items || []);
+  const [total, setTotal] = useState(() => cachedList?.total || 0);
+  const [loading, setLoading] = useState(() => !cachedList);
+  const [showSpinner, setShowSpinner] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -122,11 +141,30 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
   }, [createRequestId]);
 
   const loadConfig = useCallback(async () => {
-    try { setConfig(await getWeComCliConfig()); } catch { setConfig(null); } finally { setConfigLoaded(true); }
+    if (todoConfigCache.loaded && todoConfigCache.value) {
+      setConfig(todoConfigCache.value);
+      setConfigLoaded(true);
+    }
+    try {
+      const next = await getWeComCliConfig();
+      todoConfigCache = { value: next, loaded: true };
+      setConfig(next);
+    } catch {
+      todoConfigCache = { value: null, loaded: true };
+      setConfig(null);
+    } finally {
+      setConfigLoaded(true);
+    }
   }, []);
   const load = useCallback(async (showLoading = true) => {
     const sequence = ++requestSequence.current;
-    if (showLoading) setLoading(true);
+    const cached = todoListCache.get(listQueryKey);
+    if (cached) {
+      setItems(cached.items);
+      setTotal(cached.total);
+    }
+    const shouldBlock = showLoading && !cached;
+    if (shouldBlock) setLoading(true);
     try {
       const result = await listWeComTodos({
         view,
@@ -139,22 +177,33 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
         pageSize,
       });
       if (sequence !== requestSequence.current) return;
+      todoListCache.set(listQueryKey, { items: result.results, total: result.count });
       setItems(result.results);
       setTotal(result.count);
     } catch (error) {
-      if (showLoading) {
+      if (showLoading && !cached) {
         setItems([]);
+        setTotal(0);
+        message.error(errorText(error));
+      } else if (showLoading) {
         message.error(errorText(error));
       }
     } finally {
-      if (showLoading && sequence === requestSequence.current) setLoading(false);
+      if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [dateRange, keyword, page, pageSize, priorityFilter, status, view]);
+  }, [dateRange, keyword, listQueryKey, page, pageSize, priorityFilter, status, view]);
 
   useEffect(() => {
     void loadConfig();
-    void getWeComTodoMembers().then((r) => setMembers(r.results)).catch(() => setMembers([]));
   }, [loadConfig]);
+  useEffect(() => {
+    if (!createOpen || membersLoaded || membersLoading) return;
+    setMembersLoading(true);
+    void getWeComTodoMembers()
+      .then((r) => setMembers(r.results))
+      .catch(() => setMembers([]))
+      .finally(() => { setMembersLoading(false); setMembersLoaded(true); });
+  }, [createOpen, membersLoaded, membersLoading]);
   useEffect(() => {
     if (!createOpen || !syncToWeCom || contactsLoaded || contactsLoading) return;
     setContactsLoading(true);
@@ -165,6 +214,14 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
       .finally(() => { setContactsLoading(false); setContactsLoaded(true); });
   }, [contactsLoaded, contactsLoading, createOpen, syncToWeCom]);
   useEffect(() => { pollAttempts.current = 0; void load(true); }, [load]);
+  useEffect(() => {
+    if (!loading) {
+      setShowSpinner(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setShowSpinner(true), 120);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
   useEffect(() => {
     if (!items.some((item) => item.syncStatus === "pending") || document.hidden || pollAttempts.current >= 8) return undefined;
     const delay = Math.min(5000 * (pollAttempts.current + 1), 30000);
@@ -248,6 +305,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
       else if (response.syncStatus === "synced") message.success("平台待办已创建并同步到企业微信");
       else if (response.syncStatus === "pending") message.success("平台待办已创建，正在同步企业微信");
       else message.success("平台待办已创建");
+      invalidateTodoListCache();
       form.resetFields(); setDescriptionOpen(false); setCreateOpen(false); setStatus("pending"); setPage(1); setView("created");
     } catch (error) { message.error(errorText(error)); } finally { setSaving(false); }
   };
@@ -326,7 +384,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
             <Button icon={<ReloadOutlined />} onClick={() => void load(true)}>刷新</Button>
           </div>
         </div>
-        <Spin spinning={loading}>
+        <Spin spinning={showSpinner && items.length === 0}>
           <List
             locale={{ emptyText: <Empty description={status === "completed" ? "暂无历史待办" : status === "all" ? "暂无待办记录" : "暂无进行中的待办"} /> }}
             dataSource={items}
@@ -351,6 +409,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                     try {
                       const result = await retryWeComTodoSync(item.id);
                       result.ok ? message.success("企业微信待办已重新同步") : message.warning(result.detail);
+                      invalidateTodoListCache();
                       await load();
                     } catch (error) { message.error(errorText(error)); }
                     finally { setRetryingId(""); }
@@ -363,6 +422,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                       result.syncStatus === "failed"
                         ? message.warning("平台待办已完成，但企业微信状态同步失败")
                         : message.success("待办已完成，可在“历史待办”中查看");
+                      invalidateTodoListCache();
                       await load();
                     } catch (error) { message.error(errorText(error)); }
                   }}>完成</Button>,
@@ -372,6 +432,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                     try {
                       await setWeComTodoStatus(item.id, "pending");
                       message.success("待办已重新打开");
+                      invalidateTodoListCache();
                       await load();
                     } catch (error) { message.error(errorText(error)); }
                   }}>重新打开</Button>,
@@ -389,6 +450,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
                       try {
                         const result = await deleteWeComTodo(item.id);
                         message.success(result.detail);
+                        invalidateTodoListCache();
                         await load(false);
                       } catch (error) {
                         message.error(errorText(error));
@@ -471,6 +533,7 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
               ? message.warning("平台待办已更新，企业微信同步失败，可稍后重试")
               : message.success("待办已更新");
             setEditingTodo(null);
+            invalidateTodoListCache();
             await load();
           } catch (error) { message.error(errorText(error)); }
           finally { setEditing(false); }
@@ -533,9 +596,11 @@ export default function WorkTodos({ embedded = false, createRequestId = 0 }: { e
               mode="multiple"
               showSearch
               allowClear
+              loading={membersLoading}
               optionFilterProp="label"
               options={memberOptions}
-              placeholder="选择平台成员；未绑定企微也可以接收平台待办"
+              placeholder={membersLoading ? "正在加载成员…" : "选择平台成员；未绑定企微也可以接收平台待办"}
+              notFoundContent={membersLoading ? "正在加载成员…" : "暂无成员"}
               optionRender={(option) => {
                 const member = platformMemberById.get(Number(option.value));
                 if (!member) return option.label;

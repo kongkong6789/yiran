@@ -26,6 +26,14 @@ def current_organization(user) -> Organization | None:
     return membership.organization if membership else None
 
 
+def ensure_current_organization(user) -> Organization | None:
+    """返回当前企业；兼容历史账号，为尚未归属企业的登录用户创建个人企业。"""
+    organization = current_organization(user)
+    if organization or not user or not getattr(user, "is_authenticated", False):
+        return organization
+    return create_personal_organization(user).organization
+
+
 def is_organization_admin(user, organization: Organization | None = None) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False

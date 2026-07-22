@@ -5,6 +5,14 @@ from rest_framework import status
 from apps.council.models import AgentProfile
 from apps.council.serializers import AgentProfileSerializer
 from .graph import run_sop, catalog, resume_approval
+from apps.core.organizations import ensure_current_organization, primary_membership
+
+
+def _business_role(user) -> str:
+    membership = primary_membership(user)
+    if not membership:
+        return "operator"
+    return {"owner": "director", "admin": "manager", "member": "operator"}.get(membership.role, "operator")
 
 
 @api_view(["POST"])
@@ -27,9 +35,43 @@ def run(request):
         if executor.quota_remaining <= 0:
             return Response({"ok": False, "detail": "所选执行智能体额度已用尽。"}, status=status.HTTP_400_BAD_REQUEST)
 
-    role = executor.execution_role if executor else request.data.get("role", "operator")
+    organization = ensure_current_organization(request.user)
+    role = _business_role(request.user)
     requested_trace_id = str(request.data.get("trace_id") or "").strip()
-    result = run_sop(text, payload, role, trace_id=requested_trace_id or None)
+    result = run_sop(
+        text, payload, role, trace_id=requested_trace_id or None,
+        user=request.user, organization=organization,
+    )
+    if request.data.get("mode") == "task_create" and not result.get("action"):
+        fallback_steps = [
+            {
+                **step,
+                "status": "skipped" if step.get("status") == "block" else step.get("status"),
+                "detail": "未匹配自动化 SOP，转为普通人工任务。" if step.get("status") == "block" else step.get("detail"),
+            }
+            for step in (result.get("steps") or [])
+        ]
+        result = {
+            **result,
+            "decision": "allow",
+            "action": "task.manual",
+            "result": {
+                "ok": True,
+                "execution_mode": "manual_task",
+                "task_created": True,
+                "external_write_performed": False,
+                "user_message": "任务已创建并分配，等待负责人处理。",
+            },
+            "steps": [
+                *fallback_steps,
+                {
+                    "node": "人工任务兜底",
+                    "status": "done",
+                    "detail": "未匹配自动化 SOP，已按普通人工任务创建，不视为执行失败。",
+                    "data": {"mode": "manual_task"},
+                },
+            ],
+        }
     if executor:
         result["executor"] = AgentProfileSerializer(executor).data
     return Response(result)
@@ -49,6 +91,6 @@ def resume(request):
     return Response(resume_approval(
         int(approval_id),
         approve=bool(request.data.get("approve", True)),
-        approver=request.data.get("approver") or request.data.get("role") or "manager",
+        approver=request.user.get_username(),
         comment=request.data.get("comment") or "",
     ))

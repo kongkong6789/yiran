@@ -5,7 +5,7 @@ import {
 } from "antd";
 import {
   BulbOutlined, DatabaseOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
-  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined, UserOutlined,
+  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined,
 } from "@ant-design/icons";
 import {
   agentChat,
@@ -29,6 +29,7 @@ import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import ChatMarkdown, { isReportLike, looksBlocky } from "../components/ChatMarkdown";
 import { useThemeMode } from "../theme/mode";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 const { TextArea } = Input;
 
@@ -624,11 +625,9 @@ export default function AgentChat() {
                 <Avatar
                   size={32}
                   className={isUser ? "agent-chat-avatar-user" : "agent-chat-avatar-assistant"}
-                  src={isUser && me?.avatar_url
-                    ? `${me.avatar_url}${me.avatar_url.includes("?") ? "&" : "?"}token=${encodeURIComponent(getAuthToken() || "")}`
-                    : undefined}
+                  src={isUser ? authenticatedAvatarUrl(me?.avatar_url) : undefined}
                   icon={isUser
-                    ? (me?.avatar_url ? undefined : <UserOutlined />)
+                    ? undefined
                     : <RobotOutlined />}
                 />
                 <div className={`agent-chat-bubble${isBlocks ? " report" : ""}`}>

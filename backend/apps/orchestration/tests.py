@@ -51,3 +51,31 @@ class RealAgentExecutionTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("停用", response.data["detail"])
+
+    def test_task_creation_falls_back_to_manual_task_when_no_sop_matches(self):
+        response = self.client.post(
+            "/api/orchestration/run/",
+            {
+                "text": "联系杨院东确认下周会议时间",
+                "payload": {},
+                "agent_id": self.agent.id,
+                "trace_id": "manual-task-1",
+                "mode": "task_create",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["decision"], "allow")
+        self.assertEqual(response.data["action"], "task.manual")
+        self.assertTrue(response.data["result"]["task_created"])
+        self.assertEqual(response.data["result"]["execution_mode"], "manual_task")
+
+    def test_unmatched_direct_sop_request_still_blocks(self):
+        response = self.client.post(
+            "/api/orchestration/run/",
+            {"text": "联系杨院东确认下周会议时间", "payload": {}, "agent_id": self.agent.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["decision"], "block")
+        self.assertEqual(response.data["action"], "")

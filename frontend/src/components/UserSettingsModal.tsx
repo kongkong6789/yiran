@@ -14,10 +14,8 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   changePassword,
-  getAuthToken,
   getMe,
   getUserSettings,
-  listOrganizations,
   setAuthToken,
   switchCurrentOrganization,
   updateUserSettings,
@@ -27,6 +25,7 @@ import {
   type UserProfileSettings,
   type UserWeComBindingSummary,
 } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 import BillingPanel from "./user-settings/BillingPanel";
 import { CurrentEnterpriseCard, UserProfileHeader } from "./user-settings/ProfileIdentity";
 
@@ -106,8 +105,8 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
     setAdvancedOpen(false);
     pwdForm.resetFields();
     setPhoneTouched(false);
-    Promise.all([getUserSettings(), getMe(), listOrganizations().catch(() => ({ ok: false, count: 0, results: [] as OrganizationSummary[] }))])
-      .then(([data, me, organizationData]) => {
+    Promise.all([getUserSettings(), getMe()])
+      .then(([data, me]) => {
         const profile = data as UserProfileSettings;
         form.setFieldsValue({
           display_name: profile.display_name || "",
@@ -128,7 +127,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
         setUsername(me.user.username || "");
         setEmail(me.user.email || "");
         setAuthUser(me.user);
-        const membershipOrganizations = organizationData.results || [];
+        const membershipOrganizations = me.user.organizations || [];
         const activeOrganization = membershipOrganizations.find((item) => item.isCurrent)
           || membershipOrganizations.find((item) => item.id === me.user.organization?.id)
           || (me.user.organization ? {
@@ -152,13 +151,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
       .finally(() => setLoading(false));
   }, [open, form, llmForm, pwdForm]);
 
-  const avatarSrc = () => {
-    if (!avatarUrl) return undefined;
-    const token = getAuthToken();
-    if (!token) return avatarUrl;
-    const joiner = avatarUrl.includes("?") ? "&" : "?";
-    return `${avatarUrl}${joiner}token=${encodeURIComponent(token)}`;
-  };
+  const avatarSrc = () => authenticatedAvatarUrl(avatarUrl);
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -244,7 +237,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
     try {
       const result = await switchCurrentOrganization(organization.id);
       const selected = { ...organization, ...result.organization, isCurrent: true };
-      setOrganizations((items) => items.map((item) => ({ ...item, isCurrent: item.id === selected.id })));
+      setOrganizations(result.user.organizations || []);
       setCurrentOrganization(selected);
       setEnterpriseSwitcherOpen(false);
       const nextUser = result.user || (authUser ? { ...authUser, organization: {

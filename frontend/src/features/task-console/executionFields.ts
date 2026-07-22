@@ -57,6 +57,7 @@ const FIELD_META: Record<string, FieldMeta> = {
   qty: { label: "采购数量" },
   amount: { label: "采购金额" },
   supplier: { label: "供应商" },
+  snapshot_id: { label: "补货分析 Snapshot ID" },
 };
 
 function yesterdayValue() {

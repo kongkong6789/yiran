@@ -11,7 +11,7 @@ import {
   ReloadOutlined,
   RightOutlined,
 } from "@ant-design/icons";
-import { getAgeStats, listAgents, listMeetings, getAuditLogs } from "../api/client";
+import { getAgeStats, listAgents, listMeetings, getAuditOverview } from "../api/client";
 import { useVisualizationTheme } from "../theme/visualization";
 import OperatingMapV2 from "../components/OperatingMapV2";
 
@@ -188,10 +188,10 @@ export default function Home() {
       const n = d?.count ?? d?.results?.length;
       if (n != null) setStats((s) => ({ ...s, meetings: n }));
     }).catch(() => undefined);
-    getAuditLogs().then((d: any) => {
-      const rows = (d?.results || []).slice(0, 4).map((r: any) => ({
-        text: String(r.action || r.intent || "系统动作"),
-        meta: `${r.decision || "记录"} · ${(r.created_at || "").slice(11, 16) || "刚刚"}`,
+    getAuditOverview({ page: 1, pageSize: 5 }).then((d: any) => {
+      const rows = (d?.rows || []).slice(0, 4).map((r: any) => ({
+        text: String(r.detail || r.content || "系统动作"),
+        meta: `${r.status?.label || "记录"} · ${(r.time || "").slice(11, 16) || "刚刚"}`,
       }));
       if (rows.length) setFeed(rows);
     }).catch(() => undefined);

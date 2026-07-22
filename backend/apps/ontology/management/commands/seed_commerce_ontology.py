@@ -18,12 +18,13 @@ from apps.ontology.commerce_schema import (
 )
 from apps.ontology.models import OntObject, OntRelation
 from apps.ontology.signals import suppress_ontology_sync
+from apps.core.models import Organization
 
 SEED_ATTR = {"commerce_seed": True, "source": "seed_commerce_ontology"}
 
 
-def _ensure_obj(*, otype: str, name: str, type_key: str, x: float, y: float) -> OntObject:
-    qs = OntObject.objects.filter(otype=otype, name=name)
+def _ensure_obj(*, organization, otype: str, name: str, type_key: str, x: float, y: float) -> OntObject:
+    qs = OntObject.objects.filter(organization=organization, otype=otype, name=name)
     obj = qs.order_by("id").first()
     attrs = {
         **SEED_ATTR,
@@ -32,6 +33,7 @@ def _ensure_obj(*, otype: str, name: str, type_key: str, x: float, y: float) -> 
     }
     if obj is None:
         return OntObject.objects.create(
+            organization=organization,
             category=category_for(type_key),
             otype=otype,
             name=name,
@@ -55,7 +57,7 @@ def _ensure_rel(source: OntObject, target: OntObject, label: str) -> OntRelation
     )
     if existing:
         return existing
-    return OntRelation.objects.create(source=source, target=target, label=label)
+    return OntRelation.objects.create(organization=source.organization, source=source, target=target, label=label)
 
 
 class Command(BaseCommand):
@@ -70,57 +72,60 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        organization = Organization.objects.order_by("id").first()
+        if organization is None:
+            organization = Organization.objects.create(name="默认企业")
         with suppress_ontology_sync():
             if options["reset"]:
-                doomed = OntObject.objects.filter(attributes__commerce_seed=True)
+                doomed = OntObject.objects.filter(organization=organization, attributes__commerce_seed=True)
                 n = doomed.count()
                 doomed.delete()
                 self.stdout.write(self.style.WARNING(f"已删除旧样例对象 {n} 个"))
 
             # 样例实体树（与前端 loops 样例语义对齐）
-            company = _ensure_obj(
+            company = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Organization"]["label"],
                 name="良策代理公司（样例）",
                 type_key="Organization",
                 x=40,
                 y=200,
             )
-            brand = _ensure_obj(
+            brand = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Brand"]["label"],
                 name="示例品牌 · 花语",
                 type_key="Brand",
                 x=220,
                 y=200,
             )
-            platform = _ensure_obj(
+            platform = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Channel"]["label"],
                 name="天猫",
                 type_key="Channel",
                 x=400,
                 y=200,
             )
-            shop = _ensure_obj(
+            shop = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Shop"]["label"],
                 name="花语旗舰店",
                 type_key="Shop",
                 x=580,
                 y=200,
             )
-            link = _ensure_obj(
+            link = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Product"]["label"],
                 name="精华液链接 · 多规格",
                 type_key="Product",
                 x=760,
                 y=200,
             )
-            sku_a = _ensure_obj(
+            sku_a = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["SKU"]["label"],
                 name="精华 30ml",
                 type_key="SKU",
                 x=940,
                 y=140,
             )
-            sku_b = _ensure_obj(
+            sku_b = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["SKU"]["label"],
                 name="精华 50ml",
                 type_key="SKU",
@@ -149,7 +154,7 @@ class Command(BaseCommand):
                     _ensure_rel(chain_objs[child_key], chain_objs[parent_key], "归属")
 
             # 第二品牌枝，证明公司可含多品牌
-            brand2 = _ensure_obj(
+            brand2 = _ensure_obj(organization=organization,
                 otype=COMMERCE_OBJECT_TYPES["Brand"]["label"],
                 name="示例品牌 · 澄光",
                 type_key="Brand",

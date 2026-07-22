@@ -16,11 +16,12 @@ import threading
 
 from apps.ontology.models import OntObject, OntRelation
 from apps.ontology import signals as ont_signals
+from apps.core.organizations import ensure_current_organization
 
 from . import llm, graph_knowledge
 
 
-def _extract_from_plan(text: str, source_tag: str) -> tuple[int, int, dict[str, OntObject]]:
+def _extract_from_plan(text: str, source_tag: str, organization) -> tuple[int, int, dict[str, OntObject]]:
     """LLM 抽取方案中的实体/关系并写入本体库,返回 (新增对象数, 新增关系数, 名称映射)。"""
     if not llm.llm_available() or not text.strip():
         return 0, 0, {}
@@ -45,6 +46,7 @@ def _extract_from_plan(text: str, source_tag: str) -> tuple[int, int, dict[str, 
         if not nm:
             continue
         obj, _ = OntObject.objects.get_or_create(
+            organization=organization,
             name=nm[:128],
             otype=(item.get("otype") or "物体")[:32],
             defaults={
@@ -62,6 +64,7 @@ def _extract_from_plan(text: str, source_tag: str) -> tuple[int, int, dict[str, 
         t = name_to_obj.get(item.get("target"))
         if s and t and s.id != t.id:
             OntRelation.objects.get_or_create(
+                organization=organization,
                 source=s, target=t, label=(item.get("label") or "关联")[:64],
             )
             created_rel += 1
@@ -74,9 +77,14 @@ def writeback_meeting(meeting, deliverable) -> dict:
     PG 全量镜像同步较重(万级对象约数分钟),移到后台线程执行,不阻塞会议结束。
     """
     source_tag = f"圆桌会议·{meeting.title[:40]}"
+    actor = meeting.human_participants.order_by("id").first()
+    organization = ensure_current_organization(actor)
+    if organization is None:
+        return {"error": "图谱回写失败: 会议缺少企业身份"}
     ont_signals.pause_sync()
     try:
         meeting_obj, _ = OntObject.objects.get_or_create(
+            organization=organization,
             name=f"会议:{meeting.title[:100]}",
             otype="会议",
             defaults={
@@ -90,6 +98,7 @@ def writeback_meeting(meeting, deliverable) -> dict:
             },
         )
         plan_obj = OntObject.objects.create(
+            organization=organization,
             category="virtual",
             otype="方案",
             name=deliverable.title[:128],
@@ -100,13 +109,14 @@ def writeback_meeting(meeting, deliverable) -> dict:
             },
             x=620, y=200,
         )
-        OntRelation.objects.get_or_create(source=meeting_obj, target=plan_obj, label="产出")
+        OntRelation.objects.get_or_create(organization=organization, source=meeting_obj, target=plan_obj, label="产出")
 
         # 引用的 AGE 实体:按名称落为本地对象并建关系
         refs = graph_knowledge.search_graph(meeting.question).get("refs", [])
         ref_count = 0
         for r in refs:
             ent, _ = OntObject.objects.get_or_create(
+                organization=organization,
                 name=str(r["name"])[:128],
                 otype=str(r.get("otype") or "entity")[:32],
                 defaults={
@@ -120,13 +130,13 @@ def writeback_meeting(meeting, deliverable) -> dict:
                     "y": 300 + random.random() * 300,
                 },
             )
-            OntRelation.objects.get_or_create(source=meeting_obj, target=ent, label="引用")
+            OntRelation.objects.get_or_create(organization=organization, source=meeting_obj, target=ent, label="引用")
             ref_count += 1
 
         # LLM 从方案抽取新对象/关系
-        new_objs, new_rels, extracted = _extract_from_plan(deliverable.content, source_tag)
+        new_objs, new_rels, extracted = _extract_from_plan(deliverable.content, source_tag, organization)
         for obj in extracted.values():
-            OntRelation.objects.get_or_create(source=plan_obj, target=obj, label="涉及")
+            OntRelation.objects.get_or_create(organization=organization, source=plan_obj, target=obj, label="涉及")
 
         return {
             "meeting_object_id": meeting_obj.id,

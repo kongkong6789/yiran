@@ -72,6 +72,8 @@ export function useCollabRoomLive({
     let pollTimer: number | null = null;
     let pingTimer: number | null = null;
 
+    const pageIsVisible = () => document.visibilityState === "visible";
+
     afterMsgRef.current = messagesRef.current.reduce(
       (max, m) => (m.id > 0 && m.id > max ? m.id : max),
       0,
@@ -147,7 +149,7 @@ export function useCollabRoomLive({
     };
 
     const pollOnce = async () => {
-      if (!isCurrent()) return;
+      if (!isCurrent() || !pageIsVisible()) return;
       const requestRevision = getRoomRevision(roomId);
       const cursor = Math.max(
         afterMsgRef.current,
@@ -189,7 +191,7 @@ export function useCollabRoomLive({
     };
 
     const connect = () => {
-      if (!isCurrent()) return;
+      if (!isCurrent() || !pageIsVisible()) return;
       closeWebSocketQuietly(ws);
       afterMsgRef.current = Math.max(
         afterMsgRef.current,
@@ -202,7 +204,7 @@ export function useCollabRoomLive({
       ws = openCollabRoomSocket(roomId, {
         onSync: applySync,
         onClose: (ev) => {
-          if (!isCurrent()) return;
+          if (!isCurrent() || !pageIsVisible()) return;
           if (ev.code === 4401 || ev.code === 4403 || ev.code === 4404) return;
           if (reconnectTimer) window.clearTimeout(reconnectTimer);
           reconnectTimer = window.setTimeout(connect, 1500);
@@ -210,7 +212,7 @@ export function useCollabRoomLive({
       });
       if (pingTimer) window.clearInterval(pingTimer);
       pingTimer = window.setInterval(() => {
-        if (!isCurrent()) return;
+        if (!isCurrent() || !pageIsVisible()) return;
         if (ws?.readyState === WebSocket.OPEN) {
           try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
         }
@@ -218,6 +220,7 @@ export function useCollabRoomLive({
     };
 
     const refreshPresence = async () => {
+      if (!isCurrent() || !pageIsVisible()) return;
       const requestRevision = getRoomRevision(roomId);
       try {
         const p = await getCollabRoomPresence(roomId);
@@ -254,6 +257,21 @@ export function useCollabRoomLive({
 
     refreshPresence();
     presenceTimer = window.setInterval(refreshPresence, 20000);
+    const onVisibilityChange = () => {
+      if (!pageIsVisible()) {
+        if (reconnectTimer) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        closeWebSocketQuietly(ws);
+        ws = null;
+        return;
+      }
+      connect();
+      void pollOnce();
+      void refreshPresence();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       stopped = true;
@@ -263,6 +281,7 @@ export function useCollabRoomLive({
       if (presenceTimer) window.clearInterval(presenceTimer);
       if (pollTimer) window.clearInterval(pollTimer);
       if (pingTimer) window.clearInterval(pingTimer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       closeWebSocketQuietly(ws);
     };
   }, [

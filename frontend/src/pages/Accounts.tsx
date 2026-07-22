@@ -38,7 +38,6 @@ import {
 import {
   createAdminUser,
   deleteAdminUser,
-  getAuthToken,
   getMe,
   listAdminUsers,
   listOrganizations,
@@ -58,6 +57,7 @@ import ManagementDetailModal, {
   isInteractiveTableTarget,
 } from "../components/ManagementDetailModal";
 import { formatPhoneMasked, hasFilledPhone } from "../utils/phone";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 function AccountEditModalHead({
   icon,
@@ -149,13 +149,6 @@ const platformRoleLabel: Record<PlatformRole, string> = {
   user: "普通用户",
   staff: "平台管理员",
   superuser: "超级管理员",
-};
-
-const authenticatedAvatarUrl = (url?: string) => {
-  if (!url) return undefined;
-  const token = getAuthToken();
-  if (!token) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
 };
 
 export default function Accounts() {
@@ -1153,7 +1146,7 @@ export default function Accounts() {
                 disabled={Boolean(
                   target
                   && target.id === selfUserId
-                  && platformRoleOf(target) === "superuser"
+                  && platformRoleOf(target) === "superuser",
                 )}
               />
             </Form.Item>

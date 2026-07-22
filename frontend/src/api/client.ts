@@ -66,6 +66,8 @@ export interface AuthUser {
     roleLabel: string;
     canManage: boolean;
   } | null;
+  /** 当前账号真实加入且可切换的企业；不包含仅因平台管理权限而可管理的主体。 */
+  organizations?: OrganizationSummary[];
 }
 
 export const login = (body: { username: string; password: string }) =>
@@ -1143,6 +1145,7 @@ export const runSop = (body: {
   role?: string;
   agent_id?: number;
   trace_id?: string;
+  mode?: "task_create";
 }) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
 
 export const resumeSop = (body: {
@@ -1191,13 +1194,45 @@ export const queryJackyun = (body: {
 
 export const getTables = () =>
   api.get("/datalake/tables/").then((r) => r.data);
+export const getDataAssetPreview = (table: string, limit = 50) =>
+  api.get(`/datalake/assets/${encodeURIComponent(table)}/preview/`, { params: { limit } }).then((r) => r.data);
+export const publishDataAsset = (body: {
+  table: string;
+  asset_key: string;
+  display_name: string;
+  as_of: string;
+  confirm_complete: boolean;
+}) => api.post("/datalake/assets/publish/", body).then((r) => r.data);
 export const getMetrics = () =>
   api.get("/datalake/metrics/").then((r) => r.data);
 export const getAnomalies = () =>
   api.get("/datalake/anomalies/").then((r) => r.data);
-
-export const getAuditLogs = () =>
-  api.get("/audit-logs/").then((r) => r.data);
+export const getSourceSnapshots = () =>
+  api.get("/datalake/snapshots/").then((r) => r.data);
+export const getMetricContracts = () =>
+  api.get("/datalake/metric-contracts/").then((r) => r.data);
+export const getRawImports = () =>
+  api.get("/datalake/raw-imports/").then((r) => r.data);
+export const getImportContracts = () =>
+  api.get("/datalake/import-contracts/").then((r) => r.data);
+export const getReferenceMappings = () =>
+  api.get("/datalake/reference-mappings/").then((r) => r.data);
+export const createReferenceMapping = (body: {
+  mapping_key: string;
+  kind: "channel" | "product" | "warehouse";
+  version?: string;
+  mappings: Record<string, unknown>;
+}) => api.post("/datalake/reference-mappings/", body).then((r) => r.data);
+export const confirmReferenceMapping = (id: number) =>
+  api.post(`/datalake/reference-mappings/${id}/confirm/`, {}).then((r) => r.data);
+export const uploadSalesLedger = (form: FormData) =>
+  api.post("/datalake/raw-imports/sales-ledger/", form, { timeout: 10 * 60_000 }).then((r) => r.data);
+export const reconcileRawImport = (id: number, reconciliation_hash: string) =>
+  api.post(`/datalake/raw-imports/${id}/reconcile/`, { reconciliation_hash }).then((r) => r.data);
+export const composeInventorySalesSnapshot = (body: {
+  inventory_snapshot_id: number;
+  sales_snapshot_id: number;
+}) => api.post("/datalake/snapshots/compose/", body).then((r) => r.data);
 
 export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
 export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
@@ -1216,6 +1251,10 @@ export interface AuditRow {
   ip: string;
   status: { key: string; label: string };
   traceId: string;
+  decision: string;
+  payload: Record<string, unknown>;
+  checks: unknown[];
+  result: Record<string, unknown>;
 }
 export interface AuditOverview {
   ok: boolean;
@@ -2177,6 +2216,16 @@ export interface CollabContextRoomRef {
   last_message_id?: number | null;
 }
 
+export interface CollabForwardBundleItem {
+  message_id: number;
+  room_id: string;
+  room_title: string;
+  sender: CollabUserBrief;
+  content: string;
+  attachments?: CollabMessage["attachments"];
+  created_at: string;
+}
+
 export interface CollabMessage {
   id: number;
   room_id: string;
@@ -2202,6 +2251,15 @@ export interface CollabMessage {
     created_skill?: CreatedSkillItem;
     skill_generation_failed?: boolean;
     context_rooms?: CollabContextRoomRef[];
+    forward_mode?: "merge" | "separate";
+    forward_bundle?: CollabForwardBundleItem[];
+    forwarded_from?: {
+      message_id: number;
+      room_id: string;
+      room_title: string;
+      sender: CollabUserBrief;
+      created_at: string;
+    };
     [key: string]: unknown;
   };
   msg_type?: "user" | "system" | "ai";
@@ -2224,6 +2282,13 @@ export interface CollabMessage {
   };
   created_at: string;
   updated_at?: string;
+}
+
+export interface CollabTranslation {
+  message_id: number;
+  source_language: "zh" | "en" | string;
+  target_language: "en" | "zh-CN" | string;
+  translated_text: string;
 }
 
 export interface CollabSummary {
@@ -2628,6 +2693,31 @@ export const deleteCollabMessage = (roomId: string, messageId: number) =>
       `/collab/rooms/${roomId}/messages/${messageId}/`,
     )
     .then((r) => r.data);
+
+export const forwardCollabMessages = (
+  targetRoomId: string,
+  messageIds: number[],
+  mode: "merge" | "separate",
+) => api.post<{
+  ok: boolean;
+  mode: "merge" | "separate";
+  messages: CollabMessage[];
+  room: Partial<CollabRoom>;
+  error?: string;
+}>(`/collab/rooms/${targetRoomId}/messages/forward/`, {
+  message_ids: messageIds,
+  mode,
+}).then((r) => r.data);
+
+export const translateCollabMessages = (roomId: string, messageIds: number[]) =>
+  api.post<{
+    ok: boolean;
+    model: string;
+    translations: CollabTranslation[];
+    error?: string;
+  }>(`/collab/rooms/${roomId}/messages/translate/`, {
+    message_ids: messageIds,
+  }).then((r) => r.data);
 
 export const sendCollabMessage = (
   id: string,

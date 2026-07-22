@@ -9,4 +9,7 @@ urlpatterns = [
     path("causal-candidates/", views.causal_candidates, name="loops-causal-candidates"),
     path("<int:loop_id>/", views.loop_detail, name="loops-detail"),
     path("<int:loop_id>/confirm/", views.loop_confirm, name="loops-confirm"),
+    path("<int:loop_id>/versions/", views.loop_versions, name="loops-versions"),
+    path("<int:loop_id>/simulate/", views.loop_simulate, name="loops-simulate"),
+    path("simulation-runs/<int:run_id>/", views.simulation_run_detail, name="simulation-run-detail"),
 ]

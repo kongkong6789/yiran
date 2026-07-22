@@ -8,6 +8,8 @@ urlpatterns = [
     path("rooms/", views.room_list, name="collab-rooms"),
     path("rooms/<uuid:room_id>/", views.room_detail, name="collab-room-detail"),
     path("rooms/<uuid:room_id>/messages/", views.room_messages, name="collab-room-messages"),
+    path("rooms/<uuid:room_id>/messages/forward/", views.forward_room_messages, name="collab-forward-messages"),
+    path("rooms/<uuid:room_id>/messages/translate/", views.translate_room_messages, name="collab-translate-messages"),
     path(
         "rooms/<uuid:room_id>/xiaoce-runs/<uuid:run_id>/cancel/",
         views.xiaoce_run_cancel,

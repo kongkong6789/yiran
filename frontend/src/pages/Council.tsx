@@ -17,10 +17,11 @@ import { brand } from "../theme/brand";
 import {
   listAgents, listMeetings, createMeeting, getMeeting, interject, openCouncilMeetingSocket, pollMessages,
   stopMeeting, startMeeting, pauseMeeting, pauseActiveMeetings, downloadDeliverable,
-  listCollabUsers, getAuthToken, getMe, closeWebSocketQuietly,
+  listCollabUsers, getMe, closeWebSocketQuietly,
   type Agent, type CouncilMessage, type Meeting, type Deliverable,
   type CollabUserBrief, type AuthUser,
 } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 const KIND_META: Record<Deliverable["kind"], { label: string; color: string; icon: ReactNode }> = {
   md: { label: "Markdown 方案", color: "gold", icon: <FileTextOutlined /> },
@@ -64,10 +65,7 @@ function userLabel(u: CollabUserBrief) {
 }
 
 function avatarSrc(url?: string | null) {
-  if (!url) return undefined;
-  const token = getAuthToken();
-  if (!token) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+  return authenticatedAvatarUrl(url);
 }
 
 function buildAgenda(question: string, intro?: string) {

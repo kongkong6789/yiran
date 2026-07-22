@@ -5,9 +5,7 @@ import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import AgentChat from "./pages/AgentChat";
-import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
-import Audit from "./pages/Audit";
 import Logs from "./pages/Logs";
 import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
@@ -58,7 +56,7 @@ export default function App() {
           <Route path="connectors" element={<Connectors />} />
           <Route path="tables" element={<Navigate to="/knowledge" replace />} />
           <Route path="nocodb" element={<Navigate to="/knowledge" replace />} />
-          <Route path="datalake" element={<DataLake />} />
+          <Route path="datalake" element={<Navigate to="/knowledge?tab=enterprise-data" replace />} />
           <Route path="my/knowledge" element={(
             <SectionHub
               title="我的知识库"
@@ -85,7 +83,7 @@ export default function App() {
           )} />
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
-          <Route path="audit" element={<Audit />} />
+          <Route path="audit" element={<Navigate to="/logs" replace />} />
           <Route path="logs" element={<Logs />} />
         </Route>
       </Route>

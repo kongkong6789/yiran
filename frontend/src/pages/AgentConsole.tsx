@@ -38,6 +38,7 @@ import {
 import { collectSubmitBlockers } from "../features/task-console/taskSubmitValidation";
 import { getTaskTemplate } from "../features/task-console/taskTemplates";
 import { createTaskTraceId } from "../utils/traceId";
+import { useSearchParams } from "react-router-dom";
 
 const decisionTag: Record<string, { color: string; text: string }> = {
   allow: { color: "success", text: "放行执行" },
@@ -98,6 +99,7 @@ export default function AgentConsole({
   onDetailChange?: (open: boolean) => void;
 }) {
   const { message } = App.useApp();
+  const [searchParams] = useSearchParams();
   const [text, setText] = useState("帮我生成昨天的日报");
   const [agentId, setAgentId] = useState<number>();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -155,6 +157,11 @@ export default function AgentConsole({
   }, [view, templateKey]);
 
   useEffect(() => {
+    if (view !== "create" || searchParams.get("intent") !== "inventory-reorder") return;
+    setText("请做库存补货分析");
+  }, [searchParams, view]);
+
+  useEffect(() => {
     getCatalog().then((data) => setActions(data.actions)).catch(() => setActions([]));
   }, []);
 
@@ -179,15 +186,29 @@ export default function AgentConsole({
     const low = text.toLowerCase();
     const guess = actions.find((action) => {
       const keyword = action.title + action.name;
-      return (low.includes("日报") && action.name === "report.generate")
+      return ((low.includes("库存") && (low.includes("补货分析") || low.includes("库存诊断")))
+          && action.name === "inventory.reorder.shadow")
+        || (low.includes("日报") && action.name === "report.generate")
         || (low.includes("改价") && action.name === "price_change.apply")
         || ((low.includes("采购") || low.includes("补货")) && action.name === "purchase.create")
         || ((low.includes("吉客云") || low.includes("同步")) && action.name === "jackyun.sync")
         || low.includes(keyword);
     });
     const nextFields = guess ? guess.required_fields : {};
-    setExecutionFields(buildExecutionFields(nextFields));
-  }, [text, actions]);
+    const fields = buildExecutionFields(nextFields);
+    const snapshotId = searchParams.get("snapshot_id");
+    if (guess?.name === "inventory.reorder.shadow" && snapshotId) {
+      const snapshotField = fields.find((field) => field.key === "snapshot_id");
+      if (snapshotField) {
+        Object.assign(snapshotField, {
+          value: snapshotId,
+          source: "user",
+          status: "recognized",
+        });
+      }
+    }
+    setExecutionFields(fields);
+  }, [text, actions, searchParams]);
 
   const updateStep = (index: number, status: ExecutionStep["status"], detail?: string) => {
     setExecutionSteps((current) => current.map((step, stepIndex) => (
@@ -314,9 +335,15 @@ export default function AgentConsole({
       updateStep(activeIndex, "running", "正在调用 SOP 编排与业务数据上下文。");
       await persistProgress(activeIndex, activeIndex);
       const [sopResult] = await Promise.all([
-        runSop({ text, payload: cleaned, agent_id: selectedAgent!.id, trace_id: publishedTaskTrace }),
+        runSop({
+          text, payload: cleaned, agent_id: selectedAgent!.id,
+          trace_id: publishedTaskTrace, mode: "task_create",
+        }),
         delay(620),
       ]);
+
+      const manualTask = sopResult.action === "task.manual"
+        || sopResult.result?.execution_mode === "manual_task";
 
       const executionRejected = sopResult.decision === "block" || (
         sopResult.decision === "allow" && sopResult.result?.ok === false
@@ -390,22 +417,28 @@ export default function AgentConsole({
           [activeIndex - 1]: partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。",
         });
       }
-      await trackedCompleteStep(activeIndex, "任务执行完成，通知状态已记录。", 300);
+      await trackedCompleteStep(
+        activeIndex,
+        manualTask ? "普通任务已创建，通知状态已记录。" : "任务执行完成，通知状态已记录。",
+        300,
+      );
       const finalTimeline = EXECUTION_TEMPLATE.map((step) => ({
         title: step.title,
         detail: step.key === "notified"
           ? (assignment.notificationMode === "none"
             ? "已跳过企业微信通知。"
             : partial ? "企业微信已受理，但存在无效成员。" : "任务通知已被企业微信受理。")
-          : step.key === "finished" ? "SOP、任务分配与通知状态均已记录。" : step.detail,
+          : step.key === "finished"
+            ? (manualTask ? "普通任务已创建并分配，等待负责人处理。" : "SOP、任务分配与通知状态均已记录。")
+            : step.detail,
         status: (step.key === "notified" && assignment.notificationMode === "none")
           ? "skipped"
           : (step.key === "notified" && partial ? "failed" : "completed"),
         time: timeNow(),
       }));
       const finalTaskResponse = await api.patch(`/tasks/${sopResult.trace_id}/`, {
-        status: assignment.notificationMode === "none" ? "completed" : (partial ? "partial" : "completed"),
-        progress: 100,
+        status: manualTask ? "pending" : (assignment.notificationMode === "none" ? "completed" : (partial ? "partial" : "completed")),
+        progress: manualTask ? 0 : 100,
         sopId: sopResult.action,
         notificationStatus: assignment.notificationMode === "none" ? "skipped" : notificationStatus,
         notificationRecordId: assignment.notificationMode === "none" ? undefined : acceptedNotificationId,
@@ -432,7 +465,9 @@ export default function AgentConsole({
           sentAt: new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
         },
       });
-      if (assignment.notificationMode === "none") {
+      if (manualTask) {
+        message.success("任务已创建并分配，等待负责人处理");
+      } else if (assignment.notificationMode === "none") {
         message.success("任务执行成功");
       } else if (partial) {
         message.warning("企业微信已受理通知，但部分成员无效，请检查应用可见范围");

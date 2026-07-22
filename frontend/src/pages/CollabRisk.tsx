@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   App, Avatar, Badge, Button, Dropdown, Empty, Image, Input, Modal, Popover, Select, Space, Tag, Tooltip, Typography,
 } from "antd";
 import type { TooltipPlacement } from "antd/es/tooltip";
 import {
-  AlertOutlined, CheckSquareOutlined, ClearOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FileTextOutlined,
-  CloseOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
-  SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
-  TeamOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
+  AlertOutlined, ApartmentOutlined, CheckOutlined, CheckSquareOutlined, ClearOutlined,
+  CloseOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined,
+  FileOutlined, FileTextOutlined, ForwardOutlined, HistoryOutlined, LoadingOutlined,
+  MessageOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined,
+  RollbackOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
+  TeamOutlined, TranslationOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
+  UsergroupAddOutlined,
 } from "@ant-design/icons";
 import {
   addCollabRoomMembers,
@@ -25,19 +28,23 @@ import {
   listCollabMessages,
   listCollabRooms,
   listCollabUsers,
+  listTeams,
   markCollabRoomRead,
   recallCollabMessage,
   deleteCollabMessage,
+  forwardCollabMessages,
   refreshCollabInsights,
   checkCollabDraft,
   cancelXiaoceRun,
   sendCollabMessage,
   summarizeCollabRoom,
+  translateCollabMessages,
   updateCollabMemberNickname,
   updateCollabRoom,
   type AuthUser,
   type CollabInsight,
   type CollabMessage,
+  type CollabTranslation,
   type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
@@ -48,6 +55,7 @@ import {
   type UserSkillItem,
   type XiaoceRun,
   type McpServer,
+  type TeamSummary,
 } from "../api/client";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
@@ -86,9 +94,11 @@ import {
   type RoomMutation,
 } from "./xiaoceChat";
 import type { NasResourceHandoff } from "../features/agent-handoff/resourceHandoff";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 30;
+const TRANSLATION_BATCH_SIZE = 8;
 const VIRT_BASE_INDEX = 100_000;
 /** 有缓存时切房先秒开，超过此时长才后台整窗刷新 */
 const ROOM_CACHE_FRESH_MS = 5 * 60_000;
@@ -110,6 +120,21 @@ const FILE_ACCEPT = [
   ".mp3,.wav,.mp4,.mov,.avi",
 ].join(",");
 const MAX_FILES = 5;
+const DRAG_ATTACHMENT_TYPE = "application/x-liangce-chat-image";
+type PendingUpload = { file: File; preview?: string };
+
+function mergePendingUploads(current: PendingUpload[], files: File[]): PendingUpload[] {
+  const merged = [...current];
+  for (const file of files) {
+    if (merged.length >= MAX_FILES) break;
+    if (merged.some((item) => item.file.name === file.name && item.file.size === file.size)) continue;
+    merged.push({
+      file,
+      preview: isImageFile(file) ? URL.createObjectURL(file) : undefined,
+    });
+  }
+  return merged;
+}
 
 function isImageFile(file: File) {
   if (file.type.startsWith("image/")) return true;
@@ -136,11 +161,7 @@ function collabAttachUrl(url?: string, download = false) {
 
 /** 个人头像接口需要鉴权 token */
 function authAvatarSrc(url?: string) {
-  if (!url) return undefined;
-  const token = getAuthToken();
-  if (!token) return url;
-  const joiner = url.includes("?") ? "&" : "?";
-  return `${url}${joiner}token=${encodeURIComponent(token)}`;
+  return authenticatedAvatarUrl(url);
 }
 
 type MentionOption = {
@@ -248,6 +269,10 @@ function renderMentionContent(content: string, room: CollabRoom | null) {
 
 function looksLikeMarkdown(content: string) {
   return /(^|\n)\s{0,3}#{1,6}\s|(^|\n)\s*[-*+]\s|(^|\n)\s*\d+\.\s|\*\*[^*]+\*\*|__[^_]+__|```|^\s*>/m.test(content);
+}
+
+function isBilingualText(content: string) {
+  return /[\u3400-\u4dbf\u4e00-\u9fffA-Za-z]/.test(content || "");
 }
 
 function renderMessageBody(content: string, room: CollabRoom | null, asMarkdown: boolean) {
@@ -395,37 +420,56 @@ function UserProfileCardContent({
   online,
   roleHint,
   sentAt,
+  onMessage,
 }: {
   user: CollabUserBrief;
   online?: boolean;
   roleHint?: string;
   sentAt?: string;
+  onMessage?: () => void;
 }) {
   const label = memberLabel(user) || user.username;
   const src = authAvatarSrc(user.avatar_url);
   const isOnline = online ?? user.online;
   return (
-    <div className="collab-profile-card">
-      <Avatar
-        size={52}
-        src={src}
-        style={{ background: src ? undefined : avatarColor(label), flexShrink: 0 }}
-      >
-        {label.slice(0, 1).toUpperCase()}
-      </Avatar>
-      <div className="collab-profile-card-main">
-        <strong>{label}</strong>
-        <span className="collab-profile-uname">@{user.username}</span>
-        {user.nickname && user.nickname !== label ? (
-          <span className="collab-profile-nick">群昵称：{user.nickname}</span>
-        ) : null}
-        {roleHint ? <span className="collab-profile-role">{roleHint}</span> : null}
-        {user.bio ? <p className="collab-profile-bio">{user.bio}</p> : null}
-        <span className={`collab-profile-online ${isOnline ? "on" : "off"}`}>
-          {isOnline ? "在线" : "离线"}
-        </span>
-        {sentAt ? <span className="collab-profile-sent-at">发送于 {formatChatTimeSep(sentAt)}</span> : null}
+    <div className="collab-profile-card collab-profile-card--detail">
+      <div className="collab-profile-card-hero">
+        <Avatar
+          size={76}
+          src={src}
+          style={{ background: src ? undefined : avatarColor(label), flexShrink: 0 }}
+        >
+          {label.slice(0, 1).toUpperCase()}
+        </Avatar>
+        <div className="collab-profile-card-main">
+          <strong>{label}</strong>
+          <span className="collab-profile-uname">@{user.username}</span>
+          <span className={`collab-profile-online ${isOnline ? "on" : "off"}`}>
+            {isOnline ? "在线" : "离线"}
+          </span>
+        </div>
       </div>
+      <dl className="collab-profile-detail-list">
+        {user.nickname && user.nickname !== label ? <><dt>群昵称</dt><dd>{user.nickname}</dd></> : null}
+        <dt>身份</dt><dd>{roleHint || "团队成员"}</dd>
+        <dt>账号</dt><dd>{user.username}</dd>
+        {user.bio ? <><dt>简介</dt><dd>{user.bio}</dd></> : null}
+        {sentAt ? <><dt>发送时间</dt><dd>{formatChatTimeSep(sentAt)}</dd></> : null}
+      </dl>
+      {onMessage ? (
+        <Button
+          type="primary"
+          block
+          icon={<MessageOutlined />}
+          className="collab-profile-message-btn"
+          onClick={(event) => {
+            event.stopPropagation();
+            onMessage();
+          }}
+        >
+          发消息
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -478,8 +522,9 @@ function ProfileAvatarPopover({
   sentAt,
   placement = "rightTop",
   size = 32,
+  onMessage,
 }: {
-  children?: ReactNode;
+  children?: ReactElement;
   user?: CollabUserBrief | null;
   online?: boolean;
   roleHint?: string;
@@ -489,56 +534,18 @@ function ProfileAvatarPopover({
   sentAt?: string;
   placement?: TooltipPlacement;
   size?: number;
+  onMessage?: () => void;
 }) {
-  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
   const content = ai
     ? <AiProfileCardContent interject={interject} suggest={suggest} sentAt={sentAt} />
     : (user ? (
-      <UserProfileCardContent user={user} online={online} roleHint={roleHint} sentAt={sentAt} />
+      <UserProfileCardContent user={user} online={online} roleHint={roleHint} sentAt={sentAt} onMessage={onMessage} />
     ) : null);
 
   const label = user
     ? (memberLabel(user) || user.username || "?")
     : (suggest ? "建议" : interject ? "监控" : "AI");
   const src = !ai ? authAvatarSrc(user?.avatar_url) : undefined;
-  const openAvatarPreview = (event: React.MouseEvent | React.KeyboardEvent) => {
-    event.stopPropagation();
-    setAvatarPreviewOpen(true);
-  };
-  const avatarPreview = (
-    <Modal
-      open={avatarPreviewOpen}
-      footer={null}
-      centered
-      width={360}
-      className="collab-avatar-preview-modal"
-      onCancel={() => setAvatarPreviewOpen(false)}
-      title={null}
-      aria-label={`${label} 的头像预览`}
-    >
-      <div className="collab-avatar-preview-content">
-        <div
-          className="collab-avatar-preview-face"
-          style={{
-            background: ai
-              ? (interject && !suggest ? "#b45309" : "#0f766e")
-              : (src ? undefined : avatarColor(label)),
-          }}
-        >
-          {ai ? (
-            <RobotOutlined />
-          ) : src ? (
-            <img src={src} alt={`${label} 的头像`} draggable={false} />
-          ) : (
-            label.slice(0, 1).toUpperCase()
-          )}
-        </div>
-        <strong>{label}</strong>
-        <span>{ai ? "AI 协作助手" : (roleHint || (online ? "在线" : "团队成员"))}</span>
-      </div>
-    </Modal>
-  );
-
   if (!content) {
     return children ? <>{children}</> : null;
   }
@@ -546,71 +553,53 @@ function ProfileAvatarPopover({
   // 侧栏等外部自定义触发器（已自带尺寸）
   if (children) {
     return (
-      <>
-        <Popover
-          content={content}
-          trigger={["hover"]}
-          placement={placement}
-          arrow
-          destroyOnHidden
-          overlayClassName="collab-profile-popover"
-        >
-          <span
-            className="collab-avatar-hit"
-            role="button"
-            tabIndex={0}
-            onClick={openAvatarPreview}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") openAvatarPreview(event);
-            }}
-            aria-label={`放大 ${label} 的头像`}
-          >
-            {children}
-          </span>
-        </Popover>
-        {avatarPreview}
-      </>
-    );
-  }
-
-  // 消息列表：自绘固定 32×32 圆形，避免 flex 把 Ant Avatar 拉扁
-  return (
-    <>
       <Popover
         content={content}
-        trigger={["hover"]}
+        trigger="click"
         placement={placement}
         arrow
         destroyOnHidden
         overlayClassName="collab-profile-popover"
       >
-        <button
-          type="button"
-          className="collab-msg-avatar"
-          style={{ width: size, height: size, flex: `0 0 ${size}px` }}
-          onClick={openAvatarPreview}
-          aria-label={`放大 ${label} 的头像`}
-        >
-          <span
-            className="collab-msg-avatar-face"
-            style={{
-              background: ai
-                ? (interject && !suggest ? "#b45309" : "#0f766e")
-                : (src ? undefined : avatarColor(label)),
-            }}
-          >
-            {ai ? (
-              <RobotOutlined style={{ fontSize: size * 0.45, color: "#fff" }} />
-            ) : src ? (
-              <img src={src} alt="" draggable={false} />
-            ) : (
-              label.slice(0, 1).toUpperCase()
-            )}
-          </span>
-        </button>
+        {children}
       </Popover>
-      {avatarPreview}
-    </>
+    );
+  }
+
+  // 消息列表：自绘固定 32×32 圆形，避免 flex 把 Ant Avatar 拉扁
+  return (
+    <Popover
+      content={content}
+      trigger="click"
+      placement={placement}
+      arrow
+      destroyOnHidden
+      overlayClassName="collab-profile-popover"
+    >
+      <button
+        type="button"
+        className="collab-msg-avatar"
+        style={{ width: size, height: size, flex: `0 0 ${size}px` }}
+        aria-label={`查看 ${label} 的资料`}
+      >
+        <span
+          className="collab-msg-avatar-face"
+          style={{
+            background: ai
+              ? (interject && !suggest ? "#b45309" : "#0f766e")
+              : (src ? undefined : avatarColor(label)),
+          }}
+        >
+          {ai ? (
+            <RobotOutlined style={{ fontSize: size * 0.45, color: "#fff" }} />
+          ) : src ? (
+            <img src={src} alt="" draggable={false} />
+          ) : (
+            label.slice(0, 1).toUpperCase()
+          )}
+        </span>
+      </button>
+    </Popover>
   );
 }
 
@@ -756,7 +745,7 @@ export default function CollabRisk({
   draftRef.current = draft;
   type RoomComposerCache = {
     draft: string;
-    pendingFiles: { file: File; preview?: string }[];
+    pendingFiles: PendingUpload[];
     replyingTo: CollabMessage | null;
     referencedRoom: CollabRoom | null;
   };
@@ -795,8 +784,12 @@ export default function CollabRisk({
     onPanelChange?.(next);
   }, [onPanelChange]);
   const [contacts, setContacts] = useState<CollabUserBrief[]>([]);
+  const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(false);
+  const [expandedTeamIds, setExpandedTeamIds] = useState<Set<number>>(() => new Set());
   const [contactKeyword, setContactKeyword] = useState("");
   const [groupOpen, setGroupOpen] = useState(false);
+  const [groupTeamIds, setGroupTeamIds] = useState<number[]>([]);
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupTitle, setGroupTitle] = useState("");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -820,7 +813,23 @@ export default function CollabRisk({
   const [todoOpen, setTodoOpen] = useState(false);
   const [referencedRoom, setReferencedRoom] = useState<CollabRoom | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
-  const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
+  const [autoTranslate, setAutoTranslate] = useState(() => {
+    try { return window.localStorage.getItem("collab-auto-translate") === "1"; }
+    catch { return false; }
+  });
+  const [translations, setTranslations] = useState<Record<number, CollabTranslation>>({});
+  const [translationPendingIds, setTranslationPendingIds] = useState<Set<number>>(() => new Set());
+  const [translationError, setTranslationError] = useState("");
+  const [pendingFiles, setPendingFiles] = useState<PendingUpload[]>([]);
+  const [composerDragActive, setComposerDragActive] = useState(false);
+  const [roomDropTargetId, setRoomDropTargetId] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set());
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [forwardMessageIds, setForwardMessageIds] = useState<number[]>([]);
+  const [forwardMode, setForwardMode] = useState<"merge" | "separate">("separate");
+  const [forwardTargetId, setForwardTargetId] = useState<string | undefined>();
+  const [forwardSubmitting, setForwardSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionMenuRef = useRef<HTMLDivElement | null>(null);
@@ -846,7 +855,7 @@ export default function CollabRisk({
   const roomsRef = useRef<CollabRoom[]>([]);
   const activeRoomRef = useRef<CollabRoom | null>(null);
   const activeXiaoceRunRef = useRef<XiaoceRun | null>(null);
-  const pendingFilesRef = useRef<{ file: File; preview?: string }[]>([]);
+  const pendingFilesRef = useRef<PendingUpload[]>([]);
   const replyingToRef = useRef<CollabMessage | null>(null);
   const referencedRoomRef = useRef<CollabRoom | null>(null);
   const hasMoreBeforeRef = useRef(false);
@@ -857,6 +866,8 @@ export default function CollabRisk({
   const contactsRef = useRef<CollabUserBrief[]>([]);
   const contactSearchTimerRef = useRef<number | null>(null);
   const contactsLoadedRef = useRef(false);
+  const teamsLoadedRef = useRef(false);
+  const translationInFlightRef = useRef<Set<number>>(new Set());
   const loadingOlderRequestRef = useRef<Map<string, number>>(new Map());
   const pendingSearchTargetRef = useRef<{ roomId: string; messageId: number } | null>(null);
   const readSessionRef = useRef(
@@ -887,6 +898,17 @@ export default function CollabRisk({
     () => partitionXiaoceRooms(rooms),
     [rooms],
   );
+  const forwardRoomOptions = useMemo(() => rooms
+    .filter((room) => (
+      room.status === "open"
+      && room.id !== activeId
+      && !isXiaoceRoom(room)
+      && (!me || room.participants.some((participant) => participant.id === me.id))
+    ))
+    .map((room) => ({
+      value: room.id,
+      label: room.display_title || room.title || "未命名会话",
+    })), [activeId, me, rooms]);
   const renameTarget = useMemo(
     () => rooms.find((room) => room.id === renameTargetId)
       || (activeRoom?.id === renameTargetId ? activeRoom : null),
@@ -1008,6 +1030,63 @@ export default function CollabRisk({
     [messages],
   );
 
+  const toggleAutoTranslation = useCallback(() => {
+    setTranslationError("");
+    setAutoTranslate((current) => {
+      const next = !current;
+      try { window.localStorage.setItem("collab-auto-translate", next ? "1" : "0"); }
+      catch { /* storage can be unavailable in hardened browsers */ }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const roomId = activeId;
+    if (!autoTranslate || !roomId) return;
+    const candidates = visibleMessages
+      .filter((item) => (
+        item.id > 0
+        && item.status !== "recalled"
+        && item.msg_type !== "system"
+        && isBilingualText(item.content || "")
+        && !Array.isArray(item.meta?.forward_bundle)
+        && !translations[item.id]
+        && !translationInFlightRef.current.has(item.id)
+      ))
+      // Keep each LLM request small enough to return promptly. Completing a batch
+      // updates `translations`, which lets this effect pick up the next batch.
+      .slice(-TRANSLATION_BATCH_SIZE);
+    if (!candidates.length) return;
+    const ids = candidates.map((item) => item.id);
+    ids.forEach((id) => translationInFlightRef.current.add(id));
+    setTranslationPendingIds((current) => new Set([...current, ...ids]));
+    void translateCollabMessages(roomId, ids)
+      .then((result) => {
+        setTranslations((current) => {
+          const next = { ...current };
+          for (const item of result.translations || []) next[item.message_id] = item;
+          return next;
+        });
+        setTranslationError("");
+      })
+      .catch((error: any) => {
+        const detail = error?.response?.data?.error || "消息翻译失败，请稍后重试";
+        setTranslationError(detail);
+        setAutoTranslate(false);
+        try { window.localStorage.setItem("collab-auto-translate", "0"); }
+        catch { /* ignore */ }
+        message.error(detail);
+      })
+      .finally(() => {
+        ids.forEach((id) => translationInFlightRef.current.delete(id));
+        setTranslationPendingIds((current) => {
+          const next = new Set(current);
+          ids.forEach((id) => next.delete(id));
+          return next;
+        });
+      });
+  }, [activeId, autoTranslate, message, translations, visibleMessages]);
+
   const timeSepBeforeId = useMemo(() => {
     const show = new Set<number>();
     let lastTs = 0;
@@ -1024,18 +1103,13 @@ export default function CollabRisk({
 
   const scrollMessagesToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
     stickBottomRef.current = true;
-    forceStickUntilRef.current = Date.now() + 1600;
-    const go = () => {
+    forceStickUntilRef.current = Date.now() + 420;
+    requestAnimationFrame(() => {
       virtuosoRef.current?.scrollToIndex({
         index: "LAST",
         align: "end",
         behavior,
       });
-    };
-    requestAnimationFrame(() => {
-      go();
-      window.setTimeout(go, 40);
-      window.setTimeout(go, 160);
     });
   }, []);
 
@@ -1359,6 +1433,8 @@ export default function CollabRisk({
 
   const selectRoom = useCallback((roomId: string) => {
     if (roomId === activeIdRef.current) return;
+    setSelectionMode(false);
+    setSelectedMessageIds(new Set());
     // 先把当前会话的输入框状态存起来
     const prevId = beginRoomSelection(activeIdRef, roomLoadSeqRef, roomId);
     setStatsLoading(false);
@@ -1455,6 +1531,20 @@ export default function CollabRisk({
     }
   }, []);
 
+  const loadTeams = useCallback(async (force = false) => {
+    if (!force && teamsLoadedRef.current) return;
+    setTeamsLoading(true);
+    try {
+      const result = await listTeams();
+      setTeams((result.results || []).filter((team) => team.isActive));
+      teamsLoadedRef.current = true;
+    } catch (error: any) {
+      if (force) message.error(error?.response?.data?.error || "加载团队失败");
+    } finally {
+      setTeamsLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     getMe().then((r) => setMe(r.user)).catch(() => setMe(null));
     const roomFromQuery = searchParams.get("room");
@@ -1466,6 +1556,7 @@ export default function CollabRisk({
         contactsLoadedRef.current = true;
       })
       .catch(() => setContacts([]));
+    void loadTeams();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 从铃铛/外链带 ?room= 进入时打开对应会话
@@ -1585,7 +1676,9 @@ export default function CollabRisk({
         ended,
       }).catch(() => undefined);
     };
-    const timer = window.setInterval(() => report(false), 15_000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") report(false);
+    }, 15_000);
     const onVisibility = () => {
       if (document.visibilityState === "hidden") report(false);
       else readActiveSinceRef.current = Date.now();
@@ -1675,6 +1768,7 @@ export default function CollabRisk({
     };
 
     const beat = async () => {
+      if (document.visibilityState !== "visible") return;
       try {
         await collabPresenceHeartbeat();
         if (stopped) return;
@@ -1737,8 +1831,11 @@ export default function CollabRisk({
   useEffect(() => {
     if (!panel) return;
     setSiderTab(panel);
-    if (panel === "contacts") void loadContacts();
-  }, [loadContacts, panel]);
+    if (panel === "contacts") {
+      void loadContacts();
+      void loadTeams();
+    }
+  }, [loadContacts, loadTeams, panel]);
 
   useEffect(() => {
     if (!activeId) {
@@ -2050,8 +2147,9 @@ export default function CollabRisk({
 
   useEffect(() => {
     if (!groupOpen && !inviteOpen) return;
-    loadContacts();
-  }, [groupOpen, inviteOpen, loadContacts]);
+    void loadContacts();
+    if (groupOpen) void loadTeams();
+  }, [groupOpen, inviteOpen, loadContacts, loadTeams]);
 
   const findDirectRoom = useCallback((username: string) => (
     rooms.find((room) => (
@@ -2111,8 +2209,15 @@ export default function CollabRisk({
     }
   };
 
+  const openCreateGroup = () => {
+    setGroupTeamIds([]);
+    setGroupMembers([]);
+    setGroupTitle("");
+    setGroupOpen(true);
+  };
+
   const handleCreateGroup = async () => {
-    if (groupMembers.length < 1) {
+    if (selectedGroupMembers.length < 1) {
       message.warning("请至少选择一位群成员");
       return;
     }
@@ -2120,10 +2225,11 @@ export default function CollabRisk({
     try {
       const room = await createCollabRoom({
         title: groupTitle.trim() || undefined,
-        peer_usernames: groupMembers,
+        peer_usernames: selectedGroupMembers,
         room_kind: "group",
       });
       setGroupOpen(false);
+      setGroupTeamIds([]);
       setGroupMembers([]);
       setGroupTitle("");
       primeRoomSnapshot(room);
@@ -2136,6 +2242,22 @@ export default function CollabRisk({
     } finally {
       setCreating(false);
     }
+  };
+
+  const openGroupForTeam = (team: TeamSummary) => {
+    setGroupTeamIds([team.id]);
+    setGroupMembers([]);
+    setGroupTitle(team.name);
+    setGroupOpen(true);
+  };
+
+  const toggleTeamExpanded = (teamId: number) => {
+    setExpandedTeamIds((current) => {
+      const next = new Set(current);
+      if (next.has(teamId)) next.delete(teamId);
+      else next.add(teamId);
+      return next;
+    });
   };
 
   const openInviteModal = () => {
@@ -2743,6 +2865,7 @@ export default function CollabRisk({
     const roomId = activeIdRef.current;
     if (!roomId) return;
     Modal.confirm({
+      className: "collab-danger-confirm",
       title: "删除这条消息？",
       content: "删除后会话内其他人也将看不到该消息。",
       okText: "删除",
@@ -2771,21 +2894,53 @@ export default function CollabRisk({
     const incoming = Array.from(list);
     if (!incoming.length) return;
     setPendingFiles((prev) => {
-      const merged = [...prev];
-      for (const file of incoming) {
-        if (merged.length >= MAX_FILES) break;
-        if (!merged.some((item) => item.file.name === file.name && item.file.size === file.size)) {
-          merged.push({
-            file,
-            preview: isImageFile(file) ? URL.createObjectURL(file) : undefined,
-          });
-        }
-      }
+      const merged = mergePendingUploads(prev, incoming);
       if (merged.length >= MAX_FILES) {
         message.info(`最多发送 ${MAX_FILES} 个附件`);
       }
       return merged;
     });
+  };
+
+  const filesFromDrop = async (transfer: DataTransfer): Promise<File[]> => {
+    const external = Array.from(transfer.files || []);
+    if (external.length) return external;
+    const encoded = transfer.getData(DRAG_ATTACHMENT_TYPE);
+    if (!encoded) return [];
+    try {
+      const attachment = JSON.parse(encoded) as { url?: string; name?: string; mime?: string };
+      if (!attachment.url) return [];
+      const response = await fetch(collabAttachUrl(attachment.url));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      return [new File([blob], attachment.name || "聊天图片", {
+        type: attachment.mime || blob.type || "application/octet-stream",
+      })];
+    } catch {
+      message.error("读取拖拽图片失败，请重试");
+      return [];
+    }
+  };
+
+  const addFilesToRoom = async (roomId: string, transfer: DataTransfer) => {
+    const incoming = await filesFromDrop(transfer);
+    if (!incoming.length) return;
+    if (roomId === activeIdRef.current) {
+      addFiles(incoming);
+      return;
+    }
+    const cached = roomComposerCacheRef.current.get(roomId) || {
+      draft: "",
+      pendingFiles: [],
+      replyingTo: null,
+      referencedRoom: null,
+    };
+    const merged = mergePendingUploads(cached.pendingFiles, incoming);
+    roomComposerCacheRef.current.set(roomId, { ...cached, pendingFiles: merged });
+    setRoomDropTargetId(null);
+    selectRoom(roomId);
+    const target = roomsRef.current.find((room) => room.id === roomId);
+    message.success(`图片已放入「${target ? roomTitle(target) : "目标会话"}」输入框`);
   };
 
   const removePendingFile = (idx: number) => {
@@ -2795,6 +2950,56 @@ export default function CollabRisk({
       if (removed?.preview) URL.revokeObjectURL(removed.preview);
       return next;
     });
+  };
+
+  const toggleMessageSelection = (messageId: number) => {
+    setSelectedMessageIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  };
+
+  const openForwardDialog = (ids: number[], mode: "merge" | "separate") => {
+    if (!forwardRoomOptions.length) {
+      message.info("暂无其他可转发的会话");
+      return;
+    }
+    const selected = new Set(ids);
+    const ordered = messagesRef.current
+      .filter((item) => selected.has(item.id))
+      .map((item) => item.id);
+    if (!ordered.length) return;
+    setForwardMessageIds(ordered);
+    setForwardMode(mode);
+    setForwardTargetId(forwardRoomOptions[0]?.value);
+    setForwardOpen(true);
+  };
+
+  const submitForward = async () => {
+    if (!forwardTargetId || !forwardMessageIds.length || forwardSubmitting) return;
+    setForwardSubmitting(true);
+    try {
+      const result = await forwardCollabMessages(forwardTargetId, forwardMessageIds, forwardMode);
+      mutateRoomData(forwardTargetId, {
+        messages: (previous) => mergeMessagePatches(previous, result.messages),
+        room: (previous) => ({ ...previous, ...result.room }),
+      });
+      setForwardOpen(false);
+      setSelectionMode(false);
+      setSelectedMessageIds(new Set());
+      selectRoom(forwardTargetId);
+      window.setTimeout(() => {
+        void loadRoomDetail(forwardTargetId, { soft: true });
+        scrollMessagesToBottom("smooth");
+      }, 60);
+      message.success(forwardMode === "merge" ? "已合并转发" : "已逐条转发");
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "转发失败，请重试");
+    } finally {
+      setForwardSubmitting(false);
+    }
   };
 
   const syncMentionFromCaret = (value: string, caret?: number | null) => {
@@ -2845,6 +3050,7 @@ export default function CollabRisk({
     const roomId = activeIdRef.current;
     if (!roomId) return;
     Modal.confirm({
+      className: "collab-danger-confirm",
       title: "清空聊天记录？",
       content: "将删除本会话全部消息与风控洞察，会话本身保留。此操作对所有成员生效。",
       okText: "清空记录",
@@ -2896,6 +3102,7 @@ export default function CollabRisk({
       ? xiaoceDeleteContent(running)
       : "将彻底删除该会话及全部聊天记录，所有成员都不可再访问。";
     Modal.confirm({
+      className: "collab-danger-confirm",
       title,
       content,
       okText: xiaoceTask ? "删除任务" : "删除会话",
@@ -3055,6 +3262,21 @@ export default function CollabRisk({
           },
         },
         {
+          key: "forward",
+          icon: <ForwardOutlined />,
+          label: "转发",
+          onClick: () => openForwardDialog([m.id], "separate"),
+        },
+        {
+          key: "multi-select",
+          icon: <CheckSquareOutlined />,
+          label: "多选",
+          onClick: () => {
+            setSelectionMode(true);
+            setSelectedMessageIds(new Set([m.id]));
+          },
+        },
+        {
           key: "copy-id",
           label: `复制编号 #${m.id}`,
           onClick: async () => {
@@ -3167,6 +3389,36 @@ export default function CollabRisk({
     () => filteredContacts.filter((c) => !(c.kind === "bot" || c.bot_id === "xiaoce" || c.username === "小策bot")),
     [filteredContacts],
   );
+  const filteredTeams = useMemo(() => {
+    const q = contactKeyword.trim().toLowerCase();
+    if (!q) return teams;
+    return teams.filter((team) => (
+      team.name.toLowerCase().includes(q)
+      || team.description.toLowerCase().includes(q)
+      || team.members.some((member) => (
+        member.username.toLowerCase().includes(q)
+        || member.displayName.toLowerCase().includes(q)
+      ))
+    ));
+  }, [contactKeyword, teams]);
+  const contactById = useMemo(
+    () => new Map(contacts.map((contact) => [contact.id, contact])),
+    [contacts],
+  );
+  const selectedTeamMemberUsernames = useMemo(() => {
+    const selected = new Set(groupTeamIds);
+    return new Set(
+      teams
+        .filter((team) => selected.has(team.id))
+        .flatMap((team) => team.members)
+        .filter((member) => member.isActive && member.id !== me?.id)
+        .map((member) => member.username),
+    );
+  }, [groupTeamIds, me?.id, teams]);
+  const selectedGroupMembers = useMemo(
+    () => Array.from(new Set([...selectedTeamMemberUsernames, ...groupMembers])),
+    [groupMembers, selectedTeamMemberUsernames],
+  );
 
   const isBotContact = (user: CollabUserBrief) =>
     user.kind === "bot" || user.bot_id === "xiaoce" || user.username === "小策bot";
@@ -3270,7 +3522,7 @@ export default function CollabRisk({
   };
 
   return (
-    <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible ? "" : " collab-page--summary-hidden"}`}>
+    <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible ? "" : " collab-page--summary-hidden"}${selectionMode ? " collab-page--selecting" : ""}`}>
       <style>{css}</style>
 
       <aside className="collab-sider">
@@ -3309,6 +3561,15 @@ export default function CollabRisk({
               />
             </Tooltip>
           </Space>
+          <Button
+            type="primary"
+            size="small"
+            className="collab-create-group-btn"
+            icon={<UsergroupAddOutlined />}
+            onClick={openCreateGroup}
+          >
+            发起群聊
+          </Button>
         </div>
         {!embedded ? (
           <div className="collab-tabs">
@@ -3326,6 +3587,7 @@ export default function CollabRisk({
                 switchSiderTab("contacts");
                 setContactKeyword("");
                 void loadContacts();
+                void loadTeams();
               }}
             >
               通讯录
@@ -3370,8 +3632,22 @@ export default function CollabRisk({
               return (
                 <div
                   key={room.id}
-                  className={`collab-room-item ${activeId === room.id ? "active" : ""} risk-${room.risk_level}`}
+                  className={`collab-room-item ${activeId === room.id ? "active" : ""} ${roomDropTargetId === room.id ? "is-drop-target" : ""} risk-${room.risk_level}`}
                   onPointerEnter={() => prefetchRoom(room.id)}
+                  onDragOver={(event) => {
+                    if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes(DRAG_ATTACHMENT_TYPE)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                    setRoomDropTargetId(room.id);
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRoomDropTargetId(null);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setRoomDropTargetId(null);
+                    void addFilesToRoom(room.id, event.dataTransfer);
+                  }}
                 >
                   <button
                     type="button"
@@ -3379,13 +3655,11 @@ export default function CollabRisk({
                     onClick={() => selectRoom(room.id)}
                   >
                     {peer ? (
-                      <ProfileAvatarPopover user={peer} online={online} placement="rightTop">
-                        <AvatarWithPresence
-                          name={memberLabel(peer) || title}
-                          online={online}
-                          avatarUrl={peer.avatar_url}
-                        />
-                      </ProfileAvatarPopover>
+                      <AvatarWithPresence
+                        name={memberLabel(peer) || title}
+                        online={online}
+                        avatarUrl={peer.avatar_url}
+                      />
                     ) : (
                       <AvatarWithPresence
                         name={title}
@@ -3450,13 +3724,114 @@ export default function CollabRisk({
               style={{ marginBottom: 8 }}
             />
             <div className="collab-room-list">
-              {filteredContacts.length === 0 ? (
+              {filteredContacts.length === 0 && filteredTeams.length === 0 ? (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   description={contactKeyword.trim() ? "没有匹配的联系人" : "暂无其他账号"}
                 />
               ) : (
                 <>
+                  <div className="collab-contact-section collab-team-section">
+                    <div className="collab-contact-section-title">
+                      <span>团队分组</span>
+                      <em>{filteredTeams.length}</em>
+                    </div>
+                    {teamsLoading && !teamsLoadedRef.current ? (
+                      <div className="collab-team-empty"><LoadingOutlined /> 正在加载团队…</div>
+                    ) : filteredTeams.length > 0 ? (
+                      filteredTeams.map((team) => {
+                        const expanded = expandedTeamIds.has(team.id);
+                        const activeMembers = team.members.filter((member) => member.isActive);
+                        return (
+                          <article key={team.id} className={`collab-team-card${expanded ? " is-expanded" : ""}`}>
+                            <button
+                              type="button"
+                              className="collab-team-card-main"
+                              onClick={() => toggleTeamExpanded(team.id)}
+                              aria-expanded={expanded}
+                            >
+                              <span className="collab-team-card-icon" aria-hidden>
+                                <ApartmentOutlined />
+                              </span>
+                              <span className="collab-team-card-copy">
+                                <strong>{team.name}</strong>
+                                <small>{team.description || `${team.kindLabel} · ${team.memberCount} 位成员`}</small>
+                              </span>
+                              <Avatar.Group size={24} max={{ count: 3 }}>
+                                {activeMembers.slice(0, 4).map((member) => (
+                                  <Avatar
+                                    key={member.id}
+                                    src={authenticatedAvatarUrl(member.avatarUrl)}
+                                  >
+                                    {(member.displayName || member.username).slice(0, 1)}
+                                  </Avatar>
+                                ))}
+                              </Avatar.Group>
+                              <span className="collab-team-card-count">{team.memberCount}人</span>
+                              <DownOutlined className="collab-team-card-chevron" />
+                            </button>
+                            {expanded ? (
+                              <div className="collab-team-card-detail">
+                                <div className="collab-team-member-list">
+                                  {activeMembers.map((member) => {
+                                    const contact = contactById.get(member.id) || {
+                                      id: member.id,
+                                      username: member.username,
+                                      display_name: member.displayName,
+                                      avatar_url: member.avatarUrl,
+                                      online: false,
+                                      kind: "human" as const,
+                                    };
+                                    return (
+                                      <ProfileAvatarPopover
+                                        key={member.id}
+                                        user={contact}
+                                        online={Boolean(contact.online)}
+                                        roleHint={member.roleLabel}
+                                        placement="rightTop"
+                                        onMessage={() => void openDm(member.username)}
+                                      >
+                                        <button
+                                          type="button"
+                                          className="collab-team-member"
+                                          aria-label={`查看 ${member.displayName || member.username} 的资料`}
+                                        >
+                                          <AvatarWithPresence
+                                            name={member.displayName || member.username}
+                                            online={Boolean(contact.online)}
+                                            avatarUrl={member.avatarUrl}
+                                            size={30}
+                                          />
+                                          <span>
+                                            <strong>{member.displayName || member.username}</strong>
+                                            <small>{member.roleLabel}</small>
+                                          </span>
+                                        </button>
+                                      </ProfileAvatarPopover>
+                                    );
+                                  })}
+                                </div>
+                                <Button
+                                  type="primary"
+                                  block
+                                  icon={<UsergroupAddOutlined />}
+                                  disabled={activeMembers.every((member) => member.id === me?.id)}
+                                  onClick={() => openGroupForTeam(team)}
+                                >
+                                  发起团队群聊
+                                </Button>
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      })
+                    ) : (
+                      <div className="collab-team-empty">
+                        <ApartmentOutlined />
+                        <span>{contactKeyword.trim() ? "没有匹配的团队" : "当前企业暂无团队分组"}</span>
+                      </div>
+                    )}
+                  </div>
                   {botContacts.length > 0 ? (
                     <div className="collab-contact-section">
                       <div className="collab-contact-section-title">应用</div>
@@ -3486,39 +3861,43 @@ export default function CollabRisk({
                   ) : null}
                   {humanContacts.length > 0 ? (
                     <div className="collab-contact-section">
-                      {botContacts.length > 0 ? (
-                        <div className="collab-contact-section-title">同事</div>
-                      ) : null}
+                      <div className="collab-contact-section-title">同事</div>
                       {humanContacts.map((user) => (
-                        <button
+                        <ProfileAvatarPopover
                           key={user.id}
-                          type="button"
-                          className="collab-contact-item"
-                          disabled={creating}
-                          onClick={() => openDm(user.username)}
+                          user={user}
+                          online={Boolean(user.online)}
+                          placement="rightTop"
+                          onMessage={() => void openDm(user.username)}
                         >
-                          <ProfileAvatarPopover user={user} online={Boolean(user.online)} placement="rightTop">
+                          <button
+                            type="button"
+                            className="collab-contact-item"
+                            disabled={creating}
+                            aria-label={`查看 ${memberLabel(user) || user.username} 的资料`}
+                          >
                             <AvatarWithPresence
                               name={memberLabel(user) || user.username}
                               online={Boolean(user.online)}
                               avatarUrl={user.avatar_url}
                             />
-                          </ProfileAvatarPopover>
-                          <div>
-                            <strong>
-                              {memberLabel(user) || user.username}
-                              {isNewlyJoined(user) ? (
-                                <Tag color="green" style={{ marginLeft: 6, fontSize: 11, lineHeight: "18px" }}>新</Tag>
-                              ) : null}
-                            </strong>
-                            <span className={user.online ? "collab-status-on" : "collab-status-off"}>
-                              {user.online ? "在线" : "离线"}
-                              {memberLabel(user) && memberLabel(user) !== user.username
-                                ? ` · ${user.username}`
-                                : ""}
-                            </span>
-                          </div>
-                        </button>
+                            <div>
+                              <strong>
+                                {memberLabel(user) || user.username}
+                                {isNewlyJoined(user) ? (
+                                  <Tag color="green" style={{ marginLeft: 6, fontSize: 11, lineHeight: "18px" }}>新</Tag>
+                                ) : null}
+                              </strong>
+                              <span className={user.online ? "collab-status-on" : "collab-status-off"}>
+                                {user.online ? "在线" : "离线"}
+                                {memberLabel(user) && memberLabel(user) !== user.username
+                                  ? ` · ${user.username}`
+                                  : ""}
+                              </span>
+                            </div>
+                            <span className="collab-contact-open-hint">查看资料</span>
+                          </button>
+                        </ProfileAvatarPopover>
                       ))}
                     </div>
                   ) : null}
@@ -3548,7 +3927,7 @@ export default function CollabRisk({
             <div className="collab-welcome-stage">
               <CollabWelcome
                 onOpenContacts={() => switchSiderTab("contacts")}
-                onCreateGroup={() => setGroupOpen(true)}
+                onCreateGroup={openCreateGroup}
               />
             </div>
           )
@@ -3598,6 +3977,18 @@ export default function CollabRisk({
                     />
                   </Tooltip>
                 ) : null}
+                <Tooltip title={translationError || (autoTranslate ? "已开启：中文自动译为英文，英文自动译为中文" : "开启消息中英自动互译")}>
+                  <Button
+                    className={`collab-translate-toggle${autoTranslate ? " is-active" : ""}`}
+                    icon={translationPendingIds.size > 0 && autoTranslate ? <LoadingOutlined /> : <TranslationOutlined />}
+                    onClick={toggleAutoTranslation}
+                    aria-pressed={autoTranslate}
+                    aria-label={autoTranslate ? "关闭消息中英自动互译" : "开启消息中英自动互译"}
+                  >
+                    中英互译
+                    <i aria-hidden />
+                  </Button>
+                </Tooltip>
                 {isXiaoce ? (
                   <div className="xiaoce-theme-switch" role="group" aria-label="对话主题">
                     <Button
@@ -3646,6 +4037,7 @@ export default function CollabRisk({
                   <Dropdown
                     trigger={["click"]}
                     placement="bottomRight"
+                    overlayClassName="collab-conversation-menu"
                     menu={{
                       items: [
                         (activeRoom.room_kind === "group" || isXiaoce) && isParticipant
@@ -3774,20 +4166,10 @@ export default function CollabRisk({
                   if (Date.now() < forceStickUntilRef.current) return "auto";
                   return stickBottomRef.current ? "auto" : false;
                 }}
-                atBottomThreshold={100}
+                atBottomThreshold={56}
                 atBottomStateChange={(bottom) => {
-                  if (Date.now() < forceStickUntilRef.current) {
-                    stickBottomRef.current = true;
-                    if (!bottom) {
-                      virtuosoRef.current?.scrollToIndex({
-                        index: "LAST",
-                        align: "end",
-                        behavior: "auto",
-                      });
-                    }
-                    return;
-                  }
-                  stickBottomRef.current = bottom;
+                  if (bottom) stickBottomRef.current = true;
+                  else if (Date.now() >= forceStickUntilRef.current) stickBottomRef.current = false;
                 }}
                 startReached={() => {
                   if (stickBottomRef.current || Date.now() < forceStickUntilRef.current) return;
@@ -3837,7 +4219,7 @@ export default function CollabRisk({
                 const readStateLabel = activeRoom.room_kind === "group"
                   ? (unreadReceiptCount === 0 ? "全部已读" : `${unreadReceiptCount} 人未读`)
                   : (unreadReceiptCount === 0 ? "已读" : "未读");
-                // 消息自带旗标，或洞察/告警挂到证据消息上 → 显示红/黄连线
+                // 消息自带旗标，或洞察/告警挂到证据消息上 → 显示紧凑风险徽标
                 const chatAlert = !isSystem ? chatAlertByMsgId.get(m.id) : undefined;
                 const flagLevel = (
                   m.risk_flag_level === "red" || m.risk_flag_level === "yellow"
@@ -3851,6 +4233,10 @@ export default function CollabRisk({
                 ).trim();
                 const flagAdvice = chatAlert?.advice || "";
                 const flagged = (flagLevel === "red" || flagLevel === "yellow") && Boolean(flagLabel);
+                const forwardBundle = Array.isArray(m.meta?.forward_bundle) ? m.meta.forward_bundle : [];
+                const forwardedFrom = m.meta?.forwarded_from;
+                const translated = translations[m.id];
+                const translating = translationPendingIds.has(m.id);
                 const timeSep = timeSepBeforeId.has(m.id)
                   ? formatChatTimeSep(m.created_at)
                   : "";
@@ -3858,7 +4244,11 @@ export default function CollabRisk({
                   return (
                     <div className="collab-virt-item">
                       {timeSep ? <div className="collab-time-sep">{timeSep}</div> : null}
-                      <Dropdown trigger={["contextMenu"]} menu={{ items: msgContextItems(m) }}>
+                      <Dropdown
+                        trigger={["contextMenu"]}
+                        overlayClassName="collab-message-menu"
+                        menu={{ items: msgContextItems(m) }}
+                      >
                         <div id={`collab-msg-${m.id}`} className="collab-msg system">
                           <div className="collab-system-tip">{m.content}</div>
                         </div>
@@ -3869,11 +4259,28 @@ export default function CollabRisk({
                 return (
                   <div className="collab-virt-item">
                     {timeSep ? <div className="collab-time-sep">{timeSep}</div> : null}
-                    <Dropdown trigger={["contextMenu"]} menu={{ items: msgContextItems(m) }}>
+                    <Dropdown
+                      trigger={["contextMenu"]}
+                      overlayClassName="collab-message-menu"
+                      menu={{ items: msgContextItems(m) }}
+                    >
                     <div
                       id={`collab-msg-${m.id}`}
-                      className={`collab-msg ${mine ? "mine" : "peer"} ${isAi ? "ai" : ""} ${isInterject ? "interject" : ""} ${isCollabSuggest ? "suggest" : ""} ${flagged ? "flagged" : ""} ${highlightId === m.id ? "highlight" : ""}`}
+                      className={`collab-msg ${mine ? "mine" : "peer"} ${isAi ? "ai" : ""} ${isInterject ? "interject" : ""} ${isCollabSuggest ? "suggest" : ""} ${flagged ? "flagged" : ""} ${selectedMessageIds.has(m.id) ? "is-selected" : ""} ${highlightId === m.id ? "highlight" : ""}`}
                     >
+                      {selectionMode ? (
+                        <button
+                          type="button"
+                          className={`collab-message-selector${selectedMessageIds.has(m.id) ? " is-selected" : ""}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleMessageSelection(m.id);
+                          }}
+                          aria-label={selectedMessageIds.has(m.id) ? "取消选择消息" : "选择消息"}
+                        >
+                          {selectedMessageIds.has(m.id) ? <CheckOutlined /> : null}
+                        </button>
+                      ) : null}
                       <div className="collab-msg-aside">
                         <Tooltip title={`发送于 ${formatChatTimeSep(m.created_at)}`}>
                           <span className="collab-msg-name">
@@ -3917,8 +4324,8 @@ export default function CollabRisk({
                             placement={mine ? "topRight" : "topLeft"}
                           >
                             <div className={`collab-msg-flag risk-${flagLevel}`}>
+                              <AlertOutlined aria-hidden />
                               <span className="collab-msg-flag-label">{flagLabel}</span>
-                              <i className="collab-msg-flag-line" aria-hidden />
                             </div>
                           </Tooltip>
                         )}
@@ -3951,7 +4358,42 @@ export default function CollabRisk({
                             <span>{m.reply_to.content || "[附件]"}</span>
                           </button>
                         ) : null}
-                        {!!m.attachments?.length && (
+                        {forwardedFrom ? (
+                          <div className="collab-forward-origin">
+                            <ForwardOutlined />
+                            <span>
+                              转发自 {memberLabel(forwardedFrom.sender) || forwardedFrom.sender.username}
+                              <small>{forwardedFrom.room_title}</small>
+                            </span>
+                          </div>
+                        ) : null}
+                        {forwardBundle.length ? (
+                          <div className="collab-forward-card">
+                            <div className="collab-forward-card-head">
+                              <strong>合并转发的聊天记录</strong>
+                              <span>{forwardBundle.length} 条</span>
+                            </div>
+                            <div className="collab-forward-card-list">
+                              {forwardBundle.map((item) => (
+                                <div key={`${item.room_id}-${item.message_id}`} className="collab-forward-card-item">
+                                  <Avatar
+                                    size={28}
+                                    src={authAvatarSrc(item.sender.avatar_url)}
+                                    style={{ background: avatarColor(memberLabel(item.sender) || item.sender.username) }}
+                                  >
+                                    {(memberLabel(item.sender) || item.sender.username).slice(0, 1)}
+                                  </Avatar>
+                                  <div>
+                                    <strong>{memberLabel(item.sender) || item.sender.username}</strong>
+                                    <p>{item.content || (item.attachments?.length ? `[${item.attachments.length} 个附件]` : "空消息")}</p>
+                                    <small>{formatChatTimeSep(item.created_at)} · {item.room_title}</small>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {!forwardBundle.length && !!m.attachments?.length && (
                           <div className="collab-msg-attach">
                             {m.attachments.filter((a) => a.is_image && a.url).length > 0 && (
                               <div className="collab-msg-images">
@@ -3963,6 +4405,15 @@ export default function CollabRisk({
                                       alt={a.name || "图片"}
                                       className="collab-msg-image"
                                       rootClassName="collab-msg-image-root"
+                                      draggable
+                                      onDragStart={(event) => {
+                                        event.dataTransfer.effectAllowed = "copy";
+                                        event.dataTransfer.setData(DRAG_ATTACHMENT_TYPE, JSON.stringify({
+                                          url: a.url,
+                                          name: a.name,
+                                          mime: a.mime,
+                                        }));
+                                      }}
                                     />
                                   ))}
                                 </Image.PreviewGroup>
@@ -3986,7 +4437,20 @@ export default function CollabRisk({
                             ))}
                           </div>
                         )}
-                        {m.content ? renderMessageBody(m.content, activeRoom, isAi) : null}
+                        {!forwardBundle.length && m.content ? renderMessageBody(m.content, activeRoom, isAi) : null}
+                        {autoTranslate && !forwardBundle.length && m.content && (translated || translating) ? (
+                          <div className={`collab-translation${translating && !translated ? " is-loading" : ""}`}>
+                            <span className="collab-translation-label">
+                              {translating && !translated ? <LoadingOutlined /> : <TranslationOutlined />}
+                              {translated?.target_language === "en" ? "English" : "中文译文"}
+                            </span>
+                            {translated ? (
+                              <div className="collab-translation-text">
+                                {renderMessageBody(translated.translated_text, activeRoom, isAi)}
+                              </div>
+                            ) : <span className="collab-translation-loading">正在翻译…</span>}
+                          </div>
+                        ) : null}
                         {isXiaoceMessage && m.meta?.process_steps?.length ? (
                           <XiaoceProcess
                             steps={m.meta.process_steps}
@@ -4038,6 +4502,43 @@ export default function CollabRisk({
               )}
             </div>
 
+            {selectionMode ? (
+              <div className="collab-selection-toolbar" role="toolbar" aria-label="批量消息操作">
+                <div>
+                  <strong>已选择 {selectedMessageIds.size} 条消息</strong>
+                  <span>可合并为一张聊天记录卡片，或按原顺序逐条转发</span>
+                </div>
+                <Space size={6}>
+                  <Button
+                    size="small"
+                    icon={<ForwardOutlined />}
+                    disabled={!selectedMessageIds.size}
+                    onClick={() => openForwardDialog(Array.from(selectedMessageIds), "merge")}
+                  >
+                    合并转发
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<ForwardOutlined />}
+                    disabled={!selectedMessageIds.size}
+                    onClick={() => openForwardDialog(Array.from(selectedMessageIds), "separate")}
+                  >
+                    逐条转发
+                  </Button>
+                  <Button
+                    size="small"
+                    type="text"
+                    onClick={() => {
+                      setSelectionMode(false);
+                      setSelectedMessageIds(new Set());
+                    }}
+                  >
+                    取消
+                  </Button>
+                </Space>
+              </div>
+            ) : null}
+
             {xiaoceBusy && activeXiaoceRun ? (
               <div className="xiaoce-live-process">
                 <div className="xiaoce-live-process-inner">
@@ -4052,7 +4553,29 @@ export default function CollabRisk({
               </div>
             ) : null}
 
-            <div className="agent-chat-input collab-agent-input">
+            <div
+              className={`agent-chat-input collab-agent-input${composerDragActive ? " is-drag-active" : ""}`}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes("Files") && !event.dataTransfer.types.includes(DRAG_ATTACHMENT_TYPE)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                setComposerDragActive(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setComposerDragActive(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setComposerDragActive(false);
+                void filesFromDrop(event.dataTransfer).then(addFiles);
+              }}
+            >
+              {composerDragActive ? (
+                <div className="collab-composer-drop-overlay" aria-hidden>
+                  <PaperClipOutlined />
+                  <strong>松开即可添加到当前会话</strong>
+                </div>
+              ) : null}
               <div className="collab-agent-input-inner">
               {referencedRoom ? (
                 <div className="collab-context-composer">
@@ -4448,12 +4971,64 @@ export default function CollabRisk({
       />
 
       <Modal
+        title="转发消息"
+        open={forwardOpen}
+        onCancel={() => setForwardOpen(false)}
+        onOk={() => void submitForward()}
+        okText="确认转发"
+        cancelText="取消"
+        confirmLoading={forwardSubmitting}
+        okButtonProps={{ disabled: !forwardTargetId || !forwardMessageIds.length }}
+        className="collab-forward-modal"
+      >
+        <div className="collab-forward-form">
+          <div className="collab-forward-mode" role="group" aria-label="转发方式">
+            <button
+              type="button"
+              className={forwardMode === "merge" ? "is-active" : ""}
+              onClick={() => setForwardMode("merge")}
+            >
+              <CheckSquareOutlined />
+              <span><strong>合并转发</strong><small>整理为一张聊天记录卡片</small></span>
+            </button>
+            <button
+              type="button"
+              className={forwardMode === "separate" ? "is-active" : ""}
+              onClick={() => setForwardMode("separate")}
+            >
+              <ForwardOutlined />
+              <span><strong>逐条转发</strong><small>按当前顺序发送每条消息</small></span>
+            </button>
+          </div>
+          <label htmlFor="collab-forward-target">转发到</label>
+          <Select
+            id="collab-forward-target"
+            showSearch
+            value={forwardTargetId}
+            onChange={setForwardTargetId}
+            options={forwardRoomOptions}
+            optionFilterProp="label"
+            placeholder="选择目标会话"
+            style={{ width: "100%" }}
+          />
+          <div className="collab-forward-count">将转发 {forwardMessageIds.length} 条消息</div>
+        </div>
+      </Modal>
+
+      <Modal
         title="发起群聊"
         open={groupOpen}
-        onCancel={() => setGroupOpen(false)}
+        className="collab-group-modal"
+        onCancel={() => {
+          setGroupOpen(false);
+          setGroupTeamIds([]);
+          setGroupMembers([]);
+          setGroupTitle("");
+        }}
         onOk={handleCreateGroup}
         confirmLoading={creating}
         okText="创建群聊"
+        okButtonProps={{ disabled: selectedGroupMembers.length === 0 }}
       >
         <Space direction="vertical" style={{ width: "100%" }} size={12}>
           <div>
@@ -4465,20 +5040,55 @@ export default function CollabRisk({
             />
           </div>
           <div>
-            <Typography.Text type="secondary">选择群成员</Typography.Text>
+            <Typography.Text type="secondary">直接选择团队</Typography.Text>
+            <Select
+              mode="multiple"
+              showSearch
+              loading={teamsLoading}
+              style={{ width: "100%" }}
+              placeholder={teams.length ? "选择一个或多个团队" : "暂无可选团队"}
+              value={groupTeamIds}
+              onChange={setGroupTeamIds}
+              optionFilterProp="label"
+              options={teams.map((team) => ({
+                value: team.id,
+                label: `${team.name}（${team.memberCount} 人）`,
+              }))}
+            />
+            {groupTeamIds.length ? (
+              <div className="collab-group-team-summary">
+                <CheckOutlined />
+                已从 {groupTeamIds.length} 个团队选入 {selectedTeamMemberUsernames.size} 位成员
+              </div>
+            ) : null}
+          </div>
+          <div>
+            <Typography.Text type="secondary">补充选择同事</Typography.Text>
             <Select
               mode="multiple"
               showSearch
               style={{ width: "100%" }}
-              placeholder="选择多个联系人"
+              placeholder="可继续补充团队之外的联系人"
               value={groupMembers}
               onChange={setGroupMembers}
               onSearch={(q) => loadContacts(q)}
               options={contacts
-                .filter((u) => !(u.kind === "bot" || u.bot_id === "xiaoce" || u.username === "小策bot"))
-                .map((u) => ({ value: u.username, label: u.username }))}
+                .filter((u) => (
+                  !(u.kind === "bot" || u.bot_id === "xiaoce" || u.username === "小策bot")
+                  && u.id !== me?.id
+                  && !selectedTeamMemberUsernames.has(u.username)
+                ))
+                .map((u) => ({
+                  value: u.username,
+                  label: memberLabel(u) !== u.username
+                    ? `${memberLabel(u)}（${u.username}）`
+                    : u.username,
+                }))}
               filterOption={false}
             />
+          </div>
+          <div className="collab-group-total">
+            <TeamOutlined /> 群聊将包含你和另外 {selectedGroupMembers.length} 位成员
           </div>
         </Space>
       </Modal>
@@ -4730,6 +5340,60 @@ const css = `
   border-bottom: 1px solid #e8edf5;
   background: #fff;
 }
+.collab-sider-head > .ant-typography {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-create-group-btn {
+  height: 30px;
+  padding-inline: 10px;
+  border-color: rgba(20, 55, 98, 0.9) !important;
+  border-radius: 10px;
+  color: #fff !important;
+  background: linear-gradient(135deg, #173b6d 0%, #24558e 100%) !important;
+  box-shadow: 0 7px 18px rgba(18, 55, 101, 0.22);
+  font-size: 12px;
+  font-weight: 650;
+  transition: transform 100ms ease-out, box-shadow 180ms ease !important;
+}
+.collab-create-group-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(18, 55, 101, 0.28) !important;
+}
+.collab-create-group-btn:active { transform: scale(0.97); }
+.collab-translate-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding-inline: 10px !important;
+  border-color: #dce2ec !important;
+  border-radius: 10px;
+  color: #647086 !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  box-shadow: 0 5px 14px rgba(35, 46, 72, 0.06);
+  transition: transform 100ms ease-out, color 180ms ease, border-color 180ms ease, background 180ms ease !important;
+}
+.collab-translate-toggle > i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #bcc4d1;
+  box-shadow: 0 0 0 3px rgba(188, 196, 209, 0.16);
+}
+.collab-translate-toggle.is-active {
+  border-color: rgba(15, 118, 110, 0.34) !important;
+  color: #0f766e !important;
+  background: rgba(236, 253, 248, 0.92) !important;
+  box-shadow: 0 7px 18px rgba(15, 118, 110, 0.12);
+}
+.collab-translate-toggle.is-active > i {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+}
+.collab-translate-toggle:active { transform: scale(0.97); }
 .collab-ai-sub { font-size: 11px; color: #8b96a8; margin-top: 2px; }
 .collab-tabs {
   display: grid;
@@ -4785,6 +5449,7 @@ const css = `
   flex: 1;
   height: 100%;
   background: #fff;
+  overscroll-behavior-y: none;
 }
 .collab-virt-item {
   padding: 0 10px 8px;
@@ -4800,11 +5465,129 @@ const css = `
 .collab-contact-pane .collab-room-list { padding: 0 0 10px; }
 .collab-contact-section { margin-bottom: 6px; }
 .collab-contact-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 12px;
   font-weight: 600;
   color: #94a3b8;
   padding: 8px 10px 4px;
   user-select: none;
+}
+.collab-contact-section-title em {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #6f55e8;
+  background: rgba(111, 85, 232, 0.09);
+  font-size: 10px;
+  font-style: normal;
+  text-align: center;
+}
+.collab-team-section { margin-bottom: 12px; }
+.collab-team-card {
+  margin: 0 0 7px;
+  overflow: hidden;
+  border: 1px solid rgba(111, 85, 232, 0.13);
+  border-radius: 14px;
+  background:
+    radial-gradient(160px 72px at 0 0, rgba(111, 85, 232, 0.09), transparent 74%),
+    rgba(255, 255, 255, 0.86);
+  box-shadow: 0 7px 20px rgba(35, 45, 72, 0.055);
+  transition: transform 120ms cubic-bezier(.2,.8,.2,1), border-color 180ms ease, box-shadow 180ms ease;
+}
+.collab-team-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(111, 85, 232, 0.28);
+  box-shadow: 0 11px 28px rgba(35, 45, 72, 0.09);
+}
+.collab-team-card.is-expanded { border-color: rgba(111, 85, 232, 0.34); }
+.collab-team-card-main {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 36px minmax(0, 1fr) auto auto 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 0;
+  color: #26334b;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+.collab-team-card-main:active { transform: scale(0.99); }
+.collab-team-card-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  color: #5f49cc;
+  background: linear-gradient(145deg, #f0ecff, #e5eaff);
+  font-size: 17px;
+}
+.collab-team-card-copy { min-width: 0; }
+.collab-team-card-copy strong,
+.collab-team-card-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collab-team-card-copy strong { color: #28334a; font-size: 12px; }
+.collab-team-card-copy small { margin-top: 2px; color: #8a94a6; font-size: 10px; }
+.collab-team-card-count { color: #7b8497; font-size: 10px; white-space: nowrap; }
+.collab-team-card-chevron {
+  color: #8b95a7;
+  font-size: 10px;
+  transition: transform 180ms cubic-bezier(.2,.8,.2,1);
+}
+.collab-team-card.is-expanded .collab-team-card-chevron { transform: rotate(180deg); }
+.collab-team-card-detail {
+  display: grid;
+  gap: 8px;
+  padding: 0 9px 9px;
+  border-top: 1px solid rgba(111, 85, 232, 0.09);
+}
+.collab-team-member-list {
+  display: grid;
+  max-height: 176px;
+  gap: 2px;
+  padding-top: 7px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.collab-team-member {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 0;
+  border-radius: 10px;
+  color: #344057;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+.collab-team-member:hover { background: rgba(111, 85, 232, 0.07); }
+.collab-team-member > span:last-child { display: flex; min-width: 0; flex-direction: column; }
+.collab-team-member strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.collab-team-member small { color: #929bad; font-size: 9px; }
+.collab-team-card-detail .ant-btn-primary {
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6f55e8, #5944c8);
+  box-shadow: 0 6px 16px rgba(88, 66, 196, 0.17);
+}
+.collab-team-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 0 2px 7px;
+  padding: 13px 10px;
+  border: 1px dashed rgba(111, 85, 232, 0.18);
+  border-radius: 12px;
+  color: #8993a6;
+  background: rgba(248, 247, 253, 0.66);
+  font-size: 11px;
+  text-align: center;
 }
 .collab-bot-avatar {
   width: 40px;
@@ -4838,6 +5621,11 @@ const css = `
   display: flex;
   align-items: center;
   gap: 10px;
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
 }
 .collab-room-item {
   padding: 4px 4px 4px 10px;
@@ -4901,6 +5689,19 @@ const css = `
   background: #edf3ff;
   border-color: #d9e4ff;
 }
+.collab-room-item.active {
+  box-shadow: 0 5px 16px rgba(49, 94, 251, 0.08);
+}
+.collab-room-item:active,
+.collab-contact-item:active {
+  transform: scale(0.988);
+}
+.collab-room-main:focus-visible,
+.collab-contact-item:focus-visible,
+.collab-room-del:focus-visible {
+  outline: 2px solid rgba(49, 94, 251, 0.62);
+  outline-offset: 2px;
+}
 .collab-room-body { flex: 1; min-width: 0; }
 .collab-room-top {
   display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 2px;
@@ -4928,6 +5729,14 @@ const css = `
 }
 .collab-contact-item div { display: flex; flex-direction: column; min-width: 0; }
 .collab-contact-item span { font-size: 12px; color: #93a0b4; }
+.collab-contact-open-hint {
+  margin-left: auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #6f55e8 !important;
+  background: rgba(111, 85, 232, 0.08);
+  white-space: nowrap;
+}
 .collab-avatar-wrap {
   position: relative;
   display: inline-flex;
@@ -4955,6 +5764,18 @@ const css = `
   cursor: pointer;
   line-height: 0;
   flex-shrink: 0 !important;
+  transition:
+    transform 160ms cubic-bezier(.2, .8, .2, 1),
+    box-shadow 180ms ease;
+}
+.collab-msg-avatar:hover,
+.collab-avatar-hit:hover {
+  transform: translateY(-1px) scale(1.035);
+  box-shadow: 0 7px 16px rgba(25, 43, 74, 0.14);
+}
+.collab-msg-avatar:active,
+.collab-avatar-hit:active {
+  transform: scale(0.96);
 }
 .collab-msg-avatar-face {
   display: flex;
@@ -4987,6 +5808,9 @@ const css = `
   border-radius: 50%;
   line-height: 0;
   align-self: flex-start;
+  transition:
+    transform 160ms cubic-bezier(.2, .8, .2, 1),
+    box-shadow 180ms ease;
 }
 .collab-avatar-hit .ant-avatar {
   flex: none !important;
@@ -5001,41 +5825,15 @@ const css = `
   outline: 2px solid #315efb;
   outline-offset: 2px;
 }
-.collab-avatar-preview-modal .ant-modal-content {
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 30px 90px rgba(20, 31, 53, 0.23);
-  -webkit-backdrop-filter: blur(28px) saturate(150%);
-  backdrop-filter: blur(28px) saturate(150%);
-}
-.collab-avatar-preview-content {
-  display: flex;
-  align-items: center;
-  flex-direction: column;
-  padding: 26px 10px 18px;
-}
-.collab-avatar-preview-face {
-  display: grid;
-  width: 196px;
-  height: 196px;
-  place-items: center;
-  overflow: hidden;
-  border: 5px solid rgba(255, 255, 255, 0.96);
-  border-radius: 50%;
-  color: #fff;
-  font-size: 72px;
-  font-weight: 720;
-  box-shadow: 0 18px 44px rgba(25, 38, 65, 0.2), 0 0 0 1px rgba(34, 47, 73, 0.08);
-}
-.collab-avatar-preview-face img { width: 100%; height: 100%; object-fit: cover; }
-.collab-avatar-preview-content > strong { margin-top: 20px; color: #222d42; font-size: 20px; }
-.collab-avatar-preview-content > span { margin-top: 4px; color: #8a94a8; font-size: 12px; }
 .collab-profile-popover .ant-popover-inner {
-  padding: 12px 14px;
-  border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(23, 32, 51, 0.12);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(222, 226, 236, 0.86);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 64px rgba(23, 32, 51, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  backdrop-filter: blur(24px) saturate(150%);
 }
 .collab-profile-card {
   display: flex;
@@ -5043,6 +5841,20 @@ const css = `
   align-items: flex-start;
   min-width: 196px;
   max-width: 260px;
+  padding: 14px;
+}
+.collab-profile-card--detail {
+  display: block;
+  width: 286px;
+  max-width: min(286px, calc(100vw - 36px));
+  padding: 18px;
+}
+.collab-profile-card-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf0f5;
 }
 .collab-profile-card-main {
   min-width: 0;
@@ -5085,6 +5897,30 @@ const css = `
   color: #7d899c;
   font-size: 11px;
   line-height: 1.4;
+}
+.collab-profile-detail-list {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 9px 10px;
+  margin: 14px 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.collab-profile-detail-list dt {
+  color: #929bad;
+}
+.collab-profile-detail-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #364158;
+}
+.collab-profile-message-btn {
+  height: 38px;
+  border-radius: 10px;
+  border-color: #6f55e8 !important;
+  background: linear-gradient(135deg, #6f55e8, #7f63ee) !important;
+  box-shadow: 0 8px 18px rgba(111, 85, 232, 0.2) !important;
 }
 .collab-online-dot {
   position: absolute;
@@ -5160,32 +5996,36 @@ const css = `
 .collab-msg-aside {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   flex: 0 0 auto;
   max-width: 72px;
   align-self: flex-start;
 }
 .collab-msg.mine .collab-msg-aside {
-  align-items: center;
+  align-items: flex-end;
+  max-width: 92px;
 }
 .collab-msg-name {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 4px;
   max-width: 72px;
   font-size: 11px;
   font-weight: 600;
   color: #5c6b84;
   line-height: 1.2;
-  text-align: center;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .collab-msg.mine .collab-msg-name {
   color: #31405b;
+  justify-content: flex-end;
+  max-width: 92px;
+  text-align: right;
 }
 .collab-msg-name .collab-suggest-tag,
 .collab-msg-name .collab-interject-tag {
@@ -5208,6 +6048,10 @@ const css = `
   width: fit-content;
   max-width: 100%;
   box-shadow: 0 1px 3px rgba(11, 33, 68, 0.05);
+  transition:
+    transform 180ms cubic-bezier(.2, .8, .2, 1),
+    border-color 180ms ease,
+    box-shadow 180ms ease;
 }
 .collab-bubble-wrap {
   position: relative;
@@ -5328,23 +6172,31 @@ const css = `
   top: -28px;
   z-index: 3;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
   pointer-events: auto;
   cursor: default;
   max-width: min(240px, 70vw);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 5px 14px rgba(24, 35, 58, 0.09);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
 }
 .collab-msg.mine .collab-msg-flag {
   right: 10px;
-  align-items: flex-end;
 }
 .collab-msg.peer .collab-msg-flag {
   left: 10px;
-  align-items: flex-start;
 }
+.collab-msg-flag.risk-red { color: #cf1322; background: rgba(255, 241, 240, 0.95); }
+.collab-msg-flag.risk-yellow { color: #ad6800; background: rgba(255, 251, 230, 0.96); }
 .collab-msg-flag-label {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 650;
   letter-spacing: 0.02em;
   line-height: 1.25;
   max-width: 100%;
@@ -5352,20 +6204,8 @@ const css = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.collab-msg-flag.risk-red .collab-msg-flag-label { color: #cf1322; }
-.collab-msg-flag.risk-yellow .collab-msg-flag-label { color: #d48806; }
-.collab-msg-flag-line {
-  display: block;
-  width: 2px;
-  height: 18px;
-  margin-top: 2px;
-  border-radius: 1px;
-  opacity: 1;
-}
-.collab-msg-flag.risk-red .collab-msg-flag-line { background: #cf1322; }
-.collab-msg-flag.risk-yellow .collab-msg-flag-line { background: #d48806; }
 .collab-msg.flagged {
-  margin-top: 32px;
+  margin-top: 26px;
 }
 .collab-bubble.risk-edge-red {
   border-color: rgba(207, 19, 34, 0.45) !important;
@@ -5842,11 +6682,16 @@ const css = `
   margin-top: 8px;
 }
 .collab-draft-examples {
-  margin: 0 0 10px;
-  padding: 10px 12px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
   border-radius: 12px;
   background: #f4f7fb;
   border: 1px solid #e4ebf4;
+  animation: collabCoachReveal 180ms cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes collabCoachReveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .collab-draft-examples.level-yellow {
   background: #fff8e8;
@@ -5867,12 +6712,12 @@ const css = `
   font-size: 12px;
   font-weight: 600;
   color: #5c6b84;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 .collab-draft-examples-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .collab-draft-example-chip {
   display: flex;
@@ -5881,17 +6726,24 @@ const css = `
   gap: 2px;
   width: 100%;
   text-align: left;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border-radius: 10px;
   border: 1px solid #d7e2ef;
   background: #fff;
   cursor: pointer;
-  transition: border-color .15s, box-shadow .15s, background .15s;
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    border-color .16s,
+    box-shadow .16s,
+    background .16s;
 }
 .collab-draft-example-chip:hover {
   border-color: #C4924A;
   box-shadow: 0 4px 12px rgba(11, 33, 68, 0.06);
   background: #fffdf8;
+}
+.collab-draft-example-chip:active {
+  transform: scale(0.988);
 }
 .collab-draft-example-chip em {
   font-style: normal;
@@ -5991,12 +6843,16 @@ const css = `
   border-radius: 999px;
 }
 .collab-msg.ai .collab-bubble {
-  background: #ecfdf8;
-  border-color: #99f6e4;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(45, 185, 156, 0.11), transparent 78%),
+    rgba(245, 254, 251, 0.96);
+  border-color: rgba(50, 178, 151, 0.27);
 }
 .collab-msg.interject .collab-bubble {
-  background: #fffbeb;
-  border-color: #fcd34d;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(230, 160, 51, 0.13), transparent 78%),
+    rgba(255, 252, 242, 0.97);
+  border-color: rgba(217, 119, 6, 0.3);
   border-left: 3px solid #d97706;
 }
 .collab-msg.suggest .collab-bubble {
@@ -6004,6 +6860,32 @@ const css = `
   border-color: #99f6e4;
   border-left: 3px solid #0f766e;
 }
+.collab-translation {
+  margin-top: 9px;
+  padding: 9px 10px;
+  border-top: 1px solid rgba(99, 117, 147, 0.15);
+  border-radius: 0 0 9px 9px;
+  background: rgba(245, 248, 252, 0.76);
+}
+.collab-translation-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  color: #617089;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.collab-translation-text > p,
+.collab-translation-text .collab-md { margin: 0; }
+.collab-translation-text {
+  color: #33425a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.collab-translation-loading { color: #8a95a8; font-size: 11px; }
+.collab-translation.is-loading { background: rgba(248, 250, 253, 0.72); }
 .collab-interject-tag,
 .collab-suggest-tag {
   font-size: 10px;
@@ -6230,6 +7112,20 @@ const css = `
 }
 .collab-summary-controls .ant-btn-primary {
   width: 100%;
+  border-color: #5b50d6 !important;
+  background: linear-gradient(135deg, #6d5eea, #5145c7) !important;
+  box-shadow: 0 7px 18px rgba(81, 69, 199, 0.2);
+  transition:
+    transform 120ms cubic-bezier(.2, .8, .2, 1),
+    filter 160ms ease,
+    box-shadow 180ms ease;
+}
+.collab-summary-controls .ant-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  box-shadow: 0 9px 22px rgba(81, 69, 199, 0.26);
+}
+.collab-summary-controls .ant-btn-primary:active:not(:disabled) {
+  transform: scale(0.982);
 }
 .collab-summary-controls label {
   grid-column: 1 / -1;
@@ -7028,6 +7924,7 @@ const css = `
 .collab-msg.interject .collab-msg-aside {
   width: 92px;
   max-width: 92px;
+  align-items: flex-start;
 }
 .collab-msg.ai .collab-msg-name,
 .collab-msg.interject .collab-msg-name {
@@ -7035,6 +7932,36 @@ const css = `
   max-width: 92px;
   overflow: visible;
   text-overflow: clip;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .collab-msg:not(.system):hover .collab-bubble {
+    transform: translateY(-1px);
+    border-color: rgba(92, 110, 151, 0.24);
+    box-shadow:
+      0 10px 24px rgba(31, 45, 75, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collab-room-item,
+  .collab-contact-item,
+  .collab-team-card,
+  .collab-team-card-chevron,
+  .collab-create-group-btn,
+  .collab-translate-toggle,
+  .collab-msg-avatar,
+  .collab-avatar-hit,
+  .collab-bubble,
+  .collab-draft-examples,
+  .collab-draft-example-chip,
+  .collab-summary-controls .ant-btn-primary {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* 自己发送的消息使用更轻盈的蓝紫玻璃气泡，和他人消息形成稳定层级。 */
@@ -7057,6 +7984,20 @@ const css = `
     0 6px 18px rgba(31, 45, 75, 0.075),
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
+:root[data-theme="dark"] .collab-msg.ai .collab-bubble {
+  border-color: rgba(76, 207, 180, 0.28);
+  color: var(--lc-ink);
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(45, 185, 156, 0.16), transparent 78%),
+    rgba(24, 48, 48, 0.96);
+}
+:root[data-theme="dark"] .collab-msg.interject .collab-bubble {
+  border-color: rgba(226, 161, 74, 0.34);
+  border-left-color: #d99132;
+  background:
+    radial-gradient(180px 70px at 0 0, rgba(230, 160, 51, 0.18), transparent 78%),
+    rgba(54, 42, 25, 0.96);
+}
 .collab-msg.mine .collab-bubble:not(:has(.collab-md.blocks)) p,
 .collab-msg.mine .collab-bubble:not(:has(.collab-md.blocks)) .collab-md {
   color: #263055;
@@ -7072,26 +8013,320 @@ const css = `
   color: #eef0ff;
 }
 
+.collab-room-item.is-drop-target {
+  border-color: rgba(111, 85, 232, 0.56);
+  background: linear-gradient(135deg, rgba(245, 242, 255, 0.98), rgba(235, 241, 255, 0.96));
+  box-shadow: 0 0 0 3px rgba(111, 85, 232, 0.11), 0 10px 26px rgba(59, 45, 129, 0.12);
+  transform: translateX(2px);
+}
+.collab-agent-input {
+  position: relative;
+}
+.collab-agent-input.is-drag-active .collab-agent-composer {
+  border-color: rgba(111, 85, 232, 0.58) !important;
+  box-shadow: 0 0 0 4px rgba(111, 85, 232, 0.1), 0 14px 34px rgba(45, 35, 102, 0.13) !important;
+}
+.collab-composer-drop-overlay {
+  position: absolute;
+  z-index: 80;
+  inset: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px dashed rgba(111, 85, 232, 0.58);
+  border-radius: 15px;
+  color: #5b3fd1;
+  background: rgba(248, 246, 255, 0.93);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
+  backdrop-filter: blur(14px) saturate(145%);
+  pointer-events: none;
+}
+.collab-selection-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 14px 8px;
+  padding: 9px 10px 9px 13px;
+  border: 1px solid rgba(111, 85, 232, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 246, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(54, 42, 115, 0.08);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.collab-selection-toolbar > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.collab-selection-toolbar strong { color: #3e326d; font-size: 12px; }
+.collab-selection-toolbar span { color: #81779e; font-size: 10px; }
+.collab-message-selector {
+  position: absolute;
+  z-index: 8;
+  top: 20px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #c8cfdb;
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.94);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(28, 40, 66, 0.08);
+}
+.collab-page--selecting .collab-msg.peer { padding-left: 28px; }
+.collab-page--selecting .collab-msg.mine { padding-right: 28px; }
+.collab-msg.peer .collab-message-selector { left: 3px; }
+.collab-msg.mine .collab-message-selector { right: 3px; }
+.collab-message-selector.is-selected {
+  border-color: #6f55e8;
+  background: #6f55e8;
+}
+.collab-msg.is-selected .collab-bubble {
+  outline: 2px solid rgba(111, 85, 232, 0.44);
+  outline-offset: 3px;
+}
+.collab-forward-origin {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  color: #756a91;
+  background: rgba(111, 85, 232, 0.07);
+  font-size: 11px;
+}
+.collab-forward-origin > span { display: flex; flex-direction: column; }
+.collab-forward-origin small { color: #9b93ad; font-size: 9px; }
+.collab-forward-card {
+  width: min(360px, 64vw);
+  overflow: hidden;
+  border: 1px solid rgba(130, 139, 160, 0.17);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.78);
+}
+.collab-forward-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(130, 139, 160, 0.14);
+}
+.collab-forward-card-head strong { color: #313a50; font-size: 12px; }
+.collab-forward-card-head span { color: #8d96a8; font-size: 10px; }
+.collab-forward-card-list {
+  max-height: 286px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.collab-forward-card-item {
+  display: flex;
+  gap: 8px;
+  padding: 9px 11px;
+  border-bottom: 1px solid rgba(130, 139, 160, 0.1);
+}
+.collab-forward-card-item:last-child { border-bottom: 0; }
+.collab-forward-card-item > div { min-width: 0; }
+.collab-forward-card-item strong { display: block; color: #465169; font-size: 10px; }
+.collab-forward-card-item p {
+  margin: 2px 0;
+  overflow: hidden;
+  color: #283248;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-forward-card-item small { color: #9aa3b2; font-size: 9px; }
+.collab-forward-modal .ant-modal-content { border-radius: 18px; }
+.collab-forward-form { display: grid; gap: 12px; }
+.collab-forward-form > label { color: #535e73; font-size: 12px; font-weight: 600; }
+.collab-forward-mode { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.collab-forward-mode button {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid #e0e4ec;
+  border-radius: 12px;
+  color: #7c879a;
+  text-align: left;
+  background: #fbfcfe;
+  cursor: pointer;
+}
+.collab-forward-mode button.is-active {
+  border-color: rgba(111, 85, 232, 0.48);
+  color: #6f55e8;
+  background: #f7f4ff;
+  box-shadow: 0 0 0 3px rgba(111, 85, 232, 0.07);
+}
+.collab-forward-mode button > span { display: flex; flex-direction: column; }
+.collab-forward-mode strong { color: #303a50; font-size: 12px; }
+.collab-forward-mode small { color: #9099a9; font-size: 10px; }
+.collab-forward-count { color: #8b94a6; font-size: 11px; }
+.collab-group-modal .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid rgba(221, 225, 235, 0.86);
+  border-radius: 20px;
+  box-shadow: 0 28px 80px rgba(21, 32, 54, 0.2);
+}
+.collab-group-modal .ant-select-selector,
+.collab-group-modal .ant-input { border-radius: 10px !important; }
+.collab-group-team-summary,
+.collab-group-total {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  color: #4d5b72;
+  background: #f5f7fb;
+  font-size: 11px;
+}
+.collab-group-team-summary { color: #0f766e; background: #ecfdf8; }
+.collab-message-menu .ant-dropdown-menu-item-danger,
+.collab-conversation-menu .ant-dropdown-menu-item-danger {
+  color: #b42318 !important;
+  background: transparent !important;
+}
+.collab-message-menu .ant-dropdown-menu-item-danger:hover,
+.collab-message-menu .ant-dropdown-menu-item-danger.ant-dropdown-menu-item-active,
+.collab-conversation-menu .ant-dropdown-menu-item-danger:hover,
+.collab-conversation-menu .ant-dropdown-menu-item-danger.ant-dropdown-menu-item-active {
+  color: #b42318 !important;
+  background: #fff1f0 !important;
+}
+.collab-danger-confirm .ant-btn-dangerous.ant-btn-primary {
+  border-color: #d92d20 !important;
+  color: #fff !important;
+  background: #d92d20 !important;
+  box-shadow: 0 7px 18px rgba(217, 45, 32, 0.2);
+}
+.collab-danger-confirm .ant-btn-dangerous.ant-btn-primary:hover {
+  border-color: #b42318 !important;
+  color: #fff !important;
+  background: #b42318 !important;
+}
+:root[data-theme="dark"] .collab-composer-drop-overlay,
+:root[data-theme="dark"] .collab-selection-toolbar,
+:root[data-theme="dark"] .collab-forward-card,
+:root[data-theme="dark"] .collab-profile-popover .ant-popover-inner {
+  border-color: rgba(142, 124, 230, 0.24);
+  color: var(--lc-ink);
+  background: rgba(25, 29, 40, 0.94);
+}
+:root[data-theme="dark"] .collab-profile-detail-list dd,
+:root[data-theme="dark"] .collab-forward-card-item p,
+:root[data-theme="dark"] .collab-forward-card-head strong { color: var(--lc-ink); }
+:root[data-theme="dark"] .collab-team-card {
+  border-color: rgba(142, 124, 230, 0.22);
+  background:
+    radial-gradient(160px 72px at 0 0, rgba(142, 124, 230, 0.14), transparent 74%),
+    rgba(25, 29, 40, 0.94);
+}
+:root[data-theme="dark"] .collab-team-card-copy strong,
+:root[data-theme="dark"] .collab-team-member,
+:root[data-theme="dark"] .collab-translation-text { color: var(--lc-ink); }
+:root[data-theme="dark"] .collab-team-card-copy small,
+:root[data-theme="dark"] .collab-team-card-count,
+:root[data-theme="dark"] .collab-team-member small { color: var(--lc-muted); }
+:root[data-theme="dark"] .collab-team-member:hover { background: rgba(142, 124, 230, 0.13); }
+:root[data-theme="dark"] .collab-team-empty {
+  border-color: rgba(142, 124, 230, 0.24);
+  color: var(--lc-muted);
+  background: rgba(25, 29, 40, 0.72);
+}
+:root[data-theme="dark"] .collab-translate-toggle {
+  border-color: var(--lc-line) !important;
+  color: var(--lc-muted) !important;
+  background: rgba(25, 29, 40, 0.88) !important;
+}
+:root[data-theme="dark"] .collab-translate-toggle.is-active {
+  border-color: rgba(45, 197, 167, 0.34) !important;
+  color: #5eead4 !important;
+  background: rgba(17, 74, 67, 0.54) !important;
+}
+:root[data-theme="dark"] .collab-translation {
+  border-top-color: rgba(180, 190, 210, 0.17);
+  background: rgba(12, 16, 24, 0.28);
+}
+:root[data-theme="dark"] .collab-group-modal .ant-modal-content,
+:root[data-theme="dark"] .collab-group-total { color: var(--lc-ink); background: var(--lc-panel); }
+:root[data-theme="dark"] .collab-group-team-summary { color: #5eead4; background: rgba(17, 94, 82, 0.35); }
+
 @media (max-width: 1100px) {
   .collab-page {
     grid-template-columns: 200px minmax(0, 1fr) 260px;
   }
+  .collab-page--summary-hidden { grid-template-columns: 200px minmax(0, 1fr); }
 }
 @media (max-width: 860px) {
+  .collab-sider-head { padding: 10px; }
+  .collab-sider-head > .ant-typography { display: none; }
+  .collab-create-group-btn { width: 100%; }
+  .collab-team-card-main { grid-template-columns: 36px minmax(0, 1fr) 14px; }
+  .collab-team-card-main .ant-avatar-group,
+  .collab-team-card-count { display: none; }
+  .collab-translate-toggle > span:not(.anticon) { display: none; }
+  .collab-translate-toggle { width: 36px; padding-inline: 0 !important; }
+  .collab-translate-toggle > i { position: absolute; right: 5px; bottom: 5px; width: 6px; height: 6px; }
   .collab-page {
-    grid-template-columns: 1fr;
-    height: auto;
-    overflow: auto;
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+    height: calc(100vh - 68px);
+    min-height: 0;
+    overflow: hidden;
   }
-  .collab-page > .collab-sider,
-  .collab-page > .collab-main,
+  .collab-page > .collab-sider { grid-column: 1; grid-row: 1; }
+  .collab-page > .collab-main { grid-column: 2; grid-row: 1; }
   .collab-page > .collab-ai {
-    grid-column: auto;
-    grid-row: auto;
+    position: absolute;
+    z-index: 60;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(320px, calc(100% - 44px));
+    max-height: none;
+    border-left: 1px solid #e1e6ef;
+    box-shadow: -18px 0 44px rgba(26, 38, 63, 0.15);
   }
-  .collab-sider, .collab-ai { max-height: 280px; }
-  .collab-main { min-height: 520px; }
+  .collab-sider, .collab-main { min-height: 0; max-height: none; }
+  .collab-main { min-width: 0; }
+  .collab-selection-toolbar { align-items: flex-start; flex-direction: column; }
+  .collab-forward-card { width: min(320px, 56vw); }
   .xiaoce-live-process { padding-inline: 10px; }
   .xiaoce-process { width: 100%; }
+}
+@media (max-width: 560px) {
+  .collab-page { grid-template-columns: 132px minmax(0, 1fr); }
+  .collab-room-item { padding-left: 5px; }
+  .collab-room-main { gap: 6px; }
+  .collab-room-main .collab-avatar-wrap { display: none; }
+  .collab-room-badges .ant-tag { display: none; }
+  .collab-main-head { padding-inline: 10px; }
+  .collab-forward-mode { grid-template-columns: 1fr; }
+  .collab-contact-open-hint { display: none; }
+  .collab-contact-pane { padding-inline: 6px; }
+  .collab-contact-item { gap: 6px; padding: 7px 5px; border-radius: 9px; }
+  .collab-contact-item .collab-avatar-wrap,
+  .collab-contact-item .ant-avatar,
+  .collab-bot-avatar { width: 32px !important; height: 32px !important; flex-basis: 32px; }
+  .collab-contact-item strong { font-size: 11px; }
+  .collab-contact-item strong .ant-tag { display: none; }
+  .collab-contact-item span { font-size: 9px; }
+  .collab-contact-item.is-bot > div:last-child > span {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-height: 1.35;
+  }
 }
 `;
