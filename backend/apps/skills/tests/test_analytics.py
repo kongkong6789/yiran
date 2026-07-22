@@ -5,6 +5,7 @@ from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
+from apps.core.models import UserSettings
 from apps.skills.analytics import record_skill_usage
 from apps.skills.models import SkillAsset, SkillUsageEvent, UserSkill
 
@@ -15,6 +16,8 @@ class SkillAnalyticsApiTests(APITestCase):
         self.manager = User.objects.create_user(username="manager", password="pass", is_staff=True)
         self.member = User.objects.create_user(username="member", password="pass")
         self.outsider = User.objects.create_user(username="outsider", password="pass")
+        UserSettings.objects.create(user=self.member, avatar="member-avatar.png")
+        UserSettings.objects.create(user=self.outsider, avatar="outsider-avatar.png")
         self.asset = SkillAsset.objects.create(
             uploader=self.member,
             owner=self.member,
@@ -57,9 +60,21 @@ class SkillAnalyticsApiTests(APITestCase):
             [event["user"] for event in response.data["skills"][0]["recent_usage"]],
             ["member", "outsider"],
         )
+        self.assertEqual(
+            response.data["skills"][0]["owner_avatar_url"],
+            "/api/auth/avatars/member-avatar.png/",
+        )
+        self.assertCountEqual(
+            [event["avatar_url"] for event in response.data["skills"][0]["recent_usage"]],
+            ["/api/auth/avatars/member-avatar.png/", "/api/auth/avatars/outsider-avatar.png/"],
+        )
         self.assertCountEqual(
             [person["user"] for person in response.data["people_ranking"]],
             ["member", "outsider"],
+        )
+        self.assertCountEqual(
+            [person["avatar_url"] for person in response.data["people_ranking"]],
+            ["/api/auth/avatars/member-avatar.png/", "/api/auth/avatars/outsider-avatar.png/"],
         )
         self.assertTrue(all(person["usage_count_30d"] == 1 for person in response.data["people_ranking"]))
         self.assertTrue(all(person["skill_count_30d"] == 1 for person in response.data["people_ranking"]))
@@ -116,6 +131,10 @@ class SkillAnalyticsApiTests(APITestCase):
         self.assertEqual(response.data["summary"]["total_invocations"], 1)
         self.assertEqual(response.data["skills"][0]["unique_users_30d"], 1)
         self.assertEqual(response.data["skills"][0]["recent_usage"][0]["user"], "outsider")
+        self.assertEqual(
+            response.data["skills"][0]["recent_usage"][0]["avatar_url"],
+            "/api/auth/avatars/outsider-avatar.png/",
+        )
         self.assertEqual(response.data["people_ranking"][0]["user"], "outsider")
         self.assertEqual(response.data["people_ranking"][0]["usage_count_30d"], 1)
         self.assertFalse(response.data["skills"][0]["is_uploader"])
@@ -124,6 +143,7 @@ class SkillAnalyticsApiTests(APITestCase):
         self.assertEqual(history.status_code, 200)
         self.assertEqual(history.data["count"], 1)
         self.assertEqual(history.data["results"][0]["user"], "outsider")
+        self.assertEqual(history.data["results"][0]["avatar_url"], "/api/auth/avatars/outsider-avatar.png/")
 
     def test_uploader_can_page_through_complete_usage_history(self):
         self.client.force_authenticate(self.member)

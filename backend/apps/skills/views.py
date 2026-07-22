@@ -14,7 +14,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .analytics import build_skill_analytics, management_scope
+from .analytics import build_skill_analytics, management_scope, user_avatar_url
 from .cos_storage import cos_enabled
 from .models import SkillAsset, SkillUsageEvent, UserSkill
 from .parser import (
@@ -115,6 +115,7 @@ def _usage_event_payload(row: SkillUsageEvent) -> dict:
         "skill_name": row.skill_name,
         "user_id": row.user_id,
         "user": (user.get_full_name().strip() or user.username) if user else "未知用户",
+        "avatar_url": user_avatar_url(user),
         "source": row.source,
         "source_label": row.get_source_display(),
         "used_at": row.used_at.isoformat(),
@@ -415,7 +416,7 @@ def asset_usage_history(request, asset_id: int):
         assets = assets.filter(Q(uploader=request.user) | Q(visibility=SkillAsset.Visibility.SHARED))
     asset = get_object_or_404(assets, id=asset_id)
 
-    events = SkillUsageEvent.objects.filter(asset=asset).select_related("user")
+    events = SkillUsageEvent.objects.filter(asset=asset).select_related("user", "user__settings")
     if not can_manage and asset.uploader_id != request.user.id:
         events = events.filter(user=request.user)
 

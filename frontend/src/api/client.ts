@@ -996,6 +996,7 @@ export interface SkillAnalyticsRow {
   visibility: "shared" | "private";
   owner_id: number | null;
   owner: string;
+  owner_avatar_url: string;
   owner_team: string;
   uploader: string;
   is_uploader: boolean;
@@ -1016,6 +1017,7 @@ export interface SkillUsageEventItem {
   skill_name: string;
   user_id: number | null;
   user: string;
+  avatar_url: string;
   source: "agent" | "collab" | "direct";
   source_label: string;
   used_at: string;
@@ -1033,6 +1035,7 @@ export interface SkillUsageHistoryResponse {
 export interface SkillPeopleRankingItem {
   user_id: number;
   user: string;
+  avatar_url: string;
   team: string;
   usage_count_30d: number;
   skill_count_30d: number;
@@ -1069,7 +1072,7 @@ export interface SkillAnalyticsResponse {
   trend_range: { start: string; end: string; days: number };
   trend_by_category: Record<string, SkillTrendSeries>;
   recent_usage: SkillUsageEventItem[];
-  owner_options: Array<{ id: number; name: string; username: string }>;
+  owner_options: Array<{ id: number; name: string; username: string; avatar_url: string }>;
 }
 
 export interface SopStep {
