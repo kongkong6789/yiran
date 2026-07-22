@@ -1639,15 +1639,19 @@ def enqueue_ingest_upload(
     segment_mode: str = "general",
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
+    asset_role: str | None = None,
 ) -> TraditionalIngestResult:
     original_filename = safe_original_filename(getattr(upload, "name", "") or "upload.bin")
+    role = (asset_role or "upload").strip().lower() or "upload"
+    if role not in {"upload", "smart_doc", "mindmap"}:
+        role = "upload"
     file = KnowledgeFile.objects.create(
         knowledge_base=knowledge_base,
         original_filename=original_filename,
         segment_mode=segment_mode or "general",
         status=KnowledgeFile.Status.PROCESSING,
         uploaded_by=None,
-        metadata={"ingest_mode": "traditional-rag", "async": True},
+        metadata={"ingest_mode": "traditional-rag", "async": True, "asset_role": role},
     )
     job = KnowledgeIngestJob.objects.create(
         file=file,
