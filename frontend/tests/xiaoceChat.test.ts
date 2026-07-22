@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 import {
+  collabParticipantOnline,
   createXiaoceRunId,
   deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
@@ -35,6 +36,13 @@ test("recognizes only Xiaoce direct messages", () => {
     isXiaoceRoom({ room_kind: "dm", participants: [{ username: "同事" }] }),
     false,
   );
+});
+
+test("Xiaoce service presence cannot be downgraded by a missing heartbeat", () => {
+  assert.equal(collabParticipantOnline({ bot_id: "xiaoce", online: false }), true);
+  assert.equal(collabParticipantOnline({ username: "小策bot" }, false), true);
+  assert.equal(collabParticipantOnline({ username: "同事", online: false }), false);
+  assert.equal(collabParticipantOnline({ username: "同事", online: true }), true);
 });
 
 test("finds prior Xiaoce tasks for @ references and excludes the active room", () => {

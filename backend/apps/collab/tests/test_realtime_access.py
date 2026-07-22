@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from asgiref.sync import async_to_sync, sync_to_async
@@ -7,10 +8,17 @@ from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TransactionTestCase
+from django.utils import timezone
 
 from apps.collab import views, ws_push
 from apps.collab.mentions import get_xiaoce_bot_user
-from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
+from apps.collab.models import (
+    CollabMessage,
+    CollabParticipant,
+    CollabPresence,
+    CollabRoom,
+    XiaoceRun,
+)
 from apps.collab.routing import websocket_urlpatterns
 from apps.collab.xiaoce_runs import fail_xiaoce_run
 
@@ -131,6 +139,32 @@ class XiaoceRealtimeAccessTests(TransactionTestCase):
         socket = self._communicator(user, room)
         self.assertEqual(await socket.connect(), (False, 4403))
         await socket.disconnect()
+
+    def test_connect_and_ping_refresh_presence_without_disconnect_forcing_offline(self):
+        async_to_sync(self._connect_and_ping_refresh_presence)()
+
+    async def _connect_and_ping_refresh_presence(self):
+        socket = self._communicator(self.owner, self.room)
+        self.assertEqual(await socket.connect(), (True, None))
+        await socket.receive_json_from()
+
+        created = await sync_to_async(CollabPresence.objects.get)(user=self.owner)
+        stale = timezone.now() - timedelta(minutes=5)
+        await sync_to_async(CollabPresence.objects.filter(id=created.id).update)(
+            last_seen=stale,
+        )
+
+        await socket.send_json_to({"type": "ping"})
+        self.assertEqual(
+            await socket.receive_json_from(),
+            {"event": "pong", "data": {}},
+        )
+        refreshed = await sync_to_async(CollabPresence.objects.get)(user=self.owner)
+        self.assertGreater(refreshed.last_seen, stale)
+
+        await socket.disconnect()
+        after_disconnect = await sync_to_async(CollabPresence.objects.get)(user=self.owner)
+        self.assertEqual(after_disconnect.last_seen, refreshed.last_seen)
 
     def test_cross_room_event_is_dropped_and_lost_access_closes_socket(self):
         async_to_sync(self._cross_room_event_is_dropped_and_lost_access_closes_socket)()

@@ -32,6 +32,16 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
+        try:
+            await self._touch_presence(user)
+        except Exception:
+            # Presence is best-effort and must never tear down a healthy chat
+            # connection when its backing store is temporarily unavailable.
+            logger.warning(
+                "collab ws presence touch failed room=%s user=%s",
+                self.room_id,
+                getattr(user, "id", None),
+            )
         logger.info("collab ws connected room=%s user=%s", self.room_id, getattr(user, "id", None))
         await self.send_json({
             "event": "hello",
@@ -45,6 +55,14 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content, **kwargs):
         if (content or {}).get("type") == "ping":
+            try:
+                await self._touch_presence(self.scope.get("user"))
+            except Exception:
+                logger.warning(
+                    "collab ws presence heartbeat failed room=%s user=%s",
+                    getattr(self, "room_id", None),
+                    getattr(self.scope.get("user"), "id", None),
+                )
             await self.send_json({"event": "pong", "data": {}})
 
     async def room_push(self, event):
@@ -76,6 +94,12 @@ class RoomConsumer(AsyncJsonWebsocketConsumer):
             "event": event.get("event") or "sync",
             "data": event.get("data") or {},
         })
+
+    @database_sync_to_async
+    def _touch_presence(self, user) -> None:
+        from .presence import touch_presence
+
+        touch_presence(user)
 
     @database_sync_to_async
     def _can_access(self, user, room_id: str) -> bool:

@@ -52,7 +52,7 @@ from .models import (
     CollabRoom,
     XiaoceRun,
 )
-from .presence import presence_map, touch_presence
+from .presence import ONLINE_WINDOW_SECONDS, presence_map, touch_presence
 from .summary import (
     SummaryLLMConfigurationError,
     SummaryLLMError,
@@ -247,23 +247,17 @@ def _mark_room_read(
 
 
 def _room_payload_lite(room: CollabRoom, *, viewer=None) -> dict:
-    """发送响应用轻量房间态，避免每次拉全员资料。"""
-    member_ids = list(
-        CollabParticipant.objects.filter(room=room).values_list("user_id", flat=True)
-    )
-    pmap = presence_map(member_ids)
-    online_count = sum(1 for uid in member_ids if pmap.get(uid, {}).get("online"))
-    peer_online = None
-    if room.room_kind == "dm" and viewer is not None:
-        peer_id = next((uid for uid in member_ids if uid != viewer.id), None)
-        peer_online = bool(pmap.get(peer_id or 0, {}).get("online"))
+    """发送响应用轻量房间态，避免每次拉全员资料。
+
+    在线态不随消息事件广播：单聊的 ``peer_online`` 是相对当前查看者
+    计算的，广播发送者视角会让接收方得到相反语义。客户端通过专用
+    presence 快照刷新在线态。
+    """
     return {
         "id": str(room.id),
         "status": room.status,
         "risk_level": room.risk_level,
         "updated_at": room.updated_at.isoformat(),
-        "online_count": online_count,
-        "peer_online": peer_online,
         "unread_count": 0,
         "active_xiaoce_run": _active_xiaoce_run_payload(room, viewer),
     }
@@ -2862,6 +2856,7 @@ def presence_heartbeat(request):
         pmap = presence_map(ids)
         return Response({
             "ok": True,
+            "window_seconds": ONLINE_WINDOW_SECONDS,
             "me": {
                 "id": request.user.id,
                 "online": True,
@@ -2876,7 +2871,7 @@ def presence_heartbeat(request):
         "ok": True,
         "online": True,
         "last_seen": row.last_seen.isoformat(),
-        "window_seconds": 75,
+        "window_seconds": ONLINE_WINDOW_SECONDS,
     })
 
 

@@ -120,8 +120,10 @@ test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(monitorStyles, /\.collab-msg:not\(\.system\):hover \.collab-bubble/);
   assert.match(monitorStyles, /@media \(prefers-reduced-motion:\s*reduce\)/);
   assert.match(monitorStyles, /\.collab-summary-controls \.ant-btn-primary[\s\S]*?linear-gradient\(135deg, #6d5eea, #5145c7\)/);
-  assert.match(chatSource, /if \(document\.visibilityState !== "visible"\) return;/);
+  assert.match(chatSource, /if \(document\.visibilityState !== "visible" \|\| beatInFlight\) return;/);
+  assert.match(chatSource, /finally \{[\s\S]*?beatInFlight = false;/);
   assert.match(liveSource, /const pageIsVisible = \(\) => document\.visibilityState === "visible"/);
+  assert.match(liveSource, /!pageIsVisible\(\) \|\| presenceInFlight/);
   assert.match(liveSource, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
   assert.match(liveSource, /closeWebSocketQuietly\(ws\);[\s\S]*?ws = null;/);
 });
