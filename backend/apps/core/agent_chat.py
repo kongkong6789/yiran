@@ -1,6 +1,8 @@
 """Agent chat orchestration for Liangce AI."""
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.db.models import Q
 
@@ -192,6 +194,20 @@ def run_chat(
         )
         if active_skills else []
     )
+    if active_skills:
+        try:
+            from apps.wecom.skill_todo import try_execute_wecom_todo_skills
+
+            wecom_blocks = try_execute_wecom_todo_skills(
+                active_skills,
+                message,
+                user,
+                history=history,
+            )
+            if wecom_blocks:
+                script_blocks = list(script_blocks or []) + wecom_blocks
+        except Exception:
+            logging.getLogger(__name__).exception("wecom todo skill execution failed")
     if active_skills:
         emit_progress(progress_callback, "skill", "completed")
     raise_if_cancelled(cancel_check)

@@ -7883,6 +7883,45 @@ body {
 .work-todo-member-option .ant-tag { margin: 0; border-radius: 999px; font-size: 10px; }
 .work-todo-member-tag { display: inline-flex; align-items: center; gap: 5px; margin: 2px 4px 2px 0; border-radius: 999px; background: #f5f7fa; }
 .work-todo-member-tag .ant-avatar { background: #e7edf4; color: #64748b; }
+.collab-todo-form-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.collab-todo-member-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+.collab-todo-member-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.collab-todo-member-copy strong {
+  overflow: hidden;
+  color: var(--lc-navy);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-todo-member-copy span {
+  overflow: hidden;
+  color: var(--lc-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-todo-member-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 2px 4px 2px 0;
+  border-radius: 999px;
+  background: #f5f7fa;
+}
 .work-todo-recipient-hint {
   margin: -12px 0 18px !important;
   color: var(--lc-text-muted) !important;

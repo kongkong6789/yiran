@@ -389,8 +389,16 @@ def diagnose_skill_execution(skills: list[UserSkill], message: str, script_block
     if script_blocks:
         return ""
 
+    try:
+        from apps.wecom.skill_todo import is_wecom_todo_skill
+    except Exception:  # noqa: BLE001
+        is_wecom_todo_skill = lambda _skill: False  # type: ignore
+
     lines = ["以下 Skill 已加载,但平台未能自动执行脚本:"]
-    for skill in skills:
+    pending = [skill for skill in skills if not is_wecom_todo_skill(skill)]
+    if not pending:
+        return ""
+    for skill in pending:
         asset = skill.source_asset
         if not asset:
             lines.append(f"- {skill.name}: 无来源仓库记录,请重新上传 zip 并启用。")
@@ -430,8 +438,16 @@ def try_execute_skill_scripts(
 
     brand = extract_brand_from_context(message, history)
     results: list[dict] = []
+    try:
+        from apps.wecom.skill_todo import is_wecom_todo_skill
+    except Exception:  # noqa: BLE001
+        is_wecom_todo_skill = lambda _skill: False  # type: ignore
+
     for skill in skills:
         raise_if_cancelled(cancel_check)
+        if is_wecom_todo_skill(skill):
+            # 企微待办由平台可信动作执行，不走沙箱脚本。
+            continue
         asset = skill.source_asset
         if not asset:
             results.append({
@@ -498,7 +514,14 @@ def format_script_outputs(blocks: list[dict]) -> str:
     parts = ["【Skill 脚本执行结果】(平台已代执行,勿再要求用户手动跑终端)"]
     for item in blocks:
         name = item.get("skill_name") or item.get("skill_id") or "skill"
-        if item.get("error"):
+        if item.get("platform_action") == "wecom_todo":
+            # 企微待办技能已有面向用户的结果文案
+            if item.get("stdout"):
+                parts.append(f"\n{item['stdout']}")
+            elif item.get("error"):
+                parts.append(f"\n### {name}\n错误: {item['error']}")
+            continue
+        if item.get("error") and not item.get("ok"):
             parts.append(f"\n### {name}\n错误: {item['error']}")
             continue
         status = "成功" if item.get("ok") else f"失败(code={item.get('returncode')})"

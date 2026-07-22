@@ -325,6 +325,7 @@ export interface UserWeComBindingSummary {
   statusLabel: string;
   weComUserId: string;
   weComMember: string;
+  wecomContactId?: number | null;
   failureReason: string;
   statusHint?: string;
 }
