@@ -453,6 +453,8 @@ export interface KnowledgeBaseItem {
   owner_username?: string;
   owner_user_id?: number | null;
   can_edit?: boolean;
+  team_ids?: number[];
+  teamIds?: number[];
   name: string;
   description: string;
   category: string;
@@ -2128,6 +2130,50 @@ export const listCausalCandidates = () =>
   api.get<{ results: (OntRelation & { source_name?: string; target_name?: string })[] }>(
     "/loops/causal-candidates/",
   ).then((r) => r.data);
+
+export interface BrandLoopEvidence {
+  label: string;
+  value?: string | number | null;
+  unit?: string | null;
+}
+
+export interface BrandLoopNode {
+  id: string;
+  name: string;
+  value?: string | number | null;
+  unit?: string | null;
+  status: string;
+  data_status?: string | null;
+  evidence?: BrandLoopEvidence[];
+}
+
+export interface BrandLoopLink {
+  source: string;
+  target: string;
+  polarity?: string;
+  label?: string;
+}
+
+export interface BrandManagementLoopData {
+  brand: {
+    id?: string;
+    name: string;
+    product_count?: number | null;
+  };
+  period: string;
+  metrics: {
+    sales_quantity?: number | null;
+    inventory_cover_days?: number | null;
+    [key: string]: unknown;
+  };
+  stocks: BrandLoopNode[];
+  flows: BrandLoopNode[];
+  links: BrandLoopLink[];
+  data_status: Record<string, string>;
+}
+
+export const getBrandManagementLoop = (params?: { brand_id?: string; period?: string }) =>
+  api.get<BrandManagementLoopData>("/loops/brand-management/", { params }).then((r) => r.data);
 
 // ================= ???? =================
 export interface CollabUserBrief {
