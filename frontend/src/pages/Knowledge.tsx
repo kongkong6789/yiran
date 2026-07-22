@@ -59,6 +59,7 @@ import {
   getKnowledgeJob,
   listKnowledgeBases,
   listKnowledgeFiles,
+  listTeams,
   listSmartSheets,
   updateKnowledgeBase,
   uploadKnowledgeFile,
@@ -67,6 +68,7 @@ import {
   type KnowledgeFileItem,
   type KnowledgeIngestJobItem,
   type SmartSheetListItem,
+  type TeamSummary,
 } from "../api/client";
 import SmartTable from "./SmartTable";
 import KnowledgeDocEditor from "../components/KnowledgeDocEditor";
@@ -200,6 +202,7 @@ type KnowledgeTemplate = {
   limitations: string[];
   sampleQuestion: string;
   canEdit?: boolean;
+  teamIds?: number[];
 };
 
 type KnowledgeSource = {
@@ -439,6 +442,7 @@ function mapKnowledgeBase(base: KnowledgeBaseItem): KnowledgeTemplate {
     limitations: ["PDF/DOC/PPT/XLS parse through MinerU", "Semantic search requires local embedding service"],
     sampleQuestion: `Search key facts in ${base.name}`,
     canEdit: base.can_edit ?? true,
+    teamIds: base.team_ids || base.teamIds || [],
   };
 }
 
@@ -544,12 +548,14 @@ function displayStatus(status: KnowledgeTemplateFile["status"]) {
 export default function Knowledge() {
   const { message, modal } = AntApp.useApp();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [editForm] = Form.useForm<{ name: string; description: string; visibility: Visibility }>();
+  const [editForm] = Form.useForm<{ name: string; description: string; visibility: Visibility; teamIds?: number[] }>();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [scopeFilter, setScopeFilter] = useState<Visibility | "all">("all");
   const [templateId, setTemplateId] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("team");
+  const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [selectedTeamIds, setSelectedTeamIds] = useState<number[]>([]);
   const [engine, setEngine] = useState<Engine>("hybrid-rag");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
   const [requireCitation, setRequireCitation] = useState(true);
@@ -601,6 +607,7 @@ export default function Knowledge() {
   const [chunkLoading, setChunkLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeTemplate | null>(null);
   const [editSaving, setEditSaving] = useState(false);
+  const editVisibility = Form.useWatch("visibility", editForm) as Visibility | undefined;
 
   const chunkTotalPages = Math.max(1, Math.ceil((chunkTotalCount || 0) / chunkPageSize));
   const chunkPageNumbers = useMemo(() => {
@@ -656,6 +663,10 @@ export default function Knowledge() {
   const detailReadyCount = filteredDetailFiles.filter((file) => file.status === "ready").length;
   const selectedSourceObjects = sources.filter((item) => selectedSources.includes(item.id));
   const usingDemoTemplates = knowledgeBases.length === 0;
+  const teamOptions = useMemo(() => teams.map((team) => ({
+    value: team.id,
+    label: team.organizationName ? `${team.name} / ${team.organizationName}` : team.name,
+  })), [teams]);
 
   function parseKnowledgeBaseId(raw?: string | number | null): number | null {
     const id = Number(raw);
@@ -663,6 +674,10 @@ export default function Knowledge() {
   }
 
   /** 解析当前可写入的真实知识库 ID；示例模板会自动落成真实知识库。 */
+  function teamIdsForVisibility(nextVisibility: Visibility) {
+    return nextVisibility === "team" ? selectedTeamIds : [];
+  }
+
   async function ensureActiveKnowledgeBaseId(preferredName?: string): Promise<number | null> {
     const existing =
       parseKnowledgeBaseId(detailTemplateId)
@@ -675,12 +690,19 @@ export default function Knowledge() {
     }
 
     const name = (preferredName || detailTemplate?.name || selectedTemplate.name || "未命名知识库").trim();
+    const nextVisibility = detailTemplate?.visibility || selectedTemplate.visibility || visibility;
+    const nextTeamIds = teamIdsForVisibility(nextVisibility);
+    if (nextVisibility === "team" && nextTeamIds.length === 0) {
+      message.warning("请选择团队");
+      return null;
+    }
     try {
       const created = await createKnowledgeBase({
         name,
         description: detailTemplate?.headline || selectedTemplate.headline || "",
         category: detailTemplate?.category || selectedTemplate.category || "Custom",
-        visibility: detailTemplate?.visibility || selectedTemplate.visibility || visibility,
+        visibility: nextVisibility,
+        teamIds: nextTeamIds,
         retrieval_mode: detailTemplate?.strategy || selectedTemplate.strategy || engine,
         review_policy: detailTemplate?.reviewPolicy || selectedTemplate.reviewPolicy || reviewPolicy,
         status: "draft",
@@ -712,6 +734,11 @@ export default function Knowledge() {
       return;
     }
     // 示例卡片：双击时落成真实知识库，避免文档里无法创建
+    const nextTeamIds = teamIdsForVisibility(template.visibility);
+    if (template.visibility === "team" && nextTeamIds.length === 0) {
+      message.warning("请选择团队");
+      return;
+    }
     setBaseLoading(true);
     try {
       const created = await createKnowledgeBase({
@@ -719,6 +746,7 @@ export default function Knowledge() {
         description: template.headline,
         category: template.category || "Custom",
         visibility: template.visibility,
+        teamIds: nextTeamIds,
         retrieval_mode: template.strategy,
         review_policy: template.reviewPolicy,
         status: "draft",
@@ -751,6 +779,16 @@ export default function Knowledge() {
       message.error("Failed to load knowledge bases");
     } finally {
       setBaseLoading(false);
+    }
+  }
+
+  async function refreshTeams() {
+    try {
+      const res = await listTeams();
+      setTeams(res.results.filter((team) => team.isActive));
+    } catch (error) {
+      console.error(error);
+      message.error("Failed to load teams");
     }
   }
 
@@ -882,12 +920,17 @@ export default function Knowledge() {
     setCreateName("");
     setCreateDescription("");
     setVisibility("team");
+    setSelectedTeamIds(teamOptions.length === 1 ? [Number(teamOptions[0].value)] : []);
     setCreateMode(true);
   }
 
   function validateCreateKnowledgeBaseMeta() {
     if (!createName.trim()) {
       message.warning("请输入知识库名称");
+      return false;
+    }
+    if (visibility === "team" && selectedTeamIds.length === 0) {
+      message.warning("请选择团队");
       return false;
     }
     return true;
@@ -899,6 +942,7 @@ export default function Knowledge() {
       description: createDescription.trim(),
       category: "Custom",
       visibility,
+      teamIds: visibility === "team" ? selectedTeamIds : [],
       retrieval_mode: engine,
       review_policy: reviewPolicy,
       status: "draft",
@@ -1004,7 +1048,7 @@ export default function Knowledge() {
       return;
     }
     setEditingKnowledgeBase(template);
-    editForm.setFieldsValue({ name: template.name, description: template.headline, visibility: template.visibility });
+    editForm.setFieldsValue({ name: template.name, description: template.headline, visibility: template.visibility, teamIds: template.teamIds || [] });
   }
 
   async function handleSaveKnowledgeBaseEdit() {
@@ -1021,6 +1065,7 @@ export default function Knowledge() {
         name: values.name.trim(),
         description: values.description?.trim() || "",
         visibility: values.visibility,
+        teamIds: values.visibility === "team" ? (values.teamIds || []) : [],
       });
       await refreshKnowledgeBases();
       setEditingKnowledgeBase(null);
@@ -1345,6 +1390,7 @@ export default function Knowledge() {
 
   useEffect(() => {
     void refreshKnowledgeBases();
+    void refreshTeams();
   }, []);
 
   useEffect(() => {
@@ -1490,6 +1536,19 @@ export default function Knowledge() {
                       />
                       <small className="create-scope-hint">{visibilityDescriptions[visibility]}</small>
                     </label>
+                    {visibility === "team" ? (
+                      <label>
+                        <span>绑定团队</span>
+                        <Select
+                          mode="multiple"
+                          allowClear
+                          value={selectedTeamIds}
+                          options={teamOptions}
+                          placeholder="请选择团队"
+                          onChange={(values) => setSelectedTeamIds(values as number[])}
+                        />
+                      </label>
+                    ) : null}
                     <label>
                       <span>知识库名称</span>
                       <Input
@@ -2090,6 +2149,15 @@ export default function Knowledge() {
               ]}
             />
           </Form.Item>
+          {editVisibility === "team" ? (
+            <Form.Item
+              label="绑定团队"
+              name="teamIds"
+              rules={[{ required: true, type: "array", min: 1, message: "请选择团队" }]}
+            >
+              <Select mode="multiple" allowClear options={teamOptions} placeholder="请选择团队" />
+            </Form.Item>
+          ) : null}
         </Form>
       </Modal>
       <Drawer title={detailTemplate?.name || "方案模板详情"} width={720} open={false} onClose={() => setDetailTemplateId(null)}>

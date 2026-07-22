@@ -456,6 +456,21 @@ class OrganizationOwnershipApiTests(APITestCase):
         admin_non_member_result = self.client.get("/api/auth/teams/", {"kind": "platform"})
         self.assertEqual(admin_non_member_result.data["results"], [])
 
+    def test_enterprise_team_creator_is_automatically_added_as_lead(self):
+        self.client.force_authenticate(self.owner)
+        created = self.client.post(
+            "/api/auth/teams/",
+            {"name": "创建者可见的企业团队", "kind": "enterprise", "memberIds": [self.member.id]},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        team_id = created.data["team"]["id"]
+        creator_membership = TeamMembership.objects.get(team_id=team_id, user=self.owner)
+        self.assertEqual(creator_membership.role, TeamMembership.Role.LEAD)
+        self.assertTrue(
+            TeamMembership.objects.filter(team_id=team_id, user=self.member).exists()
+        )
+
     def test_platform_team_creator_is_automatically_added_as_member(self):
         platform_admin = User.objects.create_user(
             "platform-team-creator",

@@ -187,9 +187,9 @@ def teams(request):
             description=description,
             created_by=request.user,
         )
-        if kind == Team.Kind.PLATFORM and request.user.id not in member_ids:
-            # 平台团队仅成员可见，因此创建人必须进入团队，避免创建成功后
-            # 立即从自己的列表中消失，也保证后续具备明确的管理身份。
+        if request.user.id not in member_ids:
+            # 团队知识库按 TeamMembership 判定可见性；创建者也必须进入团队，
+            # 否则会出现“创建了团队/知识库，但自己不是团队成员看不到”的状态。
             member_ids.insert(0, request.user.id)
         if member_ids:
             TeamMembership.objects.bulk_create([
@@ -198,7 +198,7 @@ def teams(request):
                     user_id=uid,
                     role=(
                         TeamMembership.Role.LEAD
-                        if kind == Team.Kind.PLATFORM and uid == request.user.id
+                        if uid == request.user.id
                         else TeamMembership.Role.MEMBER
                     ),
                 )
