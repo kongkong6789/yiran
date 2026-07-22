@@ -151,13 +151,6 @@ const platformRoleLabel: Record<PlatformRole, string> = {
   superuser: "超级管理员",
 };
 
-const authenticatedAvatarUrl = (url?: string) => {
-  if (!url) return undefined;
-  const token = getAuthToken();
-  if (!token) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
-};
-
 export default function Accounts() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<AdminUserRow[]>([]);
@@ -1150,7 +1143,6 @@ export default function Accounts() {
               <Select
                 className="account-platform-role-select-lg"
                 options={PLATFORM_ROLE_OPTIONS}
-                disabled={Boolean(target && target.id === selfUserId && platformRoleOf(target) === "superuser")}
                 disabled={Boolean(
                   target
                   && target.id === selfUserId

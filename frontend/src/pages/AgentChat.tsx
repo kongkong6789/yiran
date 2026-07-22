@@ -5,8 +5,6 @@ import {
 } from "antd";
 import {
   BulbOutlined, DatabaseOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
-  PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined, UserOutlined,
-  BulbOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
   PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined,
 } from "@ant-design/icons";
 import {
