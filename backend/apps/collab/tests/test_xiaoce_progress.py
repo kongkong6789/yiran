@@ -6,6 +6,7 @@ from django.test import TestCase
 
 from apps.collab.models import CollabMessage, CollabRoom, XiaoceRun
 from apps.collab.xiaoce_progress import (
+    STAGES,
     XiaoceProgressReporter,
     xiaoce_run_payload,
 )
@@ -55,6 +56,13 @@ class XiaoceProgressTests(TestCase):
         self.run.refresh_from_db()
         self.assertEqual(self.run.progress_steps, [])
         self.assertNotIn("sk-secret-value", str(xiaoce_run_payload(self.run)))
+
+    def test_knowledge_step_uses_product_language(self):
+        self.assertEqual(
+            STAGES["knowledge_search"],
+            ("正在检索知识库…", "已检索知识库"),
+        )
+        self.assertNotIn("PostgreSQL", " ".join(STAGES["knowledge_search"]))
 
     def test_payload_exposes_only_public_progress_fields(self):
         reporter = XiaoceProgressReporter(self.run.id)

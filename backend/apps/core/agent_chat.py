@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from django.conf import settings
 from django.db.models import Q
@@ -153,6 +154,46 @@ def _selected_knowledge_context(
         return f"\u3010\u77e5\u8bc6\u5e93\u3011\u5df2\u9009\u62e9: {names}, \u4f46\u6ca1\u6709\u68c0\u7d22\u5230\u76f4\u63a5\u76f8\u5173\u5207\u7247\u3002", refs
     return "\n\n".join(blocks), refs
 
+
+_KNOWLEDGE_SOURCE_TERMS = (
+    "知识库", "内部资料", "公司资料", "企业资料", "参考资料", "资料库",
+    "制度", "政策", "规定", "规范", "手册", "档案", "合同", "条款", "口径",
+    "sop", "历史任务", "历史记录", "历史数据", "知识图谱", "业务图谱",
+)
+_BUSINESS_EVIDENCE_TERMS = (
+    "gmv", "sku", "经营数据", "业务数据", "指标", "数据分析", "分析数据", "数据口径",
+    "销售", "销量", "订单", "退款", "库存", "库龄", "缺货", "断货", "备货", "补货",
+    "成本", "利润", "毛利", "预算", "财务", "采购", "供应商", "商品", "店铺",
+    "渠道", "客户", "业绩", "经营", "运营分析", "市场分析", "竞品", "品牌分析",
+    "同比", "环比", "趋势", "异常预警", "异常分析", "回路分析", "因果图",
+)
+
+
+def should_retrieve_knowledge(
+    message: str,
+    knowledge_mode: str = "auto",
+    knowledge_base_ids: list[int] | None = None,
+    *,
+    doc_mode: bool = False,
+) -> bool:
+    """判断本轮是否需要检索企业知识。
+
+    auto 模式仅在用户明确询问内部资料或经营证据时检索，避免创建待办、
+    改写、翻译、闲聊等请求误跑知识库。显式选定知识库时仍强制检索。
+    """
+    mode = knowledge_mode if knowledge_mode in {"auto", "none", "selected"} else "auto"
+    if mode == "none":
+        return False
+    if mode == "selected" or knowledge_base_ids:
+        return True
+    if doc_mode:
+        return False
+    text = re.sub(r"\s+", "", str(message or "")).casefold()
+    if not text:
+        return False
+    return any(term in text for term in (*_KNOWLEDGE_SOURCE_TERMS, *_BUSINESS_EVIDENCE_TERMS))
+
+
 def run_chat(
     message: str,
     history: list[dict] | None = None,
@@ -216,13 +257,27 @@ def run_chat(
 
     knowledge = ""
     graph: dict = {"refs": []}
-    emit_progress(progress_callback, "knowledge_search", "running")
-    if not doc_mode:
+    selected_knowledge = ""
+    selected_knowledge_refs: list[dict] = []
+    retrieve_knowledge = should_retrieve_knowledge(
+        message,
+        knowledge_mode,
+        knowledge_base_ids,
+        doc_mode=doc_mode,
+    )
+    if retrieve_knowledge:
+        emit_progress(progress_callback, "knowledge_search", "running")
         knowledge = gather_knowledge(message, top_k=4, user=user)
         raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
         raise_if_cancelled(cancel_check)
-    selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(message, knowledge_mode, knowledge_base_ids, user=user)
+        selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(
+            message,
+            knowledge_mode,
+            knowledge_base_ids,
+            user=user,
+        )
+        emit_progress(progress_callback, "knowledge_search", "completed")
 
     try:
         mcp = (
@@ -247,7 +302,6 @@ def run_chat(
     nas_files = nas.get("files") or []
     context_attachments = [*attachments, *nas_files]
     raise_if_cancelled(cancel_check)
-    emit_progress(progress_callback, "knowledge_search", "completed")
     tool_count = (
         len(script_blocks)
         + (1 if mcp.get("attempted") else 0)

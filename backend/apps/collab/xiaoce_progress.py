@@ -12,8 +12,8 @@ from .models import CollabRoom, XiaoceRun
 STAGES: dict[str, tuple[str, str]] = {
     "understanding": ("正在理解你的问题…", "已理解你的问题"),
     "knowledge_search": (
-        "正在检索知识库与 PostgreSQL 数据…",
-        "已检索知识库与 PostgreSQL 数据",
+        "正在检索知识库…",
+        "已检索知识库",
     ),
     "skill": ("正在调用 Skill…", "已调用 Skill"),
     "tools": ("正在运行工具…", "已运行 {tool_count} 个工具"),
@@ -27,7 +27,7 @@ STAGES: dict[str, tuple[str, str]] = {
 }
 
 ERROR_MESSAGES = {
-    "knowledge_unavailable": "知识库或数据暂时不可用",
+    "knowledge_unavailable": "知识库暂时不可用",
     "skill_generation_failed": "Skill 提炼失败",
     "package_invalid": "Skill 包结构校验失败",
     "skill_upload_failed": "Skill 上传或启用失败",

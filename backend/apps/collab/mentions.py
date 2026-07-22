@@ -8,7 +8,7 @@ from typing import Any
 from django.contrib.auth import get_user_model
 
 from apps.council import llm
-from apps.core.agent_chat import _selected_knowledge_context
+from apps.core.agent_chat import _selected_knowledge_context, should_retrieve_knowledge
 from apps.skills.analytics import record_skill_usage
 from apps.skills.service import build_skill_system_block, resolve_skills
 from apps.skills.runner import (
@@ -326,9 +326,9 @@ def reply_ai_mention(
 
     skill_names = "、".join(s.name for s in active_skills) if active_skills else ""
 
-
+    needs_knowledge = should_retrieve_knowledge(trigger_content)
     knowledge_context = ""
-    if llm_user is not None:
+    if llm_user is not None and needs_knowledge:
         try:
             knowledge_context, _knowledge_refs = _selected_knowledge_context(
                 trigger_content,
@@ -341,18 +341,20 @@ def reply_ai_mention(
 
     # 与小策对齐：汇聚 RAG / 图谱 / 吉客云等连接器证据，避免只能查用户知识库切片
     business_context = ""
-    try:
-        from apps.council.knowledge import gather_knowledge
+    if needs_knowledge:
+        try:
+            from apps.council.knowledge import gather_knowledge
 
-        business_context = gather_knowledge(trigger_content, top_k=4, user=llm_user) or ""
-    except Exception as exc:
-        logger.exception("collab @AI gather_knowledge failed: %s", exc)
+            business_context = gather_knowledge(trigger_content, top_k=4, user=llm_user) or ""
+        except Exception as exc:
+            logger.exception("collab @AI gather_knowledge failed: %s", exc)
 
     system = (
         "你是「良策AI」，在企业协作风控会话中被成员召唤。用中文直接回答，简洁专业、可执行。\n"
         "能力说明（必须按此回答，不要编造相反规则）：\n"
         "1) 召唤应答：有人 @AI，或消息中 @ 了 Skill 时，你会立刻在聊天里回复（本条就是）。\n"
-        "2) 知识库：被 @AI 时，平台会自动检索当前用户可见的知识库；若下方有【知识库参考资料】，"
+        "2) 知识库：问题需要企业资料或经营证据时，平台才检索当前用户可见的知识库；"
+        "若下方有【知识库参考资料】，"
         "必须优先结合这些真实切片回答，并在不确定时说明没有检索到足够证据。\n"
         "3) 连接器与业务数据：若下方有【业务系统/数据底座参考】或【吉客云·…】【金蝶·…】等证据块，"
         "必须据此回答库存/订单/财务等问题，不要说「请去连接器页面查询」。"
