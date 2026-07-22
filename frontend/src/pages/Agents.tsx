@@ -5,6 +5,7 @@ import {
   Avatar,
   Button,
   Card,
+  Checkbox,
   Col,
   Drawer,
   Empty,
@@ -12,8 +13,10 @@ import {
   Input,
   InputNumber,
   Popconfirm,
+  Popover,
   Progress,
   Row,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -25,18 +28,26 @@ import {
 } from "antd";
 import {
   ApartmentOutlined,
+  BulbOutlined,
   CheckCircleOutlined,
+  DatabaseOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
   StopOutlined,
+  ToolOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
+import { Virtuoso } from "react-virtuoso";
 import {
   createAgent,
   deleteAgent,
+  getSkillAssets,
+  getSkills,
+  listKnowledgeBases,
   listAgents,
   updateAgent,
   type Agent,
@@ -46,61 +57,188 @@ const { Paragraph, Text, Title } = Typography;
 
 const EMOJI_CHOICES = ["🤖", "📈", "🧩", "💰", "🎯", "🧠", "⚙️", "🎨", "📊", "🛡️", "🚀", "🔬"];
 
-const SKILL_OPTIONS = [
-  { value: "data-analysis", label: "数据分析与可视化" },
-  { value: "daily-report", label: "经营日报生成" },
-  { value: "market-insight", label: "市场洞察" },
-  { value: "finance-reconcile", label: "财务对账" },
-  { value: "risk-approval", label: "风险审批" },
-  { value: "knowledge-summary", label: "知识检索与总结" },
-];
+const CAPABILITY_RULE_TEMPLATE = `【触发条件】
+- 涉及事实、制度或历史资料时，先检索已选知识库。
+- 涉及可执行操作时，调用最匹配的 Skill。
 
-const KNOWLEDGE_BASE_OPTIONS = [
-  { value: "company-policy", label: "公司制度与流程" },
-  { value: "product-inventory", label: "商品与库存知识库" },
-  { value: "finance-budget", label: "财务制度与预算" },
-  { value: "market-competitor", label: "市场与竞品资料" },
-  { value: "operations-sop", label: "运营 SOP 知识库" },
-  { value: "general-enterprise", label: "通用企业知识库" },
-];
+【调用顺序】
+1. 先确认用户意图与必要参数。
+2. 先检索取证，再执行操作；能力冲突时优先使用更具体的 Skill。
 
-interface AgentMockBindings {
-  skill_ids?: string[];
-  knowledge_base_ids?: string[];
-}
+【失败与边界】
+- 无结果时说明检索范围，并请求补充信息。
+- 调用失败时说明原因并给出替代方案，不得假装成功。
+- 高风险或越权操作必须停止并请求确认。`;
 
-const MOCK_BINDINGS_BY_AGENT_NAME: Record<string, Required<AgentMockBindings>> = {
-  通用智能体: {
-    skill_ids: ["knowledge-summary"],
-    knowledge_base_ids: ["general-enterprise", "company-policy"],
-  },
-  数据分析智能体: {
-    skill_ids: ["data-analysis", "knowledge-summary"],
-    knowledge_base_ids: ["general-enterprise"],
-  },
-  市场智能体: {
-    skill_ids: ["market-insight", "daily-report"],
-    knowledge_base_ids: ["market-competitor"],
-  },
-  财务智能体: {
-    skill_ids: ["finance-reconcile", "risk-approval"],
-    knowledge_base_ids: ["finance-budget", "company-policy"],
-  },
-  运营智能体: {
-    skill_ids: ["daily-report", "data-analysis"],
-    knowledge_base_ids: ["operations-sop", "product-inventory"],
-  },
-};
-
-const EMPTY_MOCK_BINDINGS: Required<AgentMockBindings> = {
-  skill_ids: [],
-  knowledge_base_ids: [],
-};
+const PERSONA_TEMPLATE = `【角色定位】你是……
+【核心目标】你需要……
+【工作边界】不得……；遇到高风险、信息不足或权限不明时先确认。
+【表达风格】清晰、稳健、直接给出可执行建议。
+【输出格式】先给结论，再列依据、步骤与风险提示。`;
 
 type AgentFormValues = Pick<
   Agent,
-  "name" | "group" | "role" | "expertise" | "persona" | "execution_role" | "quota_limit" | "is_active"
-> & AgentMockBindings;
+  | "name"
+  | "group"
+  | "role"
+  | "expertise"
+  | "persona"
+  | "execution_role"
+  | "quota_limit"
+  | "is_active"
+  | "skill_ids"
+  | "knowledge_base_ids"
+  | "capability_instructions"
+>;
+
+interface CapabilityOption<T extends string | number> {
+  value: T;
+  label: string;
+  description: string;
+  meta: string;
+}
+
+interface CapabilityPickerProps<T extends string | number> {
+  label: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  icon: React.ReactNode;
+  options: CapabilityOption<T>[];
+  value?: T[];
+  loading?: boolean;
+  onChange?: (value: T[]) => void;
+}
+
+function CapabilityPicker<T extends string | number>({
+  label,
+  searchPlaceholder,
+  emptyText,
+  icon,
+  options,
+  value = [],
+  loading = false,
+  onChange,
+}: CapabilityPickerProps<T>) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
+  const filteredOptions = useMemo(() => {
+    if (!normalizedQuery) return options;
+    return options.filter((option) => [option.label, option.description, option.meta]
+      .some((text) => text.toLocaleLowerCase("zh-CN").includes(normalizedQuery)));
+  }, [normalizedQuery, options]);
+  const selected = new Set(value);
+
+  const toggleOption = (optionValue: T) => {
+    if (selected.has(optionValue)) {
+      onChange?.(value.filter((item) => item !== optionValue));
+    } else {
+      onChange?.([...value, optionValue]);
+    }
+  };
+
+  const renderOption = (option: CapabilityOption<T>) => (
+    <div
+      className={`agents-capability-picker__item${selected.has(option.value) ? " is-selected" : ""}`}
+      key={String(option.value)}
+      role="checkbox"
+      aria-checked={selected.has(option.value)}
+      tabIndex={0}
+      onClick={() => toggleOption(option.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleOption(option.value);
+        }
+      }}
+    >
+      <Checkbox checked={selected.has(option.value)} tabIndex={-1} aria-hidden="true" />
+      <span className="agents-capability-picker__copy">
+        <Text strong>{option.label}</Text>
+        <Text type="secondary">{option.description || "暂无说明"}</Text>
+        <Text className="agents-capability-option__meta">{option.meta}</Text>
+      </span>
+    </div>
+  );
+
+  const panel = (
+    <div className="agents-capability-picker" role="dialog" aria-label={`选择${label}`}>
+      <div className="agents-capability-picker__head">
+        <div>
+          <Text strong>选择{label}</Text>
+          <Text type="secondary">已选 {value.length} / 共 {options.length}</Text>
+        </div>
+        <Button
+          type="link"
+          size="small"
+          disabled={value.length === 0}
+          onClick={() => onChange?.([])}
+        >
+          清空
+        </Button>
+      </div>
+      <Input
+        autoFocus
+        allowClear
+        prefix={<SearchOutlined />}
+        value={query}
+        placeholder={searchPlaceholder}
+        aria-label={searchPlaceholder}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <div className="agents-capability-picker__results" aria-live="polite">
+        {loading ? (
+          <Skeleton active paragraph={{ rows: 3 }} title={false} />
+        ) : filteredOptions.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={query ? "没有匹配结果" : emptyText} />
+        ) : filteredOptions.length > 12 ? (
+          <Virtuoso
+            data={filteredOptions}
+            style={{ height: 304 }}
+            itemContent={(_, option) => renderOption(option)}
+          />
+        ) : (
+          <div className="agents-capability-picker__short-list">
+            {filteredOptions.map(renderOption)}
+          </div>
+        )}
+      </div>
+      <div className="agents-capability-picker__foot">
+        <Text type="secondary">可搜索名称、说明和来源</Text>
+        <Button size="small" type="primary" onClick={() => setOpen(false)}>完成</Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <Popover
+      content={panel}
+      trigger="click"
+      placement="bottomLeft"
+      open={open}
+      zIndex={1300}
+      overlayClassName="agents-capability-popover"
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setQuery("");
+      }}
+    >
+      <Button
+        className={`agents-capability-trigger${open ? " is-open" : ""}`}
+        disabled={loading}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <span className="agents-capability-trigger__icon">{icon}</span>
+        <span className="agents-capability-trigger__label">{label}</span>
+        <span className="agents-capability-trigger__summary">
+          {loading ? "加载中" : value.length ? `已选 ${value.length} 项` : "点击选择"}
+        </span>
+        <DownOutlined className="agents-capability-trigger__arrow" />
+      </Button>
+    </Popover>
+  );
+}
 
 type AgentStatusFilter = "all" | Agent["status"];
 type AgentSort = "recent" | "name" | "quota";
@@ -139,8 +277,10 @@ const errorText = (error: unknown, fallback: string) => {
 interface AgentFormDrawerProps {
   open: boolean;
   editing: Agent | null;
-  mockBindings: Required<AgentMockBindings>;
   groupOptions: { value: string }[];
+  skillOptions: CapabilityOption<string>[];
+  knowledgeBaseOptions: CapabilityOption<number>[];
+  capabilityOptionsLoading: boolean;
   submitting: boolean;
   onClose: () => void;
   onSubmit: (values: AgentFormValues, emoji: string) => Promise<void>;
@@ -149,14 +289,20 @@ interface AgentFormDrawerProps {
 function AgentFormDrawer({
   open,
   editing,
-  mockBindings,
   groupOptions,
+  skillOptions,
+  knowledgeBaseOptions,
+  capabilityOptionsLoading,
   submitting,
   onClose,
   onSubmit,
 }: AgentFormDrawerProps) {
   const [form] = Form.useForm<AgentFormValues>();
   const [emoji, setEmoji] = useState("🤖");
+  const [activeInstructionSection, setActiveInstructionSection] = useState<"persona" | "capability">("persona");
+  const capabilityInstructions = Form.useWatch("capability_instructions", form) || "";
+  const personaInstructions = Form.useWatch("persona", form) || "";
+  const activeInstruction = activeInstructionSection === "persona" ? personaInstructions : capabilityInstructions;
 
   const syncForm = useCallback(() => {
     form.resetFields();
@@ -166,14 +312,16 @@ function AgentFormDrawer({
       role: editing?.role || "",
       expertise: editing?.expertise || "",
       persona: editing?.persona || "",
-      skill_ids: [...mockBindings.skill_ids],
-      knowledge_base_ids: [...mockBindings.knowledge_base_ids],
+      skill_ids: [...(editing?.skill_ids || [])],
+      knowledge_base_ids: [...(editing?.knowledge_base_ids || [])],
+      capability_instructions: editing?.capability_instructions || "",
       execution_role: editing?.execution_role || "operator",
       quota_limit: editing?.quota_limit ?? 10_000,
       is_active: editing?.is_active ?? true,
     });
     setEmoji(editing?.emoji || "🤖");
-  }, [editing, form, mockBindings]);
+    setActiveInstructionSection("persona");
+  }, [editing, form]);
 
   const submit = async () => {
     const values = await form.validateFields();
@@ -265,40 +413,98 @@ function AgentFormDrawer({
             </Col>
           </Row>
           <div className="agents-form-demo-note">
-            <Tag color="gold">演示数据</Tag>
-            <Text type="secondary">Skill 与知识库绑定仅保留在本次页面会话，暂不写入后端。</Text>
+            <Tag color="green">实时同步</Tag>
+            <Text type="secondary">选项来自 Skill 库和知识库，保存后会同步到当前智能体。</Text>
           </div>
           <Row gutter={16}>
             <Col xs={24} md={12}>
               <Form.Item name="skill_ids" label="Skill">
-                <Select
-                  mode="multiple"
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  maxTagCount="responsive"
-                  options={SKILL_OPTIONS}
-                  placeholder="选择一个或多个 Skill"
+                <CapabilityPicker
+                  label="技能"
+                  icon={<ToolOutlined />}
+                  options={skillOptions}
+                  loading={capabilityOptionsLoading}
+                  searchPlaceholder="搜索 Skill 名称、说明或来源"
+                  emptyText="暂无可用 Skill"
                 />
               </Form.Item>
+              <Text type="secondary" className="agents-field-help">
+                Skill 提供操作流程和工具指令；执行任务或会议发言时会加载当前账号有权限的绑定项。
+              </Text>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item name="knowledge_base_ids" label="知识库">
-                <Select
-                  mode="multiple"
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  maxTagCount="responsive"
-                  options={KNOWLEDGE_BASE_OPTIONS}
-                  placeholder="选择一个或多个知识库"
+                <CapabilityPicker
+                  label="知识库"
+                  icon={<DatabaseOutlined />}
+                  options={knowledgeBaseOptions}
+                  loading={capabilityOptionsLoading}
+                  searchPlaceholder="搜索知识库名称、说明或范围"
+                  emptyText="暂无可用知识库"
                 />
               </Form.Item>
+              <Text type="secondary" className="agents-field-help">
+                知识库提供事实依据；运行时只检索已选项，并继续校验当前账号的可见范围。
+              </Text>
             </Col>
           </Row>
-          <Form.Item name="persona" label="人设描述" extra="作为智能体的系统提示，描述立场、说话风格和关注点。">
-            <Input.TextArea rows={4} maxLength={2_000} showCount placeholder="描述该智能体如何思考和表达" />
-          </Form.Item>
+          <div className="agents-instruction-editor">
+            <div className="agents-instruction-editor__head">
+              <div>
+                <Text strong>智能体指令</Text>
+                <Text type="secondary">定义人设与能力调用方式</Text>
+              </div>
+              <Button
+                size="small"
+                icon={<BulbOutlined />}
+                disabled={Boolean(activeInstruction.trim())}
+                title={activeInstruction.trim() ? "当前内容已填写" : "填入当前部分的模板"}
+                onClick={() => {
+                  if (activeInstructionSection === "persona") form.setFieldValue("persona", PERSONA_TEMPLATE);
+                  else form.setFieldValue("capability_instructions", CAPABILITY_RULE_TEMPLATE);
+                }}
+              >
+                使用模板
+              </Button>
+            </div>
+            <Segmented
+              block
+              value={activeInstructionSection}
+              onChange={(value) => setActiveInstructionSection(value as "persona" | "capability")}
+              options={[
+                { label: "人设与表达", value: "persona" },
+                { label: "能力调度", value: "capability" },
+              ]}
+            />
+            <div className="agents-instruction-editor__body">
+              {activeInstructionSection === "persona" ? (
+              <Form.Item name="persona" noStyle>
+                <Input.TextArea
+                  rows={6}
+                  maxLength={2_000}
+                  showCount
+                  aria-label="角色与表达指令"
+                  placeholder={PERSONA_TEMPLATE}
+                />
+              </Form.Item>
+              ) : (
+              <Form.Item name="capability_instructions" noStyle>
+                <Input.TextArea
+                  rows={6}
+                  maxLength={1_000}
+                  showCount
+                  aria-label="能力调度指令"
+                  placeholder={CAPABILITY_RULE_TEMPLATE}
+                />
+              </Form.Item>
+              )}
+            </div>
+            <Text type="secondary" className="agents-instruction-editor__help">
+              {activeInstructionSection === "persona"
+                ? "用于控制智能体的身份、边界、语气和输出方式。"
+                : "用于控制何时调用已绑定能力，以及失败或越权时如何处理。"}
+            </Text>
+          </div>
         </div>
 
         <div className="agents-form-section">
@@ -439,7 +645,9 @@ function AgentCard({
 
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [mockBindingsByAgentId, setMockBindingsByAgentId] = useState<Record<number, Required<AgentMockBindings>>>({});
+  const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
+  const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
+  const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
   const [llm, setLlm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -465,9 +673,51 @@ export default function Agents() {
     }
   }, []);
 
+  const loadCapabilityOptions = useCallback(async () => {
+    setCapabilityOptionsLoading(true);
+    try {
+      const [personalSkills, skillAssets, knowledgeBases] = await Promise.all([
+        getSkills(),
+        getSkillAssets(),
+        listKnowledgeBases(),
+      ]);
+      const skillMap = new Map<string, CapabilityOption<string>>();
+      (skillAssets.results || []).forEach((skill) => {
+        skillMap.set(skill.skill_id, {
+          value: skill.skill_id,
+          label: skill.name || skill.skill_id,
+          description: skill.description || "",
+          meta: `${skill.visibility === "shared" ? "全员共享" : "个人"} · ${skill.has_scripts ? "含执行脚本" : "指令型"}`,
+        });
+      });
+      (personalSkills.results || []).filter((skill) => skill.enabled).forEach((skill) => {
+        const previous = skillMap.get(skill.skill_id);
+        skillMap.set(skill.skill_id, {
+          value: skill.skill_id,
+          label: skill.name || skill.skill_id,
+          description: skill.description || previous?.description || "",
+          meta: "个人已启用 · 运行时直接加载",
+        });
+      });
+      setSkillOptions(Array.from(skillMap.values())
+        .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")));
+      setKnowledgeBaseOptions(knowledgeBases.map((knowledgeBase) => ({
+        value: knowledgeBase.id,
+        label: knowledgeBase.name,
+        description: knowledgeBase.description || "",
+        meta: `${knowledgeBase.visibility === "private" ? "个人" : knowledgeBase.visibility === "company" ? "公司" : "团队"} · ${knowledgeBase.file_count} 个文件 · ${knowledgeBase.status === "ready" ? "可用" : `状态：${knowledgeBase.status}`}`,
+      })));
+    } catch (error) {
+      message.error(errorText(error, "Skill 库或知识库加载失败，请稍后重试"));
+    } finally {
+      setCapabilityOptionsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadCapabilityOptions();
+  }, [load, loadCapabilityOptions]);
 
   const groups = useMemo(
     () => Array.from(new Set(agents.map((agent) => agent.group || "未分类"))).sort((a, b) => a.localeCompare(b, "zh-CN")),
@@ -475,13 +725,6 @@ export default function Agents() {
   );
 
   const groupOptions = useMemo(() => groups.map((group) => ({ value: group })), [groups]);
-
-  const activeMockBindings = useMemo(() => {
-    if (!editing) return EMPTY_MOCK_BINDINGS;
-    return mockBindingsByAgentId[editing.id]
-      || MOCK_BINDINGS_BY_AGENT_NAME[editing.name]
-      || EMPTY_MOCK_BINDINGS;
-  }, [editing, mockBindingsByAgentId]);
 
   const filteredAgents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -521,11 +764,13 @@ export default function Agents() {
   ).length;
 
   const openCreate = () => {
+    void loadCapabilityOptions();
     setEditing(null);
     setDrawerOpen(true);
   };
 
   const openEdit = (agent: Agent) => {
+    void loadCapabilityOptions();
     setEditing(agent);
     setDrawerOpen(true);
   };
@@ -539,29 +784,11 @@ export default function Agents() {
   const saveAgent = async (values: AgentFormValues, emoji: string) => {
     setSubmitting(true);
     try {
-      const {
-        skill_ids: skillIds = [],
-        knowledge_base_ids: knowledgeBaseIds = [],
-        ...persistedValues
-      } = values;
-      const nextMockBindings: Required<AgentMockBindings> = {
-        skill_ids: skillIds,
-        knowledge_base_ids: knowledgeBaseIds,
-      };
-
       if (editing) {
-        await updateAgent(editing.id, { ...persistedValues, emoji });
-        setMockBindingsByAgentId((current) => ({
-          ...current,
-          [editing.id]: nextMockBindings,
-        }));
+        await updateAgent(editing.id, { ...values, emoji });
         message.success("智能体已更新");
       } else {
-        const created = await createAgent({ ...persistedValues, emoji });
-        setMockBindingsByAgentId((current) => ({
-          ...current,
-          [created.id]: nextMockBindings,
-        }));
+        await createAgent({ ...values, emoji });
         message.success("智能体已创建");
       }
       setDrawerOpen(false);
@@ -745,8 +972,10 @@ export default function Agents() {
       <AgentFormDrawer
         open={drawerOpen}
         editing={editing}
-        mockBindings={activeMockBindings}
         groupOptions={groupOptions}
+        skillOptions={skillOptions}
+        knowledgeBaseOptions={knowledgeBaseOptions}
+        capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={submitting}
         onClose={closeDrawer}
         onSubmit={saveAgent}

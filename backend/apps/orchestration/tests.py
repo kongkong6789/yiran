@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from apps.council.models import AgentProfile
+from apps.skills.models import UserSkill
 
 
 class RealAgentExecutionTests(APITestCase):
@@ -25,6 +26,15 @@ class RealAgentExecutionTests(APITestCase):
         self.assertEqual(row["status"], "available")
 
     def test_sop_uses_selected_real_agent(self):
+        skill = UserSkill.objects.create(
+            user=self.user,
+            skill_id="daily-report",
+            name="日报 Skill",
+            instructions="生成日报前先确认日期与统计范围。",
+        )
+        self.agent.skill_ids = [skill.skill_id]
+        self.agent.capability_instructions = "日报必须标注数据日期。"
+        self.agent.save(update_fields=["skill_ids", "capability_instructions"])
         response = self.client.post(
             "/api/orchestration/run/",
             {
@@ -40,6 +50,8 @@ class RealAgentExecutionTests(APITestCase):
         self.assertEqual(response.data["executor"]["id"], self.agent.id)
         self.assertEqual(response.data["trace_id"], "frontend-trace-1")
         self.assertEqual(response.data["executor"]["name"], "真实运营智能体")
+        capability_step = next(step for step in response.data["steps"] if step["node"] == "智能体能力加载")
+        self.assertEqual(capability_step["data"]["skills"][0]["skill_id"], skill.skill_id)
 
     def test_disabled_agent_cannot_execute(self):
         self.agent.is_active = False

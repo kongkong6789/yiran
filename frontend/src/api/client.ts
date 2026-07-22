@@ -1393,6 +1393,9 @@ export interface Agent {
   quota_used: number;
   quota_remaining: number;
   status: "available" | "disabled" | "quota_exhausted";
+  skill_ids: string[];
+  knowledge_base_ids: number[];
+  capability_instructions: string;
   created_at: string;
 }
 
@@ -1470,7 +1473,10 @@ export interface GraphWriteback {
 }
 
 export const listAgents = () =>
-  api.get<{ results: Partial<Agent>[]; llm: boolean }>("/council/agents/").then((r) => ({
+  api.get<{
+    results: Partial<Agent>[];
+    llm: boolean;
+  }>("/council/agents/").then((r) => ({
     ...r.data,
     results: (r.data.results || []).map((row) => {
       const quotaLimit = Number(row.quota_limit ?? 10000);
@@ -1491,6 +1497,11 @@ export const listAgents = () =>
         quota_used: quotaUsed,
         quota_remaining: quotaRemaining,
         status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
+        skill_ids: Array.isArray(row.skill_ids) ? row.skill_ids.map(String) : [],
+        knowledge_base_ids: Array.isArray(row.knowledge_base_ids)
+          ? row.knowledge_base_ids.map(Number).filter(Number.isFinite)
+          : [],
+        capability_instructions: String(row.capability_instructions || ""),
         created_at: String(row.created_at || ""),
       } satisfies Agent;
     }),

@@ -2,8 +2,10 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
+from apps.council.access import agent_queryset_for_user
 from apps.council.models import AgentProfile
 from apps.council.serializers import AgentProfileSerializer
+from apps.council.capabilities import build_agent_capability_context
 from .graph import run_sop, catalog, resume_approval
 
 
@@ -19,19 +21,36 @@ def run(request):
     executor = None
     if agent_id not in (None, ""):
         try:
-            executor = AgentProfile.objects.get(id=int(agent_id))
+            executor = agent_queryset_for_user(request.user).get(id=int(agent_id))
         except (AgentProfile.DoesNotExist, TypeError, ValueError):
-            return Response({"ok": False, "detail": "所选执行智能体不存在。"}, status=status.HTTP_400_BAD_REQUEST)
-        if not executor.is_active:
+            return Response(
+                {"ok": False, "detail": "所选执行智能体不存在或无权访问。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            not executor.is_active
+            or executor.lifecycle_status != AgentProfile.LifecycleStatus.PUBLISHED
+        ):
             return Response({"ok": False, "detail": "所选执行智能体已停用。"}, status=status.HTTP_400_BAD_REQUEST)
         if executor.quota_remaining <= 0:
             return Response({"ok": False, "detail": "所选执行智能体额度已用尽。"}, status=status.HTTP_400_BAD_REQUEST)
 
     role = executor.execution_role if executor else request.data.get("role", "operator")
     requested_trace_id = str(request.data.get("trace_id") or "").strip()
-    result = run_sop(text, payload, role, trace_id=requested_trace_id or None)
+    capability = build_agent_capability_context(executor, request.user, text) if executor else None
+    result = run_sop(
+        text,
+        payload,
+        role,
+        trace_id=requested_trace_id or None,
+        capability_context=capability["prompt"] if capability else "",
+        capability_summary=capability,
+    )
     if executor:
-        result["executor"] = AgentProfileSerializer(executor).data
+        result["executor"] = AgentProfileSerializer(
+            executor,
+            context={"request": request},
+        ).data
     return Response(result)
 
 
