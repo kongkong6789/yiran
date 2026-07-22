@@ -3031,6 +3031,7 @@ export const collabPresenceQuery = (userIds: number[]) =>
   api
     .get<{
       ok: boolean;
+      window_seconds: number;
       me: { id: number; online: boolean; last_seen: string };
       users: Record<string, { online: boolean; last_seen: string | null }>;
     }>("/collab/presence/", {

@@ -1,13 +1,20 @@
 import type { CollabMessage, CollabRoom, XiaoceRun } from "../api/client";
 
 
+export type XiaoceParticipantLike = {
+  username?: string;
+  bot_id?: string;
+  kind?: string;
+  online?: boolean;
+};
+
 export type XiaoceRoomLike = {
   id?: string;
   title?: string;
   display_title?: string;
   message_count?: number;
   room_kind?: string;
-  participants?: Array<{ username?: string; bot_id?: string }>;
+  participants?: XiaoceParticipantLike[];
 };
 
 type MutableValueRef<T> = { current: T };
@@ -27,14 +34,28 @@ type XiaoceTaskStateLike = {
 };
 
 
+export function isXiaoceParticipant(
+  participant: XiaoceParticipantLike | null | undefined,
+): boolean {
+  return Boolean(
+    participant
+    && (
+      participant.bot_id === "xiaoce"
+      || participant.username === "小策bot"
+    )
+  );
+}
+
+export function collabParticipantOnline(
+  participant: XiaoceParticipantLike | null | undefined,
+  reportedOnline = participant?.online,
+): boolean {
+  return isXiaoceParticipant(participant) || Boolean(reportedOnline);
+}
+
 export function isXiaoceRoom(room: XiaoceRoomLike | null | undefined): boolean {
   return room?.room_kind === "dm" && Boolean(
-    room.participants?.some(
-      (participant) => (
-        participant.bot_id === "xiaoce"
-        || participant.username === "小策bot"
-      ),
-    ),
+    room.participants?.some(isXiaoceParticipant),
   );
 }
 

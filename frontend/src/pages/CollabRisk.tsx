@@ -73,6 +73,7 @@ import { useThemeMode } from "../theme/mode";
 import {
   applyRoomMutation,
   beginRoomSelection,
+  collabParticipantOnline,
   createXiaoceRunId,
   deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
@@ -616,6 +617,7 @@ function participantsPresenceEqual(
       || (a[i].display_name || "") !== (b[i].display_name || "")
       || (a[i].nickname || "") !== (b[i].nickname || "")
       || (a[i].avatar_url || "") !== (b[i].avatar_url || "")
+      || (a[i].last_seen || null) !== (b[i].last_seen || null)
       || (a[i].last_read_message_id || 0) !== (b[i].last_read_message_id || 0)
     ) {
       return false;
@@ -1694,6 +1696,7 @@ export default function CollabRisk({
   // 进入页面后定时心跳，维持「在线」；仅用轻量 presence 刷新在线态，避免每 15 秒全量拉房间列表
   useEffect(() => {
     let stopped = false;
+    let beatInFlight = false;
     const applyPresenceToRooms = (
       users: Record<string, { online: boolean; last_seen: string | null }>,
     ) => {
@@ -1703,18 +1706,21 @@ export default function CollabRisk({
           const participants = room.participants.map((p) => {
             const hit = users[String(p.id)];
             if (!hit) return p;
-            if (Boolean(p.online) === Boolean(hit.online) && (p.last_seen || null) === (hit.last_seen || null)) {
+            const online = collabParticipantOnline(p, hit.online);
+            if (Boolean(p.online) === online && (p.last_seen || null) === (hit.last_seen || null)) {
               return p;
             }
             changed = true;
-            return { ...p, online: hit.online, last_seen: hit.last_seen };
+            return { ...p, online, last_seen: hit.last_seen };
           });
           if (participants === room.participants) return room;
-          const onlineCount = participants.filter((p) => p.online).length;
+          const onlineCount = participants.filter((p) => collabParticipantOnline(p)).length;
           let peerOnline = room.peer_online;
-          if (room.room_kind === "dm" && me?.id) {
+          if (isXiaoceRoom(room)) {
+            peerOnline = true;
+          } else if (room.room_kind === "dm" && me?.id) {
             const peer = participants.find((p) => p.id !== me.id);
-            peerOnline = Boolean(peer?.online);
+            peerOnline = collabParticipantOnline(peer);
           }
           return {
             ...room,
@@ -1730,11 +1736,12 @@ export default function CollabRisk({
         const next = prev.map((c) => {
           const hit = users[String(c.id)];
           if (!hit) return c;
-          if (Boolean(c.online) === Boolean(hit.online) && (c.last_seen || null) === (hit.last_seen || null)) {
+          const online = collabParticipantOnline(c, hit.online);
+          if (Boolean(c.online) === online && (c.last_seen || null) === (hit.last_seen || null)) {
             return c;
           }
           changed = true;
-          return { ...c, online: hit.online, last_seen: hit.last_seen };
+          return { ...c, online, last_seen: hit.last_seen };
         });
         return changed ? next : prev;
       });
@@ -1743,13 +1750,19 @@ export default function CollabRisk({
         const participants = prev.participants.map((p) => {
           const hit = users[String(p.id)];
           if (!hit) return p;
-          return { ...p, online: hit.online, last_seen: hit.last_seen };
+          return {
+            ...p,
+            online: collabParticipantOnline(p, hit.online),
+            last_seen: hit.last_seen,
+          };
         });
-        const onlineCount = participants.filter((p) => p.online).length;
+        const onlineCount = participants.filter((p) => collabParticipantOnline(p)).length;
         let peerOnline = prev.peer_online;
-        if (prev.room_kind === "dm" && me?.id) {
+        if (isXiaoceRoom(prev)) {
+          peerOnline = true;
+        } else if (prev.room_kind === "dm" && me?.id) {
           const peer = participants.find((p) => p.id !== me.id);
-          peerOnline = Boolean(peer?.online);
+          peerOnline = collabParticipantOnline(peer);
         }
         if (
           prev.online_count === onlineCount
@@ -1768,7 +1781,8 @@ export default function CollabRisk({
     };
 
     const beat = async () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || beatInFlight) return;
+      beatInFlight = true;
       try {
         await collabPresenceHeartbeat();
         if (stopped) return;
@@ -1783,6 +1797,8 @@ export default function CollabRisk({
         applyPresenceToRooms(presence.users || {});
       } catch {
         /* ignore */
+      } finally {
+        beatInFlight = false;
       }
     };
     beat();
@@ -3345,6 +3361,7 @@ export default function CollabRisk({
     room.display_title || room.title || peerLabel(room);
 
   const presenceLabel = (room: CollabRoom) => {
+    if (isXiaoceRoom(room)) return "在线";
     if (room.room_kind === "group") {
       const n = room.online_count ?? room.participants.filter((p) => p.online).length;
       return n > 0 ? `${n} 人在线` : "暂无人在线";
@@ -3359,6 +3376,7 @@ export default function CollabRisk({
   };
 
   const roomPeerOnline = (room: CollabRoom) => {
+    if (isXiaoceRoom(room)) return true;
     if (room.room_kind === "group") {
       return (room.online_count ?? room.participants.filter((p) => p.online).length) > 0;
     }

@@ -71,6 +71,7 @@ export function useCollabRoomLive({
     let presenceTimer: number | null = null;
     let pollTimer: number | null = null;
     let pingTimer: number | null = null;
+    let presenceInFlight = false;
 
     const pageIsVisible = () => document.visibilityState === "visible";
 
@@ -220,7 +221,8 @@ export function useCollabRoomLive({
     };
 
     const refreshPresence = async () => {
-      if (!isCurrent() || !pageIsVisible()) return;
+      if (!isCurrent() || !pageIsVisible() || presenceInFlight) return;
+      presenceInFlight = true;
       const requestRevision = getRoomRevision(roomId);
       try {
         const p = await getCollabRoomPresence(roomId);
@@ -241,6 +243,8 @@ export function useCollabRoomLive({
         );
       } catch {
         /* ignore */
+      } finally {
+        presenceInFlight = false;
       }
     };
 

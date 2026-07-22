@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 import {
+  collabParticipantOnline,
   createXiaoceRunId,
   deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
@@ -35,6 +36,13 @@ test("recognizes only Xiaoce direct messages", () => {
     isXiaoceRoom({ room_kind: "dm", participants: [{ username: "同事" }] }),
     false,
   );
+});
+
+test("Xiaoce service presence cannot be downgraded by a missing heartbeat", () => {
+  assert.equal(collabParticipantOnline({ bot_id: "xiaoce", online: false }), true);
+  assert.equal(collabParticipantOnline({ username: "小策bot" }, false), true);
+  assert.equal(collabParticipantOnline({ username: "同事", online: false }), false);
+  assert.equal(collabParticipantOnline({ username: "同事", online: true }), true);
 });
 
 test("finds prior Xiaoce tasks for @ references and excludes the active room", () => {
@@ -1014,29 +1022,35 @@ test("Xiaoce process presentation has dedicated responsive styles", () => {
   assert.match(processStyles, /var\(--lc-accent-blue/);
 });
 
-test("Xiaoce messages, live progress, and composer share one bounded content column", () => {
+test("Xiaoce bot and user messages anchor left and right while controls stay bounded", () => {
   const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
   const theme = readFileSync(
     new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
     "utf8",
   );
-  const columnStyles = theme.slice(
-    theme.indexOf("/* Keep virtual rows"),
+  const layoutStyles = theme.slice(
+    theme.indexOf("/* Let message rows"),
     theme.indexOf(".xiaoce-chat-shell .collab-msg.ai"),
   );
+  const messageRowRule = layoutStyles.match(
+    /\.xiaoce-chat-shell \.collab-virt-item\s*\{([^}]*)\}/,
+  )?.[1] || "";
+  const boundedControlRule = layoutStyles.match(
+    /\.xiaoce-chat-shell \.xiaoce-live-process-inner,\s*\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
+  )?.[1] || "";
 
   assert.match(source, /className="xiaoce-live-process-inner"/);
   assert.match(source, /className="collab-agent-input-inner"/);
-  assert.match(columnStyles, /\.collab-virt-item/);
-  assert.match(columnStyles, /\.xiaoce-live-process-inner/);
-  assert.match(columnStyles, /\.collab-agent-input-inner/);
-  assert.match(columnStyles, /width:\s*min\(/);
-  assert.match(columnStyles, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
-  assert.match(columnStyles, /margin-inline:\s*auto/);
+  assert.match(source, /\.collab-msg\.mine\s*\{[^}]*margin-left:\s*auto/);
+  assert.match(messageRowRule, /margin-inline:\s*var\(--xiaoce-chat-column-gutter\)/);
+  assert.doesNotMatch(messageRowRule, /width:\s*min\(/);
+  assert.match(boundedControlRule, /width:\s*min\(/);
+  assert.match(boundedControlRule, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
+  assert.match(boundedControlRule, /margin-inline:\s*auto/);
   assert.match(theme, /--xiaoce-chat-scrollbar-width:\s*10px/);
-  assert.match(columnStyles, /\.collab-virt-item[\s\S]*padding-inline:\s*0/);
+  assert.match(messageRowRule, /padding-inline:\s*0/);
   assert.match(
-    columnStyles,
+    layoutStyles,
     /\.xiaoce-live-process[\s\S]*\.collab-agent-input[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
   );
   assert.match(theme, /@media \(max-width: 860px\)[\s\S]*--xiaoce-chat-column-gutter:\s*10px/);
