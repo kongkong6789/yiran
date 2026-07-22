@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
 
-from apps.core.agent_chat import run_chat
+from apps.core.agent_chat import run_chat, should_retrieve_knowledge
 from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
 from apps.council import llm
 from apps.mcp.client import StreamableHttpClient
@@ -11,6 +11,15 @@ from apps.skills.runner import run_shell_command
 
 
 class AgentCancellationTests(TestCase):
+    def test_knowledge_router_skips_action_requests_and_keeps_evidence_queries(self):
+        self.assertFalse(should_retrieve_knowledge("今天要读书，并同步到企业微信"))
+        self.assertFalse(should_retrieve_knowledge("帮我润色这句话"))
+        self.assertTrue(should_retrieve_knowledge("查一下公司的请假制度"))
+        self.assertTrue(should_retrieve_knowledge("昨天 GMV 和退款率怎么样？"))
+        self.assertTrue(should_retrieve_knowledge("任意请求", knowledge_mode="selected"))
+        self.assertFalse(should_retrieve_knowledge("分析数据", knowledge_mode="none"))
+        self.assertFalse(should_retrieve_knowledge("分析销售数据", doc_mode=True))
+
     def test_guard_raises_for_cancelled_run(self):
         with self.assertRaises(AgentRunCancelled):
             raise_if_cancelled(lambda: True)
@@ -149,6 +158,48 @@ class AgentCancellationTests(TestCase):
                 ("composing", "completed", {}),
             ],
         )
+
+    @mock.patch("apps.core.agent_chat.llm.llm_available", return_value=True)
+    @mock.patch("apps.core.agent_chat.llm.chat_messages_result")
+    @mock.patch("apps.core.agent_chat.image_svc.detect_image_intent", return_value="none")
+    @mock.patch("apps.core.agent_chat.vision_image_parts", return_value=[])
+    @mock.patch("apps.core.agent_chat.read_nas_for_agent")
+    @mock.patch("apps.core.agent_chat.read_wecom_document")
+    @mock.patch("apps.core.agent_chat._selected_knowledge_context")
+    @mock.patch("apps.core.agent_chat.search_graph")
+    @mock.patch("apps.core.agent_chat.gather_knowledge")
+    def test_agent_does_not_run_or_report_knowledge_for_action_request(
+        self,
+        knowledge,
+        graph,
+        selected_knowledge,
+        mcp,
+        nas,
+        _vision,
+        _intent,
+        chat,
+        _available,
+    ):
+        mcp.return_value = {"attempted": False, "content": "", "error": ""}
+        nas.return_value = {"attempted": False, "content": "", "files": [], "error": ""}
+        chat.return_value = {
+            "content": "已创建待办",
+            "error": "",
+            "configured": True,
+            "model": "test-model",
+        }
+        events = []
+
+        result = run_chat(
+            "今天要读书，并同步到企业微信",
+            progress_callback=lambda code, status, data: events.append((code, status, data)),
+        )
+
+        self.assertTrue(result["ok"])
+        knowledge.assert_not_called()
+        graph.assert_not_called()
+        selected_knowledge.assert_not_called()
+        self.assertNotIn("knowledge_search", [event[0] for event in events])
 
     @mock.patch("apps.core.agent_chat.build_skill_system_block", return_value="")
     @mock.patch("apps.core.agent_chat.skills_payload", return_value=[])

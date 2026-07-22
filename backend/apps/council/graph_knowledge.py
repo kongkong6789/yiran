@@ -95,9 +95,8 @@ def search_graph(question: str, top_k: int = 6, max_edges: int = 12) -> dict:
         })
         lines.append(f"- [{o.get('otype') or 'entity'}] {o['name']}:{desc[:160] or '(无描述)'}")
 
-    graph_name = g.get("graph") or ""
     card = (
-        f"【知识图谱(AGE·{graph_name})】\n"
+        "【知识库·业务图谱】\n"
         + "\n".join(lines)
         + ("\n" + "\n".join(edge_lines) if edge_lines else "")
     )
