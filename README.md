@@ -46,6 +46,7 @@
 cd backend
 python -m venv .venv
 .venv\Scripts\activate           # Windows
+source .venv/bin/activate        # Mac
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py audit_fusion_migration --dry-run
@@ -240,8 +241,24 @@ python manage.py sync_wecom_contacts --max-age-hours 24
 - `GET /api/tasks/{trace_id}/artifacts/{artifact_id}/download/`：下载任务产物；仅任务发起人和已绑定的平台负责人可访问。
 
 完整接口说明：[工作任务 API](docs/work-tasks-api.md)。
-- `GET /api/council/agents/`：返回“管理 → 对象”中真实保存的智能体，任务页直接使用该列表，不再维护前端假数据。
-- `POST /api/orchestration/run/`：任务页通过 `agent_id` 指定真实智能体；后端校验智能体是否存在、是否启用、额度是否可用，并使用其执行权限运行 SOP。
+- `GET /api/council/agents/`：只返回当前企业、未归档的数字员工，同时返回当前企业与 `can_create` / `can_manage_all` 权限摘要；任务页直接使用该列表，不再维护前端假数据。
+- `GET /api/council/agents/{id}/`：读取当前企业中的数字员工详情；跨企业 ID 统一返回 404，避免泄露员工是否存在。
+- `POST /api/council/agents/`：仅企业所有者或管理员可创建；后端自动写入企业、创建人、负责人和员工编号。
+- `PATCH /api/council/agents/{id}/`：仅员工负责人或企业管理员可修改；只有企业管理员能变更负责人，且负责人必须是当前企业的启用成员。
+- `DELETE /api/council/agents/{id}/`：执行软归档并保留历史引用，不再物理删除员工。
+- 创建与修改接口支持通过 `skill_ids`、`knowledge_base_ids`、`capability_instructions` 和 `lifecycle_status` 保存能力绑定、调用规则与草稿/发布/停用状态；只允许绑定当前用户可访问的 Skill 与知识库。
+- `POST /api/orchestration/run/`：任务页通过 `agent_id` 指定真实智能体；后端校验智能体状态与额度，并将其调用规则、Skill 指令和指定知识库检索结果加载进 SOP 上下文。圆桌会议发言也复用相同能力上下文。
+
+智能体能力绑定示例：
+
+```json
+PATCH /api/council/agents/1/
+{
+  "skill_ids": ["wecom-todo"],
+  "knowledge_base_ids": [1, 2],
+  "capability_instructions": "涉及制度判断时必须先检索知识库；工具失败时明确说明原因和补救步骤。"
+}
+```
 
 ### 示例:运行 SOP
 

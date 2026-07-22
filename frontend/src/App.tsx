@@ -20,6 +20,7 @@ import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
 import WorkHub from "./pages/WorkHub";
+import VisualInterface from "./pages/VisualInterface";
 
 function LegacyCouncilRedirect() {
   const location = useLocation();
@@ -36,6 +37,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/collab" replace />} />
           <Route path="home" element={<Home />} />
+          <Route path="visual-interface" element={<VisualInterface />} />
           <Route path="agent" element={<AgentChat />} />
           <Route path="collab" element={<TeamCollaboration />} />
           <Route path="ontology" element={<OntologyGraph />} />

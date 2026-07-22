@@ -10,6 +10,7 @@ import {
   CheckSquareOutlined,
   CommentOutlined,
   ContactsOutlined,
+  DashboardOutlined,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
@@ -95,6 +96,7 @@ const WORK_GROUPS: NavGroup[] = [
     label: "工作工具",
     items: [
       { key: "work-overview", path: "/home", icon: <HomeOutlined />, label: "工作概览", keywords: "工作台 首页" },
+      { key: "work-visual-interface", path: "/visual-interface", icon: <DashboardOutlined />, label: "可视化面板", keywords: "可视化 驾驶舱 面板 数据 Ontology Loop CPD" },
       { key: "work-connectors", path: "/connectors", icon: <ApiOutlined />, label: "连接管理", keywords: "连接器 MCP 企业微信" },
     ],
   },
@@ -188,6 +190,7 @@ const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
 
 const FULL_BLEED = new Set([
   "/home",
+  "/visual-interface",
   "/agent",
   "/collab",
   "/work",

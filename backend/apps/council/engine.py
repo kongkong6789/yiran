@@ -14,6 +14,7 @@ from . import llm
 from . import knowledge
 from . import deliverables_gen
 from . import realtime as ws
+from .capabilities import build_agent_capability_context
 
 # 每场会议的知识资料在会中不变,缓存避免每轮重复查 DuckDB/RAG
 _KB_CACHE: dict[int, str] = {}
@@ -33,16 +34,33 @@ def _kb_for(m: Meeting) -> str:
     return _KB_CACHE[m.id]
 
 
-def _agent_system_prompt(agent: AgentProfile, question: str) -> str:
-    return (
+def _agent_system_prompt(agent: AgentProfile, question: str, skill_prompt: str = "") -> str:
+    capability_rules = (
+        f"\n能力调用规则：{agent.capability_instructions.strip()}\n"
+        if agent.capability_instructions.strip()
+        else ""
+    )
+    prompt = (
         f"你叫{agent.name},角色是{agent.role or '通用顾问'},专长:{agent.expertise or '综合'}。"
         f"{agent.persona}\n"
+        f"{capability_rules}"
         f"你正在参加一场圆桌会议,核心问题始终是:「{question}」。\n"
         "发言要求:像开会一样直接给出观点或具体方案,简短(2-4句),"
         "紧扣核心问题,可以回应/反驳其他人。"
         "尽量引用下方提供的『参考资料』中的具体制度/SOP/规则或业务数据(指标、异常)来支撑你的观点,"
         "不要脱离资料凭空空谈。不要输出任何分析过程或思考步骤,只给结论与建议。"
     )
+    if skill_prompt:
+        prompt += f"\n{skill_prompt}"
+    return prompt
+
+
+def _agent_runtime_contexts(parts: list[AgentProfile], user, query: str) -> dict[int, dict]:
+    """Resolve DB-backed capabilities before entering concurrent LLM workers."""
+    return {
+        agent.id: build_agent_capability_context(agent, user, query)
+        for agent in parts
+    }
 
 
 def start_meeting(
@@ -246,7 +264,7 @@ def invite_participants(
     return m, added_users
 
 
-def interject(m: Meeting, text: str, speaker_name: str | None = None) -> dict:
+def interject(m: Meeting, text: str, speaker_name: str | None = None, *, user=None) -> dict:
     """用户插话。仅当文中 @ 了参会 Agent（或 @所有人）时，才触发对应 Agent 回复。"""
     name = (speaker_name or "").strip() or "我"
     msg = Message.objects.create(
@@ -271,12 +289,24 @@ def interject(m: Meeting, text: str, speaker_name: str | None = None) -> dict:
             kb = _kb_cached_only(m)
             recent = _recent_contents(m)
             summary = m.context_summary
+            runtime_contexts = _agent_runtime_contexts(mentioned, user, text)
             m.round += 1
             round_no = m.round
 
             def _gen(agent: AgentProfile) -> tuple[AgentProfile, str]:
+                capability = runtime_contexts.get(agent.id) or {}
+                agent_kb = "\n\n".join(
+                    item for item in [kb, capability.get("knowledge_prompt", "")] if item
+                )
                 return agent, _reply_to_mention(
-                    agent, m.question, summary, recent, text, kb, round_no,
+                    agent,
+                    m.question,
+                    summary,
+                    recent,
+                    text,
+                    agent_kb,
+                    round_no,
+                    skill_prompt=capability.get("skill_prompt", ""),
                 )
 
             with ThreadPoolExecutor(max_workers=min(6, len(mentioned))) as pool:
@@ -348,13 +378,10 @@ def _reply_to_mention(
     user_text: str,
     kb: str,
     round_no: int,
+    skill_prompt: str = "",
 ) -> str:
     """被 @ 后针对用户这句话作答（不主动空转发言）。"""
-    system = (
-        f"你叫{agent.name},角色是{agent.role or '通用顾问'},专长:{agent.expertise or '综合'}。"
-        f"{(agent.persona or '')[:240]}\n"
-        f"圆桌议题：「{question}」。用户 @ 了你，直接回答，2～3 句，不要分析过程。"
-    )
+    system = _agent_system_prompt(agent, question, skill_prompt) + "\n用户 @ 了你，直接回答，2～3 句。"
     # 控制 prompt 体积，降低延迟
     recent_tail = "\n".join(recent[-4:])
     summary_tail = (context_summary or "")[-400:]
@@ -372,7 +399,7 @@ def _reply_to_mention(
     return content
 
 
-def tick(m: Meeting) -> dict:
+def tick(m: Meeting, *, user=None) -> dict:
     """推进一轮:让下一位 Agent 发言一次。返回新消息。"""
     if m.status != Meeting.Status.ACTIVE:
         return {"stopped": True, "message": None}
@@ -402,15 +429,18 @@ def tick(m: Meeting) -> dict:
     kb = knowledge.gather_knowledge(m.question)
 
     # 生成发言:优先真实 LLM
-    system = _agent_system_prompt(agent, m.question)
-    user = (
+    capability = build_agent_capability_context(agent, user, m.question)
+    system = _agent_system_prompt(agent, m.question, capability.get("skill_prompt", ""))
+    selected_kb = capability.get("knowledge_prompt", "")
+    kb = "\n\n".join(item for item in [kb, selected_kb] if item)
+    user_prompt = (
         (f"参考资料(请据此发言):\n{kb}\n\n" if kb else "")
         + f"当前会议纪要(压缩上下文):\n{m.context_summary or '(暂无)'}\n\n"
         + f"最近发言:\n" + "\n".join(_recent_contents(m)) + "\n\n"
         + (f"我(用户)刚插话:{user_hint}\n" if user_hint else "")
         + f"请围绕「{m.question}」发表你的下一轮观点,并尽量引用上面的资料。"
     )
-    content = llm.chat(system, user)
+    content = llm.chat(system, user_prompt)
     if not content:
         content = llm.mock_speak(
             m.question, agent.name, agent.role, m.round, prev_name, user_hint
@@ -437,9 +467,10 @@ def tick(m: Meeting) -> dict:
 
 
 def _speak_once(agent: AgentProfile, question: str, context_summary: str,
-                recent: list[str], user_hint: str | None, kb: str, round_no: int) -> str:
+                recent: list[str], user_hint: str | None, kb: str, round_no: int,
+                skill_prompt: str = "") -> str:
     """单个 Agent 基于共享上下文生成一次发言(供并发调用,内部不碰 DB)。"""
-    system = _agent_system_prompt(agent, question)
+    system = _agent_system_prompt(agent, question, skill_prompt)
     user = (
         (f"参考资料(请据此发言):\n{kb}\n\n" if kb else "")
         + f"当前会议纪要(压缩上下文):\n{context_summary or '(暂无)'}\n\n"
@@ -453,7 +484,7 @@ def _speak_once(agent: AgentProfile, question: str, context_summary: str,
     return content
 
 
-def tick_round(m: Meeting) -> dict:
+def tick_round(m: Meeting, *, user=None) -> dict:
     """并发推进一整轮:所有参会 Agent 基于同一份上下文同时发言。
 
     上下文关联保持不变:本轮所有人共享「上一轮压缩纪要 + 最近发言」,
@@ -475,12 +506,25 @@ def tick_round(m: Meeting) -> dict:
     recent = _recent_contents(m)
     last_user = m.messages.filter(speaker_type=Message.Speaker.USER).order_by("-id").first()
     user_hint = last_user.content if last_user else None
+    runtime_contexts = _agent_runtime_contexts(parts, user, m.question)
 
     # 并发生成本轮所有发言
     with ThreadPoolExecutor(max_workers=min(8, len(parts))) as pool:
         contents = list(
             pool.map(
-                lambda a: _speak_once(a, m.question, context_summary, recent, user_hint, kb, round_no),
+                lambda a: _speak_once(
+                    a,
+                    m.question,
+                    context_summary,
+                    recent,
+                    user_hint,
+                    "\n\n".join(
+                        item for item in [kb, (runtime_contexts.get(a.id) or {}).get("knowledge_prompt", "")]
+                        if item
+                    ),
+                    round_no,
+                    skill_prompt=(runtime_contexts.get(a.id) or {}).get("skill_prompt", ""),
+                ),
                 parts,
             )
         )

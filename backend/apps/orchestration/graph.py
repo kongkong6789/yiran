@@ -44,6 +44,7 @@ def recognize_intent_rules(text: str) -> tuple[str, str]:
 
 
 def recognize_intent(text: str, user=None) -> tuple[str, str]:
+def recognize_intent(text: str, capability_context: str = "") -> tuple[str, str]:
     """优先 LLM 意图识别,失败则关键词规则。"""
     from apps.council import llm
 
@@ -60,6 +61,8 @@ def recognize_intent(text: str, user=None) -> tuple[str, str]:
             "只输出 JSON: {\"action\":\"动作名或空串\",\"reason\":\"一句话\"}。"
             f"可选动作:\n{catalog}"
         )
+        if capability_context:
+            system += f"\n\n所选智能体已绑定以下能力，请遵守其规则并用于理解请求：\n{capability_context[:8000]}"
         out = llm.chat(
             system, f"用户请求:{text}",
             temperature=0.1, max_tokens=120, model=llm.fast_model(user), timeout=20, llm_user=user,
@@ -140,6 +143,8 @@ def run_sop_legacy(
     payload: dict | None = None,
     role: str = "operator",
     trace_id: str | None = None,
+    capability_context: str = "",
+    capability_summary: dict | None = None,
 ) -> dict:
     """执行一次完整 SOP 编排,返回逐节点轨迹与最终结论。"""
     payload = payload or {}
@@ -148,7 +153,21 @@ def run_sop_legacy(
 
     steps.append(_step("固定流程开头", "done", f"接收到请求: {text}", {"trace_id": trace_id}))
 
-    intent_desc, action_name = recognize_intent(text)
+    if capability_summary:
+        skill_count = len(capability_summary.get("skills") or [])
+        knowledge_count = len(capability_summary.get("configured_knowledge_base_ids") or [])
+        steps.append(_step(
+            "智能体能力加载",
+            "done" if capability_context else "warn",
+            f"已加载 {skill_count} 个 Skill、{knowledge_count} 个指定知识库",
+            {
+                "skills": capability_summary.get("skills") or [],
+                "knowledge_bases": capability_summary.get("knowledge_bases") or [],
+                "configured_knowledge_base_ids": capability_summary.get("configured_knowledge_base_ids") or [],
+            },
+        ))
+
+    intent_desc, action_name = recognize_intent(text, capability_context=capability_context)
     steps.append(_step(
         "意图识别", "done" if action_name else "warn", intent_desc,
         {"action": action_name},

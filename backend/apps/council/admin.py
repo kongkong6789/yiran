@@ -5,8 +5,17 @@ from .models import AgentProfile, Meeting, Message, Deliverable
 
 @admin.register(AgentProfile)
 class AgentProfileAdmin(admin.ModelAdmin):
-    list_display = ("name", "emoji", "role", "expertise", "created_at")
-    search_fields = ("name", "role", "expertise")
+    list_display = (
+        "name",
+        "employee_code",
+        "organization",
+        "owner",
+        "lifecycle_status",
+        "role",
+        "created_at",
+    )
+    list_filter = ("organization", "lifecycle_status", "execution_role")
+    search_fields = ("name", "employee_code", "role", "expertise", "owner__username")
 
 
 @admin.register(Meeting)
