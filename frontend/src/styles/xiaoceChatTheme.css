@@ -8,8 +8,14 @@
   transition: color 180ms ease, background-color 180ms ease;
 }
 
-/* Keep virtual rows, live progress and the composer on one responsive column. */
-.xiaoce-chat-shell .collab-virt-item,
+/* Let message rows span the conversation so bot replies anchor left and the
+   current user's messages anchor right. Keep progress and composer readable. */
+.xiaoce-chat-shell .collab-virt-item {
+  min-width: 0;
+  margin-inline: var(--xiaoce-chat-column-gutter);
+  padding-inline: 0;
+}
+
 .xiaoce-chat-shell .xiaoce-live-process-inner,
 .xiaoce-chat-shell .collab-agent-input-inner {
   width: min(
@@ -18,10 +24,6 @@
   );
   min-width: 0;
   margin-inline: auto;
-}
-
-.xiaoce-chat-shell .collab-virt-item {
-  padding-inline: 0;
 }
 
 /* Virtuoso's viewport loses this width to its vertical scrollbar. Reserve the
