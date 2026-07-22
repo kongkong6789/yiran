@@ -1133,6 +1133,18 @@ def agent_chat(request):
         skill_ids = [skill_ids]
 
     model = str(request.data.get("model") or "").strip() or None
+    knowledge_mode = str(request.data.get("knowledge_mode") or "auto").strip().lower()
+    if knowledge_mode not in {"auto", "none", "selected"}:
+        knowledge_mode = "auto"
+    raw_knowledge_ids = request.data.get("knowledge_base_ids") or []
+    if isinstance(raw_knowledge_ids, str):
+        raw_knowledge_ids = request.data.getlist("knowledge_base_ids") or [raw_knowledge_ids]
+    knowledge_base_ids = []
+    for raw_id in raw_knowledge_ids:
+        try:
+            knowledge_base_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
 
     try:
         result = run_chat(
@@ -1142,6 +1154,8 @@ def agent_chat(request):
             skill_ids=skill_ids,
             attachments=attachments,
             model=model,
+            knowledge_mode=knowledge_mode,
+            knowledge_base_ids=knowledge_base_ids,
             session_key=str(session.id),
         )
     except Exception as exc:

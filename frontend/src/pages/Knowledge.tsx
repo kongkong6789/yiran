@@ -19,6 +19,7 @@ import {
   Segmented,
   Select,
   Space,
+  Spin,
   Statistic,
   Switch,
   Tag,
@@ -139,8 +140,15 @@ function chunkKeywords(chunk: KnowledgeChunkItem, text: string) {
   return fallbackKeywords(text, 12);
 }
 function apiErrorMessage(error: unknown, fallback: string) {
-  const responseData = (error as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
-  return responseData?.message || responseData?.error || fallback;
+  const responseData = (error as { response?: { data?: Record<string, unknown> } })?.response?.data;
+  if (!responseData) return fallback;
+  const direct = responseData.message || responseData.error || responseData.detail;
+  if (typeof direct === "string" && direct.trim()) return direct;
+  for (const value of Object.values(responseData)) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value) && value.length) return String(value[0]);
+  }
+  return fallback;
 }
 
 function ingestStageLabel(stage?: string, status?: KnowledgeIngestJobItem["status"]) {
@@ -426,7 +434,7 @@ function mapKnowledgeBase(base: KnowledgeBaseItem): KnowledgeTemplate {
     visibility: base.visibility,
     evidenceCoverage: base.status === "ready" ? 90 : 40,
     readiness: base.status === "ready" ? 90 : base.status === "processing" ? 65 : 45,
-    limitations: ["PDF/PPT parser is not connected yet", "Semantic search requires local embedding service"],
+    limitations: ["PDF/DOC/PPT/XLS parse through MinerU", "Semantic search requires local embedding service"],
     sampleQuestion: `Search key facts in ${base.name}`,
     canEdit: base.can_edit ?? true,
   };
@@ -521,7 +529,7 @@ export default function Knowledge() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [scopeFilter, setScopeFilter] = useState<Visibility | "all">("all");
-  const [templateId, setTemplateId] = useState("customer-360");
+  const [templateId, setTemplateId] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("team");
   const [engine, setEngine] = useState<Engine>("hybrid-rag");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("required");
@@ -560,7 +568,7 @@ export default function Knowledge() {
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploadPurpose, setUploadPurpose] = useState("作为当前知识应用的补充资料，进入解析、切块、向量化和权限标注流程。");
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
-  const [baseLoading, setBaseLoading] = useState(false);
+  const [baseLoading, setBaseLoading] = useState(true);
   const [detailFilesByBase, setDetailFilesByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [detailSheetsByBase, setDetailSheetsByBase] = useState<Record<string, KnowledgeTemplateFile[]>>({});
   const [fileLoading, setFileLoading] = useState(false);
@@ -594,7 +602,7 @@ export default function Knowledge() {
     setChunkCurrentPage(1);
     if (chunkPageFile) void loadFileChunks(chunkPageFile, 1, pageSize);
   }
-  const baseTemplates = useMemo(() => knowledgeBases.length ? knowledgeBases.map(mapKnowledgeBase) : templates, [knowledgeBases]);
+  const baseTemplates = useMemo(() => knowledgeBases.map(mapKnowledgeBase), [knowledgeBases]);
   const categories = useMemo(() => ["全部", ...Array.from(new Set(baseTemplates.map((item) => item.category)))], [baseTemplates]);
   const visibleTemplates = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -716,6 +724,8 @@ export default function Knowledge() {
       setKnowledgeBases(rows);
       if (rows.length && !rows.some((item) => String(item.id) === templateId)) {
         setTemplateId(String(rows[0].id));
+      } else if (!rows.length) {
+        setTemplateId("");
       }
     } catch (error) {
       console.error(error);
@@ -889,7 +899,7 @@ export default function Knowledge() {
       message.success("Knowledge base created");
     } catch (error) {
       console.error(error);
-      message.error("Failed to create knowledge base");
+      message.error(apiErrorMessage(error, "Failed to create knowledge base"));
     } finally {
       setBaseLoading(false);
     }
@@ -998,7 +1008,7 @@ export default function Knowledge() {
       message.success("知识库已更新");
     } catch (error) {
       console.error(error);
-      message.error("更新知识库失败");
+      message.error(apiErrorMessage(error, "更新知识库失败"));
     } finally {
       setEditSaving(false);
     }
@@ -1027,7 +1037,7 @@ export default function Knowledge() {
           message.success("知识库已删除");
         } catch (error) {
           console.error(error);
-          message.error("删除知识库失败");
+          message.error(apiErrorMessage(error, "删除知识库失败"));
         }
       },
     });
@@ -1492,7 +1502,7 @@ export default function Knowledge() {
                           setUploadFiles(info.fileList);
                           setCreateUploadProgress(null);
                         }}
-                        accept=".md,.markdown,.xml,.eml,.csv,.txt,.epub,.xlsx,.pptx,.vtt,.ppt,.html,.properties,.doc,.docx,.pdf,.msg,.xls,.htm"
+                        accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm"
                       >
                         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                         <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
@@ -1987,7 +1997,14 @@ export default function Knowledge() {
                   </article>
                 );
               })}
-              {visibleTemplates.length === 0 ? <Empty description="没有匹配的知识库" /> : null}
+              {baseLoading && visibleTemplates.length === 0 ? (
+                <div className="knowledge-loading-state">
+                  <Spin />
+                  <Text type="secondary">正在加载知识库...</Text>
+                </div>
+              ) : visibleTemplates.length === 0 ? (
+                <Empty description={knowledgeBases.length === 0 ? "暂无知识库" : "没有匹配的知识库"} />
+              ) : null}
             </div>
           </section>
         </>
@@ -2199,7 +2216,7 @@ export default function Knowledge() {
             fileList={uploadFiles}
             beforeUpload={() => false}
             onChange={(info) => setUploadFiles(info.fileList)}
-            accept=".pdf,.doc,.docx,.md,.txt,.csv,.xlsx,.json,.html,.ppt,.pptx,.xmind"
+            accept=".pdf,.doc,.ppt,.pptx,.xls,.docx,.md,.markdown,.txt,.csv,.xlsx,.json,.html,.htm,.xmind"
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
             <p className="ant-upload-text">拖拽知识文件到这里，或点击选择文件</p>
@@ -2807,6 +2824,15 @@ const styles = `
   grid-template-columns: repeat(auto-fill, minmax(280px, 320px));
   gap: 14px;
   align-items: start;
+}
+.knowledge-loading-state {
+  grid-column: 1 / -1;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
 }
 .dify-kb-card {
   position: relative;

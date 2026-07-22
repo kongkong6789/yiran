@@ -1099,6 +1099,8 @@ export const agentChat = (body: {
   conversation_id?: string;
   skill_ids?: string[];
   model?: string;
+  knowledge_mode?: "auto" | "none" | "selected" | string;
+  knowledge_base_ids?: number[];
   files?: File[];
 }) => {
   if (body.files?.length) {
@@ -1106,6 +1108,8 @@ export const agentChat = (body: {
     form.append("message", body.message);
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.model) form.append("model", body.model);
+    if (body.knowledge_mode) form.append("knowledge_mode", body.knowledge_mode);
+    body.knowledge_base_ids?.forEach((id) => form.append("knowledge_base_ids", String(id)));
     body.skill_ids?.forEach((id) => form.append("skill_ids", id));
     body.files.forEach((file) => form.append("files", file));
     return api.post<AgentChatResult>("/agent/chat/", form, { timeout: 120_000 }).then((r) => r.data);

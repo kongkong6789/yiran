@@ -4,7 +4,7 @@ import {
   Typography,
 } from "antd";
 import {
-  BulbOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
+  BulbOutlined, DatabaseOutlined, DeleteOutlined, HistoryOutlined, MoonOutlined, PaperClipOutlined,
   PictureOutlined, PlusOutlined, RobotOutlined, SendOutlined, SunOutlined, UserOutlined,
 } from "@ant-design/icons";
 import {
@@ -14,12 +14,14 @@ import {
   getAgentChatSessions,
   getAgentModels,
   getAuthToken,
+  listKnowledgeBases,
   getMe,
   getUserSettings,
   type AgentChatMessage,
   type AgentChatResult,
   type AgentChatSession,
   type AuthUser,
+  type KnowledgeBaseItem,
   type McpServer,
   type UserSkillItem,
 } from "../api/client";
@@ -144,6 +146,9 @@ export default function AgentChat() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingFiles, setPendingFiles] = useState<{ file: File; preview?: string }[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
+  const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "none" | "selected">("auto");
+  const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<number[]>([]);
 
   const selectedKind = kindOfModel(selectedModel, modelPresets);
   const activeSession = sessions.find((s) => s.id === activeId) || null;
@@ -158,6 +163,11 @@ export default function AgentChat() {
     const names = Array.from(new Set(sessions.map((s) => s.username).filter(Boolean))) as string[];
     return names.sort().map((name) => ({ value: name, label: name }));
   }, [sessions]);
+
+  const knowledgeOptions = useMemo(() => knowledgeBases.map((item) => ({
+    value: item.id,
+    label: `${item.name}${item.file_count ? ` (${item.file_count})` : ""}`,
+  })), [knowledgeBases]);
 
   const modelSelectOptions = useMemo(() => {
     const chat = modelPresets.filter((m) => m.kind === "chat");
@@ -209,6 +219,12 @@ export default function AgentChat() {
     getMe()
       .then((res) => setMe(res.user))
       .catch(() => setMe(null));
+  }, []);
+
+  useEffect(() => {
+    listKnowledgeBases()
+      .then((rows) => setKnowledgeBases(rows.filter((item) => item.status !== "archived")))
+      .catch(() => setKnowledgeBases([]));
   }, []);
 
   useEffect(() => {
@@ -366,7 +382,7 @@ export default function AgentChat() {
     setMessages((prev) => [...prev, {
       role: "user",
       content: userContent,
-      meta: files.length ? { attachments: attachMeta } : undefined,
+      meta: files.length || knowledgeMode !== "auto" || selectedKnowledgeBaseIds.length ? { attachments: attachMeta, knowledge_mode: knowledgeMode, knowledge_base_ids: selectedKnowledgeBaseIds } : undefined,
     }]);
     setDraft("");
     setPendingFiles([]);
@@ -382,6 +398,8 @@ export default function AgentChat() {
         conversation_id: activeId || undefined,
         files: files.length ? files : undefined,
         model: model || undefined,
+        knowledge_mode: knowledgeMode,
+        knowledge_base_ids: knowledgeMode === "selected" ? selectedKnowledgeBaseIds : [],
       });
       if (!res.ok || !res.reply) {
         message.error(res.error || "对话失败");
@@ -755,6 +773,34 @@ export default function AgentChat() {
                 <Tag className={`agent-chat-kind-tag kind-${selectedKind}`}>
                   {kindTag(selectedKind)}
                 </Tag>
+                <Select
+                  className="agent-chat-knowledge-mode-select"
+                  value={knowledgeMode}
+                  onChange={(value) => setKnowledgeMode(value as "auto" | "none" | "selected")}
+                  options={[
+                    { value: "auto", label: "知识库:自动" },
+                    { value: "none", label: "不使用知识库" },
+                    { value: "selected", label: "指定知识库" },
+                  ]}
+                  popupMatchSelectWidth={180}
+                  suffixIcon={<DatabaseOutlined />}
+                  disabled={viewingOthers}
+                />
+                {knowledgeMode === "selected" && (
+                  <Select
+                    className="agent-chat-knowledge-select"
+                    mode="multiple"
+                    allowClear
+                    maxTagCount={1}
+                    placeholder="选择知识库"
+                    value={selectedKnowledgeBaseIds}
+                    onChange={(values) => setSelectedKnowledgeBaseIds(values as number[])}
+                    options={knowledgeOptions}
+                    popupMatchSelectWidth={260}
+                    suffixIcon={<DatabaseOutlined />}
+                    disabled={viewingOthers}
+                  />
+                )}
                 <ChatSkillPicker onSelect={insertSkill} />
                 <ChatConnectorPicker onSelect={insertConnector} />
               </div>
