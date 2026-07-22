@@ -599,7 +599,7 @@ export const deleteKnowledgeChunk = (fileId: number, chunkId: number) =>
   api.delete<{ deleted: boolean; chunk_id: number }>(`/knowledge/files/${fileId}/chunks/${chunkId}/`)
     .then((r) => r.data);
 
-export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic"; limit?: number }) =>
+export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic" | "hybrid"; limit?: number }) =>
   api.get<{ query: string; mode?: string; count: number; results: KnowledgeChunkItem[] }>("/knowledge/traditional-search/", { params })
     .then((r) => r.data);
 

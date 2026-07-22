@@ -88,7 +88,7 @@ def _selected_knowledge_context(
         return "", []
     try:
         from apps.knowledge.access import visible_knowledge_bases
-        from apps.knowledge.traditional_rag import keyword_search, semantic_search
+        from apps.knowledge.traditional_rag import hybrid_search
     except Exception:
         return "", []
     if not getattr(user, "is_authenticated", False):
@@ -109,23 +109,10 @@ def _selected_knowledge_context(
     blocks: list[str] = []
     per_base_limit = 3 if mode == "auto" else 4
     for base in bases:
-        chunks = []
-        keyword_chunks = []
-        semantic_chunks = []
         try:
-            keyword_chunks = keyword_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
+            chunks = hybrid_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
         except Exception:
-            keyword_chunks = []
-        try:
-            semantic_chunks = semantic_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
-        except Exception:
-            semantic_chunks = []
-        seen_chunk_ids: set[int] = set()
-        for chunk in [*keyword_chunks, *semantic_chunks]:
-            if chunk.id in seen_chunk_ids:
-                continue
-            seen_chunk_ids.add(chunk.id)
-            chunks.append(chunk)
+            chunks = []
         if not chunks:
             continue
         lines = []
@@ -156,6 +143,8 @@ _KNOWLEDGE_SOURCE_TERMS = (
     "知识库", "内部资料", "公司资料", "企业资料", "参考资料", "资料库",
     "制度", "政策", "规定", "规范", "手册", "档案", "合同", "条款", "口径",
     "sop", "历史任务", "历史记录", "历史数据", "知识图谱", "业务图谱",
+    "成分", "配方", "备案", "备案号", "备案编号", "备案信息", "货品", "货品ID", "商品编码", "条形码",
+    "sku", "SKU", "功效宣称", "使用人群", "产品备案", "包装声明",
 )
 _BUSINESS_EVIDENCE_TERMS = (
     "gmv", "sku", "经营数据", "业务数据", "指标", "数据分析", "分析数据", "数据口径",

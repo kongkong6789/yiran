@@ -1859,3 +1859,25 @@ def keyword_search(*, query: str, knowledge_base_id: int | None = None, limit: i
             scored.append((score, chunk.created_at, chunk))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [chunk for _score, _created_at, chunk in scored[:cap]]
+
+
+def hybrid_search(*, query: str, knowledge_base_id: int | None = None, limit: int = 10) -> list[KnowledgeChunkRef]:
+    cap = max(1, min(limit, 50))
+    keyword_chunks = keyword_search(query=query, knowledge_base_id=knowledge_base_id, limit=cap)
+    try:
+        semantic_chunks = semantic_search(query=query, knowledge_base_id=knowledge_base_id, limit=cap)
+    except TraditionalRagError as error:
+        if error.code != "config_error":
+            raise
+        semantic_chunks = []
+
+    merged: list[KnowledgeChunkRef] = []
+    seen_ids: set[int] = set()
+    for chunk in [*keyword_chunks, *semantic_chunks]:
+        if chunk.id in seen_ids:
+            continue
+        seen_ids.add(chunk.id)
+        merged.append(chunk)
+        if len(merged) >= cap:
+            break
+    return merged
