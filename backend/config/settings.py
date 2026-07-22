@@ -122,7 +122,7 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
+        "apps.core.authentication.LiangceTokenAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -335,6 +335,15 @@ TENCENT_COS_ACL = os.getenv("TENCENT_COS_ACL", "public-read")
 # Skill 专用:可单独建桶;未配置则复用主桶但使用独立路径前缀 skills/
 TENCENT_COS_SKILLS_BUCKET = os.getenv("TENCENT_COS_SKILLS_BUCKET", "")
 TENCENT_COS_SKILLS_LOCATION = os.getenv("TENCENT_COS_SKILLS_LOCATION", "skills")
+
+MINERU_API_TOKEN = os.getenv("MINERU_API_TOKEN", "")
+MINERU_API_BASE_URL = os.getenv("MINERU_API_BASE_URL", "https://mineru.net").rstrip("/")
+MINERU_MODEL_VERSION = os.getenv("MINERU_MODEL_VERSION", "vlm")
+MINERU_LANGUAGE = os.getenv("MINERU_LANGUAGE", "ch")
+MINERU_REQUEST_TIMEOUT_SECONDS = float(os.getenv("MINERU_REQUEST_TIMEOUT_SECONDS", "60"))
+MINERU_DOWNLOAD_TIMEOUT_SECONDS = float(os.getenv("MINERU_DOWNLOAD_TIMEOUT_SECONDS", "180"))
+MINERU_POLL_INTERVAL_SECONDS = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "5"))
+MINERU_POLL_TIMEOUT_SECONDS = float(os.getenv("MINERU_POLL_TIMEOUT_SECONDS", "1200"))
 
 CHAT_ATTACHMENTS_ROOT = BASE_DIR / "chat_attachments"
 SKILLS_WORKSPACE_ROOT = BASE_DIR / "skill_workspaces"

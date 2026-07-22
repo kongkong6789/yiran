@@ -43,6 +43,7 @@ test("navigation hides requested entries while routes remain available", () => {
   assert.match(knowledge, /path:\s*"\/knowledge"[\s\S]*label:\s*"知识库"/);
   assert.doesNotMatch(knowledge, /\/tables|智能表格|\/ontology|\/agent-memory|\/my\/recent/);
   assert.match(commerce, /\/commerce\/loops/);
+  assert.match(commerce, /\/commerce\/loops\/diy|回路 DIY/);
   assert.doesNotMatch(commerce, /\/commerce\/bench|label:\s*"经营首页"/);
   assert.doesNotMatch(admin, /\/audit/);
 
@@ -52,6 +53,7 @@ test("navigation hides requested entries while routes remain available", () => {
     "agent-memory",
     "commerce",
     "commerce/bench",
+    "commerce/loops/diy",
     "tables",
     "datalake",
     "audit",

@@ -9,6 +9,7 @@ export const api = axios.create({
 });
 
 const TOKEN_KEY = "liangce_auth_token";
+export const LOGIN_NOTICE_KEY = "liangce_login_notice";
 
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
@@ -33,6 +34,10 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err?.response?.status === 401) {
+      const notice = String(err?.response?.data?.detail || "").trim();
+      if (notice) {
+        sessionStorage.setItem(LOGIN_NOTICE_KEY, notice);
+      }
       clearAuthToken();
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
@@ -322,6 +327,7 @@ export interface UserWeComBindingSummary {
   statusLabel: string;
   weComUserId: string;
   weComMember: string;
+  wecomContactId?: number | null;
   failureReason: string;
   statusHint?: string;
 }
@@ -600,37 +606,105 @@ export const uploadSkill = (file: File, adopt = false) => {
   }).then((r) => r.data);
 };
 
-export const uploadSkillAsset = (file: File, adopt = true) => {
+export const uploadSkillAsset = (
+  file: File,
+  adopt = true,
+  category: SkillAssetCategory = "general",
+  onUploadProgress?: (event: AxiosProgressEvent) => void,
+) => {
   const form = new FormData();
   form.append("file", file);
+  form.append("category", category);
   if (adopt) form.append("adopt", "1");
   return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+    onUploadProgress,
   }).then((r) => r.data);
 };
 
-export const uploadSkillAssetFolder = (files: File[], adopt = true) => {
+export const uploadSkillAssetFolder = (
+  files: File[],
+  adopt = true,
+  category: SkillAssetCategory = "general",
+  onUploadProgress?: (event: AxiosProgressEvent) => void,
+) => {
   const form = new FormData();
   files.forEach((file) => {
     form.append("files", file, file.name);
     form.append("paths", file.webkitRelativePath || file.name);
   });
+  form.append("category", category);
   if (adopt) form.append("adopt", "1");
+  return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 180_000,
+    onUploadProgress,
+  }).then((r) => r.data);
+};
+
+export const createSkillAsset = (body: {
+  skill_id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  category: SkillAssetCategory;
+  adopt?: boolean;
+}) => {
+  const safeName = body.name.replace(/[\r\n]+/g, " ").replace(/"/g, "'").trim();
+  const safeDescription = body.description.replace(/[\r\n]+/g, " ").replace(/"/g, "'").trim();
+  const content = `---\nname: "${safeName}"\ndescription: "${safeDescription}"\n---\n\n${body.instructions.trim()}\n`;
+  const form = new FormData();
+  form.append("filename", "SKILL.md");
+  form.append("skill_id", body.skill_id);
+  form.append("content", content);
+  form.append("category", body.category);
+  if (body.adopt !== false) form.append("adopt", "1");
   return api.post<{ ok: boolean; asset: SkillAssetItem; adopted?: boolean; personal?: UserSkillItem }>("/skills/assets/upload/", form, {
     headers: { "Content-Type": "multipart/form-data" },
   }).then((r) => r.data);
 };
 
+export const searchSkillHub = (params: {
+  q?: string;
+  page?: number;
+  page_size?: number;
+  sort_by?: SkillHubSortKey;
+  source?: SkillHubSourceFilter;
+  category?: SkillHubCategoryFilter;
+  api_key?: SkillHubApiKeyFilter;
+}) =>
+  api.get<SkillHubSearchResponse>("/skills/skillhub/search/", { params }).then((r) => r.data);
+
+export const getSkillHubDetail = (slug: string) =>
+  api.get<{ ok: boolean; skill: SkillHubSkillItem }>(`/skills/skillhub/${encodeURIComponent(slug)}/`)
+    .then((r) => r.data);
+
+export const importSkillHubSkill = (body: { slug: string; version?: string; category: SkillAssetCategory; adopt?: boolean }) =>
+  api.post<{ ok: boolean; asset: SkillAssetItem; personal?: UserSkillItem; adopted: boolean; verification: { verified: boolean; status: string } }>(
+    "/skills/skillhub/import/",
+    { adopt: true, ...body },
+    { timeout: 60_000 },
+  ).then((r) => r.data);
+
 export const getSkillAssets = () =>
   api.get<{ count: number; results: SkillAssetItem[]; cos_enabled: boolean }>("/skills/assets/")
     .then((r) => r.data);
 
-export const getSkillAnalytics = () =>
-  api.get<SkillAnalyticsResponse>("/skills/analytics/").then((r) => r.data);
+export const getSkillAnalytics = (params?: { trend_start?: string; trend_end?: string }) =>
+  api.get<SkillAnalyticsResponse>("/skills/analytics/", { params }).then((r) => r.data);
+
+export const getSkillAssetUsage = (assetId: number, params?: { page?: number; page_size?: number }) =>
+  api.get<SkillUsageHistoryResponse>(`/skills/assets/id/${assetId}/usage/`, { params }).then((r) => r.data);
 
 export const updateSkillAssetOwner = (assetId: number, ownerId: number | null) =>
   api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/owner/`, {
     owner_id: ownerId,
+  }).then((r) => r.data);
+
+export const updateSkillAssetCategory = (assetId: number, category: SkillAssetCategory) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/category/`, {
+    category,
   }).then((r) => r.data);
 
 export const updateSkillAssetVisibility = (assetId: number, visibility: "shared" | "private") =>
@@ -809,9 +883,70 @@ export interface UserSkillItem {
   owner?: string;
 }
 
+export type SkillAssetCategory = "business" | "analysis" | "content" | "automation" | "general";
+export type SkillHubSortKey = "score" | "curated_score" | "rank" | "downloads" | "stars" | "updated_at";
+export type SkillHubSourceFilter = "" | "clawhub" | "community";
+export type SkillHubApiKeyFilter = "" | "required" | "not_required";
+export type SkillHubCategoryFilter = ""
+  | "office-efficiency"
+  | "content-creation"
+  | "dev-programming"
+  | "data-analysis"
+  | "design-media"
+  | "ai-agent"
+  | "knowledge-management"
+  | "business-ops"
+  | "education"
+  | "professional"
+  | "it-ops-security"
+  | "life-service";
+
+export interface SkillHubSecurityReport {
+  status: string;
+  status_text: string;
+  report_url: string;
+}
+
+export interface SkillHubSkillItem {
+  slug: string;
+  name: string;
+  description: string;
+  version: string;
+  category: string;
+  sub_categories: Array<{ key: string; name: string }>;
+  owner: string;
+  source: string;
+  source_url: string;
+  icon_url: string;
+  downloads: number;
+  stars: number;
+  score: number;
+  verified: boolean;
+  requires_api_key: boolean;
+  detail_url: string;
+  security_reports?: Record<string, SkillHubSecurityReport>;
+  changelog?: string;
+}
+
+export interface SkillHubSearchResponse {
+  ok: boolean;
+  keyword: string;
+  page: number;
+  page_size: number;
+  total: number;
+  results: SkillHubSkillItem[];
+}
+
 export interface SkillAssetItem {
   id: number;
   skill_id: string;
+  source: "upload" | "skillhub";
+  source_url: string;
+  source_version: string;
+  source_verified: boolean;
+  source_metadata?: Record<string, unknown>;
+  content_hash?: string;
+  category: SkillAssetCategory;
   visibility: "shared" | "private";
   name: string;
   description: string;
@@ -878,13 +1013,53 @@ export interface SkillUsageEventItem {
   used_at: string;
 }
 
+export interface SkillUsageHistoryResponse {
+  ok: boolean;
+  asset: { id: number; skill_id: string; name: string };
+  page: number;
+  page_size: number;
+  count: number;
+  results: SkillUsageEventItem[];
+}
+
+export interface SkillPeopleRankingItem {
+  user_id: number;
+  user: string;
+  team: string;
+  usage_count_30d: number;
+  skill_count_30d: number;
+  last_used_at: string | null;
+}
+
+export interface SkillTrendPoint {
+  date: string;
+  label: string;
+  count: number;
+  unique_users: number;
+  active_skills: number;
+}
+
+export interface SkillTrendSeries {
+  points: SkillTrendPoint[];
+  total: number;
+  unique_users: number;
+  active_skills: number;
+  daily_average: number;
+  peak_date: string | null;
+  peak_label: string;
+  peak_count: number;
+}
+
 export interface SkillAnalyticsResponse {
   scope_label: string;
   can_manage: boolean;
   summary: SkillAnalyticsSummary;
   skills: SkillAnalyticsRow[];
   ranking: SkillAnalyticsRow[];
-  trend: Array<{ date: string; label: string; count: number }>;
+  people_ranking: SkillPeopleRankingItem[];
+  trend: SkillTrendPoint[];
+  trend_range: { start: string; end: string; days: number };
+  trend_by_category: Record<string, SkillTrendSeries>;
   recent_usage: SkillUsageEventItem[];
   owner_options: Array<{ id: number; name: string; username: string }>;
 }
@@ -926,6 +1101,8 @@ export const agentChat = (body: {
   conversation_id?: string;
   skill_ids?: string[];
   model?: string;
+  knowledge_mode?: "auto" | "none" | "selected" | string;
+  knowledge_base_ids?: number[];
   files?: File[];
 }) => {
   if (body.files?.length) {
@@ -933,6 +1110,8 @@ export const agentChat = (body: {
     form.append("message", body.message);
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.model) form.append("model", body.model);
+    if (body.knowledge_mode) form.append("knowledge_mode", body.knowledge_mode);
+    body.knowledge_base_ids?.forEach((id) => form.append("knowledge_base_ids", String(id)));
     body.skill_ids?.forEach((id) => form.append("skill_ids", id));
     body.files.forEach((file) => form.append("files", file));
     return api.post<AgentChatResult>("/agent/chat/", form, { timeout: 120_000 }).then((r) => r.data);
@@ -2254,6 +2433,7 @@ export const updateCollabMemberNickname = (
 export type CollabMessageQuery = {
   afterId?: number;
   beforeId?: number;
+  aroundId?: number;
   limit?: number;
   lite?: boolean;
   includeParticipants?: boolean;
@@ -2264,6 +2444,7 @@ export type CollabMessagePage = {
   results: CollabMessage[];
   changed?: CollabMessage[];
   has_more_before?: boolean;
+  has_more_after?: boolean;
   room: Partial<CollabRoom>;
 };
 
@@ -2273,6 +2454,7 @@ export const listCollabMessages = (id: string, opts: CollabMessageQuery | number
   const params: Record<string, string | number> = {};
   if (o.afterId) params.after_id = o.afterId;
   if (o.beforeId) params.before_id = o.beforeId;
+  if (o.aroundId) params.around_id = o.aroundId;
   if (o.limit) params.limit = o.limit;
   if (o.lite) params.lite = "1";
   if (o.includeParticipants === false) params.include_participants = "0";
@@ -2281,6 +2463,44 @@ export const listCollabMessages = (id: string, opts: CollabMessageQuery | number
     .get<CollabMessagePage>(`/collab/rooms/${id}/messages/`, { params })
     .then((r) => r.data);
 };
+
+export type CollabSearchRoom = {
+  id: string;
+  title: string;
+  display_title: string;
+  room_kind: "dm" | "group";
+  status: "open" | "closed";
+  is_xiaoce: boolean;
+  updated_at: string;
+};
+
+export type CollabSearchMessage = {
+  id: number;
+  content: string;
+  snippet: string;
+  msg_type: "user" | "system" | "ai";
+  ai_kind: "" | "reply" | "interject" | "suggest" | "xiaoce";
+  sender: CollabUserBrief;
+  created_at: string;
+};
+
+export type CollabSearchResult = {
+  kind: "room" | "message";
+  room: CollabSearchRoom;
+  message: CollabSearchMessage | null;
+  snippet: string;
+  created_at: string;
+};
+
+export const searchCollabMessages = (query: string, limit = 40) =>
+  api
+    .get<{
+      query: string;
+      count: number;
+      has_more: boolean;
+      results: CollabSearchResult[];
+    }>("/collab/search/", { params: { q: query, limit } })
+    .then((r) => r.data);
 
 export const getCollabRoomPresence = (id: string) =>
   api.get<{

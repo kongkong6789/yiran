@@ -6,7 +6,7 @@ import type { TooltipPlacement } from "antd/es/tooltip";
 import {
   AlertOutlined, CheckOutlined, ClearOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FileTextOutlined,
   ApartmentOutlined, CloseOutlined, DownOutlined, HistoryOutlined, LoadingOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
-  SendOutlined, SettingOutlined, StopOutlined, SunOutlined, MessageOutlined, ForwardOutlined, CheckSquareOutlined,
+  SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined, MessageOutlined, ForwardOutlined, CheckSquareOutlined,
   TeamOutlined, TranslationOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined, UsergroupAddOutlined,
 } from "@ant-design/icons";
 import {
@@ -45,6 +45,7 @@ import {
   type CollabReadReceipt,
   type CollabRoom,
   type CollabRoomStats,
+  type CollabSearchResult,
   type CollabDraftTip,
   type CollabContextRoomRef,
   type CollabUserBrief,
@@ -56,10 +57,12 @@ import {
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
+import ChatTodoModal from "../components/ChatTodoModal";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
+import CollabMessageSearch from "../components/CollabMessageSearch";
 import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -80,6 +83,7 @@ import {
   reconcileRoomDetailSnapshot,
   resolveXiaoceDeleteState,
   setRoomPending,
+  stabilizeXiaoceRunSnapshot,
   transitionRoomComposer,
   xiaoceDeleteContent,
   type RoomMutation,
@@ -769,6 +773,7 @@ export default function CollabRisk({
   const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
   const switchSiderTab = useCallback((next: "chats" | "contacts") => {
     setSiderTab(next);
     onPanelChange?.(next);
@@ -799,6 +804,8 @@ export default function CollabRisk({
   const [creatingXiaoce, setCreatingXiaoce] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
   const [replyingTo, setReplyingTo] = useState<CollabMessage | null>(null);
+  const [todoSource, setTodoSource] = useState<CollabMessage | null>(null);
+  const [todoOpen, setTodoOpen] = useState(false);
   const [referencedRoom, setReferencedRoom] = useState<CollabRoom | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [autoTranslate, setAutoTranslate] = useState(() => {
@@ -856,6 +863,7 @@ export default function CollabRisk({
   const teamsLoadedRef = useRef(false);
   const translationInFlightRef = useRef<Set<number>>(new Set());
   const loadingOlderRequestRef = useRef<Map<string, number>>(new Map());
+  const pendingSearchTargetRef = useRef<{ roomId: string; messageId: number } | null>(null);
   const readSessionRef = useRef(
     `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
   );
@@ -1146,8 +1154,12 @@ export default function CollabRisk({
     setRooms((previous) => [room, ...previous.filter((item) => item.id !== room.id)]);
   }, []);
 
-  const loadRoomDetail = useCallback(async (id: string, opts?: { soft?: boolean }) => {
-    const soft = Boolean(opts?.soft);
+  const loadRoomDetail = useCallback(async (
+    id: string,
+    opts?: { soft?: boolean; targetMessageId?: number },
+  ) => {
+    const targetMessageId = opts?.targetMessageId;
+    const soft = !targetMessageId && Boolean(opts?.soft);
     const seq = ++roomLoadSeqRef.current;
     const requestRevision = getRoomDataRevision(id);
     const cachedAtStart = roomViewCacheRef.current.get(id);
@@ -1158,7 +1170,7 @@ export default function CollabRisk({
     const cacheFresh = Boolean(
       cachedAtStart && Date.now() - (cachedAtStart.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
     );
-    if (!soft && !hadCache) setRoomDetailLoading(true);
+    if (targetMessageId || (!soft && !hadCache)) setRoomDetailLoading(true);
 
     const applyMessages = (
       page: Awaited<ReturnType<typeof listCollabMessages>>,
@@ -1182,11 +1194,16 @@ export default function CollabRisk({
       const pageRun = isXiaoceRoom(hydratedRoom)
         ? (page.room?.active_xiaoce_run || hydratedRoom.active_xiaoce_run || null)
         : null;
+      const stablePageRun = stabilizeXiaoceRunSnapshot(
+        currentRun,
+        pageRun,
+        [...(page.results || []), ...currentMessages],
+      );
       const reconciled = reconcileRoomDetailSnapshot({
         pageMessages: page.results || [],
         currentMessages,
         requestStartMessageIds,
-        pageRun,
+        pageRun: stablePageRun,
         currentRun,
         requestRevision,
         currentRevision: getRoomDataRevision(id),
@@ -1203,7 +1220,32 @@ export default function CollabRisk({
       setMessages(nextMessages);
       setInsights(insights);
       setHasMoreBefore(nextHasMore);
-      if (!soft || !cachedAtResolution) {
+      if (targetMessageId) {
+        setFirstItemIndex(VIRT_BASE_INDEX);
+        setHighlightId(targetMessageId);
+        stickBottomRef.current = false;
+        forceStickUntilRef.current = 0;
+        const targetIndex = nextMessages
+          .filter((item) => item.status !== "deleted")
+          .findIndex((item) => item.id === targetMessageId);
+        if (targetIndex >= 0) {
+          const scrollToTarget = () => {
+            virtuosoRef.current?.scrollToIndex({
+              index: VIRT_BASE_INDEX + targetIndex,
+              align: "center",
+              behavior: "smooth",
+            });
+            document.getElementById(`collab-msg-${targetMessageId}`)?.scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          };
+          requestAnimationFrame(() => {
+            scrollToTarget();
+            window.setTimeout(scrollToTarget, 100);
+          });
+        }
+      } else if (!soft || !cachedAtResolution) {
         setFirstItemIndex(VIRT_BASE_INDEX);
         stickBottomRef.current = true;
         forceStickUntilRef.current = Date.now() + 2000;
@@ -1214,7 +1256,7 @@ export default function CollabRisk({
         messages: nextMessages,
         insights,
         hasMoreBefore: nextHasMore,
-        firstItemIndex: soft && cachedAtResolution
+        firstItemIndex: !targetMessageId && soft && cachedAtResolution
           ? cachedAtResolution.firstItemIndex
           : VIRT_BASE_INDEX,
         xiaoceRun: nextXiaoce,
@@ -1250,8 +1292,13 @@ export default function CollabRisk({
           (a, b) => a.id - b.id || a.created_at.localeCompare(b.created_at),
         );
         const pageRun = page.room?.active_xiaoce_run || null;
+        const stablePageRun = stabilizeXiaoceRunSnapshot(
+          cachedAtStart.xiaoceRun,
+          pageRun,
+          [...incoming, ...cachedAtStart.messages],
+        );
         const nextRun = isXiaoceRoom(cachedAtStart.room)
-          ? mergeXiaoceRunSnapshot(cachedAtStart.xiaoceRun, pageRun, {
+          ? mergeXiaoceRunSnapshot(cachedAtStart.xiaoceRun, stablePageRun, {
               authoritative: true,
               requestRevision,
               currentRevision: getRoomDataRevision(id),
@@ -1282,6 +1329,7 @@ export default function CollabRisk({
       const listRoom = roomsRef.current.find((room) => room.id === id) || cachedAtStart?.room || null;
       const page = await listCollabMessages(id, {
         limit: MSG_WINDOW,
+        aroundId: targetMessageId,
         lite: true,
         includeParticipants: false,
       });
@@ -1796,13 +1844,19 @@ export default function CollabRisk({
       return;
     }
     prevActiveIdForComposerRef.current = activeId;
-    stickBottomRef.current = true;
+    const pendingTarget = pendingSearchTargetRef.current?.roomId === activeId
+      ? pendingSearchTargetRef.current
+      : null;
+    if (pendingTarget) pendingSearchTargetRef.current = null;
+    stickBottomRef.current = !pendingTarget;
     const cached = roomViewCacheRef.current.get(activeId);
     const fresh = Boolean(
       cached && Date.now() - (cached.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
     );
     // 有缓存：秒开后后台 soft 同步；无缓存：hard 拉取。避免每次切房整页重绘等待。
-    void loadRoomDetail(activeId, { soft: Boolean(cached) || fresh });
+    void loadRoomDetail(activeId, pendingTarget
+      ? { targetMessageId: pendingTarget.messageId }
+      : { soft: Boolean(cached) || fresh });
   }, [activeId, loadRoomDetail]);
 
   // 列表就绪后空闲预取，让后续切换尽量命中缓存
@@ -1887,7 +1941,12 @@ export default function CollabRisk({
     const roomId = activeIdRef.current;
     if (!roomId) return;
     const previousRun = activeXiaoceRunRef.current;
-    const nextRun = mergeXiaoceRunSnapshot(previousRun, newest, {
+    const stableNewest = stabilizeXiaoceRunSnapshot(
+      previousRun,
+      newest,
+      messagesRef.current,
+    );
+    const nextRun = mergeXiaoceRunSnapshot(previousRun, stableNewest, {
       authoritative: Boolean(context.authoritative),
       requestRevision: context.requestRevision,
       currentRevision: getRoomDataRevision(roomId),
@@ -3223,6 +3282,16 @@ export default function CollabRisk({
             void askAiAboutMessage(m);
           },
         },
+        {
+          key: "wecom-todo",
+          icon: <CheckSquareOutlined />,
+          label: "发起企微待办",
+          disabled: !isParticipant || activeRoom?.status === "closed",
+          onClick: () => {
+            setTodoSource(m);
+            setTodoOpen(true);
+          },
+        },
       );
     } else if (isSystem && !isRecalled) {
       items.push({
@@ -3404,6 +3473,23 @@ export default function CollabRisk({
     });
   };
 
+  const openSearchResult = (result: CollabSearchResult) => {
+    setChatSearchOpen(false);
+    setSiderTab("chats");
+    const roomId = result.room.id;
+    const messageId = result.message?.id;
+    if (!messageId) {
+      selectRoom(roomId);
+      return;
+    }
+    if (activeIdRef.current === roomId) {
+      void loadRoomDetail(roomId, { targetMessageId: messageId });
+      return;
+    }
+    pendingSearchTargetRef.current = { roomId, messageId };
+    selectRoom(roomId);
+  };
+
   return (
     <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible ? "" : " collab-page--summary-hidden"}${selectionMode ? " collab-page--selecting" : ""}`}>
       <style>{css}</style>
@@ -3411,15 +3497,40 @@ export default function CollabRisk({
       <aside className="collab-sider">
         <div className="collab-sider-head">
           <Typography.Text strong>{siderTab === "contacts" ? "团队通讯录" : "消息列表"}</Typography.Text>
-          <Button
-            type="primary"
-            size="small"
-            className="collab-create-group-btn"
-            icon={<UsergroupAddOutlined />}
-            onClick={openCreateGroup}
-          >
-            发起群聊
-          </Button>
+          <Space size={4}>
+            {siderTab === "chats" ? (
+              <Popover
+                trigger="click"
+                placement="rightTop"
+                overlayClassName="collab-search-popover"
+                open={chatSearchOpen}
+                onOpenChange={setChatSearchOpen}
+                content={(
+                  <CollabMessageSearch
+                    onClose={() => setChatSearchOpen(false)}
+                    onSelect={openSearchResult}
+                  />
+                )}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<SearchOutlined />}
+                  title="搜索聊天记录"
+                  aria-label="搜索聊天记录"
+                />
+              </Popover>
+            ) : null}
+            <Button
+              type="primary"
+              size="small"
+              className="collab-create-group-btn"
+              icon={<UsergroupAddOutlined />}
+              onClick={openCreateGroup}
+            >
+              发起群聊
+            </Button>
+          </Space>
         </div>
         {!embedded ? (
           <div className="collab-tabs">
@@ -4781,6 +4892,16 @@ export default function CollabRisk({
           </button>
         </Tooltip>
       ) : null}
+
+      <ChatTodoModal
+        open={todoOpen}
+        source={todoSource}
+        participants={activeRoom?.participants || []}
+        onClose={() => {
+          setTodoOpen(false);
+          setTodoSource(null);
+        }}
+      />
 
       <Modal
         title="转发消息"

@@ -5,9 +5,11 @@ import { readFileSync } from "node:fs";
 import {
   createXiaoceRunId,
   findXiaoceReferenceRooms,
+  hasXiaoceRunTerminalMessage,
   isXiaoceRoom,
   mergeXiaoceRunSnapshot,
   partitionXiaoceRooms,
+  stabilizeXiaoceRunSnapshot,
 } from "../src/pages/xiaoceChat.ts";
 import * as xiaoceChatHelpers from "../src/pages/xiaoceChat.ts";
 
@@ -200,6 +202,50 @@ test("only an authoritative current-generation null clears a Xiaoce run", () => 
     }),
     null,
   );
+});
+
+test("transient empty snapshots cannot hide a running Xiaoce process", () => {
+  const running = {
+    id: "run-live",
+    room_id: "room-1",
+    status: "running" as const,
+    current_stage: "understanding",
+    progress_steps: [],
+    error_code: "",
+    error_message: "",
+    created_at: "2026-07-21T08:00:00Z",
+    updated_at: "2026-07-21T08:00:01Z",
+  };
+
+  assert.equal(stabilizeXiaoceRunSnapshot(running, null, []), running);
+  assert.equal(
+    stabilizeXiaoceRunSnapshot(running, null, [{
+      meta: { run_id: "another-run", process_status: "completed" },
+    }]),
+    running,
+  );
+});
+
+test("terminal evidence clears only its matching Xiaoce run", () => {
+  const running = {
+    id: "run-live",
+    room_id: "room-1",
+    status: "running" as const,
+    current_stage: "composing",
+    progress_steps: [],
+    error_code: "",
+    error_message: "",
+    created_at: "2026-07-21T08:00:00Z",
+    updated_at: "2026-07-21T08:00:03Z",
+  };
+  const terminalMessage = {
+    meta: { run_id: running.id, process_status: "completed" as const },
+  };
+
+  assert.equal(hasXiaoceRunTerminalMessage([terminalMessage], running.id), true);
+  assert.equal(stabilizeXiaoceRunSnapshot(running, null, [terminalMessage]), null);
+  const completed = { ...running, status: "completed" as const, updated_at: "2026-07-21T08:00:04Z" };
+  assert.equal(stabilizeXiaoceRunSnapshot(running, completed, []), completed);
 });
 
 test("late room detail preserves messages and run updates created after request start", async () => {
@@ -739,7 +785,9 @@ test("process component uses server snapshots and the required collapsed label",
     new URL("../src/components/XiaoceProcess.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /查看处理过程（\{steps\.length\}步）/);
+  assert.match(source, /查看处理过程（\{visibleSteps\.length\}步）/);
+  assert.match(source, /正在理解你的问题/);
+  assert.match(source, /live \? \[\{/);
   assert.match(source, /aria-expanded/);
   assert.doesNotMatch(source, /setInterval|setTimeout/);
 });
@@ -906,6 +954,13 @@ test("collaboration live hook forwards Xiaoce snapshots from websocket and fallb
   assert.match(source, /onXiaoceRuns/);
   assert.match(source, /data\.xiaoce_runs/);
   assert.match(source, /active_xiaoce_run/);
+});
+
+test("collaboration chat stabilizes empty Xiaoce snapshots before rendering", () => {
+  const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  assert.match(source, /stabilizeXiaoceRunSnapshot/);
+  assert.match(source, /stablePageRun/);
+  assert.match(source, /stableNewest/);
 });
 
 test("Xiaoce process presentation has dedicated responsive styles", () => {

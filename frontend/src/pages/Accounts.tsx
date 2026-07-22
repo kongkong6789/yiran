@@ -53,6 +53,11 @@ import OrganizationManager from "../features/organizations/OrganizationManager";
 import TeamManager from "../features/teams/TeamManager";
 import { AvatarPreview } from "../components/AvatarPreview";
 import { authenticatedAvatarUrl } from "../utils/avatar";
+import ManagementDetailModal, {
+  handleDetailRowKey,
+  isInteractiveTableTarget,
+} from "../components/ManagementDetailModal";
+import { formatPhoneMasked, hasFilledPhone } from "../utils/phone";
 
 function AccountEditModalHead({
   icon,
@@ -84,6 +89,10 @@ function fmtTime(v?: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function fmtDetailTime(v?: string | null) {
+  return v ? new Date(v).toLocaleString("zh-CN", { hour12: false }) : "—";
 }
 
 const organizationRoleLabel = {
@@ -136,6 +145,11 @@ const PLATFORM_ROLE_OPTIONS: { value: PlatformRole; label: ReactNode }[] = [
   },
 ];
 
+const platformRoleLabel: Record<PlatformRole, string> = {
+  user: "普通用户",
+  staff: "平台管理员",
+  superuser: "超级管理员",
+};
 export default function Accounts() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<AdminUserRow[]>([]);
@@ -144,6 +158,7 @@ export default function Accounts() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [target, setTarget] = useState<AdminUserRow | null>(null);
+  const [detailUser, setDetailUser] = useState<AdminUserRow | null>(null);
   const [editAvatarUrl, setEditAvatarUrl] = useState("");
   const [createAvatarFile, setCreateAvatarFile] = useState<File | null>(null);
   const [createAvatarPreview, setCreateAvatarPreview] = useState("");
@@ -467,7 +482,7 @@ export default function Accounts() {
 
   const enabledCount = rows.filter((row) => row.is_active).length;
   const organizationAdminCount = rows.filter((row) => ["owner", "admin"].includes(row.organization_role)).length;
-  const unboundPhoneCount = rows.filter((row) => !row.phone_masked).length;
+  const unboundPhoneCount = rows.filter((row) => !hasFilledPhone(row.phone_masked)).length;
 
   const canDeleteAccount = (row: AdminUserRow) => !(
     row.id === selfUserId
@@ -581,9 +596,18 @@ export default function Accounts() {
                   <Table
                     className="account-admin-table"
                     rowKey="id"
-                    loading={loading}
-                    dataSource={rows}
-                    showSorterTooltip={{ title: "点击切换升序或降序" }}
+                     loading={loading}
+                     dataSource={rows}
+                     onRow={(row) => ({
+                       className: "management-detail-row",
+                       tabIndex: 0,
+                       "aria-label": `查看${row.display_name || row.username}的账号详情`,
+                       onClick: (event) => {
+                         if (!isInteractiveTableTarget(event.target)) setDetailUser(row);
+                       },
+                       onKeyDown: (event) => handleDetailRowKey(event, () => setDetailUser(row)),
+                     })}
+                     showSorterTooltip={{ title: "点击切换升序或降序" }}
                     scroll={{ x: 980 }}
                     pagination={{
                       defaultPageSize: 15,
@@ -626,7 +650,7 @@ export default function Accounts() {
                         ),
                         render: (_: unknown, row) => <div className="account-contact-cell">
                           <span>{row.email || "未填写邮箱"}</span>
-                          <small>{row.phone_masked || "未填写手机号"}</small>
+                          <small>{formatPhoneMasked(row.phone_masked)}</small>
                         </div>,
                       },
                       {
@@ -725,8 +749,67 @@ export default function Accounts() {
                     ]}
                   />
                 </>}
-        </div>
+       </div>
       </Card>
+
+      {detailUser ? (
+        <ManagementDetailModal
+          open
+          onClose={() => setDetailUser(null)}
+          eyebrow="ACCOUNT DETAIL"
+          title={detailUser.display_name || detailUser.username}
+          subtitle={`@${detailUser.username}`}
+          avatarSrc={authenticatedAvatarUrl(detailUser.avatar_url)}
+          avatarText={detailUser.display_name || detailUser.username}
+          badges={[
+            {
+              label: platformRoleLabel[platformRoleOf(detailUser)],
+              color: platformRoleOf(detailUser) === "superuser" ? "purple" : platformRoleOf(detailUser) === "staff" ? "blue" : undefined,
+            },
+            { label: detailUser.is_active ? "已启用" : "已停用", color: detailUser.is_active ? "green" : undefined },
+          ]}
+          sections={[
+            {
+              title: "基本信息",
+              fields: [
+                { label: "用户名", value: `@${detailUser.username}` },
+                { label: "成员姓名", value: detailUser.display_name || "未填写" },
+                { label: "邮箱", value: detailUser.email || "未填写" },
+                { label: "手机号", value: formatPhoneMasked(detailUser.phone_masked, "未填写") },
+              ],
+            },
+            {
+              title: "权限与企业",
+              fields: [
+                { label: "平台权限", value: platformRoleLabel[platformRoleOf(detailUser)] },
+                { label: "账号状态", value: detailUser.is_active ? "启用" : "停用" },
+                {
+                  label: `所属企业（${detailUser.organizations?.length || 0}）`,
+                  wide: true,
+                  value: detailUser.organizations?.length ? (
+                    <div className="management-detail-tag-list">
+                      {detailUser.organizations.map((item) => (
+                        <Tag key={item.id} color={organizationRoleColor[item.role]}>
+                          {item.name} · {organizationRoleLabel[item.role]}{item.isCurrent ? " · 当前" : ""}
+                        </Tag>
+                      ))}
+                    </div>
+                  ) : "未分配企业",
+                },
+              ],
+            },
+            {
+              title: "使用信息",
+              fields: [
+                { label: "加入时间", value: fmtDetailTime(detailUser.date_joined) },
+                { label: "最近登录", value: fmtDetailTime(detailUser.last_login) },
+                { label: "密码状态", value: detailUser.has_usable_password ? "已设置可用密码" : "未设置可用密码" },
+                { label: "账号 ID", value: detailUser.id },
+              ],
+            },
+          ]}
+        />
+      ) : null}
 
       <Modal
         className="account-admin-modal account-edit-modal"
@@ -949,7 +1032,8 @@ export default function Accounts() {
             <Form.Item
               label="手机号"
               name="phone"
-              help={target?.phone_masked ? `当前：${target.phone_masked}（填写新号码才会更新）` : "填写后用于匹配企业微信成员"}
+              className="account-edit-phone-item"
+              help={hasFilledPhone(target?.phone_masked) ? `当前：${target?.phone_masked}（填写新号码才会更新）` : "填写后用于匹配企业微信成员"}
             >
               <Input prefix={<PhoneOutlined />} placeholder="留空则不修改" />
             </Form.Item>
@@ -1061,7 +1145,7 @@ export default function Accounts() {
                 disabled={Boolean(
                   target
                   && target.id === selfUserId
-                  && platformRoleOf(target) === "superuser",
+                  && platformRoleOf(target) === "superuser"
                 )}
               />
             </Form.Item>

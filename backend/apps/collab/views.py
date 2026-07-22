@@ -154,18 +154,25 @@ def _user_brief(
 
 
 def _can_access_room(user, room: CollabRoom) -> bool:
+    if _is_xiaoce_dm(room):
+        # 小策会话是用户私有数据：共享 bot 账号和平台管理员都不能代替创建者读取。
+        return bool(
+            getattr(user, "is_authenticated", False)
+            and room.created_by_id == user.id
+        )
     return CollabParticipant.objects.filter(room=room, user=user).exists()
 
 
 def _active_xiaoce_run_payload(room: CollabRoom, viewer=None) -> dict | None:
     if viewer is None or not getattr(viewer, "is_authenticated", False):
         return None
+    if not _can_access_room(viewer, room):
+        return None
     query = XiaoceRun.objects.filter(
         room=room,
+        user=viewer,
         status=XiaoceRun.Status.RUNNING,
     )
-    if not _is_admin(viewer):
-        query = query.filter(user=viewer)
     run = query.order_by("-created_at").first()
     return xiaoce_run_payload(run)
 
@@ -331,10 +338,9 @@ def _room_payloads_for_list(rooms: list[CollabRoom], *, viewer) -> list[dict]:
     if viewer is not None:
         run_query = XiaoceRun.objects.filter(
             room_id__in=room_ids,
+            user=viewer,
             status=XiaoceRun.Status.RUNNING,
         )
-        if not _is_admin(viewer):
-            run_query = run_query.filter(user=viewer)
         for run in run_query.order_by("-created_at"):
             if run.room_id not in xiaoce_run_by_room:
                 xiaoce_run_by_room[run.room_id] = xiaoce_run_payload(run)
@@ -812,6 +818,23 @@ def _is_xiaoce_dm(room: CollabRoom) -> bool:
     ).exists()
 
 
+def _accessible_rooms(user):
+    """返回当前用户可读的会话。
+
+    普通会话按成员隔离；小策单聊进一步按创建者隔离，防止共享 bot
+    账号、意外参与者或管理员权限读取他人任务。
+    """
+    xiaoce_room_ids = CollabRoom.objects.filter(
+        room_kind="dm",
+        participants__user__username=XIAOCE_BOT_USERNAME,
+    ).values("id")
+    return (
+        CollabRoom.objects.filter(participants__user=user)
+        .filter(Q(created_by=user) | ~Q(id__in=xiaoce_room_ids))
+        .distinct()
+    )
+
+
 def _parse_context_room_ids(raw) -> list[uuid.UUID]:
     """解析前端显式选中的小策历史任务。"""
     if raw in (None, "", []):
@@ -859,6 +882,7 @@ def _resolve_xiaoce_context_rooms(user, current_room: CollabRoom, raw) -> list[C
         } if candidate else set()
         if (
             candidate is None
+            or candidate.created_by_id != user.id
             or user.id not in participant_ids
             or XIAOCE_BOT_USERNAME not in participant_names
         ):
@@ -932,7 +956,11 @@ def _xiaoce_context_reference_blocks(run: XiaoceRun) -> list[str]:
             continue
         participant_ids = {item.user_id for item in room.participants.all()}
         participant_names = {item.user.username for item in room.participants.all()}
-        if run.user_id not in participant_ids or XIAOCE_BOT_USERNAME not in participant_names:
+        if (
+            room.created_by_id != run.user_id
+            or run.user_id not in participant_ids
+            or XIAOCE_BOT_USERNAME not in participant_names
+        ):
             continue
 
         base = (
@@ -1353,8 +1381,7 @@ def room_list(request):
             status=201,
         )
 
-    # 会话只对实际成员可见；管理员如需参与，也必须先成为会话成员。
-    qs = CollabRoom.objects.filter(participants__user=request.user).distinct()
+    qs = _accessible_rooms(request.user)
     status_filter = str(request.query_params.get("status") or "").strip()
     if status_filter in ("open", "closed"):
         qs = qs.filter(status=status_filter)
@@ -1362,6 +1389,152 @@ def room_list(request):
     return Response({
         "count": len(rooms),
         "results": _room_payloads_for_list(rooms, viewer=request.user),
+    })
+
+
+def _search_snippet(text: str, query: str, *, radius: int = 64) -> str:
+    """返回包含命中词的短摘要，避免搜索结果携带整篇长消息。"""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value:
+        return ""
+    folded_value = value.casefold()
+    folded_query = str(query or "").casefold()
+    hit = folded_value.find(folded_query)
+    if hit < 0:
+        return value[: radius * 2] + ("…" if len(value) > radius * 2 else "")
+    start = max(0, hit - radius)
+    end = min(len(value), hit + len(query) + radius)
+    return ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
+
+
+def _search_room_info(room: CollabRoom, *, viewer, cache: dict) -> dict:
+    cached = cache.get(room.id)
+    if cached is not None:
+        return cached
+    payload = _room_payload(room, viewer=viewer)
+    participants = payload.get("participants") or []
+    info = {
+        "id": str(room.id),
+        "title": room.title,
+        "display_title": payload.get("display_title") or room.title,
+        "room_kind": room.room_kind,
+        "status": room.status,
+        "is_xiaoce": room.room_kind == "dm" and any(
+            member.get("bot_id") == "xiaoce"
+            or member.get("username") == XIAOCE_BOT_USERNAME
+            for member in participants
+        ),
+        "updated_at": room.updated_at.isoformat(),
+    }
+    cache[room.id] = info
+    return info
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def search_messages(request):
+    """在当前用户可访问的普通会话和小策任务中搜索。"""
+    touch_presence(request.user)
+    query = str(request.query_params.get("q") or "").strip()[:120]
+    try:
+        limit = int(request.query_params.get("limit") or 40)
+    except (TypeError, ValueError):
+        limit = 40
+    limit = max(1, min(limit, 60))
+    if not query:
+        return Response({"query": "", "count": 0, "has_more": False, "results": []})
+
+    accessible_rooms = _accessible_rooms(request.user)
+
+    room_match_filter = (
+        Q(title__icontains=query)
+        | Q(summary__icontains=query)
+        | Q(participants__nickname__icontains=query)
+        | Q(participants__user__username__icontains=query)
+        | Q(participants__user__settings__display_name__icontains=query)
+    )
+    room_hits = list(
+        accessible_rooms.filter(room_match_filter)
+        .select_related("created_by")
+        .prefetch_related("participants__user")
+        .distinct()
+        .order_by("-updated_at")[: min(limit + 1, 16)]
+    )
+    message_hits = list(
+        CollabMessage.objects.filter(
+            room__in=accessible_rooms,
+            content__icontains=query,
+        )
+        .exclude(status__in=["deleted", "recalled"])
+        .select_related("sender", "room", "room__created_by")
+        .order_by("-created_at", "-id")[: limit + 1]
+    )
+
+    room_ids = {room.id for room in room_hits} | {message.room_id for message in message_hits}
+    rooms_by_id = {
+        room.id: room
+        for room in CollabRoom.objects.filter(id__in=room_ids)
+        .select_related("created_by")
+        .prefetch_related("participants__user")
+    }
+    sender_profiles = _profile_map(list({message.sender_id for message in message_hits}))
+    room_info_cache: dict = {}
+    combined: list[tuple[object, dict]] = []
+
+    for room in room_hits:
+        hydrated = rooms_by_id.get(room.id, room)
+        room_info = _search_room_info(
+            hydrated,
+            viewer=request.user,
+            cache=room_info_cache,
+        )
+        summary = (room.summary or "").strip()
+        combined.append((room.updated_at, {
+            "kind": "room",
+            "room": room_info,
+            "message": None,
+            "snippet": _search_snippet(summary or room_info["display_title"], query),
+            "created_at": room.updated_at.isoformat(),
+        }))
+
+    nickname_cache: dict = {}
+    for hit in message_hits:
+        room = rooms_by_id.get(hit.room_id, hit.room)
+        room_info = _search_room_info(room, viewer=request.user, cache=room_info_cache)
+        nick_map = nickname_cache.get(room.id)
+        if nick_map is None:
+            nick_map = _nickname_map(room)
+            nickname_cache[room.id] = nick_map
+        sender = _user_brief(
+            hit.sender,
+            nickname=nick_map.get(hit.sender_id),
+            profile=sender_profiles.get(hit.sender_id),
+        )
+        snippet = _search_snippet(hit.content, query)
+        combined.append((hit.created_at, {
+            "kind": "message",
+            "room": room_info,
+            "message": {
+                "id": hit.id,
+                "content": hit.content,
+                "snippet": snippet,
+                "msg_type": hit.msg_type,
+                "ai_kind": hit.ai_kind,
+                "sender": sender,
+                "created_at": hit.created_at.isoformat(),
+            },
+            "snippet": snippet,
+            "created_at": hit.created_at.isoformat(),
+        }))
+
+    combined.sort(key=lambda item: item[0], reverse=True)
+    has_more = len(combined) > limit or len(message_hits) > limit
+    results = [payload for _, payload in combined[:limit]]
+    return Response({
+        "query": query,
+        "count": len(results),
+        "has_more": has_more,
+        "results": results,
     })
 
 
@@ -1453,13 +1626,13 @@ def room_mark_read(request, room_id):
     """标记已读，并累加本次会话的活跃阅读时长。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom, id=room_id)
+    if not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     participant = CollabParticipant.objects.filter(room=room, user=request.user).only(
         "last_read_message_id",
     ).first()
     if participant is None:
-        if not _is_admin(request.user):
-            return Response({"ok": False, "error": "无权访问该会话"}, status=403)
-        return Response({"ok": True, "unread_count": 0, "last_read_message_id": 0})
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     previous_id = int(participant.last_read_message_id or 0)
     raw = request.data.get("up_to_id")
     up_to = int(raw) if str(raw or "").isdigit() else None
@@ -1518,7 +1691,10 @@ def unread_summary(request):
     """顶栏铃铛：未读协作消息汇总。"""
     touch_presence(request.user)
     parts = list(
-        CollabParticipant.objects.filter(user=request.user)
+        CollabParticipant.objects.filter(
+            user=request.user,
+            room__in=_accessible_rooms(request.user),
+        )
         .select_related("room", "room__created_by")
     )
     items = []
@@ -1555,6 +1731,8 @@ def room_members(request, room_id):
     """群聊拉人（POST）/ 踢人（DELETE）/ 修改群内名称（PATCH）。"""
     touch_presence(request.user)
     room = get_object_or_404(CollabRoom.objects.select_related("created_by"), id=room_id)
+    if _is_xiaoce_dm(room) and not _can_access_room(request.user, room):
+        return Response({"ok": False, "error": "无权访问该会话"}, status=403)
     is_member = CollabParticipant.objects.filter(room=room, user=request.user).exists()
     if not is_member and not _is_admin(request.user):
         return Response({"ok": False, "error": "仅群成员可操作"}, status=403)
@@ -1946,8 +2124,12 @@ def room_messages(request, room_id):
             response_body["xiaoce_run"] = xiaoce_payload
         return Response(response_body, status=201)
 
-    after_id = int(request.query_params.get("after_id") or 0)
-    before_id = int(request.query_params.get("before_id") or 0)
+    try:
+        after_id = int(request.query_params.get("after_id") or 0)
+        before_id = int(request.query_params.get("before_id") or 0)
+        around_id = int(request.query_params.get("around_id") or 0)
+    except (TypeError, ValueError):
+        return Response({"ok": False, "error": "消息定位参数无效"}, status=400)
     try:
         limit = int(request.query_params.get("limit") or 50)
     except (TypeError, ValueError):
@@ -1956,12 +2138,43 @@ def room_messages(request, room_id):
     lite = str(request.query_params.get("lite") or "").lower() in ("1", "true", "yes")
     include_participants = str(
         request.query_params.get("include_participants")
-        or ("0" if lite or after_id or before_id else "1")
+        or ("0" if lite or after_id or before_id or around_id else "1")
     ).lower() in ("1", "true", "yes")
 
     base = room.messages.select_related("sender", "reply_to", "reply_to__sender")
     has_more_before = False
-    if before_id > 0:
+    has_more_after = False
+    if around_id > 0:
+        target = (
+            base.exclude(status__in=["deleted", "recalled"])
+            .filter(id=around_id)
+            .first()
+        )
+        if target is None:
+            return Response({"ok": False, "error": "消息不存在或已不可查看"}, status=404)
+        before_limit = max(0, (limit - 1) // 2)
+        after_limit = max(0, limit - before_limit - 1)
+        before_rows = list(
+            base.exclude(status="deleted")
+            .filter(id__lt=around_id)
+            .order_by("-id")[:before_limit]
+        )
+        before_rows.reverse()
+        after_rows = list(
+            base.exclude(status="deleted")
+            .filter(id__gt=around_id)
+            .order_by("id")[:after_limit]
+        )
+        rows = [*before_rows, target, *after_rows]
+        has_more_before = bool(
+            rows
+            and base.exclude(status="deleted").filter(id__lt=rows[0].id).exists()
+        )
+        has_more_after = bool(
+            rows
+            and base.exclude(status="deleted").filter(id__gt=rows[-1].id).exists()
+        )
+    elif before_id > 0:
         # 历史上拉：取更旧的一页，正序返回
         qs = base.exclude(status="deleted").filter(id__lt=before_id).order_by("-id")
         rows = list(qs[:limit])
@@ -2060,6 +2273,7 @@ def room_messages(request, room_id):
         ],
         "changed": changed,
         "has_more_before": has_more_before,
+        "has_more_after": has_more_after,
         "room": room_meta,
     })
 

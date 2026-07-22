@@ -40,24 +40,33 @@
 
 ## 启动
 
-### 后端
+需要 Python 3.11+、Node.js 20+。本地开发需要同时启动后端和前端，分别占用两个终端。
+
+### 终端 1：后端
 
 ```bash
 cd backend
-python -m venv .venv
-.venv\Scripts\activate           # Windows
-pip install -r requirements.txt
+python3 -m venv .venv             # 首次运行
+source .venv/bin/activate         # macOS / Linux
+# .venv\Scripts\activate          # Windows PowerShell
+python -m pip install -r requirements.txt  # 首次运行或依赖更新后
 python manage.py migrate
 python manage.py runserver 0.0.0.0:8000
 ```
 
-### 前端
+后端会自动读取 `backend/.env`。请保留本地 `.env`，不要提交到 Git。
+
+### 终端 2：前端
 
 ```bash
 cd frontend
-npm install
-npm run dev                       # http://localhost:5173
+npm ci                            # 首次运行或 package-lock.json 更新后
+npm run dev                       # http://127.0.0.1:5173
 ```
+
+看到 Django 输出 `Starting development server at http://0.0.0.0:8000/`，以及
+Vite 输出 `Local: http://localhost:5173/` 后即可访问。停止服务时在各自终端按
+`Ctrl+C`。如果终端提示 `node` 或 `npm` 不存在，请先安装 Node.js 20 LTS，再重新执行前端命令。
 
 前端默认通过同域 `/api` 调用后端；跨域部署时设置
 `VITE_API_BASE_URL=https://api.example.com/api`。Vite 开发代理目标可通过

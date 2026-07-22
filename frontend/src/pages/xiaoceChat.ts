@@ -239,6 +239,35 @@ export function mergeXiaoceRunSnapshots(
 }
 
 
+export function hasXiaoceRunTerminalMessage(
+  messages: Array<Pick<CollabMessage, "meta">>,
+  runId: string,
+): boolean {
+  return messages.some((message) => {
+    const meta = message.meta;
+    if (!meta || meta.run_id !== runId) return false;
+    return meta.process_status === "completed"
+      || meta.process_status === "failed"
+      || meta.process_status === "cancelled"
+      || meta.cancelled === true;
+  });
+}
+
+
+/**
+ * 轮询 / presence 可能比运行创建或终态消息更早抵达。
+ * 只有已看到同一 run 的终态消息时，才允许空快照卸载正在显示的处理过程。
+ */
+export function stabilizeXiaoceRunSnapshot(
+  current: XiaoceRun | null,
+  incoming: XiaoceRun | null,
+  messages: Array<Pick<CollabMessage, "meta">>,
+): XiaoceRun | null {
+  if (incoming !== null || current?.status !== "running") return incoming;
+  return hasXiaoceRunTerminalMessage(messages, current.id) ? null : current;
+}
+
+
 type RoomMutationCacheLike = {
   room: CollabRoom;
   messages: CollabMessage[];

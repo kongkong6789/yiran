@@ -63,16 +63,20 @@ def _wecom_binding_summary(user) -> dict:
             "statusLabel": "待匹配",
             "weComUserId": "",
             "weComMember": "",
+            "wecomContactId": None,
             "failureReason": "",
             "statusHint": "尚未建立企业微信成员绑定。",
         }
     wecom_member = ""
+    wecom_contact_id = None
     if binding.wecom_config_id and binding.wecom_userid:
         contact = WeComContact.objects.filter(
             config_id=binding.wecom_config_id,
             wecom_userid=binding.wecom_userid,
-        ).only("name").first()
-        wecom_member = contact.name if contact else ""
+        ).only("id", "name").first()
+        if contact:
+            wecom_member = contact.name
+            wecom_contact_id = contact.id
     awaiting_reverification = bool(
         binding.status == UserWeComBinding.Status.PENDING
         and binding.wecom_config_id
@@ -83,6 +87,7 @@ def _wecom_binding_summary(user) -> dict:
         "statusLabel": "待重新验证" if awaiting_reverification else binding.get_status_display(),
         "weComUserId": binding.wecom_userid or "",
         "weComMember": wecom_member,
+        "wecomContactId": wecom_contact_id,
         "failureReason": binding.failure_reason or "",
         "statusHint": (
             "手机号已更新，系统正在确认是否仍对应当前企业微信成员；原绑定关系会保留。"
@@ -229,6 +234,13 @@ def login(request):
     password = str(request.data.get("password") or "")
     user = authenticate(request, username=username, password=password)
     if not user:
+        inactive_user = User.objects.filter(username=username).first()
+        if inactive_user and not inactive_user.is_active and inactive_user.check_password(password):
+            _write_auth_audit(
+                request, actor=username, action="auth.login_failed", intent="登录失败",
+                decision=AuditLog.Decision.BLOCK, result={"reason": "account_disabled"},
+            )
+            return Response({"ok": False, "error": "账号已停用，请联系管理员"}, status=400)
         _write_auth_audit(
             request, actor=username, action="auth.login_failed", intent="登录失败",
             decision=AuditLog.Decision.BLOCK, result={"reason": "invalid_credentials"},
@@ -624,7 +636,6 @@ def admin_users(request):
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def admin_user_detail(request, user_id: int):
-    """管理员：改密 / 启停 / 角色 / 删除账号。"""
     """管理员：改密 / 启停 / 角色 / 删除。"""
     denied = _require_staff(request.user)
     if denied:
@@ -646,20 +657,6 @@ def admin_user_detail(request, user_id: int):
             return Response({"ok": False, "error": "不能管理其他企业的用户"}, status=403)
     if target.is_superuser and not request.user.is_superuser:
         return Response({"ok": False, "error": "不能修改超级管理员"}, status=403)
-    if request.method == "DELETE":
-        if target.id == request.user.id:
-            return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)
-        if target.is_superuser and not request.user.is_superuser:
-            return Response({"ok": False, "error": "不能删除超级管理员"}, status=403)
-        if target.is_superuser:
-            other_supers = User.objects.filter(is_superuser=True).exclude(id=target.id).count()
-            if other_supers < 1:
-                return Response({"ok": False, "error": "不能删除唯一的超级管理员"}, status=400)
-        username = target.username
-        Token.objects.filter(user=target).delete()
-        target.delete()
-        return Response({"ok": True, "deleted": username})
-
     if request.method == "DELETE":
         if target.id == request.user.id:
             return Response({"ok": False, "error": "不能删除自己的账号"}, status=400)

@@ -15,6 +15,10 @@ import {
 } from "../../api/client";
 import { getManagedWeComUsers, type ManagedWeComMember } from "../task-console/mockWeCom";
 import { authenticatedAvatarUrl } from "../../utils/avatar";
+import ManagementDetailModal, {
+  handleDetailRowKey,
+  isInteractiveTableTarget,
+} from "../../components/ManagementDetailModal";
 
 const statusColors: Record<WeComBindingStatus, string> = {
   matched: "green",
@@ -50,6 +54,7 @@ const timeValue = (value?: string | null) => (value ? new Date(value).getTime() 
 export default function WeComBindingManager() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<WeComBindingRow[]>([]);
+  const [detailBinding, setDetailBinding] = useState<WeComBindingRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>();
@@ -167,6 +172,15 @@ export default function WeComBindingManager() {
         rowKey="id"
         loading={loading}
         dataSource={rows}
+        onRow={(row) => ({
+          className: "management-detail-row",
+          tabIndex: 0,
+          "aria-label": `查看${row.platformUser}的企微绑定详情`,
+          onClick: (event) => {
+            if (!isInteractiveTableTarget(event.target)) setDetailBinding(row);
+          },
+          onKeyDown: (event) => handleDetailRowKey(event, () => setDetailBinding(row)),
+        })}
         showSorterTooltip={{ title: "点击切换升序或降序" }}
         scroll={{ x: 1180 }}
         pagination={{
@@ -288,6 +302,59 @@ export default function WeComBindingManager() {
           },
         ]}
       />
+
+      {detailBinding ? (
+        <ManagementDetailModal
+          open
+          onClose={() => setDetailBinding(null)}
+          eyebrow="WECOM BINDING"
+          title={detailBinding.platformUser}
+          subtitle={detailBinding.weComUserId ? `已关联企业微信成员：${detailBinding.weComMember || detailBinding.weComUserId}` : "尚未关联企业微信成员"}
+          avatarSrc={authenticatedAvatarUrl(detailBinding.platformAvatar)}
+          avatarText={detailBinding.platformUser}
+          badges={[
+            { label: detailBinding.statusLabel, color: statusColors[detailBinding.status] },
+            { label: detailBinding.sourceLabel || "未知来源" },
+          ]}
+          sections={[
+            {
+              title: "平台账号",
+              fields: [
+                { label: "平台成员", value: detailBinding.platformUser },
+                { label: "平台用户 ID", value: detailBinding.platformUserId },
+                { label: "手机号", value: detailBinding.phoneMasked || "未填写" },
+                { label: "匹配来源", value: detailBinding.sourceLabel || "—" },
+              ],
+            },
+            {
+              title: "企业微信成员",
+              fields: [
+                { label: "成员姓名", value: detailBinding.weComMember || "未绑定" },
+                { label: "企业微信 UserID", value: detailBinding.weComUserId || "—" },
+                { label: "部门", value: detailBinding.weComDepartment || "—" },
+                { label: "职位", value: detailBinding.weComPosition || "—" },
+                {
+                  label: "通讯录状态",
+                  value: detailBinding.weComAvailable === null
+                    ? "未知"
+                    : detailBinding.weComAvailable ? "可用" : "不可用",
+                },
+                { label: "绑定状态", value: detailBinding.statusLabel },
+              ],
+            },
+            {
+              title: "验证与重试",
+              fields: [
+                { label: "匹配时间", value: formatTime(detailBinding.matchedAt) },
+                { label: "最后验证", value: formatTime(detailBinding.verifiedAt) },
+                { label: "下次重试", value: formatTime(detailBinding.nextRetryAt) },
+                { label: "重试次数", value: detailBinding.retry_count },
+                { label: "失败原因", value: detailBinding.failureReason || "无", wide: true },
+              ],
+            },
+          ]}
+        />
+      ) : null}
 
       <Modal
         title="人工绑定企业微信成员"

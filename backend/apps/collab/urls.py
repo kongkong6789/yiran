@@ -4,6 +4,7 @@ from . import realtime, views
 
 urlpatterns = [
     path("xiaoce-tasks/", views.xiaoce_task_list, name="collab-xiaoce-tasks"),
+    path("search/", views.search_messages, name="collab-search"),
     path("rooms/", views.room_list, name="collab-rooms"),
     path("rooms/<uuid:room_id>/", views.room_detail, name="collab-room-detail"),
     path("rooms/<uuid:room_id>/messages/", views.room_messages, name="collab-room-messages"),
