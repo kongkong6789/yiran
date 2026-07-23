@@ -9,15 +9,15 @@
 }
 
 /* Let message rows span the conversation so bot replies anchor left and the
-   current user's messages anchor right. Keep progress and composer readable. */
+   current user's messages anchor right. Keep progress readable while the
+   composer uses the full chat width. */
 .xiaoce-chat-shell .collab-virt-item {
   min-width: 0;
   margin-inline: var(--xiaoce-chat-column-gutter);
   padding-inline: 0;
 }
 
-.xiaoce-chat-shell .xiaoce-live-process-inner,
-.xiaoce-chat-shell .collab-agent-input-inner {
+.xiaoce-chat-shell .xiaoce-live-process-inner {
   width: min(
     var(--xiaoce-chat-column-width),
     calc(100% - var(--xiaoce-chat-column-gutter) - var(--xiaoce-chat-column-gutter))
@@ -26,11 +26,20 @@
   margin-inline: auto;
 }
 
-/* Virtuoso's viewport loses this width to its vertical scrollbar. Reserve the
-   same right-side gutter for the sibling progress and composer rows so their
-   percentage widths and centering use the identical content box. */
-.xiaoce-chat-shell .xiaoce-live-process,
+.xiaoce-chat-shell .collab-agent-input-inner {
+  width: 100%;
+  min-width: 0;
+  margin-inline: 0;
+}
+
+/* Virtuoso's viewport loses this width to its vertical scrollbar. Reserve that
+   space for sibling rows, and give the full-width composer balanced gutters. */
 .xiaoce-chat-shell .collab-agent-input {
+  padding-left: var(--xiaoce-chat-column-gutter);
+  padding-right: calc(var(--xiaoce-chat-column-gutter) + var(--xiaoce-chat-scrollbar-width));
+}
+
+.xiaoce-chat-shell .xiaoce-live-process {
   padding-left: 0;
   padding-right: var(--xiaoce-chat-scrollbar-width);
 }
