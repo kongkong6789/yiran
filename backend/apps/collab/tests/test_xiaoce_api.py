@@ -7,14 +7,15 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from rest_framework.test import APITestCase
 
 from apps.collab import views
 from apps.collab.mentions import get_xiaoce_bot_user
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, XiaoceRun
-from apps.collab.xiaoce_runs import complete_xiaoce_run
+from apps.collab.xiaoce_runs import cancel_xiaoce_run, complete_xiaoce_run
 from apps.collab.tests.test_xiaoce_runs import prepared_skill
+from apps.core.attachments import resolve_attachment_path
 from apps.skills.models import SkillAsset, UserSkill
 
 
@@ -390,6 +391,249 @@ class XiaoceApiTests(APITestCase):
         run = XiaoceRun.objects.select_related("result_message").get(id=run_id)
         self.assertEqual(run.result_message.attachments, [])
 
+    @patch("apps.core.agent_chat.run_chat")
+    def test_attachment_followup_reuses_the_latest_uploaded_excel(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "已完成分析。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                processed = views.process_uploaded_files([xlsx_upload()], self.user.id)
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="这里面都有什么",
+                    attachments=views.attachment_public_meta(processed),
+                    msg_type="user",
+                )
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.bot,
+                    content="文件包含补货计划。",
+                    msg_type="ai",
+                    ai_kind="xiaoce",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="读取这里面的数据给我做一个分析",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        inherited = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual(len(inherited), 1)
+        self.assertIn("SKU-001", inherited[0]["text"])
+        self.assertIn("建议补货量", inherited[0]["text"])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_non_attachment_followup_does_not_inherit_an_uploaded_file(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "已完成。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                uploaded = views.process_uploaded_files([xlsx_upload()], self.user.id)
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="这是上周的补货表",
+                    attachments=views.attachment_public_meta(uploaded),
+                    msg_type="user",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="帮我写一份今天的会议纪要",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        self.assertEqual(run_chat.call_args.kwargs["attachments"], [])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_current_attachment_takes_priority_over_inherited_file(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "已完成。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                previous = views.process_uploaded_files(
+                    [xlsx_upload("previous.xlsx")], self.user.id,
+                )
+                current = views.process_uploaded_files(
+                    [xlsx_upload("current.xlsx")], self.user.id,
+                )
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="先看这份旧表",
+                    attachments=views.attachment_public_meta(previous),
+                    msg_type="user",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="读取这个表格并分析",
+                    attachments=views.attachment_public_meta(current),
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        attachments = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual([item["name"] for item in attachments], ["current.xlsx"])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_attachment_followup_uses_requesters_latest_file_and_ignores_other_sources(
+        self,
+        run_chat,
+    ):
+        run_chat.return_value = {"ok": True, "reply": "已完成。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                own_old = views.process_uploaded_files(
+                    [xlsx_upload("own-old.xlsx")], self.user.id,
+                )
+                own_latest = views.process_uploaded_files(
+                    [xlsx_upload("own-latest.xlsx")], self.user.id,
+                )
+                other_attachment = views.process_uploaded_files(
+                    [xlsx_upload("other.xlsx")], self.user.id,
+                )
+                bot_attachment = views.process_uploaded_files(
+                    [xlsx_upload("bot.xlsx")], self.user.id,
+                )
+                for sender, content, attachment in (
+                    (self.user, "我的旧附件", own_old),
+                    (self.user, "我的最新附件", own_latest),
+                    (self.other, "其他用户的附件", other_attachment),
+                    (self.bot, "bot 的附件", bot_attachment),
+                ):
+                    CollabMessage.objects.create(
+                        room=self.room,
+                        sender=sender,
+                        content=content,
+                        attachments=views.attachment_public_meta(attachment),
+                        msg_type="user" if sender != self.bot else "ai",
+                        ai_kind="reply" if sender == self.bot else "",
+                    )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="读取这里面的数据给我做一个分析",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        attachments = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual([item["name"] for item in attachments], ["own-latest.xlsx"])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_attachment_followup_can_read_a_file_generated_by_xiaoce(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "文件内容是 hello。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                generated = views.process_uploaded_files(
+                    [xlsx_upload("xiaoce-generated.xlsx")],
+                    self.user.id,
+                )
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.bot,
+                    content="已生成文件。",
+                    attachments=views.attachment_public_meta(generated),
+                    msg_type="ai",
+                    ai_kind="xiaoce",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="读取这个文件并告诉我里面的数据",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        attachments = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual([item["name"] for item in attachments], ["xiaoce-generated.xlsx"])
+        self.assertIn("SKU-001", attachments[0]["text"])
+        run.refresh_from_db()
+        self.assertEqual(run.result_message.attachments, [])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_replying_to_an_attachment_beats_a_newer_file(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "已分析引用文件。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                quoted_file = views.process_uploaded_files(
+                    [xlsx_upload("quoted.xlsx")],
+                    self.user.id,
+                )
+                newer_file = views.process_uploaded_files(
+                    [xlsx_upload("newer.xlsx")],
+                    self.user.id,
+                )
+                quoted = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="需要稍后分析的表",
+                    attachments=views.attachment_public_meta(quoted_file),
+                    msg_type="user",
+                )
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="另一份表",
+                    attachments=views.attachment_public_meta(newer_file),
+                    msg_type="user",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    reply_to=quoted,
+                    content="分析一下",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        attachments = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual([item["name"] for item in attachments], ["quoted.xlsx"])
+
     def test_generated_file_is_exposed_without_requiring_a_return_phrase(self):
         with tempfile.TemporaryDirectory() as tmp:
             with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
@@ -411,6 +655,192 @@ class XiaoceApiTests(APITestCase):
 
         self.assertEqual(output[0]["name"], "补货分析.csv")
         self.assertEqual(output[0]["url"], "/api/collab/attachments/generated_report.csv/")
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_generates_and_returns_downloadable_excel_even_if_model_refuses(self, run_chat):
+        run_chat.return_value = {
+            "ok": True,
+            "reply": "我无法直接生成并发送 Excel 文件。",
+        }
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="可以帮我产出一个excel吗 内容里面写一个hello就好",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                views._run_xiaoce_reply_async(run.id)
+
+                run.refresh_from_db()
+                attachment = run.result_message.attachments[0]
+                stored_path = Path(tmp) / str(self.user.id) / attachment["id"]
+                workbook = load_workbook(stored_path, data_only=False)
+                try:
+                    self.assertEqual(workbook.active["A1"].value, "hello")
+                finally:
+                    workbook.close()
+
+                download = self.client.get(f'{attachment["url"]}?download=1')
+                downloaded = b"".join(download.streaming_content)
+
+        self.assertEqual(run.result_message.content, "已生成 Excel 文件，内容已写入，可点击附件下载。")
+        self.assertEqual(len(run.result_message.attachments), 1)
+        self.assertEqual(attachment["name"], "xiaoce-export.xlsx")
+        self.assertEqual(download.status_code, 200)
+        self.assertTrue(downloaded.startswith(b"PK"))
+        run_chat.assert_not_called()
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_copies_and_updates_an_uploaded_excel(self, run_chat):
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                processed = views.process_uploaded_files([xlsx_upload("source.xlsx")], self.user.id)
+                original_path = Path(processed[0]["stored_path"])
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content=(
+                        "请在上传的 Excel 的 B2 单元格写入 hello，"
+                        "然后把文件发给我，并导出 Excel"
+                    ),
+                    attachments=views.attachment_public_meta(processed),
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+                run.refresh_from_db()
+                attachment = run.result_message.attachments[0]
+                output_path = resolve_attachment_path(self.user.id, attachment["id"])
+                output = load_workbook(output_path, data_only=False)
+                original = load_workbook(original_path, data_only=False)
+                try:
+                    self.assertEqual(output.active["A1"].value, "SKU")
+                    self.assertEqual(output.active["B2"].value, "hello")
+                    self.assertEqual(original.active["B2"].value, 120)
+                finally:
+                    output.close()
+                    original.close()
+
+        self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
+        self.assertEqual(run.result_message.content, "已生成 Excel 文件，内容已写入，可点击附件下载。")
+        run_chat.assert_not_called()
+
+    @patch("apps.collab.views.maybe_generate_excel_artifact")
+    @patch("apps.core.agent_chat.run_chat")
+    def test_excel_generation_failure_does_not_fail_the_successful_chat(
+        self,
+        run_chat,
+        generate_excel,
+    ):
+        generate_excel.side_effect = OSError("disk full")
+        run_chat.return_value = {"ok": True, "reply": "这是模型生成的正文。"}
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="把这段内容导出 Excel",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
+        self.assertEqual(run.result_message.attachments, [])
+        self.assertIn("这是模型生成的正文。", run.result_message.content)
+        self.assertIn("Excel 文件生成失败", run.result_message.content)
+
+    @patch("apps.collab.views.maybe_generate_excel_artifact")
+    @patch("apps.core.agent_chat.run_chat")
+    def test_generic_export_does_not_wrap_an_llm_error_in_a_workbook(
+        self,
+        run_chat,
+        generate_excel,
+    ):
+        run_chat.return_value = {
+            "ok": True,
+            "reply": "模型调用未成功。",
+            "llm": True,
+            "llm_error": "certificate failed",
+        }
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="把分析结果导出 Excel",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
+        self.assertEqual(run.result_message.attachments, [])
+        generate_excel.assert_not_called()
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_cancelled_excel_generation_cleans_the_unpublished_file(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="生成 Excel，内容里面写一个 hello",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        created: list[dict] = []
+
+        def generate_then_cancel(**kwargs):
+            from apps.collab.xiaoce_artifacts import create_excel_artifact
+
+            item = create_excel_artifact(user_id=self.user.id, content="hello")
+            created.append(item)
+            cancel_xiaoce_run(XiaoceRun.objects.get(id=run.id))
+            return [item]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)),
+                patch(
+                    "apps.collab.views.maybe_generate_excel_artifact",
+                    side_effect=generate_then_cancel,
+                ),
+            ):
+                views._run_xiaoce_reply_async(run.id)
+                self.assertIsNone(resolve_attachment_path(self.user.id, created[0]["id"]))
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, XiaoceRun.Status.CANCELLED)
+        run_chat.assert_not_called()
 
     @patch("apps.collab.views.threading.Thread")
     def test_reference_rejects_unowned_or_current_task(self, _thread_cls):

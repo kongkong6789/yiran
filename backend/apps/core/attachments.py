@@ -73,14 +73,23 @@ def _cell_to_text(value) -> str:
     return str(value).replace("\t", " ").strip()[:MAX_CELL_CHARS]
 
 
-def _sheet_text(title: str, rows, *, total_rows: int | None = None) -> str:
+def _sheet_text(
+    title: str,
+    rows,
+    *,
+    total_rows: int | None = None,
+    total_columns: int | None = None,
+) -> str:
     lines = [f"## 工作表: {title}"]
     emitted = 0
     for raw_row in rows:
         if emitted >= MAX_SPREADSHEET_ROWS:
             break
         row = list(raw_row or ())
-        truncated_columns = len(row) > MAX_SPREADSHEET_COLUMNS
+        truncated_columns = (
+            len(row) > MAX_SPREADSHEET_COLUMNS
+            or bool(total_columns and total_columns > MAX_SPREADSHEET_COLUMNS)
+        )
         values = [_cell_to_text(value) for value in row[:MAX_SPREADSHEET_COLUMNS]]
         while values and not values[-1]:
             values.pop()
@@ -92,7 +101,10 @@ def _sheet_text(title: str, rows, *, total_rows: int | None = None) -> str:
         lines.append(line)
         emitted += 1
     if total_rows is not None and total_rows > MAX_SPREADSHEET_ROWS:
-        lines.append(f"……（工作表共 {total_rows} 行，仅展示前 {MAX_SPREADSHEET_ROWS} 行非空内容）")
+        lines.append(
+            f"……（工作表共 {total_rows} 行，"
+            f"仅扫描前 {MAX_SPREADSHEET_ROWS} 行以保证安全）"
+        )
     elif emitted >= MAX_SPREADSHEET_ROWS:
         lines.append(f"……（仅展示前 {MAX_SPREADSHEET_ROWS} 行非空内容）")
     if emitted == 0:
@@ -108,8 +120,14 @@ def _extract_xlsx_text(data: bytes) -> str:
         blocks = [
             _sheet_text(
                 sheet.title,
-                sheet.iter_rows(values_only=True),
+                sheet.iter_rows(
+                    min_row=1,
+                    max_row=min(sheet.max_row, MAX_SPREADSHEET_ROWS),
+                    max_col=min(sheet.max_column, MAX_SPREADSHEET_COLUMNS),
+                    values_only=True,
+                ),
                 total_rows=sheet.max_row,
+                total_columns=sheet.max_column,
             )
             for sheet in workbook.worksheets[:MAX_SPREADSHEET_SHEETS]
         ]
