@@ -8,6 +8,7 @@ import AgentChat from "./pages/AgentChat";
 import Accounts from "./pages/Accounts";
 import Logs from "./pages/Logs";
 import Agents from "./pages/Agents";
+import AgentDashboard from "./pages/AgentDashboard";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
@@ -93,6 +94,7 @@ export default function App() {
             />
           )} />
           <Route path="agents" element={<Agents />} />
+          <Route path="agent-dashboard" element={<AgentDashboard />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="audit" element={<Navigate to="/logs" replace />} />
           <Route path="logs" element={<Logs />} />

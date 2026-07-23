@@ -84,10 +84,19 @@ function useCanvas(
     paint();
     const observer = new ResizeObserver(paint);
     observer.observe(canvas);
-    return () => observer.disconnect();
+    const themeObserver = new MutationObserver(paint);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => {
+      observer.disconnect();
+      themeObserver.disconnect();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, dependencies);
   return ref;
+}
+
+function canvasThemeColor(ctx: CanvasRenderingContext2D, token: string, fallback: string) {
+  return getComputedStyle(ctx.canvas).getPropertyValue(token).trim() || fallback;
 }
 
 function EmptyState({ text = "暂无真实数据" }: { text?: string }) {
@@ -160,8 +169,8 @@ function TrendChart({ points }: { points: ReturnType<typeof buildTaskTrend> }) {
     for (let i = 0; i <= 4; i += 1) {
       const y = pad.top + (chartH / 4) * i;
       ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y);
-      ctx.strokeStyle = "#e8eef7"; ctx.stroke();
-      ctx.fillStyle = "#75829a"; ctx.textAlign = "right";
+      ctx.strokeStyle = canvasThemeColor(ctx, "--db-chart-grid", "#e8eef7"); ctx.stroke();
+      ctx.fillStyle = canvasThemeColor(ctx, "--db-chart-label", "#75829a"); ctx.textAlign = "right";
       ctx.fillText(String(Math.round(maxCount * (1 - i / 4))), pad.left - 8, y + 3);
     }
     const xFor = (index: number) => pad.left + index * (chartW / Math.max(1, points.length - 1));
@@ -175,7 +184,7 @@ function TrendChart({ points }: { points: ReturnType<typeof buildTaskTrend> }) {
     };
     drawLine(points.map((point) => point.count), maxCount, COLORS.blue);
     drawLine(points.map((point) => point.rate), 100, COLORS.cyan);
-    ctx.textAlign = "center"; ctx.fillStyle = "#75829a";
+    ctx.textAlign = "center"; ctx.fillStyle = canvasThemeColor(ctx, "--db-chart-label", "#75829a");
     points.forEach((point, index) => {
       if (points.length <= 7 || index % 2 === 0 || index === points.length - 1) ctx.fillText(point.label, xFor(index), height - 9);
     });
@@ -193,9 +202,9 @@ function DonutChart({ values, total }: { values: number[]; total: number }) {
       ctx.beginPath(); ctx.arc(cx, cy, radius, start, end);
       ctx.strokeStyle = LOOP_COLORS[index]; ctx.lineWidth = 22; ctx.stroke(); start = end + 0.02;
     });
-    if (!total) { ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.strokeStyle = "#edf2f8"; ctx.lineWidth = 22; ctx.stroke(); }
-    ctx.textAlign = "center"; ctx.fillStyle = "#536179"; ctx.font = '12px Inter, "PingFang SC", sans-serif'; ctx.fillText("Loop 总数", cx, cy - 5);
-    ctx.fillStyle = "#101a33"; ctx.font = '700 20px Inter, "PingFang SC", sans-serif'; ctx.fillText(String(total), cx, cy + 20);
+    if (!total) { ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.strokeStyle = canvasThemeColor(ctx, "--db-chart-track", "#edf2f8"); ctx.lineWidth = 22; ctx.stroke(); }
+    ctx.textAlign = "center"; ctx.fillStyle = canvasThemeColor(ctx, "--db-chart-label", "#536179"); ctx.font = '12px Inter, "PingFang SC", sans-serif'; ctx.fillText("Loop 总数", cx, cy - 5);
+    ctx.fillStyle = canvasThemeColor(ctx, "--db-ink", "#101a33"); ctx.font = '700 20px Inter, "PingFang SC", sans-serif'; ctx.fillText(String(total), cx, cy + 20);
   }, [values, total]);
   return <canvas ref={ref} className="lc-dashboard__donut" aria-label={`真实经营回路总数 ${total}`} />;
 }
@@ -203,13 +212,13 @@ function DonutChart({ values, total }: { values: number[]; total: number }) {
 function HealthGauge({ score }: { score: number | null }) {
   const ref = useCanvas((ctx, width, height) => {
     const cx = width / 2; const cy = height * 0.72; const radius = Math.min(width * 0.37, height * 0.58);
-    ctx.beginPath(); ctx.arc(cx, cy, radius, Math.PI, Math.PI * 2); ctx.strokeStyle = "#e8eef7"; ctx.lineWidth = 13; ctx.lineCap = "round"; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, radius, Math.PI, Math.PI * 2); ctx.strokeStyle = canvasThemeColor(ctx, "--db-chart-track", "#e8eef7"); ctx.lineWidth = 13; ctx.lineCap = "round"; ctx.stroke();
     if (score !== null) {
       const gradient = ctx.createLinearGradient(cx - radius, cy, cx + radius, cy); gradient.addColorStop(0, COLORS.blue); gradient.addColorStop(1, COLORS.cyan);
       ctx.beginPath(); ctx.arc(cx, cy, radius, Math.PI, Math.PI + Math.PI * (score / 100)); ctx.strokeStyle = gradient; ctx.lineWidth = 13; ctx.stroke();
     }
-    ctx.fillStyle = "#101a33"; ctx.textAlign = "center"; ctx.font = "700 34px Inter, sans-serif"; ctx.fillText(score === null ? "—" : String(score), cx, cy - 16);
-    ctx.fillStyle = score === null ? "#7d899d" : "#19a96c"; ctx.font = '600 12px Inter, "PingFang SC", sans-serif'; ctx.fillText(score === null ? "暂无数据" : "健康", cx, cy + 8);
+    ctx.fillStyle = canvasThemeColor(ctx, "--db-ink", "#101a33"); ctx.textAlign = "center"; ctx.font = "700 34px Inter, sans-serif"; ctx.fillText(score === null ? "—" : String(score), cx, cy - 16);
+    ctx.fillStyle = score === null ? canvasThemeColor(ctx, "--db-chart-label", "#7d899d") : canvasThemeColor(ctx, "--db-success-text", "#19a96c"); ctx.font = '600 12px Inter, "PingFang SC", sans-serif'; ctx.fillText(score === null ? "暂无数据" : "健康", cx, cy + 8);
   }, [score]);
   return <canvas ref={ref} className="lc-dashboard__gauge" aria-label={score === null ? "系统健康度暂无数据" : `系统健康度 ${score} 分`} />;
 }

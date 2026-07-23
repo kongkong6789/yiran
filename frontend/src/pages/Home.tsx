@@ -13,7 +13,7 @@ import {
 } from "@ant-design/icons";
 import { getAgeStats, listAgents, listMeetings, getAuditOverview } from "../api/client";
 import { useVisualizationTheme } from "../theme/visualization";
-import OperatingMapV2 from "../components/OperatingMapV2";
+import BusinessMap from "../components/BusinessMap";
 
 type Domain = {
   name: string;
@@ -46,9 +46,6 @@ const DOMAINS: Domain[] = [
     name: "连接", sub: "Connectors", desc: "企微 · 金蝶 · MCP",
     color: "#ef5ba5", route: "/connectors", countLabel: "64 个节点",
     samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
-  },
-  {
-    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 18,
   },
   {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
@@ -144,8 +141,8 @@ function buildGraph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
 }
 
 const LABEL_OFFSETS: [number, number][] = [
-  [-12, -34], [0, -42], [22, -36], [30, -4],
-  [28, 18], [0, 36], [-18, 28], [-34, -8],
+  [0, -44], [50, -18], [50, 24],
+  [0, 50], [-50, 24], [-50, -18],
 ];
 
 export default function Home() {
@@ -490,7 +487,7 @@ export default function Home() {
       }
     });
 
-    if (m === "star") {
+    if (m === "star" || m === "relation") {
       ctx.font = "650 14px Inter, PingFang SC, Microsoft YaHei, sans-serif";
       ctx.textAlign = "center";
       nodes.filter((n) => n.type === "core").forEach((core) => {
@@ -513,24 +510,25 @@ export default function Home() {
     setMode(nextMode);
     const { nodes } = graphRef.current;
     const { width, height } = st;
-    const cx = width * 0.49;
+    const cx = width * 0.5;
     const cy = height * 0.52;
+    const domainCount = DOMAINS.length;
 
     if (nextMode === "star") {
-      const ringX = Math.min(width * 0.34, height * 0.56);
-      const ringY = Math.min(height * 0.31, width * 0.18);
+      const ringX = Math.min(width * 0.31, height * 0.52);
+      const ringY = Math.min(height * 0.3, width * 0.17);
       nodes.forEach((node) => {
         if (node.type === "center") {
           node.tx = cx; node.ty = cy;
         } else if (node.type === "core") {
-          const angle = -Math.PI / 2 + (node.group || 0) * Math.PI * 2 / 8;
+          const angle = -Math.PI / 2 + (node.group || 0) * Math.PI * 2 / domainCount;
           node.tx = cx + Math.cos(angle) * ringX;
           node.ty = cy + Math.sin(angle) * ringY;
         } else {
           const core = nodes.find((n) => n.type === "core" && n.group === node.group)!;
           const groupItems = nodes.filter((n) => n.type === "item" && n.group === node.group);
           const localIndex = groupItems.findIndex((n) => n.id === node.id);
-          const angle = (-Math.PI / 2 + (node.group || 0) * Math.PI * 2 / 8) + (localIndex - groupItems.length / 2) * 0.12;
+          const angle = (-Math.PI / 2 + (node.group || 0) * Math.PI * 2 / domainCount) + (localIndex - groupItems.length / 2) * 0.12;
           const rr = 38 + (localIndex % 4) * 16 + Math.floor(localIndex / 4) * 7;
           node.tx = core.tx + Math.cos(angle) * rr + Math.cos(localIndex * 1.8) * 4;
           node.ty = core.ty + Math.sin(angle) * rr * 0.92 + Math.sin(localIndex * 1.7) * 4;
@@ -538,8 +536,8 @@ export default function Home() {
       });
     } else {
       const corePos = [
-        [0.24, 0.27], [0.45, 0.2], [0.69, 0.27], [0.79, 0.47],
-        [0.67, 0.73], [0.47, 0.81], [0.25, 0.72], [0.16, 0.49],
+        [0.5, 0.2], [0.75, 0.33], [0.75, 0.67],
+        [0.5, 0.8], [0.25, 0.67], [0.25, 0.33],
       ];
       nodes.forEach((node) => {
         if (node.type === "center") {
@@ -607,9 +605,21 @@ export default function Home() {
 
   useEffect(() => {
     resize();
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    const observer = new ResizeObserver(() => {
+      const rect = wrap.getBoundingClientRect();
+      if (Math.abs(rect.width - stateRef.current.width) > 0.5 || Math.abs(rect.height - stateRef.current.height) > 0.5) {
+        resize();
+      }
+    });
+    observer.observe(wrap);
     const onResize = () => resize();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", onResize);
+    };
   }, []);
 
   useEffect(() => {
@@ -820,7 +830,7 @@ export default function Home() {
           <canvas ref={canvasRef} className="kgv3-canvas" />
 
           {mode === "map" && (
-            <OperatingMapV2 themeMode={visualTheme.mode} onSelectDomain={selectDomain} onNavigate={nav} />
+            <BusinessMap themeMode={visualTheme.mode} onSelectDomain={selectDomain} onNavigate={nav} />
           )}
 
           {mode !== "map" && selected && selectedDomain && (
@@ -952,15 +962,20 @@ export default function Home() {
 
 const css = `
 .kgv3-page {
-  --kg-bg: #fbfcff;
+  --kg-right-width: 320px;
+  --kg-bg: var(--lc-graph-canvas, #f4f7fb);
   --kg-line: rgba(137,157,204,.18);
   --kg-text: #17243c;
   --kg-muted: #7d8ba6;
   --kg-brand: #376dff;
   --kg-brand-soft: #edf3ff;
+  --kg-panel: rgba(255,255,255,.92);
+  --kg-control: rgba(255,255,255,.82);
+  --kg-control-text: #44536d;
+  --kg-control-hover: #f3f7ff;
   --kg-shadow: 0 16px 48px rgba(66,88,140,.07);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 268px;
+  grid-template-columns: minmax(0, 1fr) var(--kg-right-width);
   height: calc(100vh - 68px);
   margin: 0;
   background: var(--kg-bg);
@@ -974,10 +989,12 @@ const css = `
 }
 .kgv3-graph-card {
   position: relative;
+  width: 100%;
+  min-width: 0;
   height: 100%;
   border: 0;
   border-radius: 0;
-  background: #fbfcff;
+  background: var(--lc-graph-canvas, #f4f7fb);
   box-shadow: none;
   overflow: hidden;
 }
@@ -992,17 +1009,21 @@ const css = `
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  color: inherit !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 .kgv3-tool-btn {
-  height: 38px;
+  min-height: 44px;
   border-radius: 15px;
   border: 1px solid var(--kg-line);
-  background: rgba(255,255,255,.78);
+  background: var(--kg-control);
   padding: 0 14px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #44536d;
+  color: var(--kg-control-text);
   cursor: pointer;
   box-shadow: 0 8px 24px rgba(65,87,139,.06);
   backdrop-filter: blur(14px);
@@ -1027,7 +1048,7 @@ const css = `
 }
 .kgv3-mode-pill {
   position: absolute; top: 4px; left: 4px;
-  height: 36px; width: 104px; border-radius: 12px;
+  height: 38px; width: 104px; border-radius: 12px;
   background: rgba(255,255,255,.94);
   box-shadow: 0 8px 20px rgba(49,94,251,.11), inset 0 0 0 1px rgba(255,255,255,.8);
   transition: .28s ease;
@@ -1036,7 +1057,7 @@ const css = `
 .kgv3-mode.map .kgv3-mode-pill { transform: translateX(208px); }
 .kgv3-mode button {
   position: relative; z-index: 1;
-  width: 104px; height: 36px;
+  width: 104px; height: 38px;
   border: 0; background: transparent; border-radius: 12px;
   color: #778299; cursor: pointer; font-weight: 600;
 }
@@ -1047,24 +1068,31 @@ const css = `
   width: 100%; height: 100%;
   cursor: grab;
 }
+.kgv3-page:not(.map-mode) .kgv3-canvas {
+  animation: kgv3-view-enter .2s ease-out both;
+}
+@keyframes kgv3-view-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 .kgv3-zoom {
   position: absolute; left: 20px; bottom: 20px; z-index: 8;
   display: flex;
-  background: rgba(255,255,255,.84); border: 1px solid var(--kg-line); border-radius: 16px; overflow: hidden;
+  background: var(--kg-control); border: 1px solid var(--kg-line); border-radius: 16px; overflow: hidden;
   box-shadow: 0 10px 26px rgba(58,82,136,.07);
   backdrop-filter: blur(12px);
 }
 .kgv3-zoom button {
-  width: 40px; height: 38px; border: 0; border-right: 1px solid var(--kg-line);
-  background: transparent; cursor: pointer; font-size: 14px; color: #4b5870;
+  width: 44px; height: 42px; border: 0; border-right: 1px solid var(--kg-line);
+  background: transparent; cursor: pointer; font-size: 14px; color: var(--kg-control-text);
   transition: background .2s ease, color .2s ease;
 }
-.kgv3-zoom button:hover { background: #f3f7ff; color: var(--kg-brand); }
+.kgv3-zoom button:hover { background: var(--kg-control-hover); color: var(--kg-brand); }
 .kgv3-zoom button:last-child { border-right: 0; }
 .kgv3-legend {
   position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
   z-index: 8; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-  padding: 9px 16px; background: rgba(255,255,255,.78);
+  padding: 10px 16px; background: var(--kg-control);
   border: 1px solid var(--kg-line); border-radius: 18px;
   box-shadow: 0 10px 28px rgba(58,82,136,.06); color: #6c7890; font-size: 11px;
   backdrop-filter: blur(14px);
@@ -1077,14 +1105,58 @@ const css = `
 .kgv3-page.map-mode .kgv3-canvas { display: none; }
 .kgv3-page.map-mode {
   grid-template-columns: minmax(0, 1fr);
-  background: #fbfcff;
+  background: var(--lc-graph-canvas, #f4f7fb);
 }
-.kgv3-page.map-mode .kgv3-toolbar { right: 370px; }
+.kgv3-page.map-mode .kgv3-toolbar {
+  right: calc(var(--kg-right-width) + 20px);
+}
 .kgv3-page.map-mode .kgv3-tool-btn { visibility: hidden; }
 .kgv3-page.map-mode.theme-dark {
   --kg-line: rgba(111,153,222,.22);
   --kg-brand: #79aaff;
-  background: #071126;
+  background: var(--lc-graph-canvas, #050505);
+}
+.kgv3-page.theme-dark {
+  --kg-bg: var(--lc-graph-canvas, #050505);
+  --kg-line: var(--lc-border-light);
+  --kg-text: var(--lc-ink);
+  --kg-muted: var(--lc-muted);
+  --kg-brand: #79aaff;
+  --kg-brand-soft: rgba(74,132,224,.18);
+  --kg-panel: var(--lc-surface);
+  --kg-control: var(--lc-surface-raised);
+  --kg-control-text: var(--lc-text-secondary);
+  --kg-control-hover: var(--lc-hover);
+}
+.kgv3-page.theme-dark .kgv3-mode-pill {
+  background: rgba(55,93,157,.72);
+  box-shadow: 0 0 22px rgba(58,126,240,.22), inset 0 0 0 1px rgba(123,174,255,.16);
+}
+.kgv3-page.theme-light .kgv3-toolbar,
+.kgv3-page.theme-dark .kgv3-toolbar {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.kgv3-page.theme-dark .kgv3-mode button { color: var(--lc-muted); }
+.kgv3-page.theme-dark .kgv3-mode button.active { color: #dcecff; }
+.kgv3-page.theme-dark .kgv3-tool-btn,
+.kgv3-page.theme-dark .kgv3-zoom,
+.kgv3-page.theme-dark .kgv3-legend {
+  color: var(--kg-control-text) !important;
+  background: var(--kg-control) !important;
+  border-color: var(--kg-line) !important;
+}
+.kgv3-page.theme-dark .kgv3-tool-chevron,
+.kgv3-page.theme-dark .kgv3-zoom button { color: var(--kg-control-text); }
+.kgv3-page.theme-dark .kgv3-bar { background: var(--lc-surface-input); }
+.kgv3-page.theme-dark .kgv3-bar-row { color: var(--lc-text-secondary); }
+.kgv3-page.theme-dark .kgv3-bar-row em { color: var(--lc-muted); }
+.kgv3-page.theme-dark .kgv3-bar-row:hover,
+.kgv3-page.theme-dark .kgv3-bar-row:focus-visible,
+.kgv3-page.theme-dark .kgv3-bar-row.active {
+  background: var(--lc-hover);
+  color: var(--kg-brand);
 }
 .kgv3-page.map-mode.theme-dark .kgv3-mode {
   border-color: rgba(111,153,222,.2);
@@ -1101,8 +1173,8 @@ const css = `
 .kgv3-right {
   min-width: 0; min-height: 0;
   border-left: 1px solid var(--kg-line);
-  background: rgba(255,255,255,.9);
-  padding: 0 22px;
+  background: var(--kg-panel);
+  padding: 0 24px;
   overflow: auto;
   box-shadow: -16px 0 48px rgba(81,100,145,.035);
 }
@@ -1270,13 +1342,14 @@ const css = `
 }
 
 @media (max-width: 1500px) {
-  .kgv3-page.map-mode .kgv3-toolbar { right: 338px; }
+  .kgv3-page { --kg-right-width: 300px; }
 }
 @media (max-width: 1250px) {
-  .kgv3-page.map-mode .kgv3-toolbar { right: 312px; }
+  .kgv3-page { --kg-right-width: 284px; }
 }
 @media (max-width: 1100px) {
-  .kgv3-page { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 68px); }
+  .kgv3-page,
+  .kgv3-page:not(.map-mode) { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 68px); }
   .kgv3-workspace { height: 62vh; min-height: 420px; }
   .kgv3-right { border-left: 0; border-top: 1px solid var(--kg-line); padding: 0 20px; }
   .kgv3-legend { display: none; }
@@ -1295,6 +1368,7 @@ const css = `
 }
 @media (prefers-reduced-motion: reduce) {
   .kgv3-node-popover { animation: none; }
+  .kgv3-page:not(.map-mode) .kgv3-canvas { animation: none; }
   .kgv3-mode-pill, .kgv3-tool-btn { transition: none; }
 }
 `;
