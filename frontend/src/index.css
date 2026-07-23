@@ -17788,3 +17788,136 @@ img[src*="liangce-default-avatar"] {
   .skill-workspace-drawer *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
 
+/* 连接中心：宽屏工作区与扁平状态导航 */
+.connectors-page {
+  padding: clamp(22px, 2.25vw, 40px) clamp(20px, 2.8vw, 52px) 48px;
+}
+
+.connectors-page-shell {
+  width: min(1600px, 100%);
+}
+
+.connectors-hero {
+  padding-inline: 0;
+}
+
+.connectors-featured-section {
+  margin-block: 24px 34px;
+}
+
+.connectors-board {
+  gap: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+:root[data-theme] .connectors-board {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.connectors-board-head {
+  padding-top: 20px;
+  border-top: 1px solid var(--lc-line);
+}
+
+.connectors-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--lc-line);
+  border-radius: 13px;
+  background: var(--lc-surface);
+  box-shadow: none;
+}
+
+:root[data-theme] .connectors-stats {
+  border: 1px solid var(--lc-line) !important;
+  background: var(--lc-surface) !important;
+  box-shadow: none !important;
+}
+
+.connectors-stat {
+  min-height: 68px;
+  padding: 13px 18px;
+  border: 0;
+  border-left: 1px solid var(--lc-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.connectors-stat:first-child {
+  border-left: 0;
+}
+
+.connectors-stat:hover {
+  border-color: var(--lc-line);
+  background: var(--lc-hover);
+  box-shadow: none;
+  transform: none;
+}
+
+.connectors-stat.is-active {
+  border-color: var(--lc-line);
+  background: var(--lc-selected);
+  box-shadow: inset 0 -2px 0 var(--lc-gold);
+  transform: none;
+}
+
+.connectors-stat b {
+  font-size: 23px;
+}
+
+.connectors-stat span {
+  font-size: 12px;
+}
+
+.connectors-toolbar {
+  border-color: var(--lc-line);
+  background: var(--lc-surface-raised);
+}
+
+.connectors-layers {
+  gap: 28px;
+}
+
+.connectors-grid {
+  gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .connectors-page {
+    padding: 18px;
+  }
+}
+
+@media (max-width: 640px) {
+  .connectors-page {
+    padding: 12px;
+  }
+
+  .connectors-board-head {
+    padding-top: 16px;
+  }
+
+  .connectors-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .connectors-stat:nth-child(3) {
+    border-left: 0;
+  }
+
+  .connectors-stat:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--lc-line);
+  }
+}
+
