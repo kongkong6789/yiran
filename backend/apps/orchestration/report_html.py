@@ -228,6 +228,15 @@ def sanitize_mermaid_source(code: str) -> str | None:
     # xychart-beta / quadrant often break in Mermaid 11 with LLM output.
     if head.startswith("xychart") or head.startswith("quadrant"):
         return None
+    # Normalize curly / fullwidth quotes that LLMs often emit in pie labels.
+    text = (
+        text.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\uff02", '"')
+        .replace("\uff07", "'")
+    )
     # Normalize Chinese colon after labels in pie lines: "A"：40 -> "A" : 40
     text = re.sub(r'("([^"\\]|\\.)*")\s*[：:]\s*', r"\1 : ", text)
     return text

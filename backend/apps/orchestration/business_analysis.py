@@ -455,7 +455,7 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str,
         "面向业务读者撰写：少用技术术语，不要输出 content_hash、asset_key、ISO 毫秒时间戳、SOP/智能体元数据。"
         "趋势与结构优先用 Markdown 表格呈现（日期/指标/数值），清晰可读。"
         "不要使用 xychart-beta、quadrantChart、复杂 flowchart 做趋势图（易语法错误）。"
-        "仅在确有必要时使用最简 Mermaid pie，标签用短中文并用双引号包裹，例如：\n"
+        "仅在确有必要时使用最简 Mermaid pie，标签用短中文并用英文双引号包裹（禁止中文弯引号），例如：\n"
         "```mermaid\npie title 结构占比\n\"品类A\" : 40\n\"品类B\" : 60\n```\n"
         "不要输出任务编号、SOP、执行智能体等流程元数据，也不要复述提示词。"
     )

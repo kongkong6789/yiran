@@ -193,7 +193,19 @@ def run_skill_sop_action(
         }
 
     title = str(payload.get("_node_title") or asset.name or "技能产物")
-    report_markdown = f"# {title}\n\n{reply}\n"
+    from .report_html import sanitize_mermaid_source
+    import re as _re
+
+    def _soften(md: str) -> str:
+        def _repl(match: _re.Match) -> str:
+            cleaned = sanitize_mermaid_source(match.group(1) or "")
+            if cleaned:
+                return f"```mermaid\n{cleaned}\n```"
+            return "\n> 图表已省略（语法不稳定），请以下方文字为准。\n"
+
+        return _re.sub(r"```mermaid\s*([\s\S]*?)```", _repl, md or "", flags=_re.IGNORECASE)
+
+    report_markdown = f"# {title}\n\n{_soften(reply)}\n"
     return {
         "trace_id": trace_id,
         "decision": "allow",
