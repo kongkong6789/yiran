@@ -131,6 +131,7 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
 
 test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(monitorStyles, /\.collab-msg-aside\s*\{[\s\S]*?align-items:\s*flex-start;/);
+  assert.match(monitorStyles, /\.collab-msg\.peer\s*\{[\s\S]*?margin-left:\s*28px;/);
   assert.match(monitorStyles, /\.collab-msg\.ai \.collab-msg-name,[\s\S]*?justify-content:\s*flex-start;[\s\S]*?text-align:\s*left;/);
   assert.match(monitorStyles, /\.collab-msg:not\(\.system\):hover \.collab-bubble/);
   assert.match(monitorStyles, /@media \(prefers-reduced-motion:\s*reduce\)/);

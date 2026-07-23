@@ -6335,6 +6335,9 @@ const css = `
   max-width: 88%;
   overflow: visible;
 }
+.collab-msg.peer {
+  margin-left: 28px;
+}
 .collab-msg.mine { margin-left: auto; flex-direction: row-reverse; }
 .collab-msg-aside {
   display: flex;
@@ -8732,6 +8735,9 @@ const css = `
   }
   .collab-virt-item {
     padding-inline: 14px 10px;
+  }
+  .collab-msg.peer {
+    margin-left: 14px;
   }
   .collab-forward-mode { grid-template-columns: 1fr; }
   .collab-contact-open-hint { display: none; }
