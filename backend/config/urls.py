@@ -14,6 +14,7 @@ urlpatterns = [
     path("api/wiki/", include("apps.wiki.urls")),
     path("api/ontology/", include("apps.ontology.urls")),
     path("api/loops/", include("apps.loops.urls")),
+    path("api/ops-loops/", include("apps.loops.ops_urls")),
     path("api/harness/", include("apps.harness.urls")),
     path("api/orchestration/", include("apps.orchestration.urls")),
     path("api/connectors/", include("apps.connectors.urls")),

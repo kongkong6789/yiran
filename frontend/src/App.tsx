@@ -12,6 +12,11 @@ import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
 import LoopsDiy from "./pages/LoopsDiy";
+import LoopsHome from "./pages/loopsOps/LoopsHome";
+import LoopsMonitor from "./pages/loopsOps/LoopsMonitor";
+import LoopDiscover from "./pages/loopsOps/LoopDiscover";
+import LoopDesignWorkspace from "./pages/loopsOps/LoopDesignWorkspace";
+import LoopRunWorkspace from "./pages/loopsOps/LoopRunWorkspace";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
@@ -49,7 +54,11 @@ export default function App() {
           <Route path="commerce/bench" element={<CommerceFusion />} />
           <Route path="commerce/loops" element={<Loops />} />
           <Route path="commerce/loops/diy" element={<LoopsDiy />} />
-          <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
+          <Route path="loops" element={<LoopsHome />} />
+          <Route path="loops/monitor" element={<LoopsMonitor />} />
+          <Route path="loops/discover" element={<LoopDiscover />} />
+          <Route path="loops/:id/design" element={<LoopDesignWorkspace />} />
+          <Route path="loops/:id/run" element={<LoopRunWorkspace />} />
           <Route path="loops/diy" element={<Navigate to="/commerce/loops/diy" replace />} />
           <Route path="work" element={<WorkHub />} />
           <Route path="console" element={<Navigate to="/work" replace />} />

@@ -456,13 +456,15 @@ function fileStatusToUi(status: KnowledgeFileItem["status"]): KnowledgeTemplateF
 
 function mapKnowledgeFile(file: KnowledgeFileItem): KnowledgeTemplateFile {
   const embedding = file.metadata?.embedding as { status?: string } | undefined;
+  const embeddingReady = embedding?.status === "ready";
+  // 仅切分未向量 → 向量待补齐；已向量入库 → hash 前缀
   const source = file.status === "processing"
-    ? "\u540e\u53f0\u5165\u5e93\u5904\u7406\u4e2d"
-    : embedding?.status && embedding.status !== "ready"
-      ? "\u5411\u91cf\u5f85\u8865\u9f50"
-      : file.content_hash
-        ? `hash ${file.content_hash.slice(0, 10)}`
-        : file.storage_path || "backend";
+    ? "后台入库处理中"
+    : embeddingReady && file.content_hash
+      ? `hash ${file.content_hash.slice(0, 10)}`
+      : embeddingReady
+        ? "已向量入库"
+        : "向量待补齐";
   return {
     id: file.id,
     backend: file,
@@ -1961,7 +1963,7 @@ export default function Knowledge() {
                               ? "思维导图 · 双击打开画布编辑"
                               : isEditableMarkdownDoc(file)
                                 ? "智能文档 · 双击打开编辑"
-                                : "上传文件 · 双击查看切片"}
+                                : file.source}
                         </div>
                       </td>
                       <td><span className="segment-pill">{knowledgeFileTypeLabel(file)}</span></td>

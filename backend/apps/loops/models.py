@@ -175,3 +175,147 @@ class SimulationRun(models.Model):
     class Meta:
         ordering = ["-created_at", "-id"]
         constraints = [models.UniqueConstraint(fields=["organization", "idempotency_key"], name="uniq_org_sim_idempotency")]
+
+
+def new_ops_loop_key() -> str:
+    return f"ops:{uuid.uuid4().hex}"
+
+
+def new_ops_run_key() -> str:
+    return f"opsrun:{uuid.uuid4().hex}"
+
+
+def default_ooda_definition() -> dict:
+    return {
+        "goal": {"metric": "利润率", "target": "恢复到基线", "threshold": "下降超过5%"},
+        "phases": {
+            "observe": {
+                "title": "观察业务状态",
+                "description": "监控业务状态并发现异常",
+                "metrics": ["利润率", "毛利率", "净利润"],
+                "trigger": "下降超过 5%",
+                "data_sources": ["销售", "广告", "财务"],
+                "schedule": {"frequency": "daily", "time": "09:00", "label": "每天 09:00"},
+                "anomaly": {
+                    "condition": "下降超过 5%",
+                    "duration": "连续 2 天",
+                    "baseline": "前 7 日均值",
+                },
+            },
+            "orient": {
+                "title": "理解业务背景",
+                "description": "理解业务背景并建立关联",
+                "knowledge_hints": ["利润计算规则", "业务本体"],
+                "relations": ["店铺", "平台", "商品"],
+            },
+            "decide": {
+                "title": "原因分析与决策",
+                "description": "原因分析、影响评估并生成策略",
+                "tasks": ["异常归因", "影响评估", "策略生成"],
+                "outputs": ["分析结果", "优化建议"],
+            },
+            "act": {
+                "title": "执行决策",
+                "description": "执行决策并落地方案",
+                "actions": ["广告预算调整", "价格优化", "库存调整", "报告生成"],
+                "require_confirm": True,
+            },
+            "learn": {
+                "title": "效果评估",
+                "description": "评估结果并持续学习",
+                "eval_metrics": ["利润变化", "销售额", "成本", "ROI"],
+            },
+        },
+        "loop_condition": "利润率恢复 ≥ 目标值",
+    }
+
+
+class OperationalLoop(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        CANDIDATE = "candidate", "候选"
+        ACTIVE = "active", "运行中"
+        PAUSED = "paused", "暂停"
+        ERROR = "error", "异常"
+        ARCHIVED = "archived", "已归档"
+
+    class Source(models.TextChoices):
+        AI = "ai", "AI发现"
+        MANUAL = "manual", "手动"
+
+    class Phase(models.TextChoices):
+        OBSERVE = "observe", "观察"
+        ORIENT = "orient", "理解"
+        DECIDE = "decide", "决策"
+        ACT = "act", "执行"
+        LEARN = "learn", "学习"
+        IDLE = "idle", "空闲"
+
+    organization = models.ForeignKey("core.Organization", on_delete=models.CASCADE, related_name="operational_loops")
+    loop_key = models.CharField("稳定标识", max_length=96, default=new_ops_loop_key)
+    name = models.CharField("名称", max_length=160)
+    description = models.TextField("描述", blank=True, default="")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.MANUAL)
+    confidence = models.PositiveSmallIntegerField("置信度", default=0)
+    definition = models.JSONField("OODA定义", default=default_ooda_definition)
+    knowledge_refs = models.JSONField("知识引用", default=list, blank=True)
+    metrics_snapshot = models.JSONField("指标快照", default=dict, blank=True)
+    ooda_phase = models.CharField(max_length=16, choices=Phase.choices, default=Phase.IDLE)
+    last_result = models.JSONField("最近一轮结果", default=dict, blank=True)
+    current_run_key = models.CharField(max_length=96, blank=True, default="")
+    linked_feedback_loop = models.ForeignKey(
+        FeedbackLoop, null=True, blank=True, on_delete=models.SET_NULL, related_name="operational_links"
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_ops_loops"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["organization", "loop_key"], name="uniq_org_ops_loop_key")]
+
+    def __str__(self):
+        return f"{self.id}:{self.name}({self.status})"
+
+
+class OperationalLoopRun(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "排队"
+        RUNNING = "running", "运行中"
+        AWAITING_CONFIRM = "awaiting_confirm", "待确认"
+        COMPLETED = "completed", "完成"
+        FAILED = "failed", "失败"
+
+    class Phase(models.TextChoices):
+        OBSERVE = "observe", "观察"
+        ORIENT = "orient", "理解"
+        DECIDE = "decide", "决策"
+        ACT = "act", "执行"
+        LEARN = "learn", "学习"
+
+    organization = models.ForeignKey("core.Organization", on_delete=models.CASCADE, related_name="operational_loop_runs")
+    loop = models.ForeignKey(OperationalLoop, on_delete=models.CASCADE, related_name="runs")
+    run_key = models.CharField(max_length=96, default=new_ops_run_key)
+    round = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    phase = models.CharField(max_length=16, choices=Phase.choices, default=Phase.OBSERVE)
+    progress = models.PositiveSmallIntegerField(default=0)
+    trace_id = models.CharField(max_length=96, blank=True, default="")
+    logs = models.JSONField(default=list, blank=True)
+    phase_results = models.JSONField(default=dict, blank=True)
+    metrics = models.JSONField(default=dict, blank=True)
+    error = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="ops_loop_runs"
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["organization", "run_key"], name="uniq_org_ops_run_key")]
