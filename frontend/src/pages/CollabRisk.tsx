@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
+} from "react";
 import {
   App, Avatar, Badge, Button, Dropdown, Empty, Image, Input, Modal, Popover, Select, Space, Tag, Tooltip, Typography,
 } from "antd";
@@ -848,8 +857,17 @@ export default function CollabRisk({
   const [forwardSubmitting, setForwardSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [composerMinHeight, setComposerMinHeight] = useState(0);
   const mentionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const composerResizeRef = useRef<{
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+    currentHeight: number;
+    pendingHeight: number;
+    frameId: number | null;
+  } | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [roomDetailLoading, setRoomDetailLoading] = useState(false);
@@ -862,6 +880,9 @@ export default function CollabRisk({
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
   const forceStickUntilRef = useRef(0);
+  const manualScrollUntilRef = useRef(0);
+  const bottomScrollFrameRef = useRef<number | null>(null);
+  const bottomScrollBehaviorRef = useRef<"auto" | "smooth">("auto");
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const messageScrollerRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1012,7 +1033,7 @@ export default function CollabRisk({
 
   const isParticipant = useMemo(() => {
     if (!me || !activeRoom) return false;
-    return activeRoom.participants.some((p) => p.id === me.id);
+    return (activeRoom.participants || []).some((p) => p.id === me.id);
   }, [me, activeRoom]);
 
   const isXiaoce = xiaoceRoom;
@@ -1114,24 +1135,95 @@ export default function CollabRisk({
     return show;
   }, [visibleMessages]);
 
+  const scheduleMessagesToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
+    bottomScrollBehaviorRef.current = behavior;
+    if (bottomScrollFrameRef.current !== null) return;
+    bottomScrollFrameRef.current = window.requestAnimationFrame(() => {
+      bottomScrollFrameRef.current = null;
+      virtuosoRef.current?.scrollTo({
+        top: Number.MAX_SAFE_INTEGER,
+        behavior: bottomScrollBehaviorRef.current,
+      });
+    });
+  }, []);
+
   const scrollMessagesToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
     stickBottomRef.current = true;
-    forceStickUntilRef.current = Date.now() + 420;
+    forceStickUntilRef.current = Date.now() + 180;
     setMessagesAtBottom(true);
-    const settle = () => {
-      virtuosoRef.current?.scrollToIndex({
-        index: "LAST",
-        align: "end",
-        behavior,
-      });
-      const scroller = messageScrollerRef.current;
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    scheduleMessagesToBottom(behavior);
+  }, [scheduleMessagesToBottom]);
+
+  const releaseMessageAutoScroll = useCallback(() => {
+    stickBottomRef.current = false;
+    forceStickUntilRef.current = 0;
+    manualScrollUntilRef.current = Date.now() + 600;
+    if (bottomScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(bottomScrollFrameRef.current);
+      bottomScrollFrameRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (bottomScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(bottomScrollFrameRef.current);
+    }
+  }, []);
+
+  const beginComposerResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const textarea = composerRef.current?.resizableTextArea?.textArea as HTMLTextAreaElement | undefined;
+    const startHeight = textarea?.getBoundingClientRect().height || 72;
+    composerResizeRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight,
+      currentHeight: startHeight,
+      pendingHeight: startHeight,
+      frameId: null,
     };
-    requestAnimationFrame(settle);
-    // Images and rich report blocks may measure after the first frame. A short
-    // second settle keeps the real bottom reachable without fighting manual scroll.
-    window.setTimeout(settle, 90);
-    window.setTimeout(settle, 240);
+    composerBoxRef.current?.classList.add("is-resizing");
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, []);
+
+  const moveComposerResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = composerResizeRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    const viewportLimit = Math.max(120, window.innerHeight - 260);
+    const nextHeight = Math.max(
+      56,
+      Math.min(viewportLimit, session.startHeight + session.startY - event.clientY),
+    );
+    session.pendingHeight = Math.round(nextHeight);
+    if (session.frameId !== null) return;
+    const pointerId = event.pointerId;
+    session.frameId = window.requestAnimationFrame(() => {
+      const liveSession = composerResizeRef.current;
+      if (!liveSession || liveSession.pointerId !== pointerId) return;
+      liveSession.frameId = null;
+      liveSession.currentHeight = liveSession.pendingHeight;
+      composerBoxRef.current?.style.setProperty(
+        "--collab-composer-min-height",
+        `${liveSession.currentHeight}px`,
+      );
+    });
+  }, []);
+
+  const finishComposerResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const session = composerResizeRef.current;
+    if (session?.pointerId !== event.pointerId) return;
+    if (session.frameId !== null) window.cancelAnimationFrame(session.frameId);
+    session.currentHeight = session.pendingHeight;
+    composerBoxRef.current?.style.setProperty(
+      "--collab-composer-min-height",
+      `${session.currentHeight}px`,
+    );
+    setComposerMinHeight(session.currentHeight);
+    composerResizeRef.current = null;
+    composerBoxRef.current?.classList.remove("is-resizing");
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }, []);
 
   useEffect(() => {
@@ -1142,7 +1234,7 @@ export default function CollabRisk({
       if (!stickBottomRef.current) return;
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        scroller.scrollTop = scroller.scrollHeight;
+        scheduleMessagesToBottom("auto");
       });
     };
     const observer = new ResizeObserver(settleIfPinned);
@@ -1153,7 +1245,7 @@ export default function CollabRisk({
       window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [activeId, visibleMessages.length]);
+  }, [activeId, scheduleMessagesToBottom, visibleMessages.length]);
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
@@ -1296,7 +1388,7 @@ export default function CollabRisk({
       } else if (!soft || !cachedAtResolution) {
         setFirstItemIndex(VIRT_BASE_INDEX);
         stickBottomRef.current = true;
-        forceStickUntilRef.current = Date.now() + 2000;
+        forceStickUntilRef.current = Date.now() + 240;
         window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
       }
       roomViewCacheRef.current.set(id, {
@@ -1382,7 +1474,16 @@ export default function CollabRisk({
         includeParticipants: false,
       });
       const roomBase = {
-        ...(listRoom || { id } as CollabRoom),
+        id,
+        title: "正在打开会话…",
+        display_title: "正在打开会话…",
+        room_kind: "dm",
+        participants: [],
+        status: "open",
+        risk_level: "green",
+        messages: [],
+        insights: [],
+        ...(listRoom || {}),
         active_xiaoce_run: listRoom?.active_xiaoce_run || null,
       } as CollabRoom;
       applyMessages(page, roomBase, cachedAtStart?.insights || []);
@@ -1538,7 +1639,7 @@ export default function CollabRisk({
       setRoomStats(cached.stats);
       setRoomDetailLoading(false);
       stickBottomRef.current = true;
-      forceStickUntilRef.current = Date.now() + 800;
+      forceStickUntilRef.current = Date.now() + 180;
       window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
     } else {
       // 用会话列表里的摘要立刻占位，避免切到空的「协作会话」引导页
@@ -1656,9 +1757,12 @@ export default function CollabRisk({
     const roomId = searchParams.get("room");
     if (!roomId) return;
     selectRoom(roomId);
-    switchSiderTab("chats");
-    setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams, selectRoom, switchSiderTab]);
+    setSiderTab("chats");
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("room");
+    nextParams.delete("panel");
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams, selectRoom]);
 
   // 从资源交接入口进入时，按稳定 bot_id 创建/复用目标单聊。
   useEffect(() => {
@@ -2606,7 +2710,7 @@ export default function CollabRisk({
     }
     const runId = isXiaoceRoom(targetRoom) ? createXiaoceRunId() : undefined;
     stickBottomRef.current = true;
-    forceStickUntilRef.current = Date.now() + 1600;
+    forceStickUntilRef.current = 0;
     const tempId = -Date.now();
     const clientMessageKey = `local-${targetRoomId}-${Math.abs(tempId)}`;
     const optimistic: CollabMessage = {
@@ -4318,7 +4422,19 @@ export default function CollabRisk({
               </div>
             )}
 
-            <div className="collab-messages">
+            <div
+              className="collab-messages"
+              onWheelCapture={(event) => {
+                if (event.deltaY < 0 || !messagesAtBottom) releaseMessageAutoScroll();
+              }}
+              onPointerDownCapture={(event) => {
+                if (event.target === messageScrollerRef.current) releaseMessageAutoScroll();
+              }}
+              onPointerMoveCapture={(event) => {
+                if (event.buttons) releaseMessageAutoScroll();
+              }}
+              onTouchMoveCapture={releaseMessageAutoScroll}
+            >
               {visibleMessages.length === 0 ? (
                 <div className="collab-empty soft">
                   {roomDetailLoading
@@ -4342,10 +4458,11 @@ export default function CollabRisk({
                   align: "end",
                 }}
                 followOutput={() => {
+                  if (Date.now() < manualScrollUntilRef.current) return false;
                   if (Date.now() < forceStickUntilRef.current) return "auto";
                   return stickBottomRef.current ? "auto" : false;
                 }}
-                atBottomThreshold={8}
+                atBottomThreshold={24}
                 atBottomStateChange={(bottom) => {
                   setMessagesAtBottom(bottom);
                   if (bottom) stickBottomRef.current = true;
@@ -4906,7 +5023,38 @@ export default function CollabRisk({
               <div
                 ref={composerBoxRef}
                 className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}${mention && mentionOptions.length > 0 ? " has-mention" : ""}`}
+                style={composerMinHeight
+                  ? { "--collab-composer-min-height": `${composerMinHeight}px` } as CSSProperties
+                  : undefined}
               >
+                <button
+                  type="button"
+                  className="collab-composer-resizer"
+                  aria-label="向上拖动扩大输入框，双击恢复自动高度"
+                  title="向上拖动调整输入框高度，双击恢复自动高度"
+                  onPointerDown={beginComposerResize}
+                  onPointerMove={moveComposerResize}
+                  onPointerUp={finishComposerResize}
+                  onPointerCancel={finishComposerResize}
+                  onLostPointerCapture={finishComposerResize}
+                  onDoubleClick={() => setComposerMinHeight(0)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Home" || event.key === "0") {
+                      event.preventDefault();
+                      setComposerMinHeight(0);
+                      return;
+                    }
+                    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                    event.preventDefault();
+                    const textarea = composerRef.current?.resizableTextArea?.textArea as HTMLTextAreaElement | undefined;
+                    const currentHeight = composerMinHeight || textarea?.getBoundingClientRect().height || 72;
+                    const direction = event.key === "ArrowUp" ? 24 : -24;
+                    const viewportLimit = Math.max(120, window.innerHeight - 260);
+                    setComposerMinHeight(Math.max(56, Math.min(viewportLimit, currentHeight + direction)));
+                  }}
+                >
+                  <span aria-hidden />
+                </button>
                 {mention && mentionOptions.length > 0 ? (
                   <div ref={mentionMenuRef} className="collab-mention-menu" role="listbox">
                     {mentionOptions.map((opt, idx) => (
@@ -5019,7 +5167,7 @@ export default function CollabRisk({
                           ? "输入消息… 用 @ 引用之前的小策任务"
                           : "输入消息… 用 @ 提及成员 / @AI；停手约 3 秒会给出可点的改写示例"
                   }
-                  autoSize={{ minRows: 2, maxRows: 6 }}
+                  autoSize={{ minRows: 2 }}
                   disabled={!isParticipant || activeRoom.status === "closed" || sending || xiaoceBusy}
                   onPaste={(e) => {
                     const cd = e.clipboardData;
@@ -6336,9 +6484,13 @@ const css = `
   overflow: visible;
 }
 .collab-msg.peer {
-  margin-left: 28px;
+  margin-left: 18px;
 }
-.collab-msg.mine { margin-left: auto; flex-direction: row-reverse; }
+.collab-msg.mine {
+  margin-right: 18px;
+  margin-left: auto;
+  flex-direction: row-reverse;
+}
 .collab-msg-aside {
   display: flex;
   flex-direction: column;
@@ -7020,6 +7172,52 @@ const css = `
   position: relative;
   overflow: visible;
   z-index: 30;
+}
+.collab-composer-resizer {
+  position: absolute;
+  z-index: 6;
+  top: -7px;
+  left: 50%;
+  display: grid;
+  width: 58px;
+  height: 16px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.collab-composer-resizer > span {
+  display: block;
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: #c6cfdd;
+  box-shadow: 0 1px 2px rgba(18, 32, 55, 0.08);
+  transition: width 160ms ease, background 160ms ease, transform 100ms ease-out;
+}
+.collab-composer-resizer:hover > span,
+.collab-composer-resizer:focus-visible > span {
+  width: 42px;
+  background: #7c8ba3;
+}
+.collab-composer-resizer:active > span {
+  transform: scaleX(0.94);
+}
+.collab-agent-composer.is-resizing {
+  user-select: none;
+}
+.collab-agent-composer.is-resizing .collab-composer-resizer > span {
+  width: 46px;
+  background: #65758e;
+}
+.collab-agent-composer textarea.agent-chat-composer-textarea {
+  min-height: var(--collab-composer-min-height, 52px) !important;
+  max-height: calc(100vh - 260px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
 }
 .collab-agent-composer.has-mention {
   z-index: 80;
@@ -8737,7 +8935,10 @@ const css = `
     padding-inline: 14px 10px;
   }
   .collab-msg.peer {
-    margin-left: 14px;
+    margin-left: 10px;
+  }
+  .collab-msg.mine {
+    margin-right: 10px;
   }
   .collab-forward-mode { grid-template-columns: 1fr; }
   .collab-contact-open-hint { display: none; }

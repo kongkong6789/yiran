@@ -23,6 +23,18 @@ const avatarSource = readFileSync(
   new URL("../src/utils/avatar.ts", import.meta.url),
   "utf8",
 );
+const userSettingsSource = readFileSync(
+  new URL("../src/components/UserSettingsModal.tsx", import.meta.url),
+  "utf8",
+);
+const unreadBellSource = readFileSync(
+  new URL("../src/components/CollabUnreadBell.tsx", import.meta.url),
+  "utf8",
+);
+const globalStyles = readFileSync(
+  new URL("../src/index.css", import.meta.url),
+  "utf8",
+);
 const artifactSource = readFileSync(
   new URL("../src/components/CollabArtifactsPanel.tsx", import.meta.url),
   "utf8",
@@ -111,6 +123,17 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
   assert.match(chatSource, /computeItemKey=/);
   assert.match(chatSource, /optimisticIndex/);
   assert.match(chatSource, /className=\{`agent-chat-send-circle\$\{canSendMessage \|\| sending/);
+  assert.match(chatSource, /className="collab-composer-resizer"/);
+  assert.match(chatSource, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(chatSource, /autoSize=\{\{ minRows: 2 \}\}/);
+  assert.doesNotMatch(chatSource, /maxRows:\s*6/);
+  assert.match(monitorStyles, /--collab-composer-min-height/);
+  const composerMoveStart = chatSource.indexOf("const moveComposerResize");
+  const composerMoveEnd = chatSource.indexOf("const finishComposerResize", composerMoveStart);
+  const composerMoveSource = chatSource.slice(composerMoveStart, composerMoveEnd);
+  assert.match(composerMoveSource, /requestAnimationFrame/);
+  assert.match(composerMoveSource, /style\.setProperty/);
+  assert.doesNotMatch(composerMoveSource, /setComposerMinHeight/);
   assert.match(chatSource, /onClose=\{\(\) => setSummaryPanelVisible\(false\)\}/);
   assert.match(chatSource, /aria-label="显示智能纪要"/);
   assert.match(chatSource, /icon=\{<InsertRowRightOutlined \/>\}/);
@@ -131,7 +154,8 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
 
 test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(monitorStyles, /\.collab-msg-aside\s*\{[\s\S]*?align-items:\s*flex-start;/);
-  assert.match(monitorStyles, /\.collab-msg\.peer\s*\{[\s\S]*?margin-left:\s*28px;/);
+  assert.match(monitorStyles, /\.collab-msg\.peer\s*\{[\s\S]*?margin-left:\s*18px;/);
+  assert.match(monitorStyles, /\.collab-msg\.mine\s*\{[\s\S]*?margin-right:\s*18px;/);
   assert.match(monitorStyles, /\.collab-msg\.ai \.collab-msg-name,[\s\S]*?justify-content:\s*flex-start;[\s\S]*?text-align:\s*left;/);
   assert.match(monitorStyles, /\.collab-msg:not\(\.system\):hover \.collab-bubble/);
   assert.match(monitorStyles, /@media \(prefers-reduced-motion:\s*reduce\)/);
@@ -157,11 +181,29 @@ test("chat supports stable bottom scrolling, team grouping, translation, and ini
   assert.match(chatSource, /key:\s*"translate"/);
   assert.match(chatSource, /translations\[m\.id\] \? "隐藏译文" : "翻译消息"/);
   assert.doesNotMatch(chatSource, /autoTranslate|collab-auto-translate|中英互译/);
-  assert.match(chatSource, /atBottomThreshold=\{8\}/);
   assert.match(chatSource, /ResizeObserver\(settleIfPinned\)/);
+  assert.match(chatSource, /const scheduleMessagesToBottom/);
+  assert.match(chatSource, /bottomScrollFrameRef/);
+  assert.match(chatSource, /manualScrollUntilRef/);
+  assert.match(chatSource, /atBottomThreshold=\{24\}/);
+  assert.doesNotMatch(chatSource, /scroller\.scrollTop\s*=\s*scroller\.scrollHeight/);
   assert.match(monitorStyles, /\.collab-message-menu \.ant-dropdown-menu-item-danger/);
   assert.match(avatarSource, /if \(!value\) return ""/);
+  assert.match(avatarSource, /export const versionedAvatarUrl/);
+  assert.match(userSettingsSource, /versionedAvatarUrl\(res\.avatar_url\)/);
+  assert.match(chatSource, /window\.addEventListener\("liangce:user-updated", onUserUpdated\)/);
   assert.doesNotMatch(avatarSource, /liangce-default-avatar\.png/);
+});
+
+test("unread notifications preview safely and deep-link without a blank screen", () => {
+  assert.match(unreadBellSource, /className="collab-unread-toast"/);
+  assert.match(unreadBellSource, /window\.setTimeout\(\(\) => setPreview\(null\), 30_000\)/);
+  assert.match(unreadBellSource, /openRoom\(item\)/);
+  assert.match(globalStyles, /@keyframes collab-unread-toast-lifecycle/);
+  assert.match(globalStyles, /backdrop-filter:\s*blur\(24px\) saturate\(165%\)/);
+  assert.match(chatSource, /participants:\s*\[\]/);
+  assert.match(chatSource, /\(activeRoom\.participants \|\| \[\]\)\.some/);
+  assert.match(chatSource, /nextParams\.delete\("room"\)/);
 });
 
 test("chat attachments preview instantly, download, drag-forward, and appear in the AI artifact drawer", () => {

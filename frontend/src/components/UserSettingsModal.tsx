@@ -25,7 +25,7 @@ import {
   type UserProfileSettings,
   type UserWeComBindingSummary,
 } from "../api/client";
-import { authenticatedAvatarUrl } from "../utils/avatar";
+import { authenticatedAvatarUrl, versionedAvatarUrl } from "../utils/avatar";
 import BillingPanel from "./user-settings/BillingPanel";
 import { CurrentEnterpriseCard, UserProfileHeader } from "./user-settings/ProfileIdentity";
 
@@ -157,8 +157,17 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
     setUploading(true);
     try {
       const res = await uploadUserAvatar(file);
-      setAvatarUrl(res.avatar_url || "");
-      if (res.user) onSaved?.(res.user);
+      const nextAvatarUrl = versionedAvatarUrl(res.avatar_url);
+      setAvatarUrl(nextAvatarUrl);
+      const nextUser = res.user
+        ? { ...res.user, avatar_url: nextAvatarUrl }
+        : authUser
+          ? { ...authUser, avatar_url: nextAvatarUrl }
+          : null;
+      if (nextUser) {
+        setAuthUser(nextUser);
+        onSaved?.(nextUser);
+      }
       message.success("头像已更新");
     } catch (e: any) {
       message.error(e?.response?.data?.error || "头像上传失败");
@@ -207,7 +216,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
       setDisplayName(profile.display_name || "");
       if (res.phone_masked !== undefined) setPhoneMasked(res.phone_masked);
       if (res.wecom_binding) setWecomBinding(res.wecom_binding);
-      if (res.user) onSaved?.(res.user);
+      if (res.user) onSaved?.({ ...res.user, avatar_url: avatarUrl || res.user.avatar_url });
 
       const syncHint = res.wecom_sync_triggered ? "，企业微信账号绑定同步已触发" : "";
       if (wantsPwd) {
@@ -216,7 +225,7 @@ export default function UserSettingsModal({ open, onClose, onSaved }: Props) {
           new_password: pwd.new_password,
         });
         if (pwdRes.token) setAuthToken(pwdRes.token);
-        if (pwdRes.user) onSaved?.(pwdRes.user);
+        if (pwdRes.user) onSaved?.({ ...pwdRes.user, avatar_url: avatarUrl || pwdRes.user.avatar_url });
         message.success(`个人信息与密码已保存${syncHint}`);
       } else {
         message.success(`个人信息已保存${syncHint}`);
