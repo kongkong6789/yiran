@@ -289,14 +289,15 @@ def _evidence_markdown(profiles: list[dict]) -> str:
         "",
         "本报告基于下列已发布的企业可信数据版本；文中精确数字来自快照事实，AI 仅负责归纳与解释。",
         "",
-        "| 数据资产 | 版本 | 数据截至 | 记录数 |",
-        "| --- | ---: | --- | ---: |",
+        "| 数据资产 | 版本 | 数据截至 | 记录数 | 校验指纹 |",
+        "| --- | ---: | --- | ---: | --- |",
     ]
     for row in profiles:
         name = str(row.get("display_name") or row.get("asset_key") or "未命名数据")
         lines.append(
             f"| {name} | v{row.get('snapshot_id')} | "
-            f"{_friendly_as_of(row.get('as_of'))} | {row.get('row_count') or 0} |"
+            f"{_friendly_as_of(row.get('as_of'))} | {row.get('row_count') or 0} | "
+            f"`{row.get('content_hash') or '—'}` |"
         )
     lines.extend([
         "",

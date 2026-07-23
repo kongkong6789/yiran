@@ -185,7 +185,7 @@ class XiaoceExcelArtifactTests(SimpleTestCase):
                 )
                 path = resolve_attachment_path(42, item["id"])
                 self.assertIsNotNone(path)
-                self.assertEqual(path.parent, Path(tmp) / "42")
+                self.assertEqual(path.parent, (Path(tmp) / "42").resolve())
                 self.assertEqual(item["name"], "unsafe-name.xlsx")
                 self.assertEqual(item["mime"], XLSX_MIME)
                 self.assertEqual(item["size"], path.stat().st_size)

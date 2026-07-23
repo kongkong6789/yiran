@@ -1,0 +1,221 @@
+.xiaoce-history-drawer .ant-drawer-content,
+.xiaoce-history-drawer .ant-drawer-header,
+.xiaoce-history-drawer .ant-drawer-body {
+  color: var(--lc-ink);
+  background: var(--lc-surface-overlay);
+}
+
+.xiaoce-history-drawer .ant-drawer-header {
+  min-height: 68px;
+  padding: 12px 18px;
+  border-bottom-color: var(--lc-border-light);
+}
+
+.xiaoce-history-drawer .ant-drawer-body {
+  display: flex;
+  min-height: 0;
+  padding: 0;
+  flex-direction: column;
+}
+
+.xiaoce-history-drawer .ant-drawer-close,
+.xiaoce-history-drawer .ant-drawer-extra .ant-tag {
+  color: var(--lc-text-muted);
+}
+
+.xiaoce-history-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.xiaoce-history-title > .anticon {
+  color: var(--lc-accent-blue);
+  font-size: 18px;
+}
+
+.xiaoce-history-title > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xiaoce-history-title strong {
+  color: var(--lc-ink);
+  font-size: 15px;
+}
+
+.xiaoce-history-title small {
+  overflow: hidden;
+  max-width: 390px;
+  color: var(--lc-text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xiaoce-history-toolbar {
+  display: grid;
+  gap: 8px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--lc-border-light);
+  background: var(--lc-surface-raised);
+}
+
+.xiaoce-history-toolbar .ant-input-affix-wrapper {
+  min-height: 42px;
+  border-color: var(--lc-border-strong);
+  border-radius: 11px;
+  color: var(--lc-ink);
+  background: var(--lc-surface-input);
+}
+
+.xiaoce-history-toolbar .ant-input {
+  color: var(--lc-ink);
+  background: transparent;
+}
+
+.xiaoce-history-toolbar .ant-input-prefix,
+.xiaoce-history-toolbar .ant-input::placeholder,
+.xiaoce-history-toolbar > span {
+  color: var(--lc-text-muted);
+}
+
+.xiaoce-history-toolbar > span {
+  font-size: 11px;
+}
+
+.xiaoce-history-list {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px 20px;
+  overscroll-behavior: contain;
+}
+
+.xiaoce-history-state {
+  display: flex;
+  min-height: 280px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--lc-text-muted);
+  font-size: 13px;
+}
+
+.xiaoce-history-state:has(.ant-btn) {
+  flex-direction: column;
+}
+
+.xiaoce-history-item {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--lc-border-light);
+  border-radius: 10px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xiaoce-history-item:hover,
+.xiaoce-history-item:focus-visible {
+  background: var(--lc-hover);
+}
+
+.xiaoce-history-item:focus-visible {
+  outline: 2px solid var(--lc-accent-blue);
+  outline-offset: -2px;
+}
+
+.xiaoce-history-avatar {
+  flex: 0 0 36px;
+  color: #fff;
+  background: var(--lc-accent-blue);
+}
+
+.xiaoce-history-item.is-ai .xiaoce-history-avatar {
+  background: #0f766e;
+}
+
+.xiaoce-history-item.is-system .xiaoce-history-avatar {
+  color: var(--lc-text-muted);
+  background: var(--lc-hover);
+}
+
+.xiaoce-history-item-body,
+.xiaoce-history-item-head {
+  display: flex;
+  min-width: 0;
+}
+
+.xiaoce-history-item-body {
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.xiaoce-history-item-head {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.xiaoce-history-item-head strong {
+  overflow: hidden;
+  color: var(--lc-ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xiaoce-history-item-head time {
+  flex: 0 0 auto;
+  color: var(--lc-text-muted);
+  font-size: 10px;
+}
+
+.xiaoce-history-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--lc-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.xiaoce-history-item.is-system .xiaoce-history-copy {
+  color: var(--lc-text-muted);
+}
+
+.xiaoce-history-list .ant-empty {
+  margin-top: 100px;
+}
+
+.xiaoce-history-list .ant-empty-description {
+  color: var(--lc-text-muted);
+}
+
+@media (max-width: 720px) {
+  .xiaoce-history-title small {
+    max-width: 220px;
+  }
+
+  .xiaoce-history-toolbar {
+    padding-inline: 12px;
+  }
+
+  .xiaoce-history-list {
+    padding-inline: 7px;
+  }
+}

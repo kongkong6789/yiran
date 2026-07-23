@@ -20,6 +20,7 @@ type Args = {
   roomId: string | null;
   messagesRef: React.MutableRefObject<CollabMessage[]>;
   insightsRef: React.MutableRefObject<CollabInsight[]>;
+  activeXiaoceRunRef: React.MutableRefObject<XiaoceRun | null>;
   mergeMessages: (incoming: CollabMessage[], changed?: CollabMessage[]) => void;
   mergeInsights: (incoming: CollabInsight[]) => void;
   patchRoomMeta: (meta: Partial<CollabRoom>) => void;
@@ -42,6 +43,7 @@ export function useCollabRoomLive({
   roomId,
   messagesRef,
   insightsRef,
+  activeXiaoceRunRef,
   mergeMessages,
   mergeInsights,
   patchRoomMeta,
@@ -70,8 +72,10 @@ export function useCollabRoomLive({
     let reconnectTimer: number | null = null;
     let presenceTimer: number | null = null;
     let pollTimer: number | null = null;
+    let xiaoceReconcileTimer: number | null = null;
     let pingTimer: number | null = null;
     let presenceInFlight = false;
+    let xiaoceReconcileInFlight = false;
 
     const pageIsVisible = () => document.visibilityState === "visible";
 
@@ -248,6 +252,56 @@ export function useCollabRoomLive({
       }
     };
 
+    const reconcileXiaoceCompletion = async () => {
+      const runAtStart = activeXiaoceRunRef.current;
+      if (
+        !isCurrent()
+        || !pageIsVisible()
+        || runAtStart?.status !== "running"
+        || xiaoceReconcileInFlight
+      ) return;
+      xiaoceReconcileInFlight = true;
+      const requestRevision = getRoomRevision(roomId);
+      try {
+        const presence = await getCollabRoomPresence(roomId);
+        if (!isCurrent()) return;
+        const serverRun = presence.active_xiaoce_run || null;
+        if (
+          serverRun?.id === runAtStart.id
+          && serverRun.status === "running"
+        ) {
+          onXiaoceRuns?.([serverRun], {
+            authoritative: true,
+            requestRevision,
+          });
+          return;
+        }
+
+        // A terminal message may be missed if the socket reconnects between
+        // completion and delivery. Re-read the latest window without relying
+        // on the incremental cursor before dismissing the live process.
+        const page = await listCollabMessages(roomId, {
+          limit: 50,
+          lite: true,
+          includeParticipants: false,
+        });
+        if (!isCurrent()) return;
+        const latest = page.results || [];
+        applySync({
+          messages: latest,
+          after_id: latest.reduce((max, item) => Math.max(max, item.id), afterMsgRef.current),
+          room: {
+            ...page.room,
+            active_xiaoce_run: serverRun,
+          },
+        }, requestRevision);
+      } catch {
+        /* the normal socket and incremental poll remain active */
+      } finally {
+        xiaoceReconcileInFlight = false;
+      }
+    };
+
     const startTimer = window.setTimeout(() => {
       if (!isCurrent()) return;
       afterMsgRef.current = Math.max(
@@ -261,6 +315,9 @@ export function useCollabRoomLive({
 
     refreshPresence();
     presenceTimer = window.setInterval(refreshPresence, 20000);
+    xiaoceReconcileTimer = window.setInterval(() => {
+      void reconcileXiaoceCompletion();
+    }, 2500);
     const onVisibilityChange = () => {
       if (!pageIsVisible()) {
         if (reconnectTimer) {
@@ -274,6 +331,7 @@ export function useCollabRoomLive({
       connect();
       void pollOnce();
       void refreshPresence();
+      void reconcileXiaoceCompletion();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
@@ -284,6 +342,7 @@ export function useCollabRoomLive({
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (presenceTimer) window.clearInterval(presenceTimer);
       if (pollTimer) window.clearInterval(pollTimer);
+      if (xiaoceReconcileTimer) window.clearInterval(xiaoceReconcileTimer);
       if (pingTimer) window.clearInterval(pingTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       closeWebSocketQuietly(ws);
@@ -292,6 +351,7 @@ export function useCollabRoomLive({
     roomId,
     messagesRef,
     insightsRef,
+    activeXiaoceRunRef,
     mergeMessages,
     mergeInsights,
     patchRoomMeta,

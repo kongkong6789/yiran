@@ -448,7 +448,7 @@ function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes:
   if (!Array.isArray(rows) || !rows.length) return [defaultWelcome(fallbackName, nodes)];
   const restored = rows
     .filter((item) => item && (item.role === "user" || item.role === "assistant") && String(item.content || "").trim())
-    .map((item, index) => {
+    .map((item, index): ChatMessage => {
       const rawTrial = (item as { trial?: TrialRunState }).trial;
       const rawChange = (item as { flowChange?: FlowChangeInfo }).flowChange;
       return {
@@ -2053,7 +2053,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
   const selectedNodes = draft.graph.nodes.filter((node) => selectedNodeKeys.includes(node.key));
   const selectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const editMode = selectedNodeKeys.length === 0 ? "flow" : selectedNodeKeys.length === 1 ? "node" : "nodes";
-  const activeChips = editMode === "flow" ? QUICK_ACTIONS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
+  const activeChips: typeof QUICK_ACTIONS = editMode === "flow" ? QUICK_ACTIONS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
 
   const actionTitles = useMemo(
     () => Object.fromEntries(actions.map((action) => [action.name, action.title])),
@@ -2454,7 +2454,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       }));
     };
 
-    setMessages((current) => current.map((item) => {
+    setMessages((current) => current.map((item): ChatMessage => {
       if (item.id !== assistantId) return item;
       if (isConfirmResume && item.trial) {
         resumeFromStep = Math.max(1, Math.min(item.trial.current || 1, item.trial.total || total));
@@ -3343,6 +3343,8 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       const saved = await saveDraft();
       const savedVersion = saved?.version;
       if (!savedVersion) return;
+      if (!saved?.version) return;
+      const savedVersion = saved.version;
       const text = "跑一遍流程";
       const assistantId = `a-${Date.now()}`;
       setMessages((current) => [
@@ -3365,6 +3367,9 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       setSending(true);
       try {
         await runTrialInChat(text, assistantId, {
+          key: saved.key,
+          version: savedVersion.version,
+          graph: savedVersion.graph || draft.graph,
           key: saved!.key,
           version: savedVersion.version,
           graph: savedVersion.graph || draft.graph,

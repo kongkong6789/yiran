@@ -108,12 +108,16 @@ class AgentCancellationTests(TestCase):
                 "继续任务",
                 usage_source="direct",
                 extra_reference_blocks=["历史任务事实：预算 20 万"],
+                internal_system_append="平台将在服务端渲染文件，请只输出正文。",
+                max_tokens_floor=4_200,
             )
 
         self.assertTrue(result["ok"])
         record_usage.assert_called_once_with(active_skills, None, source="direct")
         messages = chat.call_args.args[1]
         self.assertIn("历史任务事实：预算 20 万", messages[-1]["content"])
+        self.assertIn("平台将在服务端渲染文件，请只输出正文。", chat.call_args.args[0])
+        self.assertEqual(chat.call_args.kwargs["max_tokens"], 4_200)
 
     @mock.patch("apps.core.agent_chat.llm.llm_available", return_value=True)
     @mock.patch("apps.core.agent_chat.llm.chat_messages_result")

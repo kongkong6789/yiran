@@ -1010,16 +1010,17 @@ test("collaboration chat stabilizes empty Xiaoce snapshots before rendering", ()
 test("Xiaoce process presentation has dedicated responsive styles", () => {
   const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
   assert.match(source, /\.xiaoce-process/);
-  assert.match(source, /\.xiaoce-live-process/);
+  assert.match(source, /\.xiaoce-live-process-item/);
+  assert.match(source, /\.xiaoce-live-message/);
   assert.match(source, /\.xiaoce-created-skill/);
   const processStyles = source.slice(
-    source.indexOf(".xiaoce-live-process {"),
-    source.indexOf(".collab-agent-composer {"),
+    source.indexOf(".xiaoce-live-empty-list {"),
+    source.indexOf(".xiaoce-created-skill {"),
   );
-  assert.match(processStyles, /var\(--lc-bg-elevated/);
-  assert.match(processStyles, /var\(--lc-border-light/);
-  assert.match(processStyles, /var\(--lc-text-muted/);
+  assert.match(processStyles, /\.xiaoce-live-message \.xiaoce-process\.is-live/);
+  assert.match(processStyles, /var\(--lc-bg/);
   assert.match(processStyles, /var\(--lc-accent-blue/);
+  assert.doesNotMatch(source, /\.xiaoce-live-process\s*\{/);
 });
 
 test("Xiaoce messages anchor to both edges while the composer spans the chat width", () => {
@@ -1035,9 +1036,6 @@ test("Xiaoce messages anchor to both edges while the composer spans the chat wid
   const messageRowRule = layoutStyles.match(
     /\.xiaoce-chat-shell \.collab-virt-item\s*\{([^}]*)\}/,
   )?.[1] || "";
-  const boundedProcessRule = layoutStyles.match(
-    /\.xiaoce-chat-shell \.xiaoce-live-process-inner\s*\{([^}]*)\}/,
-  )?.[1] || "";
   const fullWidthComposerRule = layoutStyles.match(
     /\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
   )?.[1] || "";
@@ -1045,23 +1043,55 @@ test("Xiaoce messages anchor to both edges while the composer spans the chat wid
     /\.xiaoce-chat-shell \.collab-agent-input\s*\{([^}]*)\}/,
   )?.[1] || "";
 
-  assert.match(source, /className="xiaoce-live-process-inner"/);
+  assert.match(source, /function XiaoceLiveProcessMessage/);
+  assert.match(source, /Footer: \(\) => \(/);
+  assert.match(source, /<XiaoceLiveProcessMessage run=\{activeXiaoceRun\} \/>/);
+  assert.match(source, /className="collab-msg-aside"/);
   assert.match(source, /className="collab-agent-input-inner"/);
   assert.match(source, /\.collab-msg\.mine\s*\{[^}]*margin-left:\s*auto/);
   assert.match(messageRowRule, /margin-inline:\s*var\(--xiaoce-chat-column-gutter\)/);
   assert.doesNotMatch(messageRowRule, /width:\s*min\(/);
-  assert.match(boundedProcessRule, /width:\s*min\(/);
-  assert.match(boundedProcessRule, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
-  assert.match(boundedProcessRule, /margin-inline:\s*auto/);
   assert.match(fullWidthComposerRule, /width:\s*100%/);
   assert.match(fullWidthComposerRule, /margin-inline:\s*0/);
   assert.match(composerPaddingRule, /padding-left:\s*var\(--xiaoce-chat-column-gutter\)/);
   assert.match(composerPaddingRule, /padding-right:\s*calc\(var\(--xiaoce-chat-column-gutter\) \+ var\(--xiaoce-chat-scrollbar-width\)\)/);
   assert.match(theme, /--xiaoce-chat-scrollbar-width:\s*10px/);
   assert.match(messageRowRule, /padding-inline:\s*0/);
-  assert.match(
-    layoutStyles,
-    /\.collab-agent-input[\s\S]*padding-right:\s*calc\(var\(--xiaoce-chat-column-gutter\) \+ var\(--xiaoce-chat-scrollbar-width\)\)[\s\S]*\.xiaoce-live-process[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
-  );
   assert.match(theme, /@media \(max-width: 860px\)[\s\S]*--xiaoce-chat-column-gutter:\s*10px/);
+});
+
+test("Xiaoce completion reconciles missed realtime delivery and opens long replies at the start", () => {
+  const chatSource = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const liveSource = readFileSync(
+    new URL("../src/hooks/useCollabRoomLive.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(liveSource, /activeXiaoceRunRef/);
+  assert.match(liveSource, /reconcileXiaoceCompletion/);
+  assert.match(liveSource, /Re-read the latest window without relying/);
+  assert.match(liveSource, /xiaoceReconcileTimer = window\.setInterval/);
+  assert.match(chatSource, /scrollXiaoceReplyToStart/);
+  assert.match(chatSource, /completedXiaoceMessage/);
+  assert.match(chatSource, /align: "start"/);
+  assert.match(chatSource, /block: "start"/);
+});
+
+test("Xiaoce exposes a large searchable all-message history drawer", () => {
+  const chatSource = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const historySource = readFileSync(
+    new URL("../src/components/XiaoceHistoryDrawer.tsx", import.meta.url),
+    "utf8",
+  );
+  const historyStyles = readFileSync(
+    new URL("../src/styles/xiaoceHistoryDrawer.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(chatSource, /aria-label="查看全部历史发言"/);
+  assert.match(chatSource, /<XiaoceHistoryDrawer/);
+  assert.match(historySource, /width="min\(620px, calc\(100vw - 16px\)\)"/);
+  assert.match(historySource, /placeholder="搜索全部历史发言"/);
+  assert.match(historySource, /beforeId/);
+  assert.match(historySource, /limit: 100/);
+  assert.match(historySource, /onSelect\(message\.id\)/);
+  assert.match(historyStyles, /\.xiaoce-history-list\s*\{[\s\S]*overflow-y:\s*auto/);
 });

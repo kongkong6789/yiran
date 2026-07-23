@@ -63,6 +63,7 @@ import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatTodoModal from "../components/ChatTodoModal";
 import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
+import XiaoceHistoryDrawer from "../components/XiaoceHistoryDrawer";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabMessageSearch from "../components/CollabMessageSearch";
@@ -123,8 +124,11 @@ const RISK_META: Record<string, { color: string; label: string }> = {
 const FILE_ACCEPT = [
   "image/*",
   ".png,.jpg,.jpeg,.gif,.webp,.bmp",
-  ".md,.markdown,.txt,.json,.csv,.py,.log,.yaml,.yml,.xml,.html,.htm,.tsv",
-  ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx",
+  "text/*,.md,.markdown,.txt,.rtf,.json,.jsonl,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm",
+  ".py,.pyi,.js,.jsx,.mjs,.cjs,.ts,.tsx,.java,.go,.rs,.c,.cc,.cpp,.cxx,.h,.hh,.hpp",
+  ".cs,.php,.rb,.swift,.kt,.kts,.scala,.sql,.sh,.bash,.zsh,.fish,.ps1,.bat,.cmd",
+  ".css,.scss,.sass,.less,.vue,.svelte,.toml,.ini,.cfg,.conf,.properties",
+  ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.ppt,.pptx",
   ".zip,.rar,.7z,.tar,.gz",
   ".mp3,.wav,.mp4,.mov,.avi",
 ].join(",");
@@ -612,6 +616,36 @@ function ProfileAvatarPopover({
   );
 }
 
+function XiaoceLiveProcessMessage({ run }: { run: XiaoceRun }) {
+  return (
+    <div className="collab-virt-item xiaoce-live-process-item">
+      <div
+        className="collab-msg peer ai xiaoce-live-message"
+        aria-label="小策bot 正在处理"
+      >
+        <div className="collab-msg-aside">
+          <span className="collab-msg-name">
+            <span className="collab-msg-name-text">小策bot</span>
+          </span>
+          <ProfileAvatarPopover
+            ai
+            online
+            placement="rightTop"
+          />
+        </div>
+        <div className="collab-bubble-wrap">
+          <XiaoceProcess
+            steps={run.progress_steps}
+            status={run.status}
+            live
+            errorMessage={run.error_message}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function participantsPresenceEqual(
   a: CollabUserBrief[] | undefined,
   b: CollabUserBrief[] | undefined,
@@ -789,6 +823,7 @@ export default function CollabRisk({
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [siderTab, setSiderTab] = useState<"chats" | "contacts">("chats");
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [xiaoceHistoryOpen, setXiaoceHistoryOpen] = useState(false);
   const switchSiderTab = useCallback((next: "chats" | "contacts") => {
     setSiderTab(next);
     onPanelChange?.(next);
@@ -1181,6 +1216,33 @@ export default function CollabRisk({
     scrollMessagesToBottom(behavior);
     return true;
   }, [scrollMessagesToBottom]);
+
+  const scrollXiaoceReplyToStart = useCallback((messageId: number) => {
+    const targetIndex = messagesRef.current
+      .filter((item) => item.status !== "deleted")
+      .findIndex((item) => item.id === messageId);
+    if (targetIndex < 0) return;
+    messageScrollIntentRevisionRef.current += 1;
+    manualMessageScrollLockRef.current = true;
+    messageAtBottomRef.current = false;
+    stickBottomRef.current = false;
+    forceStickUntilRef.current = 0;
+    const revealStart = () => {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndexRef.current + targetIndex,
+        align: "start",
+        behavior: "auto",
+      });
+      document.getElementById(`collab-msg-${messageId}`)?.scrollIntoView({
+        behavior: "auto",
+        block: "start",
+      });
+    };
+    requestAnimationFrame(() => {
+      revealStart();
+      window.setTimeout(revealStart, 80);
+    });
+  }, []);
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
@@ -1978,6 +2040,18 @@ export default function CollabRisk({
     const shouldStick = !manualMessageScrollLockRef.current && (
       stickBottomRef.current || Date.now() < forceStickUntilRef.current
     );
+    const activeRunId = activeXiaoceRunRef.current?.id;
+    const completedXiaoceMessage = incoming.find((item) => (
+      item.msg_type === "ai"
+      && Boolean(activeRunId)
+      && item.meta?.run_id === activeRunId
+      && (
+        item.meta?.process_status === "completed"
+        || item.meta?.process_status === "failed"
+        || item.meta?.process_status === "cancelled"
+        || item.meta?.cancelled === true
+      )
+    ));
     const roomId = activeIdRef.current;
     if (!roomId || (!incoming.length && !changed?.length)) return;
     mutateRoomData(roomId, { messages: (prev) => {
@@ -2015,13 +2089,15 @@ export default function CollabRisk({
       }
       return next;
     } });
-    if (shouldStick && incoming.length) {
+    if (shouldStick && completedXiaoceMessage) {
+      scrollXiaoceReplyToStart(completedXiaoceMessage.id);
+    } else if (shouldStick && incoming.length) {
       scrollMessagesToBottom("auto");
     }
     if ([...incoming, ...(changed || [])].some((item) => Boolean(item.meta?.created_skill))) {
       setSkillRefreshKey((value) => value + 1);
     }
-  }, [mutateRoomData, scrollMessagesToBottom]);
+  }, [mutateRoomData, scrollMessagesToBottom, scrollXiaoceReplyToStart]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
     setInsights((prev) => {
@@ -2160,6 +2236,7 @@ export default function CollabRisk({
     roomId: activeId,
     messagesRef,
     insightsRef,
+    activeXiaoceRunRef,
     mergeMessages: mergeLiveMessages,
     mergeInsights: mergeLiveInsights,
     patchRoomMeta,
@@ -3617,6 +3694,13 @@ export default function CollabRisk({
     selectRoom(roomId);
   };
 
+  const openXiaoceHistoryMessage = (messageId: number) => {
+    const roomId = activeRoomRef.current?.id;
+    setXiaoceHistoryOpen(false);
+    if (!roomId) return;
+    void loadRoomDetail(roomId, { targetMessageId: messageId });
+  };
+
   return (
     <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible ? "" : " collab-page--summary-hidden"}${selectionMode ? " collab-page--selecting" : ""}`}>
       <style>{css}</style>
@@ -4086,6 +4170,19 @@ export default function CollabRisk({
                   </Button>
                 </Tooltip>
                 {isXiaoce ? (
+                  <Tooltip title="查看全部历史发言">
+                    <Button
+                      type="text"
+                      className="xiaoce-history-button"
+                      icon={<HistoryOutlined />}
+                      onClick={() => setXiaoceHistoryOpen(true)}
+                      aria-label="查看全部历史发言"
+                    >
+                      历史发言
+                    </Button>
+                  </Tooltip>
+                ) : null}
+                {isXiaoce ? (
                   <div className="xiaoce-theme-switch" role="group" aria-label="对话主题">
                     <Button
                       type="text"
@@ -4272,11 +4369,17 @@ export default function CollabRisk({
               onPointerCancelCapture={() => { messagePointerStartRef.current = null; }}
             >
               {visibleMessages.length === 0 ? (
-                <div className="collab-empty soft">
-                  {roomDetailLoading
-                    ? "正在加载消息…"
-                    : "开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。"}
-                </div>
+                xiaoceBusy && activeXiaoceRun ? (
+                  <div className="xiaoce-live-empty-list">
+                    <XiaoceLiveProcessMessage run={activeXiaoceRun} />
+                  </div>
+                ) : (
+                  <div className="collab-empty soft">
+                    {roomDetailLoading
+                      ? "正在加载消息…"
+                      : "开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。"}
+                  </div>
+                )
               ) : (
               <Virtuoso
                 key={activeId || "none"}
@@ -4318,6 +4421,11 @@ export default function CollabRisk({
                     <div className="collab-msg-history-tip">
                       {loadingOlder ? "加载更早消息…" : hasMoreBefore ? "上滑加载更早消息" : "已到会话开头"}
                     </div>
+                  ),
+                  Footer: () => (
+                    xiaoceBusy && activeXiaoceRun
+                      ? <XiaoceLiveProcessMessage run={activeXiaoceRun} />
+                      : null
                   ),
                 }}
                 itemContent={(_index, m) => {
@@ -4673,20 +4781,6 @@ export default function CollabRisk({
                     取消
                   </Button>
                 </Space>
-              </div>
-            ) : null}
-
-            {xiaoceBusy && activeXiaoceRun ? (
-              <div className="xiaoce-live-process">
-                <div className="xiaoce-live-process-inner">
-                  <span className="xiaoce-live-process-label">小策bot</span>
-                  <XiaoceProcess
-                    steps={activeXiaoceRun.progress_steps}
-                    status={activeXiaoceRun.status}
-                    live
-                    errorMessage={activeXiaoceRun.error_message}
-                  />
-                </div>
               </div>
             ) : null}
 
@@ -5105,6 +5199,14 @@ export default function CollabRisk({
           setTodoOpen(false);
           setTodoSource(null);
         }}
+      />
+
+      <XiaoceHistoryDrawer
+        open={xiaoceHistoryOpen}
+        roomId={isXiaoce ? activeRoom?.id || null : null}
+        roomTitle={activeRoom ? roomTitle(activeRoom) : ""}
+        onClose={() => setXiaoceHistoryOpen(false)}
+        onSelect={openXiaoceHistoryMessage}
       />
 
       <Modal
@@ -6653,19 +6755,20 @@ const css = `
 .collab-context-composer button:hover {
   background: color-mix(in srgb, var(--lc-text, #172033) 7%, transparent);
 }
-.xiaoce-live-process {
-  flex-shrink: 0;
-  padding: 10px 16px 8px;
-  border-top: 1px solid var(--lc-border-light, #edf1f7);
-  background: color-mix(in srgb, var(--lc-bg-elevated, #fff) 92%, #f3f7ff);
+.xiaoce-live-empty-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: 18px;
 }
-.xiaoce-live-process-label {
-  display: block;
-  margin: 0 0 6px 2px;
-  color: var(--lc-text-muted, #5c6b84);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.xiaoce-live-process-item {
+  padding-bottom: 18px;
+}
+.xiaoce-live-message {
+  margin-bottom: 0;
+}
+.xiaoce-live-message .xiaoce-process.is-live {
+  margin-top: 18px;
 }
 .xiaoce-process {
   width: min(420px, 100%);
@@ -8438,7 +8541,6 @@ const css = `
   .collab-main { min-width: 0; }
   .collab-selection-toolbar { align-items: flex-start; flex-direction: column; }
   .collab-forward-card { width: min(320px, 56vw); }
-  .xiaoce-live-process { padding-inline: 10px; }
   .xiaoce-process { width: 100%; }
 }
 @media (max-width: 560px) {
