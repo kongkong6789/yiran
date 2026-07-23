@@ -43,8 +43,7 @@ def recognize_intent_rules(text: str) -> tuple[str, str]:
     return ("未识别到明确动作", "")
 
 
-def recognize_intent(text: str, user=None) -> tuple[str, str]:
-def recognize_intent(text: str, capability_context: str = "") -> tuple[str, str]:
+def recognize_intent(text: str, user=None, capability_context: str = "") -> tuple[str, str]:
     """优先 LLM 意图识别,失败则关键词规则。"""
     from apps.council import llm
 

@@ -1283,7 +1283,7 @@ export const createSop = (body: Record<string, unknown>) =>
 export const updateSop = (key: string, body: Record<string, unknown>) =>
   api.patch<SopDefinitionItem>(`/orchestration/sops/${key}/`, body).then((r) => r.data);
 
-export const duplicateSop = (key: string, body: { key: string; name?: string }) =>
+export const duplicateSop = (key: string, body: { key?: string; name?: string } = {}) =>
   api.post<SopDefinitionItem>(`/orchestration/sops/${key}/duplicate/`, body).then((r) => r.data);
 
 export const createSopVersion = (key: string, body: Record<string, unknown>) =>

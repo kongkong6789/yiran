@@ -31,7 +31,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { App, Button, Dropdown, Empty, Input, Modal, Select, Space, Spin, Table, Tag } from "antd";
+import { App, Button, Dropdown, Empty, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip } from "antd";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -346,9 +346,10 @@ function SopStructuredSource({ draft, disabled, onChange }: {
   </div>;
 }
 
-function SopEditor({ initial, record, onBack, onSaved }: {
+function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSaved }: {
   initial: SopDraftPayload;
   record?: SopDefinitionItem;
+  openVersionsOnMount?: boolean;
   onBack: () => void;
   onSaved: (item: SopDefinitionItem) => void;
 }) {
@@ -366,7 +367,7 @@ function SopEditor({ initial, record, onBack, onSaved }: {
   const [view, setView] = useState<"flow" | "source">("flow");
   const [versions, setVersions] = useState<SopVersionItem[]>(record?.version ? [record.version] : []);
   const [selectedVersion, setSelectedVersion] = useState<SopVersionItem | undefined>(record?.version);
-  const [versionOpen, setVersionOpen] = useState(false);
+  const [versionOpen, setVersionOpen] = useState(Boolean(openVersionsOnMount && record));
   const readOnly = Boolean(record && selectedVersion?.status !== "draft");
 
   const refreshVersions = useCallback(async () => {
@@ -376,6 +377,10 @@ function SopEditor({ initial, record, onBack, onSaved }: {
   }, [message, record]);
 
   useEffect(() => { void refreshVersions(); }, [refreshVersions]);
+
+  useEffect(() => {
+    if (openVersionsOnMount && record) setVersionOpen(true);
+  }, [openVersionsOnMount, record]);
 
   const selectVersion = async (version: string) => {
     if (!record) return;
@@ -539,7 +544,7 @@ export default function SopCenter() {
   const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft">("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [editor, setEditor] = useState<{ draft: SopDraftPayload; record?: SopDefinitionItem }>();
+  const [editor, setEditor] = useState<{ draft: SopDraftPayload; record?: SopDefinitionItem; openVersions?: boolean }>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -562,18 +567,22 @@ export default function SopCenter() {
     graph: detail.version?.graph || EMPTY_GRAPH,
   });
 
-  const openEdit = async (item: SopDefinitionItem) => {
-    try { const detail = await getSop(item.key); setEditor({ draft: toDraft(detail), record: detail }); }
+  const openEdit = async (item: SopDefinitionItem, options?: { openVersions?: boolean }) => {
+    try {
+      const detail = await getSop(item.key);
+      setEditor({ draft: toDraft(detail), record: detail, openVersions: options?.openVersions });
+    }
     catch (error) { message.error(errorText(error, "SOP 详情加载失败")); }
   };
 
   const copySystem = async (item: SopDefinitionItem) => {
     try {
-      const copy = await duplicateSop(item.key, { key: `${item.key}.local`, name: `${item.name}（本地版）` });
+      const copy = await duplicateSop(item.key);
       const detail = await getSop(copy.key);
+      message.success(`已复制为「${detail.name}」`);
       await refresh();
       setEditor({ draft: toDraft(detail), record: detail });
-    } catch (error) { message.error(errorText(error, "复制失败，请调整本地 SOP ID")); }
+    } catch (error) { message.error(errorText(error, "复制失败")); }
   };
 
   const createNextVersion = async (item: SopDefinitionItem) => {
@@ -658,12 +667,16 @@ export default function SopCenter() {
     {
       title: "操作",
       key: "actions",
-      width: 180,
+      width: 240,
       render: (_: unknown, row: SopDefinitionItem) => {
         const moreItems = row.system
-          ? [{ key: "copy", label: "复制后编辑", onClick: () => void copySystem(row) }]
+          ? [
+            { key: "versions", label: "版本管理", onClick: () => void openEdit(row, { openVersions: true }) },
+            { key: "copy", label: "复制后编辑", onClick: () => void copySystem(row) },
+          ]
           : [
             { key: "edit", label: row.hasDraft ? "AI 编辑草稿" : "查看流程", onClick: () => void openEdit(row) },
+            { key: "versions", label: "版本管理", onClick: () => void openEdit(row, { openVersions: true }) },
             ...(row.status === "published" && !row.hasDraft
               ? [{ key: "version", label: "创建新版本", onClick: () => void createNextVersion(row) }]
               : [{
@@ -685,13 +698,24 @@ export default function SopCenter() {
             <Button className="sop-template-run-btn" size="small" icon={<PlayCircleOutlined />} onClick={() => runSopTemplate(row)}>
               运行
             </Button>
-            <Button
-              className="sop-template-copy-btn"
-              size="small"
-              icon={<CopyOutlined />}
-              aria-label={`复制${row.name}`}
-              onClick={() => void copySystem(row)}
-            />
+            <Tooltip title="复制">
+              <Button
+                className="sop-template-copy-btn"
+                size="small"
+                icon={<CopyOutlined />}
+                aria-label={`复制${row.name}`}
+                onClick={() => void copySystem(row)}
+              />
+            </Tooltip>
+            <Tooltip title="版本管理">
+              <Button
+                className="sop-template-version-btn"
+                size="small"
+                icon={<HistoryOutlined />}
+                aria-label={`版本管理${row.name}`}
+                onClick={() => void openEdit(row, { openVersions: true })}
+              />
+            </Tooltip>
             <Dropdown
               menu={{
                 items: moreItems.map((item) => ({
@@ -702,7 +726,9 @@ export default function SopCenter() {
               }}
               trigger={["click"]}
             >
-              <Button className="sop-template-more-btn" size="small" icon={<MoreOutlined />} aria-label="更多操作" />
+              <Tooltip title="更多操作">
+                <Button className="sop-template-more-btn" size="small" icon={<MoreOutlined />} aria-label="更多操作" />
+              </Tooltip>
             </Dropdown>
           </div>
         );
@@ -710,7 +736,17 @@ export default function SopCenter() {
     },
   ];
 
-  if (editor) return <SopEditor initial={editor.draft} record={editor.record} onBack={() => setEditor(undefined)} onSaved={(item) => { setEditor({ draft: toDraft(item), record: item }); void refresh(); }} />;
+  if (editor) {
+    return (
+      <SopEditor
+        initial={editor.draft}
+        record={editor.record}
+        openVersionsOnMount={editor.openVersions}
+        onBack={() => setEditor(undefined)}
+        onSaved={(item) => { setEditor({ draft: toDraft(item), record: item }); void refresh(); }}
+      />
+    );
+  }
 
   return (
     <div className="sop-center">

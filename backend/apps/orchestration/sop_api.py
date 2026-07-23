@@ -298,6 +298,25 @@ def sop_detail(request, sop_key: str):
     return Response(_sop_payload(sop, request.user, include_graph=True))
 
 
+def _allocate_unique_sop_key(organization, preferred: str) -> str:
+    preferred = (preferred or "").strip()[:96] or "sop.copy"
+    if not SopDefinition.objects.filter(organization=organization, sop_key=preferred).exists():
+        return preferred
+    base = preferred
+    for index in range(2, 1000):
+        candidate = f"{base}.{index}"[:96]
+        if not SopDefinition.objects.filter(organization=organization, sop_key=candidate).exists():
+            return candidate
+    raise ValueError("无法分配唯一的 SOP ID。")
+
+
+def _default_copy_key(sop_key: str) -> str:
+    matched = re.match(r"^(.*?\.local)(?:\.\d+)?$", sop_key or "")
+    if matched:
+        return matched.group(1)
+    return f"{(sop_key or 'sop').strip()}.local"
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def sop_duplicate(request, sop_key: str):
@@ -306,14 +325,23 @@ def sop_duplicate(request, sop_key: str):
     if not source:
         return Response({"error": "SOP 不存在。"}, status=404)
     source_version = source.versions.filter(version=source.current_version).first() or source.versions.first()
-    key = str(request.data.get("key") or f"{source.sop_key}.local").strip()[:96]
-    if SopDefinition.objects.filter(organization=organization, sop_key=key).exists():
-        return Response({"error": "当前工作区已存在相同 SOP ID。"}, status=400)
+    preferred = str(request.data.get("key") or _default_copy_key(source.sop_key)).strip()[:96]
+    try:
+        key = _allocate_unique_sop_key(organization, preferred)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=400)
+    copy_index = 1
+    if key != preferred:
+        suffix = key.rsplit(".", 1)[-1]
+        copy_index = int(suffix) if suffix.isdigit() else 2
+    default_name = f"{source.name}（本地版）" if copy_index == 1 else f"{source.name}（本地版 {copy_index}）"
+    if request.data.get("name"):
+        default_name = str(request.data.get("name"))
     with transaction.atomic():
         copy = SopDefinition.objects.create(
             organization=organization,
             sop_key=key,
-            name=str(request.data.get("name") or f"{source.name}（本地版）")[:128],
+            name=default_name[:128],
             business_domain=source.business_domain,
             description=source.description,
             action_name=source.action_name,
