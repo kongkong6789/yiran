@@ -844,6 +844,8 @@ export interface AgentChatResult {
   refs?: {
     rag?: unknown[];
     graph?: { id: number; name: string; otype: string }[];
+    lightrag?: { source_id?: string; source_name?: string; workspace?: string; mode?: string }[];
+    lightrag_status?: { mode?: string; error?: string; degraded_sources?: string[] };
     mcp?: { server: string; tool?: string; source?: string }[];
     skills?: { skill_id: string; name: string; description?: string }[];
   };
@@ -1137,6 +1139,7 @@ export const agentChat = (body: {
   skill_ids?: string[];
   model?: string;
   knowledge_mode?: "auto" | "none" | "selected" | string;
+  lightrag_mode?: "local" | "global" | "hybrid" | "mix" | "naive" | "bypass" | string;
   knowledge_base_ids?: number[];
   files?: File[];
 }) => {
@@ -1146,6 +1149,7 @@ export const agentChat = (body: {
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.model) form.append("model", body.model);
     if (body.knowledge_mode) form.append("knowledge_mode", body.knowledge_mode);
+    if (body.lightrag_mode) form.append("lightrag_mode", body.lightrag_mode);
     body.knowledge_base_ids?.forEach((id) => form.append("knowledge_base_ids", String(id)));
     body.skill_ids?.forEach((id) => form.append("skill_ids", id));
     body.files.forEach((file) => form.append("files", file));

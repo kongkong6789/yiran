@@ -10,6 +10,7 @@ from apps.council import llm
 from apps.council import images as image_svc
 from apps.council.knowledge import gather_knowledge
 from apps.council.graph_knowledge import search_graph
+from apps.council.lightrag_modes import normalize_lightrag_mode, query_lightrag
 from apps.mcp.client import find_document_url_in_thread, is_document_followup, read_wecom_document
 from apps.mcp.nas_files import read_nas_for_agent
 from apps.skills.analytics import record_skill_usage
@@ -190,6 +191,7 @@ def run_chat(
     cancel_check=None,
     knowledge_mode: str = "auto",
     knowledge_base_ids: list[int] | None = None,
+    lightrag_mode: str | None = None,
     progress_callback=None,
     session_key: str | None = None,
     usage_source: str = "agent",
@@ -199,6 +201,7 @@ def run_chat(
     history = history or []
     attachments = attachments or []
     model_override = (model or "").strip() or None
+    normalized_lightrag_mode = normalize_lightrag_mode(lightrag_mode)
     harness = ConversationHarness(progress_callback=progress_callback)
     progress_callback = harness.emit_progress
     if not message and not attachments:
@@ -248,17 +251,35 @@ def run_chat(
     graph: dict = {"refs": []}
     selected_knowledge = ""
     selected_knowledge_refs: list[dict] = []
+    lightrag_block = ""
+    lightrag_refs: list[dict] = []
+    lightrag_status: dict = {"mode": normalized_lightrag_mode, "error": "", "degraded_sources": []}
     retrieve_knowledge = should_retrieve_knowledge(
         message,
         knowledge_mode,
         knowledge_base_ids,
         doc_mode=doc_mode,
     )
+    if normalized_lightrag_mode == "bypass":
+        retrieve_knowledge = False
     if retrieve_knowledge:
         emit_progress(progress_callback, "knowledge_search", "running")
         knowledge = gather_knowledge(message, top_k=4, user=user)
         raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
+        lightrag = query_lightrag(
+            message,
+            mode=normalized_lightrag_mode,
+            limit=4,
+            user=user,
+        )
+        lightrag_block = lightrag.block
+        lightrag_refs = lightrag.refs
+        lightrag_status = {
+            "mode": lightrag.mode,
+            "error": lightrag.error,
+            "degraded_sources": lightrag.degraded_sources,
+        }
         raise_if_cancelled(cancel_check)
         selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(
             message,
@@ -305,6 +326,7 @@ def run_chat(
         )
     has_evidence = bool(
         selected_knowledge
+        or lightrag_block
         or knowledge
         or graph.get("refs")
         or mcp.get("content")
@@ -317,6 +339,8 @@ def run_chat(
         "rag": [],
         "knowledge_bases": selected_knowledge_refs,
         "graph": graph.get("refs") or [],
+        "lightrag": lightrag_refs,
+        "lightrag_status": lightrag_status,
         "mcp": (
             ([{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
              if mcp.get("content") else [])
@@ -359,6 +383,8 @@ def run_chat(
         reference_blocks.append(f"[Skill diagnostic]\n{skill_diag}")
     if selected_knowledge:
         reference_blocks.append(selected_knowledge)
+    if lightrag_block:
+        reference_blocks.append(lightrag_block)
     if knowledge:
         reference_blocks.append(knowledge)
     if mcp.get("content"):
@@ -594,6 +620,7 @@ def run_chat(
         "memory_injected": bool(ctx_pack.memory_block or ctx_pack.summary_block),
         "knowledge_hit": bool(
             selected_knowledge
+            or lightrag_block
             or knowledge
             or mcp.get("content")
             or nas.get("content")

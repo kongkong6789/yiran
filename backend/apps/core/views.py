@@ -1166,6 +1166,9 @@ def agent_chat(request):
     knowledge_mode = str(request.data.get("knowledge_mode") or "auto").strip().lower()
     if knowledge_mode not in {"auto", "none", "selected"}:
         knowledge_mode = "auto"
+    lightrag_mode = str(request.data.get("lightrag_mode") or "mix").strip().lower()
+    if lightrag_mode not in {"local", "global", "hybrid", "mix", "naive", "bypass"}:
+        lightrag_mode = "mix"
     raw_knowledge_ids = request.data.get("knowledge_base_ids") or []
     if isinstance(raw_knowledge_ids, str):
         raw_knowledge_ids = request.data.getlist("knowledge_base_ids") or [raw_knowledge_ids]
@@ -1186,6 +1189,7 @@ def agent_chat(request):
             model=model,
             knowledge_mode=knowledge_mode,
             knowledge_base_ids=knowledge_base_ids,
+            lightrag_mode=lightrag_mode,
             session_key=str(session.id),
         )
     except Exception as exc:
@@ -1204,6 +1208,7 @@ def agent_chat(request):
                 "knowledge_hit": result.get("knowledge_hit"),
                 "mcp": result.get("mcp") or {},
                 "refs": result.get("refs") or {},
+                "lightrag_mode": lightrag_mode,
                 "skills": result.get("skills") or [],
                 "attachments": result.get("attachments") or [],
                 "nas_files": result.get("nas_files") or [],
