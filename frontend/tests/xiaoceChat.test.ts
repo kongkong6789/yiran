@@ -1022,7 +1022,7 @@ test("Xiaoce process presentation has dedicated responsive styles", () => {
   assert.match(processStyles, /var\(--lc-accent-blue/);
 });
 
-test("Xiaoce bot and user messages anchor left and right while controls stay bounded", () => {
+test("Xiaoce messages anchor to both edges while the composer spans the chat width", () => {
   const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
   const theme = readFileSync(
     new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
@@ -1035,8 +1035,14 @@ test("Xiaoce bot and user messages anchor left and right while controls stay bou
   const messageRowRule = layoutStyles.match(
     /\.xiaoce-chat-shell \.collab-virt-item\s*\{([^}]*)\}/,
   )?.[1] || "";
-  const boundedControlRule = layoutStyles.match(
-    /\.xiaoce-chat-shell \.xiaoce-live-process-inner,\s*\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
+  const boundedProcessRule = layoutStyles.match(
+    /\.xiaoce-chat-shell \.xiaoce-live-process-inner\s*\{([^}]*)\}/,
+  )?.[1] || "";
+  const fullWidthComposerRule = layoutStyles.match(
+    /\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
+  )?.[1] || "";
+  const composerPaddingRule = layoutStyles.match(
+    /\.xiaoce-chat-shell \.collab-agent-input\s*\{([^}]*)\}/,
   )?.[1] || "";
 
   assert.match(source, /className="xiaoce-live-process-inner"/);
@@ -1044,14 +1050,18 @@ test("Xiaoce bot and user messages anchor left and right while controls stay bou
   assert.match(source, /\.collab-msg\.mine\s*\{[^}]*margin-left:\s*auto/);
   assert.match(messageRowRule, /margin-inline:\s*var\(--xiaoce-chat-column-gutter\)/);
   assert.doesNotMatch(messageRowRule, /width:\s*min\(/);
-  assert.match(boundedControlRule, /width:\s*min\(/);
-  assert.match(boundedControlRule, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
-  assert.match(boundedControlRule, /margin-inline:\s*auto/);
+  assert.match(boundedProcessRule, /width:\s*min\(/);
+  assert.match(boundedProcessRule, /calc\(100% - var\(--xiaoce-chat-column-gutter\)/);
+  assert.match(boundedProcessRule, /margin-inline:\s*auto/);
+  assert.match(fullWidthComposerRule, /width:\s*100%/);
+  assert.match(fullWidthComposerRule, /margin-inline:\s*0/);
+  assert.match(composerPaddingRule, /padding-left:\s*var\(--xiaoce-chat-column-gutter\)/);
+  assert.match(composerPaddingRule, /padding-right:\s*calc\(var\(--xiaoce-chat-column-gutter\) \+ var\(--xiaoce-chat-scrollbar-width\)\)/);
   assert.match(theme, /--xiaoce-chat-scrollbar-width:\s*10px/);
   assert.match(messageRowRule, /padding-inline:\s*0/);
   assert.match(
     layoutStyles,
-    /\.xiaoce-live-process[\s\S]*\.collab-agent-input[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
+    /\.collab-agent-input[\s\S]*padding-right:\s*calc\(var\(--xiaoce-chat-column-gutter\) \+ var\(--xiaoce-chat-scrollbar-width\)\)[\s\S]*\.xiaoce-live-process[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
   );
   assert.match(theme, /@media \(max-width: 860px\)[\s\S]*--xiaoce-chat-column-gutter:\s*10px/);
 });

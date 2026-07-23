@@ -1,9 +1,9 @@
 .enterprise-data-page {
-  --enterprise-ink: #1a1d26;
-  --enterprise-muted: #6b7280;
-  --enterprise-line: #e8ebf0;
-  --enterprise-soft: #f4f6fb;
-  --enterprise-surface: #fff;
+  --enterprise-ink: var(--lc-text);
+  --enterprise-muted: var(--lc-text-muted);
+  --enterprise-line: var(--lc-border-light);
+  --enterprise-soft: var(--lc-surface-raised);
+  --enterprise-surface: var(--lc-surface);
   --enterprise-accent: #6b46fe;
   --enterprise-accent-soft: #f0ebff;
   --enterprise-accent-hover: #5a38e8;

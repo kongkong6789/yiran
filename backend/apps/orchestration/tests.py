@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from apps.council.models import AgentProfile
+from apps.core.organizations import ensure_current_organization
 from apps.skills.models import UserSkill
 
 
@@ -9,7 +10,11 @@ class RealAgentExecutionTests(APITestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="agent-runner", password="test-pass")
         self.client.force_authenticate(self.user)
+        self.organization = ensure_current_organization(self.user)
         self.agent = AgentProfile.objects.create(
+            organization=self.organization,
+            created_by=self.user,
+            owner=self.user,
             name="真实运营智能体",
             expertise="经营日报和数据分析",
             execution_role=AgentProfile.ExecutionRole.OPERATOR,

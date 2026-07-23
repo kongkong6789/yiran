@@ -10,7 +10,7 @@ class OpsLoopsApiTests(TestCase):
     def setUp(self):
         User = get_user_model()
         self.user = User.objects.create_user(username="ops-loop-user", password="pass")
-        self.org = Organization.objects.create(name="Ops Org", slug="ops-org", created_by=self.user)
+        self.org = Organization.objects.create(name="Ops Org")
         OrganizationMembership.objects.create(
             organization=self.org,
             user=self.user,
