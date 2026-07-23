@@ -52,25 +52,7 @@ import {
   resolveAgentAvatar,
 } from "../utils/agentAvatars";
 
-const { Paragraph, Text, Title } = Typography;
-
-const EMOJI_CHOICES = ["🤖", "📈", "🧩", "💰", "🎯", "🧠", "⚙️", "🎨", "📊", "🛡️", "🚀", "🔬"];
-
-const CAPABILITY_RULE_TEMPLATE = `【触发条件】
-- 涉及事实、制度或历史资料时，先检索已选知识库。
-- 涉及可执行操作时，调用最匹配的 Skill。
-- 用户明确要求跑流程/周报/SOP 时，优先走已绑定的已发布 SOP。
-
 const { Text } = Typography;
-【调用顺序】
-1. 先确认用户意图与必要参数。
-2. 先检索取证，再执行操作；能力冲突时优先使用更具体的 Skill 或已绑定 SOP。
-
-【失败与边界】
-- 无结果时说明检索范围，并请求补充信息。
-- 调用失败时说明原因并给出替代方案，不得假装成功。
-- 未绑定或不在白名单的 SOP 不得执行。
-- 高风险或越权操作必须停止并请求确认。`;
 
 const PERSONA_TEMPLATE = `【角色定位】你是……
 【核心目标】你需要……
@@ -266,6 +248,7 @@ const DEMO_AGENTS: Agent[] = [
     quota_remaining: 10000,
     status: "available",
     skill_ids: ["meeting"],
+    sop_keys: [],
     knowledge_base_ids: [1, 2],
     capability_instructions: "行政 SOP",
     created_at: "2026-01-01T00:00:00Z",
@@ -285,6 +268,7 @@ const DEMO_AGENTS: Agent[] = [
     quota_remaining: 10000,
     status: "available",
     skill_ids: ["audit", "budget"],
+    sop_keys: [],
     knowledge_base_ids: [1, 2, 3],
     capability_instructions: "财务 SOP",
     created_at: "2026-01-02T00:00:00Z",
@@ -304,6 +288,7 @@ const DEMO_AGENTS: Agent[] = [
     quota_remaining: 10000,
     status: "available",
     skill_ids: ["review"],
+    sop_keys: [],
     knowledge_base_ids: [1, 2, 3, 4],
     capability_instructions: "法务 SOP",
     created_at: "2026-01-03T00:00:00Z",
@@ -323,6 +308,7 @@ const DEMO_AGENTS: Agent[] = [
     quota_remaining: 10000,
     status: "available",
     skill_ids: ["ticket", "account", "device"],
+    sop_keys: [],
     knowledge_base_ids: [1, 2],
     capability_instructions: "IT SOP",
     created_at: "2026-01-04T00:00:00Z",
@@ -342,6 +328,7 @@ const DEMO_AGENTS: Agent[] = [
     quota_remaining: 10000,
     status: "available",
     skill_ids: ["leave", "certificate"],
+    sop_keys: [],
     knowledge_base_ids: [1, 2, 3],
     capability_instructions: "人事 SOP",
     created_at: "2026-01-05T00:00:00Z",
@@ -567,7 +554,7 @@ export function AgentFormModal({
             <div className="agents-capability-config__head">
               <div>
                 <Text strong id="agents-capability-config-title">连接能力</Text>
-                <Text type="secondary">按需添加技能与知识，保存后立即同步到当前智能体</Text>
+                <Text type="secondary">按需添加技能、SOP 与知识，保存后立即同步到当前智能体</Text>
               </div>
               <Tag color="green">实时同步</Tag>
             </div>
@@ -581,21 +568,33 @@ export function AgentFormModal({
                   </div>
                 </div>
                 <Form.Item name="skill_ids" noStyle>
-          <div className="agents-form-demo-note">
-            <Tag color="green">实时同步</Tag>
-            <Text type="secondary">选项来自 Skill 库、已发布 SOP 和知识库；保存后会同步到当前智能体。</Text>
-          </div>
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item name="skill_ids" label="Skill">
-                <CapabilityPicker
-                  label="技能"
-                  icon={<ToolOutlined />}
-                  options={skillOptions}
-                  loading={capabilityOptionsLoading}
-                  searchPlaceholder="搜索 Skill 名称、说明或来源"
-                  emptyText="暂无可用 Skill"
-                />
+                  <CapabilityPicker
+                    label="技能"
+                    icon={<ToolOutlined />}
+                    options={skillOptions}
+                    loading={capabilityOptionsLoading}
+                    searchPlaceholder="搜索 Skill 名称、说明或来源"
+                    emptyText="暂无可用 Skill"
+                  />
+                </Form.Item>
+              </div>
+              <div className="agents-capability-config__card">
+                <div className="agents-capability-config__meta">
+                  <span className="agents-capability-config__icon"><PartitionOutlined /></span>
+                  <div>
+                    <Text strong>SOP</Text>
+                    <Text type="secondary">仅可绑定已发布 SOP；小策 bot 可按绑定列表调用</Text>
+                  </div>
+                </div>
+                <Form.Item name="sop_keys" noStyle>
+                  <CapabilityPicker
+                    label="SOP"
+                    icon={<PartitionOutlined />}
+                    options={sopOptions}
+                    loading={capabilityOptionsLoading}
+                    searchPlaceholder="搜索已发布 SOP 名称或 key"
+                    emptyText="暂无已发布 SOP"
+                  />
                 </Form.Item>
               </div>
               <div className="agents-capability-config__card">
@@ -607,38 +606,14 @@ export function AgentFormModal({
                   </div>
                 </div>
                 <Form.Item name="knowledge_base_ids" noStyle>
-              </Form.Item>
-              <Text type="secondary" className="agents-field-help">
-                Skill 提供操作流程和工具指令；执行任务或会议发言时会加载当前账号有权限的绑定项。
-              </Text>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item name="sop_keys" label="SOP">
-                <CapabilityPicker
-                  label="SOP"
-                  icon={<PartitionOutlined />}
-                  options={sopOptions}
-                  loading={capabilityOptionsLoading}
-                  searchPlaceholder="搜索已发布 SOP 名称或 key"
-                  emptyText="暂无已发布 SOP"
-                />
-              </Form.Item>
-              <Text type="secondary" className="agents-field-help">
-                仅可绑定已发布 SOP。名称设为「小策」或 employee_code=`xiaoce` 时，协作小策 bot 可按绑定列表调用。
-              </Text>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item name="knowledge_base_ids" label="知识库">
-                <CapabilityPicker
-                  label="知识库"
-                  icon={<DatabaseOutlined />}
-                  options={knowledgeBaseOptions}
-                  loading={capabilityOptionsLoading}
-                  searchPlaceholder="搜索知识库名称、说明或范围"
-                  emptyText="暂无可用知识库"
-                />
+                  <CapabilityPicker
+                    label="知识库"
+                    icon={<DatabaseOutlined />}
+                    options={knowledgeBaseOptions}
+                    loading={capabilityOptionsLoading}
+                    searchPlaceholder="搜索知识库名称、说明或范围"
+                    emptyText="暂无可用知识库"
+                  />
                 </Form.Item>
               </div>
             </div>
@@ -701,7 +676,7 @@ function AgentDirectoryCard({
   const stats = [
     { value: agent.knowledge_base_ids.length, label: "资料" },
     { value: agent.skill_ids.length, label: "技能" },
-    { value: agent.capability_instructions.trim() ? Math.max(1, Math.min(4, agent.skill_ids.length + 1)) : 0, label: "SOP" },
+    { value: agent.sop_keys?.length || 0, label: "SOP" },
   ];
   const menuItems = [
     {

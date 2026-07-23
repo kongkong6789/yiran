@@ -3343,8 +3343,6 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       const saved = await saveDraft();
       const savedVersion = saved?.version;
       if (!savedVersion) return;
-      if (!saved?.version) return;
-      const savedVersion = saved.version;
       const text = "跑一遍流程";
       const assistantId = `a-${Date.now()}`;
       setMessages((current) => [
@@ -3368,9 +3366,6 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       try {
         await runTrialInChat(text, assistantId, {
           key: saved.key,
-          version: savedVersion.version,
-          graph: savedVersion.graph || draft.graph,
-          key: saved!.key,
           version: savedVersion.version,
           graph: savedVersion.graph || draft.graph,
         });

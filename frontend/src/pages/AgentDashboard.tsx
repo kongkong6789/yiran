@@ -23,6 +23,7 @@ import {
   getSkills,
   listKnowledgeBases,
   listAgents,
+  listSops,
   updateAgent,
   type Agent,
 } from "../api/client";
@@ -58,6 +59,7 @@ const FALLBACK_AGENT: Agent = {
   quota_remaining: 10000,
   status: "available",
   skill_ids: ["文本翻译", "日志分析", "诊断脚本执行"],
+  sop_keys: [],
   knowledge_base_ids: [1, 2],
   capability_instructions: "故障报修受理 / 权限开通工单分流",
   created_at: "2026-07-08T00:00:00Z",
@@ -109,6 +111,7 @@ export default function AgentDashboard() {
   const [saving, setSaving] = useState(false);
   const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
+  const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
   const [tab, setTab] = useState<AgentProfileTab>("work");
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("day");
@@ -136,10 +139,11 @@ export default function AgentDashboard() {
   const loadCapabilityOptions = async () => {
     setCapabilityOptionsLoading(true);
     try {
-      const [skillAssets, personalSkills, knowledgeBases] = await Promise.all([
+      const [skillAssets, personalSkills, knowledgeBases, sops] = await Promise.all([
         getSkillAssets(),
         getSkills(),
         listKnowledgeBases(),
+        listSops(),
       ]);
       const skillMap = new Map<string, CapabilityOption<string>>();
       (skillAssets.results || []).forEach((skill) => {
@@ -161,6 +165,17 @@ export default function AgentDashboard() {
       });
       setSkillOptions(Array.from(skillMap.values())
         .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")));
+      setSopOptions(
+        (sops.results || [])
+          .filter((sop) => sop.status === "published")
+          .map((sop) => ({
+            value: sop.key,
+            label: sop.name || sop.key,
+            description: sop.description || sop.actionName || "",
+            meta: `已发布 · ${sop.key}${sop.currentVersion ? ` · v${sop.currentVersion}` : ""}`,
+          }))
+          .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
+      );
       setKnowledgeBaseOptions(knowledgeBases.map((knowledgeBase) => ({
         value: knowledgeBase.id,
         label: knowledgeBase.name,
@@ -168,7 +183,7 @@ export default function AgentDashboard() {
         meta: `${knowledgeBase.visibility === "private" ? "个人" : knowledgeBase.visibility === "company" ? "公司" : "团队"} · ${knowledgeBase.file_count} 个文件 · ${knowledgeBase.status === "ready" ? "可用" : `状态：${knowledgeBase.status}`}`,
       })));
     } catch (error) {
-      message.error(dashboardError(error, "Skill 库或知识库加载失败，请稍后重试"));
+      message.error(dashboardError(error, "Skill / SOP / 知识库加载失败，请稍后重试"));
     } finally {
       setCapabilityOptionsLoading(false);
     }
@@ -188,7 +203,7 @@ export default function AgentDashboard() {
 
   const knowledgeCount = selectedAgent.knowledge_base_ids.length;
   const skillCount = selectedAgent.skill_ids.length;
-  const sopCount = selectedAgent.capability_instructions.trim() ? Math.max(1, Math.min(3, skillCount || 1)) : 0;
+  const sopCount = selectedAgent.sop_keys?.length || 0;
   const toolCount = selectedAgent.capability_instructions.trim() ? 2 : 0;
 
   const growthRecords = useMemo(() => {
@@ -353,6 +368,7 @@ export default function AgentDashboard() {
           .sort((a, b) => a.localeCompare(b, "zh-CN"))
           .map((group) => ({ value: group }))}
         skillOptions={skillOptions}
+        sopOptions={sopOptions}
         knowledgeBaseOptions={knowledgeBaseOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={saving}
