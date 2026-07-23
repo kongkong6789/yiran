@@ -2976,6 +2976,7 @@ export interface CollabRoom {
     id: number;
     content: string;
     sender: string;
+    sender_avatar_url?: string;
     created_at: string;
   };
   messages?: CollabMessage[];
@@ -3016,6 +3017,9 @@ export interface CollabMessage {
     is_image?: boolean;
     is_file?: boolean;
     url?: string;
+    /** Local object URL used until the authenticated server image has loaded. */
+    preview_url?: string;
+    uploading?: boolean;
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   meta?: {
@@ -3665,6 +3669,7 @@ export type CollabUnreadItem = {
     id: number;
     content: string;
     sender: string;
+    sender_avatar_url?: string;
     created_at: string;
   };
   updated_at: string;

@@ -150,7 +150,6 @@ const platformRoleLabel: Record<PlatformRole, string> = {
   staff: "平台管理员",
   superuser: "超级管理员",
 };
-
 export default function Accounts() {
   const { message, modal } = App.useApp();
   const [rows, setRows] = useState<AdminUserRow[]>([]);
@@ -1146,7 +1145,7 @@ export default function Accounts() {
                 disabled={Boolean(
                   target
                   && target.id === selfUserId
-                  && platformRoleOf(target) === "superuser",
+                  && platformRoleOf(target) === "superuser"
                 )}
               />
             </Form.Item>

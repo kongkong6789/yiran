@@ -1222,6 +1222,38 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(run.result_message.meta["process_steps"], run.progress_steps)
 
     @patch("apps.core.agent_chat.run_chat")
+    def test_worker_exposes_generated_images_as_artifacts(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="生成图片",
+            msg_type="user",
+            meta={},
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        run_chat.return_value = {
+            "ok": True,
+            "reply": "图片已生成",
+            "generated_images": [{
+                "url": "/api/agent/attachments/generated_gen.png",
+                "stored_id": "generated_gen.png",
+            }],
+        }
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        attachment = run.result_message.attachments[0]
+        self.assertEqual(attachment["id"], "generated_gen.png")
+        self.assertEqual(attachment["url"], "/api/agent/attachments/generated_gen.png")
+        self.assertTrue(attachment["is_image"])
+
+    @patch("apps.core.agent_chat.run_chat")
     def test_worker_injects_referenced_task_transcript(self, run_chat):
         context_room = self.create_context_room()
         CollabMessage.objects.create(

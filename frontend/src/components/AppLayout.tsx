@@ -688,7 +688,10 @@ export default function AppLayout() {
       <UserSettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        onSaved={(nextUser) => setUser(nextUser)}
+        onSaved={(nextUser) => {
+          setUser(nextUser);
+          window.dispatchEvent(new CustomEvent("liangce:user-updated", { detail: nextUser }));
+        }}
       />
 
       <Layout className="app-layout-body">

@@ -1,6 +1,15 @@
 import { getAuthToken } from "../api/client";
 
-export const DEFAULT_USER_AVATAR_URL = "/liangce-default-avatar.png";
+/** Force a newly uploaded avatar to bypass the browser's cached image response. */
+export const versionedAvatarUrl = (url?: string | null, version = Date.now()) => {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  const hashIndex = value.indexOf("#");
+  const base = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
+  const hash = hashIndex >= 0 ? value.slice(hashIndex) : "";
+  const joiner = base.includes("?") ? "&" : "?";
+  return `${base}${joiner}avatar_v=${encodeURIComponent(String(version))}${hash}`;
+};
 
 /**
  * Platform avatars are served by an authenticated backend endpoint. External
@@ -8,7 +17,8 @@ export const DEFAULT_USER_AVATAR_URL = "/liangce-default-avatar.png";
  */
 export const authenticatedAvatarUrl = (url?: string | null) => {
   const value = String(url || "").trim();
-  if (!value) return DEFAULT_USER_AVATAR_URL;
+  // Let Ant Avatar render the user's initial/icon when no custom image exists.
+  if (!value) return "";
   if (!value.startsWith("/")) return value;
   const token = getAuthToken();
   if (!token) return value;

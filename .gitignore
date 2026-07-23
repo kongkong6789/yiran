@@ -8,11 +8,15 @@ backend/.env
 backend/chat_attachments/
 backend/skill_workspaces/
 backend/profile_avatars/
+backend/backups/
 
 # Node
 frontend/node_modules/
 frontend/dist/
-frontend/tsconfig.tsbuildinfo
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+/.vite/
 
 # 编辑器
 .vscode/
@@ -29,4 +33,3 @@ frontend/tsconfig.tsbuildinfo
 backend/runserver.*.log
 backend/wecom-queue.*.log
 frontend/vite.*.log
-

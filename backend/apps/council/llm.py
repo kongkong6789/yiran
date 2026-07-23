@@ -88,8 +88,26 @@ def credential_status(user=None) -> dict:
 
 
 def fast_model(user=None) -> str:
-    """逐轮发言/压缩用的快模型。"""
+    """逐轮发言/压缩用的快模型。
+
+    个人凭据必须和个人模型成对使用；否则会把用户配置的可用模型替换成
+    平台 ``LLM_MODEL_FAST``，在第三方网关上表现为 model_not_found。
+    """
     _, _, model = _resolve_credentials(user)
+    if user is not None and getattr(user, "is_authenticated", False):
+        from apps.core.models import UserSettings
+
+        personal = (
+            UserSettings.objects.filter(user=user)
+            .only("llm_api_key", "llm_model")
+            .first()
+        )
+        if (
+            personal
+            and (personal.llm_api_key or "").strip()
+            and (personal.llm_model or "").strip()
+        ):
+            return personal.llm_model.strip()
     return getattr(settings, "LLM_MODEL_FAST", None) or model
 
 

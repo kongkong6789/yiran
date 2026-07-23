@@ -897,7 +897,7 @@ test("collaboration chat wires room-scoped async send and selection guards", () 
   assert.match(selectionSource, /setStatsLoading\(false\)/);
   assert.match(
     source,
-    /sendPlainMessage\(targetRoomId, content, files, replyTarget, contextRoom\)/,
+    /sendPlainMessage\([\s\S]*?targetRoomId,[\s\S]*?content,[\s\S]*?files,[\s\S]*?previews,[\s\S]*?replyTarget,[\s\S]*?contextRoom,[\s\S]*?\)/,
   );
   assert.doesNotMatch(source, /const \[sending, setSending\] = useState\(false\)/);
 });

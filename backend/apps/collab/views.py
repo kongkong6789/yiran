@@ -4,12 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
-import os
 import re
-import tempfile
 import threading
 import uuid
-from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
@@ -24,13 +21,11 @@ from rest_framework.response import Response
 logger = logging.getLogger(__name__)
 
 from apps.core.attachments import (
-    MAX_ATTACH_BYTES,
-    MAX_ATTACH_FILES,
     attachment_public_meta,
-    attachments_root,
-    load_stored_attachments,
+    preview_attachment,
     process_uploaded_files,
     resolve_attachment_path,
+    resolve_attachment_path_any,
 )
 
 from .analyze import analyze_room_messages, apply_message_risk_flags, _HARD_RISK_RE
@@ -72,11 +67,6 @@ from .translation import (
     TranslationLLMError,
     translate_message_batch,
 )
-from .xiaoce_file_artifacts import (
-    detect_file_artifact_requests,
-    extract_explicit_file_content,
-    maybe_generate_file_artifacts,
-)
 from .xiaoce_progress import XiaoceProgressReporter, xiaoce_run_payload
 from .xiaoce_runs import (
     cancel_xiaoce_run,
@@ -99,45 +89,6 @@ XIAOCE_CONTEXT_MAX_ROOMS = 1
 XIAOCE_CONTEXT_HEAD_MESSAGES = 20
 XIAOCE_CONTEXT_TAIL_MESSAGES = 80
 XIAOCE_CONTEXT_MAX_CHARS = 24_000
-MAX_FORWARD_ATTACHMENTS = 50
-MAX_FORWARD_ATTACHMENT_BYTES = 100 * 1024 * 1024
-XIAOCE_RETURN_FILE_RE = re.compile(
-    r"(?:返回|返还|发回|回传|发给我|给我|发送|提供|下载).{0,10}(?:文件|附件)"
-    r"|(?:文件|附件).{0,10}(?:返回|返还|发回|回传|发给我|给我|发送|提供|下载)"
-    r"|(?:返回|返还|发回|回传|发给我|发送|提供|下载).{0,12}"
-    r"(?:Word|DOCX|PDF|PPTX?|幻灯片|Markdown|MD|HTML|网页|CSV|JSON|TXT|文本)"
-    r"|(?:Word|DOCX|PDF|PPTX?|幻灯片|Markdown|MD|HTML|网页|CSV|JSON|TXT|文本)"
-    r".{0,12}(?:返回|返还|发回|回传|发给我|发送|提供|下载)"
-    r"|\b(?:return|send|download)\b.{0,24}\b(?:file|attachment)s?\b",
-    re.IGNORECASE,
-)
-XIAOCE_ATTACHMENT_FOLLOWUP_RE = re.compile(
-    r"(?:这个|这份|该|刚才|上面|之前|刚(?:刚)?生成的|新生成的|你生成的).{0,8}"
-    r"(?:文件|附件|产物|报告|文档|表格|Excel|XLSX|Word|DOCX|PDF|PPTX?|幻灯片|"
-    r"Markdown|MD|HTML|网页|CSV|JSON|TXT|代码)"
-    r"|(?:文件|附件|产物|报告|文档|表格|Excel|XLSX|Word|DOCX|PDF|PPTX?|幻灯片|"
-    r"Markdown|MD|HTML|网页|CSV|JSON|TXT|代码)"
-    r".{0,10}(?:里面|内容|数据|分析|读取|总结|修改|改写|转换|导出)"
-    r"|(?:这里面|其中).{0,10}(?:内容|数据|字段|记录|分析)"
-    r"|(?:读取|分析|总结).{0,10}(?:这里面|这个|这份|该文件|上面的|刚才的)"
-    r"|(?:读取|分析|总结|修改|改写|转换|导出).{0,12}"
-    r"(?:刚(?:刚)?生成的|新生成的|你生成的).{0,8}"
-    r"(?:文件|附件|产物|报告|文档|表格|Excel|XLSX|Word|DOCX|PDF|PPTX?|幻灯片|"
-    r"Markdown|MD|HTML|网页|CSV|JSON|TXT|代码)"
-    r"|继续.{0,8}(?:读取|分析|总结|修改|改写|转换|导出)",
-    re.IGNORECASE,
-)
-XIAOCE_FILE_ARTIFACT_SYSTEM_APPEND = (
-    "The platform has a trusted server-side file renderer. When the user asks "
-    "for a downloadable file, write the complete artifact body instead of "
-    "claiming that you cannot create or attach files. Use clear Markdown "
-    "headings, lists and tables for documents/PDF/slides. For HTML, JSON, CSV "
-    "or source-code-only requests, return the complete source in one fenced "
-    "code block. HTML must be static semantic markup with inline CSS only: no "
-    "scripts, forms, or remote resources. Do not include filesystem paths, "
-    "shell commands, secrets, or instructions to create the file manually; "
-    "the server handles packaging."
-)
 
 
 def _is_admin(user) -> bool:
@@ -177,6 +128,7 @@ def _user_brief(
     nick = (nickname or "").strip()
     profile = profile or {}
     profile_name = (profile.get("display_name") or "").strip()
+    automated = is_xiaoce_bot_user(user) or getattr(user, "username", "") == "良策AI"
     info = {
         "id": user.id,
         "username": user.username,
@@ -184,7 +136,7 @@ def _user_brief(
         "display_name": nick or profile_name or user.username,
         "avatar_url": profile.get("avatar_url") or "",
         "bio": profile.get("bio") or "",
-        "kind": "bot" if is_xiaoce_bot_user(user) else "human",
+        "kind": "bot" if automated else "human",
     }
     if last_read_message_id is not None:
         info["last_read_message_id"] = int(last_read_message_id or 0)
@@ -192,10 +144,14 @@ def _user_brief(
         info["bot_id"] = "xiaoce"
         info["display_name"] = nick or profile_name or XIAOCE_BOT_DISPLAY
         info["online"] = True
+    elif automated:
+        info["bot_id"] = "liangce-ai"
+        info["display_name"] = nick or profile_name or "良策AI"
+        info["online"] = True
     else:
         info["online"] = False
         info["last_seen"] = None
-    if presence and user.id in presence and not is_xiaoce_bot_user(user):
+    if presence and user.id in presence and not automated:
         info["online"] = bool(presence[user.id].get("online"))
         info["last_seen"] = presence[user.id].get("last_seen")
     elif "last_seen" not in info:
@@ -544,10 +500,12 @@ def _room_payload_from_parts(
                 bits.append(f"[附件×{files}]" if files > 1 else "[附件]")
             preview = " ".join(bits) or "[附件]"
         sender_nick = nick_by_id.get(last.sender_id, "")
+        sender_profile = profiles.get(last.sender_id) or {}
         payload["last_message"] = {
             "id": last.id,
             "content": (preview or "[消息]")[:80],
             "sender": sender_nick or last.sender.username,
+            "sender_avatar_url": sender_profile.get("avatar_url") or "",
             "created_at": last.created_at.isoformat(),
         }
     if include_messages:
@@ -645,7 +603,12 @@ def _message_read_state_map(
     """用参与者已读游标批量计算群消息的已读/未读状态。"""
     if room.room_kind != "group" or not messages:
         return {}
-    parts = list(room.participants.select_related("user").all())
+    parts = [
+        part
+        for part in room.participants.select_related("user").all()
+        if not is_xiaoce_bot_user(part.user)
+        and getattr(part.user, "username", "") != "良策AI"
+    ]
     names = nickname_map or {p.user_id: (p.nickname or "").strip() for p in parts}
     out: dict[int, dict] = {}
     for msg in messages:
@@ -1159,125 +1122,33 @@ def _worker_error_code(current_stage: str, error) -> str:
     return "stage_failed"
 
 
-def _xiaoce_local_attachment(item: dict, user_id: int) -> dict | None:
-    """只允许将已保存在当前用户附件目录的文件写入 bot 消息。"""
-    if not isinstance(item, dict):
-        return None
-    stored_id = str(item.get("id") or item.get("stored_id") or "").strip()
-    path = resolve_attachment_path(user_id, stored_id)
-    if path is None:
-        return None
-    name = str(item.get("name") or "").replace("\\", "/").split("/")[-1]
-    if not name:
-        name = path.name.split("_", 1)[-1] if "_" in path.name else path.name
-    mime = str(item.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream")
-    is_image = bool(item.get("is_image") or mime.startswith("image/"))
-    return {
-        "id": stored_id,
-        "name": name,
-        "size": path.stat().st_size,
-        "mime": mime,
-        "has_text": bool(item.get("has_text")),
-        "is_image": is_image,
-        "is_file": not is_image,
-        # Bot messages are sent by the shared Xiaoce account, while generated
-        # bytes live in the requesting user's private attachment directory.
-        # Persist that owner explicitly so downloads never scan other users.
-        "storage_owner_id": user_id,
-        "url": f"/api/collab/attachments/{stored_id}/",
-    }
-
-
-def _xiaoce_input_attachments(
-    run: XiaoceRun,
-    trigger_content: str,
-) -> list[dict]:
-    """读取本轮附件，或解析用户明确引用/追问的同任务附件。"""
-    current = run.trigger_message.attachments or []
-    if current:
-        return load_stored_attachments(current, run.user_id)
-
-    # 回复某条附件消息是一种比自然语言更明确的选择，必须优先于“最近附件”。
-    quoted = getattr(run.trigger_message, "reply_to", None)
-    if (
-        quoted is not None
-        and quoted.room_id == run.room_id
-        and quoted.status not in {"deleted", "recalled"}
-        and quoted.attachments
-        and (
-            (quoted.sender_id == run.user_id and quoted.msg_type == "user")
-            or (quoted.msg_type == "ai" and quoted.ai_kind == "xiaoce")
-        )
-    ):
-        return load_stored_attachments(quoted.attachments, run.user_id)
-
-    if not XIAOCE_ATTACHMENT_FOLLOWUP_RE.search(trigger_content or ""):
-        return []
-
-    recent = list(
-        run.room.messages
-        .filter(
-            id__lt=run.trigger_message_id,
-        )
-        .filter(
-            Q(sender_id=run.user_id, msg_type="user")
-            | Q(msg_type="ai", ai_kind="xiaoce"),
-        )
-        .exclude(status__in=["deleted", "recalled"])
-        .order_by("-id")[:20]
-    )
-    source = next((message for message in recent if message.attachments), None)
-    if source is None:
-        return []
-    return load_stored_attachments(source.attachments or [], run.user_id)
-
-
-def _xiaoce_output_attachments(result: dict, trigger_content: str, user_id: int) -> list[dict]:
-    """收集小策真正产生的文件，或用户明确要求返回的原附件。"""
-    candidates: list[dict] = []
-    # Explicitly requested local files take precedence over optional images or
-    # tool outputs when the five-attachment message limit is reached.
-    for key in ("generated_files", "generated_images", "output_attachments"):
-        value = result.get(key) or []
-        if isinstance(value, list):
-            candidates.extend(item for item in value if isinstance(item, dict))
-    if XIAOCE_RETURN_FILE_RE.search(trigger_content or ""):
-        value = result.get("attachments") or []
-        if isinstance(value, list):
-            candidates.extend(item for item in value if isinstance(item, dict))
-
-    output: list[dict] = []
-    seen: set[str] = set()
-    for item in candidates:
-        public = _xiaoce_local_attachment(item, user_id)
-        if public is None or public["id"] in seen:
-            continue
-        seen.add(public["id"])
-        output.append(public)
-        if len(output) >= MAX_ATTACH_FILES:
-            break
-    return output
-
-
-def _cleanup_xiaoce_generated_files(items: list[dict], user_id: int) -> None:
-    """删除尚未成功挂到消息上的本轮本地生成文件。"""
-    for item in items or []:
+def _generated_image_attachments(run_id, images) -> list[dict]:
+    """Expose agent-generated images as first-class chat/artifact attachments."""
+    attachments: list[dict] = []
+    for index, item in enumerate(images or [], 1):
         if not isinstance(item, dict):
             continue
-        stored_id = str(item.get("id") or item.get("stored_id") or "").strip()
-        path = resolve_attachment_path(user_id, stored_id)
-        if path is None:
+        url = str(item.get("url") or item.get("remote_url") or "").strip()
+        if not url:
             continue
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            logger.exception("failed to clean orphan Xiaoce artifact id=%s", stored_id)
+        stored_id = str(item.get("stored_id") or "").strip()
+        attachments.append({
+            "id": stored_id or f"generated-{run_id}-{index}",
+            "name": f"AI生成图片-{index}.png",
+            "size": 0,
+            "mime": "image/png",
+            "has_text": False,
+            "is_image": True,
+            "is_file": False,
+            "url": url,
+        })
+    return attachments
 
 
 def _run_xiaoce_reply_async(run_id) -> None:
     """小策bot 单聊：执行普通问答或安全的会话 Skill 打包。"""
     try:
-        from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
+        from apps.core.cancellation import AgentRunCancelled
         from apps.core.agent_chat import run_chat
         from apps.core.conversation_skill import (
             ConversationSkillError,
@@ -1286,12 +1157,7 @@ def _run_xiaoce_reply_async(run_id) -> None:
         )
 
         run = (
-            XiaoceRun.objects.select_related(
-                "room",
-                "user",
-                "trigger_message",
-                "trigger_message__reply_to",
-            )
+            XiaoceRun.objects.select_related("room", "user", "trigger_message")
             .get(id=run_id)
         )
         reporter = XiaoceProgressReporter(run.id)
@@ -1323,170 +1189,34 @@ def _run_xiaoce_reply_async(run_id) -> None:
                     {"skill_generation_failed": True},
                 )
         else:
-            from apps.collab.xiaoce_sop import try_handle_xiaoce_sop
-
-            sop_handled = try_handle_xiaoce_sop(
-                user=run.user,
-                room=run.room,
-                text=trigger_content,
-                cancel_check=cancel_check,
-                progress_callback=progress_callback,
-            )
-            if sop_handled is not None:
-                ai_msg = complete_xiaoce_run(
-                    run.id,
-                    str(sop_handled.get("reply") or "SOP 已处理。"),
-                    sop_handled.get("meta") if isinstance(sop_handled.get("meta"), dict) else None,
-                )
-                _publish_xiaoce_message(run, ai_msg)
-                return
-
             history = _xiaoce_history_before(run.room, run.trigger_message_id)
             context_blocks = _xiaoce_context_reference_blocks(run)
-            attachments = _xiaoce_input_attachments(run, trigger_content)
-            local_generated_files: list[dict] = []
-            artifact_error = ""
-            try:
-                artifact_requests = detect_file_artifact_requests(trigger_content)
-            except ValueError as exc:
-                artifact_requests = []
-                artifact_error = str(exc)
-            explicit_artifact_content = extract_explicit_file_content(trigger_content)
-            deterministic_artifact_request = bool(
-                artifact_requests and explicit_artifact_content
+            result = run_chat(
+                message=trigger_content,
+                history=history[-16:],
+                user=run.user,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+                session_key=f"collab:room:{run.room_id}",
+                usage_source="agent",
+                extra_reference_blocks=context_blocks,
             )
-
-            # 用户已经给出文件内容时，无需等待模型，也不应因模型未配置而失败；
-            # 本地执行器会按白名单格式确定性创建文件。
-            if deterministic_artifact_request:
-                raise_if_cancelled(cancel_check)
-                try:
-                    local_generated_files = maybe_generate_file_artifacts(
-                        user_id=run.user_id,
-                        request_text=trigger_content,
-                        model_reply=None,
-                        source_attachments=attachments,
-                    )
-                except Exception:
-                    artifact_error = "文件生成失败，请检查内容或源文件后重试。"
-                    logger.exception("Xiaoce file artifact generation failed run=%s", run.id)
-                if cancel_check():
-                    _cleanup_xiaoce_generated_files(local_generated_files, run.user_id)
-                    raise AgentRunCancelled("agent run cancelled")
-
-            if local_generated_files:
-                reporter.start("understanding")
-                reporter.complete("understanding")
-                reporter.start("tools")
-                reporter.complete("tools", tool_count=1)
-                reporter.start("composing")
-                reporter.complete("composing")
-                result = {
-                    "ok": True,
-                    "reply": "",
-                    "generated_files": list(local_generated_files),
-                }
-            else:
-                result = run_chat(
-                    message=trigger_content,
-                    history=history[-16:],
-                    attachments=attachments,
-                    user=run.user,
-                    cancel_check=cancel_check,
-                    progress_callback=progress_callback,
-                    session_key=f"collab:room:{run.room_id}",
-                    usage_source="agent",
-                    extra_reference_blocks=context_blocks,
-                    internal_system_append=(
-                        XIAOCE_FILE_ARTIFACT_SYSTEM_APPEND
-                        if artifact_requests
-                        else ""
-                    ),
-                    max_tokens_floor=4200 if artifact_requests else None,
-                )
             if result.get("ok"):
                 reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
             else:
                 reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
-
-            # 通用文件请求需要模型先产出真实内容；模型报错或未配置时，
-            # 不把错误说明伪装成一个成功文件。
-            if (
-                not local_generated_files
-                and artifact_requests
-                and result.get("ok")
-                and not result.get("llm_error")
-                and result.get("llm", True)
-            ):
-                raise_if_cancelled(cancel_check)
-                try:
-                    local_generated_files = maybe_generate_file_artifacts(
-                        user_id=run.user_id,
-                        request_text=trigger_content,
-                        model_reply=reply,
-                        source_attachments=attachments,
-                    )
-                except Exception:
-                    artifact_error = "文件生成失败，请检查内容或源文件后重试。"
-                    logger.exception("Xiaoce file artifact generation failed run=%s", run.id)
-                if cancel_check():
-                    _cleanup_xiaoce_generated_files(local_generated_files, run.user_id)
-                    raise AgentRunCancelled("agent run cancelled")
-
-            if local_generated_files:
-                existing_files = result.get("generated_files")
-                existing_files = existing_files if isinstance(existing_files, list) else []
-                local_ids = {
-                    str(item.get("id") or item.get("stored_id") or "")
-                    for item in local_generated_files
-                    if isinstance(item, dict)
-                }
-                result["generated_files"] = [
-                    *local_generated_files,
-                    *[
-                        item
-                        for item in existing_files
-                        if str(item.get("id") or item.get("stored_id") or "")
-                        not in local_ids
-                    ],
-                ]
-                generated_names = "、".join(
-                    str(item.get("name") or "文件")
-                    for item in local_generated_files
-                    if isinstance(item, dict)
-                )
-                reply = (
-                    f"已生成文件：{generated_names}，可点击附件下载。"
-                    if generated_names
-                    else "文件已生成，可点击附件下载。"
-                )
-            elif artifact_error:
-                reply = f"{reply}\n\n{artifact_error}".strip()
-            try:
-                output_attachments = _xiaoce_output_attachments(
-                    result,
-                    trigger_content,
-                    run.user_id,
-                )
-                ai_msg = complete_xiaoce_run(
-                    run.id,
-                    reply,
-                    attachments=output_attachments,
-                )
-            except Exception:
-                _cleanup_xiaoce_generated_files(local_generated_files, run.user_id)
-                raise
-            attached_ids = {
-                str(item.get("id") or "")
-                for item in output_attachments
-                if isinstance(item, dict)
-            }
-            orphaned = [
-                item
-                for item in local_generated_files
-                if ai_msg is None or str(item.get("id") or "") not in attached_ids
-            ]
-            _cleanup_xiaoce_generated_files(orphaned, run.user_id)
+            generated_attachments = _generated_image_attachments(
+                run.id,
+                result.get("generated_images"),
+            )
+            ai_msg = complete_xiaoce_run(
+                run.id,
+                reply,
+                {"generated_images": len(generated_attachments)} if generated_attachments else None,
+            )
+            if ai_msg is not None and generated_attachments:
+                ai_msg.attachments = generated_attachments
+                ai_msg.save(update_fields=["attachments", "updated_at"])
         _publish_xiaoce_message(run, ai_msg)
     except AgentRunCancelled:
         return
@@ -2275,9 +2005,8 @@ def room_messages(request, room_id):
             return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
         content = str(request.data.get("content") or "").strip()
         is_bot_dm = _is_xiaoce_dm(room)
-        files = request.FILES.getlist("files") or request.FILES.getlist("file")
         xiaoce_run_id = None
-        if is_bot_dm and (content or files):
+        if is_bot_dm and content:
             active_run = XiaoceRun.objects.filter(
                 room=room,
                 user=request.user,
@@ -2307,9 +2036,18 @@ def room_messages(request, room_id):
                 )
             except ValueError as exc:
                 return Response({"ok": False, "error": str(exc)}, status=400)
-        # Finish every request-only validation before writing upload bytes.
-        # Otherwise a rejected 400/409 request can leave large orphan files.
-        if not content and not files:
+        files = request.FILES.getlist("files") or request.FILES.getlist("file")
+        attachments_meta: list[dict] = []
+        if files:
+            try:
+                processed = process_uploaded_files(files, request.user.id)
+            except ValueError as exc:
+                return Response({"ok": False, "error": str(exc)}, status=400)
+            attachments_meta = attachment_public_meta(processed)
+            for item in attachments_meta:
+                stored = item.get("id") or ""
+                item["url"] = f"/api/collab/attachments/{stored}/"
+        if not content and not attachments_meta:
             return Response({"ok": False, "error": "消息不能为空"}, status=400)
         if len(content) > 4000:
             return Response({"ok": False, "error": "消息过长"}, status=400)
@@ -2333,18 +2071,6 @@ def room_messages(request, room_id):
             )
             if reply_to is None:
                 return Response({"ok": False, "error": "引用消息不存在或已删除"}, status=400)
-
-        processed: list[dict] = []
-        attachments_meta: list[dict] = []
-        if files:
-            try:
-                processed = process_uploaded_files(files, request.user.id)
-            except ValueError as exc:
-                return Response({"ok": False, "error": str(exc)}, status=400)
-            attachments_meta = attachment_public_meta(processed)
-            for item in attachments_meta:
-                stored = item.get("id") or ""
-                item["url"] = f"/api/collab/attachments/{stored}/"
 
         xiaoce_run = None
         xiaoce_payload = None
@@ -2371,7 +2097,6 @@ def room_messages(request, room_id):
                         msg,
                     )
         except IntegrityError:
-            _cleanup_xiaoce_generated_files(processed, request.user.id)
             active_run = XiaoceRun.objects.filter(
                 room=room,
                 user=request.user,
@@ -2382,9 +2107,6 @@ def room_messages(request, room_id):
                 "error": "小策bot 正在生成上一轮回答，请先暂停或等待完成",
                 "xiaoce_run": xiaoce_run_payload(active_run),
             }, status=409)
-        except Exception:
-            _cleanup_xiaoce_generated_files(processed, request.user.id)
-            raise
         if xiaoce_run is not None:
             xiaoce_payload = XiaoceProgressReporter(xiaoce_run.id).start("understanding")
         # 硬红线即时落标，不等后台 LLM 分析，前端立刻能画红线
@@ -2407,7 +2129,7 @@ def room_messages(request, room_id):
         )
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
         # 小策bot 单聊：每条用户消息自动走知识问答；群聊仍需 @AI / Skill
-        if is_bot_dm and (content or attachments_meta):
+        if is_bot_dm and content:
             need_ai_reply = True
             analyze = False
         if need_ai_reply:
@@ -2597,122 +2319,6 @@ def room_messages(request, room_id):
     })
 
 
-def _forward_attachment_owner_id(message: CollabMessage, item: dict) -> int:
-    if message.msg_type != "ai":
-        return message.sender_id
-    try:
-        return int(item.get("storage_owner_id") or message.room.created_by_id)
-    except (TypeError, ValueError):
-        return message.room.created_by_id
-
-
-def _copy_forwarded_attachments(
-    messages: list[CollabMessage],
-    *,
-    target_user_id: int,
-) -> tuple[dict[int, list[dict]], list[Path]]:
-    """Copy forwarded bytes into the forwarding user's private directory.
-
-    Attachment metadata alone is not an ownership grant. Copying creates a new
-    opaque ID under the sender who will own the forwarded message, so download
-    and later Xiaoce reads stay deterministic without global directory scans.
-    """
-
-    occurrences: list[tuple[int, tuple[int, str], dict]] = []
-    unique_sources: dict[tuple[int, str], Path] = {}
-    total_bytes = 0
-    for message in messages:
-        for raw_item in message.attachments or []:
-            if not isinstance(raw_item, dict):
-                raise ValueError("部分附件信息无效，无法转发")
-            stored_id = str(raw_item.get("id") or "").strip()
-            owner_id = _forward_attachment_owner_id(message, raw_item)
-            source = resolve_attachment_path(owner_id, stored_id)
-            if source is None:
-                raise ValueError(f"附件 {raw_item.get('name') or stored_id} 已丢失，无法转发")
-            key = (owner_id, stored_id)
-            occurrences.append((message.id, key, raw_item))
-            if len(occurrences) > MAX_FORWARD_ATTACHMENTS:
-                raise ValueError(f"一次最多转发 {MAX_FORWARD_ATTACHMENTS} 个附件")
-            if key in unique_sources:
-                continue
-            size = source.stat().st_size
-            if size > MAX_ATTACH_BYTES:
-                raise ValueError(
-                    f"附件 {raw_item.get('name') or stored_id} 超过转发大小上限"
-                )
-            total_bytes += size
-            if total_bytes > MAX_FORWARD_ATTACHMENT_BYTES:
-                raise ValueError(
-                    "转发附件总大小超过 "
-                    f"{MAX_FORWARD_ATTACHMENT_BYTES // (1024 * 1024)}MB 上限"
-                )
-            unique_sources[key] = source
-
-    if not occurrences:
-        return {message.id: [] for message in messages}, []
-
-    target_root = attachments_root(target_user_id)
-    target_root.mkdir(parents=True, exist_ok=True)
-    clone_ids: dict[tuple[int, str], tuple[str, int]] = {}
-    created_paths: list[Path] = []
-    temporary_paths: list[str] = []
-    try:
-        for key, source in unique_sources.items():
-            safe_suffix = source.name.split("_", 1)[-1] if "_" in source.name else source.name
-            new_id = f"{uuid.uuid4().hex}_{safe_suffix}"
-            target = target_root / new_id
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=".forward-",
-                dir=target_root,
-                delete=False,
-            ) as temporary:
-                temporary_path = temporary.name
-                temporary_paths.append(temporary_path)
-                copied = 0
-                with source.open("rb") as source_stream:
-                    while True:
-                        chunk = source_stream.read(64 * 1024)
-                        if not chunk:
-                            break
-                        copied += len(chunk)
-                        if copied > MAX_ATTACH_BYTES:
-                            raise ValueError("附件在转发时超过大小上限")
-                        temporary.write(chunk)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            os.replace(temporary_path, target)
-            temporary_paths.remove(temporary_path)
-            created_paths.append(target)
-            clone_ids[key] = (new_id, copied)
-
-        by_message = {message.id: [] for message in messages}
-        for message_id, key, raw_item in occurrences:
-            new_id, size = clone_ids[key]
-            cloned = {
-                **raw_item,
-                "id": new_id,
-                "size": size,
-                "storage_owner_id": target_user_id,
-                "url": f"/api/collab/attachments/{new_id}/",
-            }
-            by_message[message_id].append(cloned)
-        return by_message, created_paths
-    except Exception:
-        for raw_path in temporary_paths:
-            try:
-                os.unlink(raw_path)
-            except OSError:
-                pass
-        for path in created_paths:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
-
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def forward_room_messages(request, room_id):
@@ -2757,22 +2363,11 @@ def forward_room_messages(request, room_id):
     if joined_room_ids != source_room_ids:
         return Response({"ok": False, "error": "无权转发其中部分消息"}, status=403)
 
-    try:
-        attachments_by_message, copied_paths = _copy_forwarded_attachments(
-            ordered,
-            target_user_id=request.user.id,
-        )
-    except ValueError as exc:
-        return Response({"ok": False, "error": str(exc)}, status=400)
-    except OSError:
-        logger.exception("failed to copy forwarded attachments user=%s", request.user.id)
-        return Response({"ok": False, "error": "附件复制失败，请稍后重试"}, status=500)
-
     bundle = []
     all_attachments: list[dict] = []
     for row in ordered:
         payload = _message_payload(row)
-        attachments = attachments_by_message.get(row.id, [])
+        attachments = list(row.attachments or [])
         all_attachments.extend(attachments)
         bundle.append({
             "message_id": row.id,
@@ -2785,46 +2380,38 @@ def forward_room_messages(request, room_id):
         })
 
     created: list[CollabMessage] = []
-    try:
-        with transaction.atomic():
-            if mode == "merge":
+    with transaction.atomic():
+        if mode == "merge":
+            created.append(CollabMessage.objects.create(
+                room=target_room,
+                sender=request.user,
+                content=f"合并转发 · {len(bundle)} 条聊天记录",
+                attachments=all_attachments,
+                mentions=[],
+                msg_type="user",
+                meta={"forward_mode": "merge", "forward_bundle": bundle},
+            ))
+        else:
+            for source, item in zip(ordered, bundle):
                 created.append(CollabMessage.objects.create(
                     room=target_room,
                     sender=request.user,
-                    content=f"合并转发 · {len(bundle)} 条聊天记录",
-                    attachments=all_attachments,
+                    content=source.content or "",
+                    attachments=source.attachments or [],
                     mentions=[],
                     msg_type="user",
-                    meta={"forward_mode": "merge", "forward_bundle": bundle},
-                ))
-            else:
-                for source, item in zip(ordered, bundle):
-                    created.append(CollabMessage.objects.create(
-                        room=target_room,
-                        sender=request.user,
-                        content=source.content or "",
-                        attachments=attachments_by_message.get(source.id, []),
-                        mentions=[],
-                        msg_type="user",
-                        meta={
-                            "forward_mode": "separate",
-                            "forwarded_from": {
-                                "message_id": source.id,
-                                "room_id": str(source.room_id),
-                                "room_title": source.room.title or "会话",
-                                "sender": item["sender"],
-                                "created_at": source.created_at.isoformat(),
-                            },
+                    meta={
+                        "forward_mode": "separate",
+                        "forwarded_from": {
+                            "message_id": source.id,
+                            "room_id": str(source.room_id),
+                            "room_title": source.room.title or "会话",
+                            "sender": item["sender"],
+                            "created_at": source.created_at.isoformat(),
                         },
-                    ))
-            target_room.save(update_fields=["updated_at"])
-    except Exception:
-        for path in copied_paths:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
+                    },
+                ))
+        target_room.save(update_fields=["updated_at"])
 
     nickname_map = _nickname_map(target_room)
     payloads = [_message_payload(item, nickname_map=nickname_map) for item in created]
@@ -3348,28 +2935,6 @@ def _resolve_request_user(request):
     return row.user if row else None
 
 
-def _collab_attachment_response(path, *, original: str, mime: str, as_attachment: bool):
-    response = FileResponse(
-        path.open("rb"),
-        as_attachment=as_attachment,
-        filename=original,
-        content_type=mime,
-    )
-    response["X-Content-Type-Options"] = "nosniff"
-    response["Cache-Control"] = "private, no-store"
-    if mime in {
-        "text/html",
-        "application/xhtml+xml",
-        "image/svg+xml",
-        "text/xml",
-        "application/xml",
-    }:
-        # Generated web/code artifacts are downloads, never active content in
-        # the Liangce origin. This header also protects future preview changes.
-        response["Content-Security-Policy"] = "sandbox"
-    return response
-
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def collab_attachment(request, stored_id: str):
@@ -3413,50 +2978,23 @@ def collab_attachment(request, stored_id: str):
         if path:
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+            if str(request.query_params.get("preview") or "") in ("1", "true", "True"):
+                return Response(preview_attachment(path, original, mime))
             force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
             as_attach = force_download or not (mime or "").startswith("image/")
-            return _collab_attachment_response(
-                path,
-                original=original,
-                mime=mime,
-                as_attachment=as_attach,
-            )
+            return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)
         return Response({"ok": False, "error": "附件不存在"}, status=404)
 
     if not _can_access_room(user, msg.room):
         return Response({"ok": False, "error": "无权查看该附件"}, status=403)
 
-    matching_attachment = next(
-        (
-            item
-            for item in (msg.attachments or [])
-            if isinstance(item, dict) and str(item.get("id") or "") == safe
-        ),
-        {},
-    )
-    storage_owner_id = msg.sender_id
-    if msg.msg_type == "ai":
-        try:
-            storage_owner_id = int(
-                matching_attachment.get("storage_owner_id")
-                or msg.room.created_by_id
-            )
-        except (TypeError, ValueError):
-            storage_owner_id = msg.room.created_by_id
-    path = resolve_attachment_path(storage_owner_id, safe)
+    path = resolve_attachment_path(msg.sender_id, safe) or resolve_attachment_path_any(safe)
     if not path:
         return Response({"ok": False, "error": "附件文件丢失"}, status=404)
-    mime = str(
-        matching_attachment.get("mime")
-        or mimetypes.guess_type(path.name)[0]
-        or "application/octet-stream"
-    )
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+    if str(request.query_params.get("preview") or "") in ("1", "true", "True"):
+        return Response(preview_attachment(path, original, mime))
     force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
     as_attach = force_download or not (mime or "").startswith("image/")
-    return _collab_attachment_response(
-        path,
-        original=original,
-        mime=mime,
-        as_attachment=as_attach,
-    )
+    return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)
