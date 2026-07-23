@@ -1,8 +1,17 @@
+import tempfile
+from pathlib import Path
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom
+from apps.core.attachments import (
+    attachment_public_meta,
+    process_uploaded_files,
+    resolve_attachment_path,
+)
 
 
 User = get_user_model()
@@ -53,6 +62,53 @@ class CollabForwardApiTests(TestCase):
             [row["content"] for row in response.data["messages"]],
             [self.messages[2].content, self.messages[0].content],
         )
+
+    def test_forward_copies_another_members_attachment_to_the_forwarder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                uploaded = process_uploaded_files(
+                    [
+                        SimpleUploadedFile(
+                            "member-report.md",
+                            b"# member report\nreal content",
+                            content_type="text/markdown",
+                        ),
+                    ],
+                    self.member.id,
+                )
+                source = CollabMessage.objects.create(
+                    room=self.source,
+                    sender=self.member,
+                    content="成员报告",
+                    attachments=attachment_public_meta(uploaded),
+                )
+
+                response = self.client.post(
+                    f"/api/collab/rooms/{self.target.id}/messages/forward/",
+                    {"message_ids": [source.id], "mode": "separate"},
+                    format="json",
+                )
+
+                self.assertEqual(response.status_code, 201)
+                forwarded = CollabMessage.objects.get(
+                    id=response.data["messages"][0]["id"],
+                )
+                original_id = source.attachments[0]["id"]
+                copied = forwarded.attachments[0]
+                copied_path = resolve_attachment_path(self.owner.id, copied["id"])
+                self.assertNotEqual(copied["id"], original_id)
+                self.assertIsNotNone(copied_path)
+                self.assertEqual(copied_path.read_bytes(), b"# member report\nreal content")
+                self.assertIsNotNone(resolve_attachment_path(self.member.id, original_id))
+
+                download = self.client.get(
+                    f"/api/collab/attachments/{copied['id']}/?download=1",
+                )
+                self.assertEqual(download.status_code, 200)
+                self.assertEqual(
+                    b"".join(download.streaming_content),
+                    b"# member report\nreal content",
+                )
 
     def test_forward_rejects_messages_from_a_room_the_user_did_not_join(self):
         outsider = User.objects.create_user(username="forward-outsider", password="test-pass-123")

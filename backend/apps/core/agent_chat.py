@@ -199,6 +199,8 @@ def run_chat(
     session_key: str | None = None,
     usage_source: str = "agent",
     extra_reference_blocks: list[str] | None = None,
+    internal_system_append: str = "",
+    max_tokens_floor: int | None = None,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -489,6 +491,11 @@ def run_chat(
         + (SKILL_EXEC_APPEND if active_skills else "")
         + build_skill_system_block(active_skills)
     )
+    trusted_append = str(internal_system_append or "").strip()
+    if trusted_append:
+        # This parameter is reserved for fixed, server-authored execution
+        # contracts. Never pass uploaded or user-provided text through it.
+        system += f"\n\n{trusted_append[:4_000]}"
     if image_parts and image_intent == "analyze":
         system += "\n\nAnalyze the attached image carefully and answer only from visible image evidence unless reference material is provided."
     wants_table = doc_mode and any(k in message for k in ("\u8868\u683c", "\u8868", "\u5bf9\u6bd4", "\u6e05\u5355", "table"))
@@ -496,6 +503,11 @@ def run_chat(
     max_tokens = 3500 if has_script_data else (2500 if wants_table and mcp.get("content") else 900)
     if image_parts:
         max_tokens = max(max_tokens, 1200)
+    if max_tokens_floor is not None:
+        try:
+            max_tokens = max(max_tokens, min(6_000, max(500, int(max_tokens_floor))))
+        except (TypeError, ValueError):
+            pass
     budget_report = harness.finalize_budget(messages=messages, max_output_tokens=max_tokens)
     if budget_report.get("over_soft_budget") and not image_parts:
         remaining = harness.config.soft_turn_token_budget - budget_report["prompt_tokens_estimated"]

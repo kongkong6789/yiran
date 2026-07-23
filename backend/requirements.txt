@@ -16,6 +16,14 @@ duckdb>=1.1
 psycopg2-binary>=2.9
 openpyxl>=3.1
 xlrd>=2.0.1
+python-docx>=1.1,<2.0
+python-pptx>=1.0,<2.0
+reportlab>=4.2,<5.0
+pypdf>=5.0,<7.0
+defusedxml>=0.7,<1.0
+bleach>=6.2,<7.0
+tinycss2>=1.4,<2.0
+Pillow>=10.0,<13.0
 
 # 说明:
 # 第4层 LangGraph 以进程内 Python 库运行，不启动独立 LangGraph HTTP 服务。

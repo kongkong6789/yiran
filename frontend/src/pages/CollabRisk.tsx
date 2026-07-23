@@ -123,8 +123,11 @@ const RISK_META: Record<string, { color: string; label: string }> = {
 const FILE_ACCEPT = [
   "image/*",
   ".png,.jpg,.jpeg,.gif,.webp,.bmp",
-  ".md,.markdown,.txt,.json,.csv,.py,.log,.yaml,.yml,.xml,.html,.htm,.tsv",
-  ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx",
+  "text/*,.md,.markdown,.txt,.rtf,.json,.jsonl,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm",
+  ".py,.pyi,.js,.jsx,.mjs,.cjs,.ts,.tsx,.java,.go,.rs,.c,.cc,.cpp,.cxx,.h,.hh,.hpp",
+  ".cs,.php,.rb,.swift,.kt,.kts,.scala,.sql,.sh,.bash,.zsh,.fish,.ps1,.bat,.cmd",
+  ".css,.scss,.sass,.less,.vue,.svelte,.toml,.ini,.cfg,.conf,.properties",
+  ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.ppt,.pptx",
   ".zip,.rar,.7z,.tar,.gz",
   ".mp3,.wav,.mp4,.mov,.avi",
 ].join(",");

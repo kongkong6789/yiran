@@ -90,7 +90,14 @@ function kindTag(kind: ModelKind) {
   return "对话";
 }
 
-const ATTACH_ACCEPT = ".md,.markdown,.txt,.json,.csv,.py,.log,.yaml,.yml,.xml,.html,.htm,.tsv,.png,.jpg,.jpeg,.gif,.webp,.bmp,image/*";
+const ATTACH_ACCEPT = [
+  "text/*,.md,.markdown,.txt,.rtf,.json,.jsonl,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm",
+  ".py,.pyi,.js,.jsx,.mjs,.cjs,.ts,.tsx,.java,.go,.rs,.c,.cc,.cpp,.cxx,.h,.hh,.hpp",
+  ".cs,.php,.rb,.swift,.kt,.kts,.scala,.sql,.sh,.bash,.zsh,.fish,.ps1,.bat,.cmd",
+  ".css,.scss,.sass,.less,.vue,.svelte,.toml,.ini,.cfg,.conf,.properties",
+  ".pdf,.doc,.docx,.xls,.xlsx,.xlsm,.ppt,.pptx",
+  ".png,.jpg,.jpeg,.gif,.webp,.bmp,image/*",
+].join(",");
 const MAX_ATTACH_FILES = 5;
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
 

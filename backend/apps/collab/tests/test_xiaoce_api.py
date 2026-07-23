@@ -391,6 +391,48 @@ class XiaoceApiTests(APITestCase):
         run = XiaoceRun.objects.select_related("result_message").get(id=run_id)
         self.assertEqual(run.result_message.attachments, [])
 
+    def test_rejected_message_does_not_write_uploaded_attachment_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with override_settings(CHAT_ATTACHMENTS_ROOT=root):
+                response = self.client.post(
+                    self.messages_url,
+                    {
+                        "content": "x" * 4001,
+                        "run_id": str(uuid.uuid4()),
+                        "files": [xlsx_upload("must-not-be-written.xlsx")],
+                    },
+                    format="multipart",
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse((root / str(self.user.id)).exists())
+
+    def test_transaction_failure_cleans_uploaded_attachment_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                override_settings(CHAT_ATTACHMENTS_ROOT=root),
+                patch(
+                    "apps.collab.views.create_xiaoce_run",
+                    side_effect=RuntimeError("database write failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "database write failed"):
+                    self.client.post(
+                        self.messages_url,
+                        {
+                            "content": "分析这个文件",
+                            "run_id": str(uuid.uuid4()),
+                            "files": [xlsx_upload("must-be-cleaned.xlsx")],
+                        },
+                        format="multipart",
+                    )
+                user_root = root / str(self.user.id)
+                remaining = list(user_root.iterdir()) if user_root.exists() else []
+
+        self.assertEqual(remaining, [])
+
     @patch("apps.core.agent_chat.run_chat")
     def test_attachment_followup_reuses_the_latest_uploaded_excel(self, run_chat):
         run_chat.return_value = {"ok": True, "reply": "已完成分析。"}
@@ -589,6 +631,48 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(run.result_message.attachments, [])
 
     @patch("apps.core.agent_chat.run_chat")
+    def test_followup_can_modify_a_just_generated_html_file(self, run_chat):
+        run_chat.return_value = {"ok": True, "reply": "已读取并准备修改。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                generated = views.process_uploaded_files(
+                    [
+                        SimpleUploadedFile(
+                            "report.html",
+                            b"<h1>hello</h1>",
+                            content_type="text/html",
+                        ),
+                    ],
+                    self.user.id,
+                )
+                CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.bot,
+                    content="已生成文件。",
+                    attachments=views.attachment_public_meta(generated),
+                    msg_type="ai",
+                    ai_kind="xiaoce",
+                )
+                trigger = CollabMessage.objects.create(
+                    room=self.room,
+                    sender=self.user,
+                    content="修改刚生成的 HTML 文件，把标题改成周报",
+                    msg_type="user",
+                )
+                run = XiaoceRun.objects.create(
+                    id=uuid.uuid4(),
+                    room=self.room,
+                    user=self.user,
+                    trigger_message=trigger,
+                )
+
+                views._run_xiaoce_reply_async(run.id)
+
+        attachments = run_chat.call_args.kwargs["attachments"]
+        self.assertEqual([item["name"] for item in attachments], ["report.html"])
+        self.assertIn("hello", attachments[0]["text"])
+
+    @patch("apps.core.agent_chat.run_chat")
     def test_replying_to_an_attachment_beats_a_newer_file(self, run_chat):
         run_chat.return_value = {"ok": True, "reply": "已分析引用文件。"}
         with tempfile.TemporaryDirectory() as tmp:
@@ -656,6 +740,81 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(output[0]["name"], "补货分析.csv")
         self.assertEqual(output[0]["url"], "/api/collab/attachments/generated_report.csv/")
 
+    def test_requested_files_take_priority_over_optional_images_at_attachment_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                root = Path(tmp) / str(self.user.id)
+                root.mkdir(parents=True)
+                requested = {
+                    "id": "requested_report.pdf",
+                    "name": "经营报告.pdf",
+                    "mime": "application/pdf",
+                }
+                (root / requested["id"]).write_bytes(b"%PDF-safe")
+                images = []
+                for index in range(5):
+                    item = {
+                        "id": f"optional_{index}.png",
+                        "name": f"optional-{index}.png",
+                        "mime": "image/png",
+                        "is_image": True,
+                    }
+                    (root / item["id"]).write_bytes(b"\x89PNG\r\n\x1a\n")
+                    images.append(item)
+
+                output = views._xiaoce_output_attachments(
+                    {
+                        "generated_images": images,
+                        "generated_files": [requested],
+                    },
+                    "生成 PDF 报告",
+                    self.user.id,
+                )
+
+        self.assertEqual(len(output), views.MAX_ATTACH_FILES)
+        self.assertEqual(output[0]["name"], "经营报告.pdf")
+        self.assertIn("optional-0.png", [item["name"] for item in output])
+        self.assertNotIn("optional-4.png", [item["name"] for item in output])
+
+    def test_generated_html_download_uses_explicit_storage_owner_and_safe_headers(self):
+        stored_id = f"{uuid.uuid4().hex}_report.html"
+        attachment = {
+            "id": stored_id,
+            "name": "report.html",
+            "mime": "text/html",
+            "storage_owner_id": self.user.id,
+            "is_file": True,
+            "is_image": False,
+        }
+        CollabMessage.objects.create(
+            room=self.room,
+            sender=self.bot,
+            content="文件已生成",
+            attachments=[attachment],
+            msg_type="ai",
+            ai_kind="xiaoce",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                user_root = Path(tmp) / str(self.user.id)
+                user_root.mkdir(parents=True)
+                (user_root / stored_id).write_text("<h1>safe</h1>", encoding="utf-8")
+
+                response = self.client.get(f"/api/collab/attachments/{stored_id}/")
+                payload = b"".join(response.streaming_content)
+
+                self.client.force_authenticate(self.other)
+                forbidden = self.client.get(f"/api/collab/attachments/{stored_id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload, b"<h1>safe</h1>")
+        self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(response["Content-Security-Policy"], "sandbox")
+        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertEqual(forbidden.status_code, 403)
+
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_generates_and_returns_downloadable_excel_even_if_model_refuses(self, run_chat):
         run_chat.return_value = {
@@ -691,12 +850,90 @@ class XiaoceApiTests(APITestCase):
                 download = self.client.get(f'{attachment["url"]}?download=1')
                 downloaded = b"".join(download.streaming_content)
 
-        self.assertEqual(run.result_message.content, "已生成 Excel 文件，内容已写入，可点击附件下载。")
+        self.assertEqual(
+            run.result_message.content,
+            "已生成文件：xiaoce-export.xlsx，可点击附件下载。",
+        )
         self.assertEqual(len(run.result_message.attachments), 1)
         self.assertEqual(attachment["name"], "xiaoce-export.xlsx")
         self.assertEqual(download.status_code, 200)
         self.assertTrue(downloaded.startswith(b"PK"))
         run_chat.assert_not_called()
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_generates_literal_markdown_without_calling_the_model(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="请生成一个 Markdown 文件，内容里面写一个 hello",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                views._run_xiaoce_reply_async(run.id)
+                run.refresh_from_db()
+                attachment = run.result_message.attachments[0]
+                stored_path = resolve_attachment_path(self.user.id, attachment["id"])
+                content = stored_path.read_text(encoding="utf-8")
+                download = self.client.get(f'{attachment["url"]}?download=1')
+
+        self.assertEqual(content, "hello\n")
+        self.assertEqual(attachment["name"], "xiaoce-export.md")
+        self.assertEqual(attachment["storage_owner_id"], self.user.id)
+        self.assertEqual(download.status_code, 200)
+        self.assertTrue(download["Content-Type"].startswith("text/markdown"))
+        self.assertEqual(
+            run.result_message.content,
+            "已生成文件：xiaoce-export.md，可点击附件下载。",
+        )
+        run_chat.assert_not_called()
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_model_backed_file_generation_uses_the_trusted_renderer_contract(self, run_chat):
+        run_chat.return_value = {
+            "ok": True,
+            "reply": "# 经营分析\n\n- GMV 稳定",
+            "llm": True,
+        }
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="请根据当前对话生成一个 Markdown 分析报告",
+            msg_type="user",
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                views._run_xiaoce_reply_async(run.id)
+                run.refresh_from_db()
+                attachment = run.result_message.attachments[0]
+                stored_path = resolve_attachment_path(self.user.id, attachment["id"])
+                content = stored_path.read_text(encoding="utf-8")
+
+        call = run_chat.call_args.kwargs
+        self.assertEqual(call["max_tokens_floor"], 4200)
+        self.assertEqual(
+            call["internal_system_append"],
+            views.XIAOCE_FILE_ARTIFACT_SYSTEM_APPEND,
+        )
+        self.assertIn("# 经营分析", content)
+        self.assertEqual(
+            run.result_message.content,
+            "已生成文件：xiaoce-export.md，可点击附件下载。",
+        )
 
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_copies_and_updates_an_uploaded_excel(self, run_chat):
@@ -737,10 +974,13 @@ class XiaoceApiTests(APITestCase):
                     original.close()
 
         self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
-        self.assertEqual(run.result_message.content, "已生成 Excel 文件，内容已写入，可点击附件下载。")
+        self.assertEqual(
+            run.result_message.content,
+            "已生成文件：xiaoce-export.xlsx，可点击附件下载。",
+        )
         run_chat.assert_not_called()
 
-    @patch("apps.collab.views.maybe_generate_excel_artifact")
+    @patch("apps.collab.views.maybe_generate_file_artifacts")
     @patch("apps.core.agent_chat.run_chat")
     def test_excel_generation_failure_does_not_fail_the_successful_chat(
         self,
@@ -768,9 +1008,9 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(run.status, XiaoceRun.Status.COMPLETED)
         self.assertEqual(run.result_message.attachments, [])
         self.assertIn("这是模型生成的正文。", run.result_message.content)
-        self.assertIn("Excel 文件生成失败", run.result_message.content)
+        self.assertIn("文件生成失败", run.result_message.content)
 
-    @patch("apps.collab.views.maybe_generate_excel_artifact")
+    @patch("apps.collab.views.maybe_generate_file_artifacts")
     @patch("apps.core.agent_chat.run_chat")
     def test_generic_export_does_not_wrap_an_llm_error_in_a_workbook(
         self,
@@ -831,7 +1071,7 @@ class XiaoceApiTests(APITestCase):
             with (
                 override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)),
                 patch(
-                    "apps.collab.views.maybe_generate_excel_artifact",
+                    "apps.collab.views.maybe_generate_file_artifacts",
                     side_effect=generate_then_cancel,
                 ),
             ):
