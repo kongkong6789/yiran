@@ -57,7 +57,7 @@ type NavItem = {
   keywords?: string;
 };
 type NavGroup = { key: string; label: string; items: NavItem[] };
-type SectionKey = "common" | "knowledge";
+type SectionKey = "common" | "knowledge" | "loops";
 type NavSection = {
   key: SectionKey;
   label: string;
@@ -128,6 +128,24 @@ const COMMERCE_GROUPS: NavGroup[] = [
   },
 ];
 
+const LOOPS_OPS_GROUPS: NavGroup[] = [
+  {
+    key: "loops-ops",
+    label: "业务闭环",
+    items: [
+      { key: "loops-home", path: "/loops", icon: <SyncOutlined />, label: "Loops 列表", keywords: "OODA 闭环 运营" },
+      { key: "loops-monitor", path: "/loops/monitor", icon: <PlayCircleOutlined />, label: "运行监控", keywords: "执行 监控 进度" },
+    ],
+  },
+  {
+    key: "loops-create",
+    label: "创建与设计",
+    items: [
+      { key: "loops-discover", path: "/loops/discover", icon: <BulbOutlined />, label: "AI 发现", keywords: "发现 候选 知识" },
+    ],
+  },
+];
+
 const ADMIN_GROUPS: NavGroup[] = [
   {
     key: "organization-admin",
@@ -163,6 +181,16 @@ const SECTIONS: NavSection[] = [
     icon: <BookOutlined />,
     defaultPath: "/knowledge",
     groups: KNOWLEDGE_GROUPS,
+  },
+  {
+    key: "loops",
+    label: "Loops",
+    description: "业务闭环运营",
+    sidebarTitle: "Loops 管理",
+    eyebrow: "LOOPS",
+    icon: <SyncOutlined />,
+    defaultPath: "/loops",
+    groups: LOOPS_OPS_GROUPS,
   },
 ];
 
@@ -277,7 +305,7 @@ export default function AppLayout() {
     : sidebarWidth < 224
       ? "compact"
       : "full";
-  const isFullBleed = FULL_BLEED.has(loc.pathname);
+  const isFullBleed = FULL_BLEED.has(loc.pathname) || loc.pathname.startsWith("/loops/");
 
   const selectedKeys = useMemo(() => {
     const key = navKeyForLocation(loc.pathname, loc.search);
