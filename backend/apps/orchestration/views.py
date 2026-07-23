@@ -120,7 +120,7 @@ def run(request):
 
 @api_view(["GET"])
 def actions_catalog(request):
-    return Response(catalog())
+    return Response(catalog(user=request.user if request.user.is_authenticated else None))
 
 
 @api_view(["POST"])

@@ -69,6 +69,8 @@ import {
   updateSkillAssetCategory,
   updateSkillAssetOwner,
   updateSkillAssetVisibility,
+  updateSkillAssetSop,
+  publishSkillAsSop,
   uploadSkillAssetFolder,
   type SkillAnalyticsResponse,
   type SkillAnalyticsRow,
@@ -1194,6 +1196,26 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
               const success = visibility === "shared" ? "已发布到共享仓库，团队成员可主动采用" : "已取消共享，并撤销其他成员的采用入口";
               void runAction(selectedEntry.skillId, () => updateSkillAssetVisibility(selectedEntry.asset!.id, visibility), success);
             }}
+            onSopCallableChange={(enabled) => {
+              if (!selectedEntry?.asset) return;
+              void runAction(
+                selectedEntry.skillId,
+                () => updateSkillAssetSop(selectedEntry.asset!.id, { sop_callable: enabled }),
+                enabled ? "已允许在 SOP 中调用此技能" : "已取消 SOP 可用",
+              );
+            }}
+            onPublishSop={() => {
+              if (!selectedEntry?.asset) return;
+              void runAction(
+                selectedEntry.skillId,
+                async () => {
+                  const result = await publishSkillAsSop(selectedEntry.asset!.id);
+                  if (!result.ok) throw new Error(result.error || "发布失败");
+                  return result;
+                },
+                "已生成 SOP 草稿，可在流程中心继续编辑",
+              );
+            }}
             onDelete={() => {
               if (!selectedEntry) return;
               const deletesAsset = Boolean(selectedEntry.asset?.is_uploader);
@@ -1854,7 +1876,7 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
   );
 }
 
-function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onOpenWorkspace, onVisibilityChange, onDelete }: {
+function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onSopCallableChange, onPublishSop, onDelete }: {
   entry: SkillEntry | null;
   panelView: "overview" | "manage";
   onPanelViewChange: (view: "overview" | "manage") => void;
@@ -1869,6 +1891,8 @@ function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canMana
   onViewUsageHistory: () => void;
   onOpenWorkspace?: () => void;
   onVisibilityChange: (visibility: "shared" | "private") => void;
+  onSopCallableChange: (enabled: boolean) => void;
+  onPublishSop: () => void;
   onDelete: () => void;
 }) {
   if (!entry) return <section className="skill-insight-panel"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择技能查看详情" /></section>;
@@ -1911,6 +1935,34 @@ function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canMana
               ) : <Tag bordered={false} icon={categoryIcon(entry.category)}>{categoryLabel}</Tag>}
               <small>分类会同步影响左侧筛选与统计</small>
             </div>
+            {entry.asset && (entry.asset.is_uploader || canManage) && (
+              <div className="skill-responsibility-category">
+                <span>可用于 SOP</span>
+                <span className="skill-enable-control">
+                  <Switch
+                    checked={Boolean(entry.asset.sop_callable)}
+                    loading={actionLoading}
+                    onChange={onSopCallableChange}
+                  />
+                  {entry.asset.sop_callable ? "已对流程开放" : "未对流程开放"}
+                </span>
+                <small>开启后，已启用该技能的成员可在 SOP「执行业务能力」里选择它。</small>
+                {entry.asset.sop_callable && (
+                  <Button size="small" loading={actionLoading} onClick={onPublishSop} style={{ marginTop: 8 }}>
+                    发布为 SOP 模板
+                  </Button>
+                )}
+              </div>
+            )}
+            {entry.asset?.sop_callable && !(entry.asset.is_uploader || canManage) && entry.personal?.enabled && (
+              <div className="skill-responsibility-category">
+                <span>可用于 SOP</span>
+                <Tag bordered={false} color="green">已对流程开放</Tag>
+                <Button size="small" loading={actionLoading} onClick={onPublishSop} style={{ marginTop: 8 }}>
+                  发布为 SOP 模板
+                </Button>
+              </div>
+            )}
             {entry.asset?.source === "skillhub" && (
               <div className="skill-responsibility-source">
                 <span><GlobalOutlined /> SkillHub · v{entry.asset.source_version || "未知版本"}</span>

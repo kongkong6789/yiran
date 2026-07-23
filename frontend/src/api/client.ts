@@ -760,6 +760,23 @@ export const updateSkillAssetVisibility = (assetId: number, visibility: "shared"
     visibility,
   }).then((r) => r.data);
 
+export const updateSkillAssetSop = (
+  assetId: number,
+  body: { sop_callable?: boolean; sop_high_risk?: boolean; action_key?: string },
+) =>
+  api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/sop/`, body).then((r) => r.data);
+
+export const publishSkillAsSop = (assetId: number) =>
+  api.post<{
+    ok: boolean;
+    sop_key: string;
+    version: string;
+    name: string;
+    action_name: string;
+    message?: string;
+    error?: string;
+  }>(`/skills/assets/id/${assetId}/publish-sop/`).then((r) => r.data);
+
 export const adoptSkillAsset = (skillId: string) =>
   api.post<{ ok: boolean; personal: UserSkillItem; asset: SkillAssetItem }>(`/skills/assets/${skillId}/adopt/`)
     .then((r) => r.data);
@@ -1016,6 +1033,9 @@ export interface SkillAssetItem {
   can_edit?: boolean;
   owner_id?: number | null;
   owner?: string;
+  sop_callable?: boolean;
+  action_key?: string;
+  sop_high_risk?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1175,6 +1195,12 @@ export interface ActionContract {
   to_state: string | null;
   budget_field: string | null;
   high_risk: boolean;
+  sop_ready?: boolean;
+  group?: "system" | "skill" | string;
+  source?: "builtin" | "skill" | string;
+  skill_id?: string;
+  asset_id?: number;
+  description?: string;
 }
 
 export interface TaskTemplateItem {
@@ -1346,6 +1372,14 @@ export interface SopVersionItem {
   outputSchema: Record<string, unknown>;
   triggerIntents: string[];
   utteranceExamples: string[];
+  editorChat?: Array<{
+    id?: string;
+    role: "user" | "assistant";
+    content: string;
+    model?: string;
+    images?: string[];
+    tools?: Array<{ name: string; summary: string; status?: string }>;
+  }>;
   contentHash: string;
   changeSummary: string;
   publishedAt?: string | null;
@@ -1366,10 +1400,77 @@ export interface SopDefinitionItem {
   hasDraft: boolean;
   draftVersion: string | null;
   callCount: number;
+  trialCount?: number;
   successRate: number;
+  pendingEvolutionCount?: number;
   nodeCount: number;
   updatedAt: string;
   version?: SopVersionItem;
+}
+
+export interface SopRunItem {
+  runKey: string;
+  traceId: string;
+  status: string;
+  source: "live" | "trial" | "resume" | string;
+  isTrial: boolean;
+  currentNode: string;
+  version: string;
+  sopKey: string;
+  error: string;
+  missingFields: string[];
+  outcomeTags: string[];
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  userId?: number;
+  nodes?: SopNodeRunItem[];
+  inputData?: Record<string, unknown>;
+  stateData?: Record<string, unknown>;
+  outputData?: Record<string, unknown>;
+}
+
+export interface SopNodeRunItem {
+  sequence: number;
+  nodeKey: string;
+  nodeType: string;
+  title: string;
+  status: string;
+  error: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  outputPreview?: unknown;
+}
+
+export interface SopEvolutionSignalItem {
+  id: number;
+  sopKey: string;
+  version?: string | null;
+  nodeKey: string;
+  signalType: string;
+  count: number;
+  lastSeenAt?: string | null;
+  sampleRunIds: string[];
+  payloadSummary: Record<string, unknown>;
+}
+
+export interface SopEvolutionProposalItem {
+  id: number;
+  sopKey: string;
+  status: string;
+  category: string;
+  riskLevel: string;
+  title: string;
+  rationale: string;
+  evidence: Record<string, unknown>;
+  patch: Record<string, unknown>;
+  baseVersion?: string | null;
+  draftVersion?: string | null;
+  trialResult?: Record<string, unknown>;
+  createdBySystem?: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  reviewedAt?: string | null;
+  proposedGraph?: SopVersionItem["graph"];
 }
 
 export const listSops = () =>
@@ -1387,6 +1488,9 @@ export const updateSop = (key: string, body: Record<string, unknown>) =>
 export const duplicateSop = (key: string, body: { key?: string; name?: string } = {}) =>
   api.post<SopDefinitionItem>(`/orchestration/sops/${key}/duplicate/`, body).then((r) => r.data);
 
+export const deleteSop = (key: string) =>
+  api.delete(`/orchestration/sops/${encodeURIComponent(key)}/`).then((r) => r.data);
+
 export const createSopVersion = (key: string, body: Record<string, unknown>) =>
   api.post<SopVersionItem>(`/orchestration/sops/${key}/versions/`, body).then((r) => r.data);
 
@@ -1401,6 +1505,217 @@ export const updateSopVersion = (key: string, version: string, body: Record<stri
 
 export const publishSopVersion = (key: string, version: string) =>
   api.post<SopDefinitionItem>(`/orchestration/sops/${key}/versions/${version}/publish/`, {}).then((r) => r.data);
+
+export const listSopRuns = (
+  key: string,
+  params: { limit?: number; trial?: boolean; source?: string; status?: string } = {},
+) =>
+  api
+    .get<{ results: SopRunItem[]; count: number }>(`/orchestration/sops/${encodeURIComponent(key)}/runs/`, {
+      params: {
+        limit: params.limit ?? 30,
+        ...(params.trial === undefined ? {} : { trial: params.trial ? "1" : "0" }),
+        ...(params.source ? { source: params.source } : {}),
+        ...(params.status ? { status: params.status } : {}),
+      },
+    })
+    .then((r) => r.data);
+
+export const getSopRun = (runKey: string) =>
+  api.get<SopRunItem>(`/orchestration/runs/${encodeURIComponent(runKey)}/`).then((r) => r.data);
+
+export const listSopEvolutionSignals = (key: string, params: { limit?: number; type?: string } = {}) =>
+  api
+    .get<{ results: SopEvolutionSignalItem[]; count: number }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/signals/`,
+      { params: { limit: params.limit ?? 50, ...(params.type ? { type: params.type } : {}) } },
+    )
+    .then((r) => r.data);
+
+export const listSopEvolutionProposals = (key: string, params: { limit?: number; status?: string } = {}) =>
+  api
+    .get<{ results: SopEvolutionProposalItem[]; count: number }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/`,
+      { params: { limit: params.limit ?? 40, ...(params.status ? { status: params.status } : {}) } },
+    )
+    .then((r) => r.data);
+
+export const analyzeSopEvolution = (key: string) =>
+  api
+    .post<{ created: SopEvolutionProposalItem[]; autoDraftedIds: number[]; count: number }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/`,
+      {},
+      { timeout: 120_000 },
+    )
+    .then((r) => r.data);
+
+export const trialSopEvolutionProposal = (key: string, proposalId: number, body: Record<string, unknown> = {}) =>
+  api
+    .post<{ proposal: SopEvolutionProposalItem; result: Record<string, unknown> }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/${proposalId}/trial/`,
+      body,
+      { timeout: 180_000 },
+    )
+    .then((r) => r.data);
+
+export const draftSopEvolutionProposal = (key: string, proposalId: number) =>
+  api
+    .post<{ proposal: SopEvolutionProposalItem; version: SopVersionItem }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/${proposalId}/draft/`,
+      {},
+    )
+    .then((r) => r.data);
+
+export const acceptSopEvolutionProposal = (key: string, proposalId: number) =>
+  api
+    .post<{ proposal: SopEvolutionProposalItem; version?: SopVersionItem | null; note?: string }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/${proposalId}/accept/`,
+      {},
+    )
+    .then((r) => r.data);
+
+export const rejectSopEvolutionProposal = (key: string, proposalId: number) =>
+  api
+    .post<{ proposal: SopEvolutionProposalItem }>(
+      `/orchestration/sops/${encodeURIComponent(key)}/evolution/proposals/${proposalId}/reject/`,
+      {},
+    )
+    .then((r) => r.data);
+
+export const trialSopVersion = (
+  key: string,
+  version: string,
+  body: { text?: string; graph?: SopDraftPayload["graph"]; payload?: Record<string, unknown> } = {},
+) =>
+  api.post<{
+    assistant: string;
+    tools: Array<{ name: string; summary: string; status?: string }>;
+    result: Record<string, unknown>;
+    artifacts?: Array<{
+      id: string;
+      kind: string;
+      title: string;
+      summary: string;
+      content: string;
+    }>;
+    trialMeta?: {
+      mode?: string;
+      externalWritePerformed?: boolean;
+      involvesPush?: boolean;
+      pushedToUser?: boolean | null;
+      canvasNodeCount?: number;
+      note?: string;
+      awaitingConfirm?: {
+        kind?: string;
+        nodeKey?: string;
+        title?: string;
+        instruction?: string;
+        missing?: string[];
+      } | null;
+    };
+    model?: string;
+  }>(`/orchestration/sops/${key}/versions/${version}/trial/`, body, { timeout: 180_000 }).then((r) => r.data);
+
+export type TrialStreamHandlers = {
+  onHello?: (data: { total?: number; titles?: string[]; name?: string; version?: string }) => void;
+  onProgress?: (data: {
+    kind?: string;
+    title?: string;
+    detail?: string;
+    status?: string;
+    index?: number;
+    total?: number;
+  }) => void;
+  onHeartbeat?: (data: { message?: string; tick?: number }) => void;
+  onArtifactDelta?: (data: {
+    id: string;
+    kind: string;
+    title: string;
+    summary: string;
+    delta: string;
+    done: boolean;
+  }) => void;
+  onDone?: (data: {
+    assistant: string;
+    tools: Array<{ name: string; summary: string; status?: string }>;
+    result: Record<string, unknown>;
+    artifacts?: Array<{ id: string; kind: string; title: string; summary: string; content: string }>;
+    trialMeta?: {
+      mode?: string;
+      externalWritePerformed?: boolean;
+      involvesPush?: boolean;
+      pushedToUser?: boolean | null;
+      canvasNodeCount?: number;
+      note?: string;
+      awaitingConfirm?: {
+        kind?: string;
+        nodeKey?: string;
+        title?: string;
+        instruction?: string;
+        missing?: string[];
+      } | null;
+    };
+    model?: string;
+  }) => void;
+  onError?: (message: string) => void;
+  signal?: AbortSignal;
+};
+
+export async function trialSopVersionStream(
+  key: string,
+  version: string,
+  body: { text?: string; graph?: SopDraftPayload["graph"]; payload?: Record<string, unknown> } = {},
+  handlers: TrialStreamHandlers = {},
+) {
+  const token = getAuthToken();
+  const res = await fetch(`${api.defaults.baseURL}/orchestration/sops/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}/trial/stream/`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Token ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: handlers.signal,
+    credentials: "same-origin",
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `试跑流式接口失败（${res.status}）`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split(/\n\n/);
+    buf = parts.pop() || "";
+    for (const block of parts) {
+      const lines = block.split(/\n/);
+      let eventName = "message";
+      let dataLine = "";
+      for (const line of lines) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+      }
+      if (!dataLine) continue;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = JSON.parse(dataLine);
+      } catch {
+        continue;
+      }
+      if (eventName === "hello") handlers.onHello?.(payload as never);
+      else if (eventName === "progress") handlers.onProgress?.(payload as never);
+      else if (eventName === "heartbeat") handlers.onHeartbeat?.(payload as never);
+      else if (eventName === "artifact_delta") handlers.onArtifactDelta?.(payload as never);
+      else if (eventName === "done") handlers.onDone?.(payload as never);
+      else if (eventName === "error") handlers.onError?.(String(payload.error || "试跑失败"));
+    }
+  }
+}
 
 export interface SopDraftPayload {
   key: string;
@@ -1427,11 +1742,13 @@ export const rewriteSopWithAi = (body: {
   targetNodeKey?: string | null;
   targetNodeKeys?: string[];
   images?: string[];
+  mode?: "edit" | "consult";
 }) => api.post<{
   assistant: string;
   draft: SopDraftPayload;
   model: string;
-  scope?: "node" | "nodes" | "flow";
+  scope?: "node" | "nodes" | "flow" | "consult";
+  changed?: boolean;
   targetNodeKey?: string;
   targetNodeKeys?: string[];
   tools?: Array<{ name: string; summary: string; status?: string }>;

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -266,24 +267,40 @@ def _profile_snapshot(snapshot: SourceSnapshot, *, payload_filters: dict | None 
     }
 
 
+def _friendly_as_of(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "—"
+    # Prefer business-readable local-ish datetime; keep date if parse fails.
+    try:
+        from datetime import datetime
+
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return text[:19].replace("T", " ")
+
+
 def _evidence_markdown(profiles: list[dict]) -> str:
     lines = [
         "",
-        "## 数据证据与口径",
+        "## 数据来源说明",
         "",
-        "本报告只使用下列已发布可信版本。精确数字来自快照事实，AI 仅负责归纳和解释。",
+        "本报告基于下列已发布的企业可信数据版本；文中精确数字来自快照事实，AI 仅负责归纳与解释。",
         "",
-        "| 数据资产 | Snapshot | 数据截至时间 | 行数 | 内容 Hash |",
-        "| --- | ---: | --- | ---: | --- |",
+        "| 数据资产 | 版本 | 数据截至 | 记录数 |",
+        "| --- | ---: | --- | ---: |",
     ]
     for row in profiles:
+        name = str(row.get("display_name") or row.get("asset_key") or "未命名数据")
         lines.append(
-            f"| {row['display_name']} (`{row['asset_key']}`) | {row['snapshot_id']} | "
-            f"{row['as_of']} | {row['row_count']} | `{row['content_hash']}` |"
+            f"| {name} | v{row.get('snapshot_id')} | "
+            f"{_friendly_as_of(row.get('as_of'))} | {row.get('row_count') or 0} |"
         )
     lines.extend([
         "",
-        "> 注意：若数据日期不覆盖完整自然周，报告会按实际覆盖范围分析，不会把缺失日期按 0 计算。",
+        "> 说明：若数据日期未覆盖完整自然周，报告按实际观测日分析，不会把缺失日期按 0 计算。",
     ])
     return "\n".join(lines)
 
@@ -434,19 +451,34 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str,
         "必须依据 date_ranges.observed_count 和 observed_values 区分实际观测日与连续自然日，"
         "不得把稀疏观测描述为连续一周、连续两周或完整报告期。"
         "所有金额、数量、比率和环比结论必须能在输入行或统计摘要中验证。"
-        "报告应直接回答任务，至少包含：核心结论、关键指标、趋势或结构分析、异常与风险、可执行建议。"
+        "报告应直接回答任务要求；若任务未另作规定，至少包含：核心结论、关键指标、趋势或结构分析、异常与风险、可执行建议。"
+        "面向业务读者撰写：少用技术术语，不要输出 content_hash、asset_key、ISO 毫秒时间戳、SOP/智能体元数据。"
+        "趋势与结构优先用 Markdown 表格呈现（日期/指标/数值），清晰可读。"
+        "不要使用 xychart-beta、quadrantChart、复杂 flowchart 做趋势图（易语法错误）。"
+        "仅在确有必要时使用最简 Mermaid pie，标签用短中文并用双引号包裹，例如：\n"
+        "```mermaid\npie title 结构占比\n\"品类A\" : 40\n\"品类B\" : 60\n```\n"
         "不要输出任务编号、SOP、执行智能体等流程元数据，也不要复述提示词。"
     )
+    node_instruction = str(payload.get("_node_instruction") or "").strip()
     evidence_json = json.dumps(profiles, ensure_ascii=False, default=_json_default, separators=(",", ":"))
     # 防止异常大字段撑爆模型上下文；摘要与来源元数据始终保留在结果中。
     if len(evidence_json) > 90_000:
         compact = [{**row, "rows": row["rows"][:20], "rows_supplied": min(row["rows_supplied"], 20)} for row in profiles]
         evidence_json = json.dumps(compact, ensure_ascii=False, default=_json_default, separators=(",", ":"))
+    task_block = text
+    if node_instruction and node_instruction not in text:
+        task_block = f"{node_instruction}\n\n补充请求：{text}"
+    wants_chart = any(token in f"{task_block}" for token in ("折线", "饼图", "图表", "可视化", "占比图", "趋势图", "mermaid"))
     llm_result = llm.chat_messages_result(
         system,
-        [{"role": "user", "content": f"任务：{text}\n任务配置：{json.dumps(payload, ensure_ascii=False)}\n\n可信数据：\n{evidence_json}"}],
+        [{"role": "user", "content": (
+            f"任务：{task_block}\n"
+            f"任务配置：{json.dumps({k: v for k, v in payload.items() if not str(k).startswith('_') or k in {'_node_title'}}, ensure_ascii=False)}\n\n"
+            f"可信数据：\n{evidence_json}"
+            + ("\n\n请用 Markdown 表格展示趋势/结构数字；如需占比可用最简 mermaid pie，勿用 xychart。" if wants_chart else "")
+        )}],
         temperature=0.15,
-        max_tokens=2600,
+        max_tokens=3200 if wants_chart else 2600,
         timeout=90,
         llm_user=user,
     )
@@ -464,13 +496,61 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str,
             "steps": [*steps, {"node": "AI 分析", "status": "block", "detail": message, "data": {}}],
         }
 
-    report_markdown = (
-        f"# {text.strip()}\n{_coverage_markdown(profiles)}\n\n"
-        f"{report.lstrip('# ').strip()}\n{_evidence_markdown(profiles)}"
+    # If the model dumped a full HTML document into the answer, peel it out so
+    # Markdown stays readable and HTML can be previewed as a real page.
+    from .report_html import (
+        extract_embedded_html,
+        markdown_to_html_document,
+        resolve_report_output_format,
     )
+
+    embedded_html, report = extract_embedded_html(report)
+
+    report_title = str(payload.get("_node_title") or "").strip() or text.strip().split("\n", 1)[0][:80] or "经营分析报告"
+    markdown_body = (report.lstrip("# ").strip() if report else "")
+    # Avoid stuffing raw HTML / half-open fences back into the Markdown twin.
+    if embedded_html:
+        markdown_body = markdown_body or "（正文已输出为 HTML 报告，请在 HTML 页签预览。）"
+    elif not markdown_body:
+        markdown_body = "（暂无正文）"
+
+    def _soften_mermaid_blocks(md: str) -> str:
+        def _repl(match: re.Match) -> str:
+            from .report_html import sanitize_mermaid_source
+
+            cleaned = sanitize_mermaid_source(match.group(1) or "")
+            if cleaned:
+                return f"```mermaid\n{cleaned}\n```"
+            return "\n> 趋势请见表格与文字解读（已省略不稳定自动图表）。\n"
+
+        return re.sub(r"```mermaid\s*([\s\S]*?)```", _repl, md or "", flags=re.IGNORECASE)
+
+    markdown_body = _soften_mermaid_blocks(markdown_body)
+    report_markdown = (
+        f"# {report_title}\n{_coverage_markdown(profiles)}\n\n"
+        f"{markdown_body}\n{_evidence_markdown(profiles)}"
+    )
+
+    output_format = resolve_report_output_format(
+        payload,
+        text=text,
+        instruction=str(payload.get("_node_instruction") or ""),
+    )
+    if embedded_html:
+        output_format = "html"
+    report_html = ""
+    if output_format == "html":
+        # Prefer the model's own HTML page. Only fall back to Markdown→HTML when
+        # there is no embedded document — never wrap source code in another page.
+        report_html = embedded_html or markdown_to_html_document(report_markdown, title=report_title)
     steps.extend([
         {"node": "AI 分析", "status": "done", "detail": "AI 已基于可信快照完成经营分析。", "data": {"model": llm_result.get("model")}},
-        {"node": "生成报告和证据", "status": "done", "detail": "交付物已绑定数据版本、截至时间与内容 Hash。", "data": {"snapshot_ids": [row["snapshot_id"] for row in profiles]}},
+        {
+            "node": "生成报告和证据",
+            "status": "done",
+            "detail": f"交付物已绑定数据版本，输出格式：{'HTML' if output_format == 'html' else 'Markdown'}。",
+            "data": {"snapshot_ids": [row["snapshot_id"] for row in profiles], "output_format": output_format},
+        },
     ])
     _write_audit(
         trace_id=trace_id, user=user, organization=organization, text=text,
@@ -480,23 +560,32 @@ def run_business_analysis(*, text: str, organization, user, trace_id: str,
             "execution_mode": "ai_business_analysis",
             "model": llm_result.get("model"),
             "report_hash": f"sha256:{hashlib.sha256(report_markdown.encode('utf-8')).hexdigest()}",
+            "output_format": output_format,
             "external_write_performed": False,
         },
     )
+    result_payload = {
+        "ok": True,
+        "execution_mode": "ai_business_analysis",
+        "report_markdown": report_markdown,
+        "output_format": output_format,
+        "evidence": evidence,
+        "requested_scope": payload,
+        "data_profiles": [{key: value for key, value in row.items() if key != "rows"} for row in profiles],
+        "model": llm_result.get("model"),
+        "external_write_performed": False,
+        "user_message": (
+            f"已读取 {len(profiles)} 个可信数据版本并生成 HTML 报告。"
+            if output_format == "html"
+            else f"已读取 {len(profiles)} 个可信数据版本并生成分析报告。"
+        ),
+    }
+    if report_html:
+        result_payload["report_html"] = report_html
     return {
         "trace_id": trace_id,
         "decision": "allow",
         "action": "report.generate",
-        "result": {
-            "ok": True,
-            "execution_mode": "ai_business_analysis",
-            "report_markdown": report_markdown,
-            "evidence": evidence,
-            "requested_scope": payload,
-            "data_profiles": [{key: value for key, value in row.items() if key != "rows"} for row in profiles],
-            "model": llm_result.get("model"),
-            "external_write_performed": False,
-            "user_message": f"已读取 {len(profiles)} 个可信数据版本并生成分析报告。",
-        },
+        "result": result_payload,
         "steps": steps,
     }

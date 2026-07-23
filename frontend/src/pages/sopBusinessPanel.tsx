@@ -1,5 +1,6 @@
 import { CloseOutlined, DeleteOutlined } from "@ant-design/icons";
 import { Button, Collapse, Input, Select, Space, Switch, Tag } from "antd";
+import { useEffect } from "react";
 
 import type { ActionContract, KnowledgeBaseItem, SopGraphNode } from "../api/client";
 
@@ -78,7 +79,7 @@ const STEP_KIND_OPTIONS = [
   { value: "data_bind", label: "使用企业数据", hint: "绑定可信业务表 / 快照" },
   { value: "knowledge_query", label: "查知识库", hint: "检索制度、话术、经验文档" },
   { value: "checkpoint", label: "人工确认", hint: "暂停等负责人点头再继续" },
-  { value: "execute_action", label: "执行业务能力", hint: "生成报告、库存分析等" },
+  { value: "execute_action", label: "执行业务能力", hint: "生成报告、推送通知等系统动作" },
   { value: "gate", label: "安全检查", hint: "权限与风险闸机" },
   { value: "handoff", label: "转人工处理", hint: "异常时交给真人" },
   { value: "end", label: "结束", hint: "产出结果并留存" },
@@ -216,6 +217,20 @@ export default function SopBusinessNodePanel({
   };
 
   const kind = STEP_KIND_OPTIONS.find((item) => item.value === node.type);
+  const actionName = String(config.action_name || "");
+  const instructionText = String(config.instruction || "");
+  const wantsHtmlReport = /HTML|html|网页报告|网页版|输出\s*HTML/i.test(instructionText);
+  const reportOutputFormat = String(config.output_format || "").trim() || (wantsHtmlReport ? "html" : "markdown");
+
+  useEffect(() => {
+    if (disabled) return;
+    if (node.type !== "execute_action" || actionName !== "report.generate") return;
+    if (!wantsHtmlReport) return;
+    if (String(config.output_format || "").trim() === "html") return;
+    patchConfig({ output_format: "html" });
+    // Intentionally sync structured field when AI only rewrote instruction text.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disabled, node.type, actionName, wantsHtmlReport, node.key]);
 
   return (
     <aside className="sop-biz-panel">
@@ -371,17 +386,94 @@ export default function SopBusinessNodePanel({
               disabled={disabled}
               showSearch
               optionFilterProp="label"
-              placeholder={actions.length ? "例如：生成经营分析报告" : "暂无可用业务能力"}
-              options={actions.map((action) => ({
-                value: action.name,
-                label: action.title,
-              }))}
-              onChange={(value) => patchConfig({ action_name: value })}
+              placeholder={actions.length ? "选择系统能力或技能中心技能" : "暂无可用业务能力"}
+              options={[
+                {
+                  label: "系统能力",
+                  options: actions
+                    .filter((action) => (action.group || action.source || "system") !== "skill")
+                    .map((action) => ({
+                      value: action.name,
+                      label: action.high_risk ? `${action.title}（需确认）` : action.title,
+                    })),
+                },
+                {
+                  label: "我的技能（技能中心）",
+                  options: actions
+                    .filter((action) => action.group === "skill" || action.source === "skill")
+                    .map((action) => ({
+                      value: action.name,
+                      label: action.high_risk ? `${action.title}（需确认）` : action.title,
+                    })),
+                },
+              ].filter((group) => group.options.length > 0)}
+              onChange={(value) => {
+                const patch: Record<string, unknown> = { action_name: value };
+                if (value === "notify.push") {
+                  if (!config.destination) patch.destination = "platform";
+                  if (!config.push_content && config.instruction) patch.push_content = String(config.instruction);
+                }
+                patchConfig(patch);
+              }}
             />
             <em className="sop-biz-hint">
-              这里的「业务能力」就是流程可调用的系统动作（不是单独的工具市场）。Agent 侧可复用技能包，请到「技能中心」管理。
+              能力目录 = 平台已接通的系统动作 + 你在技能中心启用并勾选「可用于 SOP」的技能。
+              去「技能中心」管理更多能力；未接通的 ERP 占位不会出现在这里。
             </em>
           </label>
+        )}
+
+        {node.type === "execute_action" && String(config.action_name || "") === "report.generate" && (
+          <label className="sop-biz-field">
+            <span>报告输出格式</span>
+            <Select
+              value={reportOutputFormat}
+              disabled={disabled}
+              options={[
+                { value: "markdown", label: "Markdown（.md）" },
+                { value: "html", label: "HTML（可预览网页）" },
+              ]}
+              onChange={(value) => patchConfig({ output_format: value })}
+            />
+            <em className="sop-biz-hint">
+              选 HTML 时，试跑产物可直接网页预览；同时仍会保留 Markdown 源稿。
+            </em>
+          </label>
+        )}
+
+        {node.type === "execute_action" && String(config.action_name || "") === "notify.push" && (
+          <>
+            <label className="sop-biz-field">
+              <span>推送渠道</span>
+              <Select
+                value={String(config.destination || "platform")}
+                disabled={disabled}
+                options={[
+                  { value: "platform", label: "平台站内通知" },
+                  { value: "wecom", label: "企业微信" },
+                ]}
+                onChange={(value) => patchConfig({ destination: value })}
+              />
+              <em className="sop-biz-hint">推送是副作用工具：正式运行前必须人工确认；试跑只预览、不真实发送。</em>
+            </label>
+            <label className="sop-biz-field">
+              <span>推送内容</span>
+              <Input.TextArea
+                rows={3}
+                value={String(config.push_content || config.instruction || "")}
+                disabled={disabled}
+                placeholder="写清楚要发给用户的正文"
+                onChange={(event) => patchConfig({
+                  push_content: event.target.value,
+                  instruction: event.target.value || String(config.instruction || ""),
+                })}
+              />
+            </label>
+            <div className="sop-biz-callout">
+              <strong>发送前需确认</strong>
+              <span>建议在本步骤前增加「人工确认」节点。未确认时流程会停在推送步骤，等待负责人点头后再发。</span>
+            </div>
+          </>
         )}
 
         {(node.type === "execute_action" || node.type === "data_bind" || node.type === "collect_info" || node.type === "checkpoint") && (
@@ -415,7 +507,7 @@ export default function SopBusinessNodePanel({
         <div className="sop-biz-switch">
           <div>
             <strong>需要人工确认后继续</strong>
-            <span>适合高风险结果或对外发布前复核</span>
+            <span>适合高风险结果、对外推送或发布前复核</span>
           </div>
           <Switch
             checked={node.type === "checkpoint"}
