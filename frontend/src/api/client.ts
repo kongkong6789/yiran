@@ -844,6 +844,8 @@ export interface AgentChatResult {
   refs?: {
     rag?: unknown[];
     graph?: { id: number; name: string; otype: string }[];
+    lightrag?: { source_id?: string; source_name?: string; workspace?: string; mode?: string }[];
+    lightrag_status?: { mode?: string; error?: string; degraded_sources?: string[] };
     mcp?: { server: string; tool?: string; source?: string }[];
     skills?: { skill_id: string; name: string; description?: string }[];
   };
@@ -1137,6 +1139,7 @@ export const agentChat = (body: {
   skill_ids?: string[];
   model?: string;
   knowledge_mode?: "auto" | "none" | "selected" | string;
+  lightrag_mode?: "local" | "global" | "hybrid" | "mix" | "naive" | "bypass" | string;
   knowledge_base_ids?: number[];
   files?: File[];
 }) => {
@@ -1146,6 +1149,7 @@ export const agentChat = (body: {
     if (body.conversation_id) form.append("conversation_id", body.conversation_id);
     if (body.model) form.append("model", body.model);
     if (body.knowledge_mode) form.append("knowledge_mode", body.knowledge_mode);
+    if (body.lightrag_mode) form.append("lightrag_mode", body.lightrag_mode);
     body.knowledge_base_ids?.forEach((id) => form.append("knowledge_base_ids", String(id)));
     body.skill_ids?.forEach((id) => form.append("skill_ids", id));
     body.files.forEach((file) => form.append("files", file));
@@ -1224,9 +1228,22 @@ export const duplicateTaskTemplate = (key: string) =>
 
 export interface SopGraphNode {
   key: string;
-  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end";
+  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end" | "knowledge_query" | "data_bind";
   title: string;
   config: Record<string, unknown>;
+}
+
+export interface SopNodeDataBindings {
+  snapshot_ids: number[];
+  metric_ids: string[];
+  asset_keys: string[];
+  scope: string;
+  brand_ids: string[];
+}
+
+export interface SopNodeKnowledgeScope {
+  knowledge_base_ids: number[];
+  retrieval_hint: string;
 }
 
 export interface SopGraphEdge {
@@ -1236,11 +1253,28 @@ export interface SopGraphEdge {
   priority: number;
 }
 
+export interface SopGraphLayout {
+  [nodeKey: string]: { x: number; y: number };
+}
+
+export interface SopGraphMeta {
+  goal?: string[];
+  required_info?: string[];
+  layout?: SopGraphLayout;
+  slot_filling_policy?: Record<string, unknown>;
+}
+
 export interface SopVersionItem {
   id: number;
   version: string;
   status: "draft" | "published" | "retired";
-  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  graph: {
+    start: string;
+    terminals: string[];
+    nodes: SopGraphNode[];
+    edges: SopGraphEdge[];
+    meta?: SopGraphMeta;
+  };
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   triggerIntents: string[];
@@ -1310,14 +1344,31 @@ export interface SopDraftPayload {
   version: string;
   triggerIntents: string[];
   utteranceExamples: string[];
-  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  graph: {
+    start: string;
+    terminals: string[];
+    nodes: SopGraphNode[];
+    edges: SopGraphEdge[];
+    meta?: SopGraphMeta;
+  };
 }
 
 export const rewriteSopWithAi = (body: {
   instruction: string;
   draft: SopDraftPayload;
   history: Array<{ role: "user" | "assistant"; content: string }>;
-}) => api.post<{ assistant: string; draft: SopDraftPayload; model: string }>(
+  targetNodeKey?: string | null;
+  targetNodeKeys?: string[];
+  images?: string[];
+}) => api.post<{
+  assistant: string;
+  draft: SopDraftPayload;
+  model: string;
+  scope?: "node" | "nodes" | "flow";
+  targetNodeKey?: string;
+  targetNodeKeys?: string[];
+  tools?: Array<{ name: string; summary: string; status?: string }>;
+}>(
   "/orchestration/sops/ai/rewrite/",
   body,
   { timeout: 90_000 },
