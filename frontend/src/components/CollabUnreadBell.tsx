@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Badge, Button, Dropdown, Empty, Typography } from "antd";
+import { Avatar, Badge, Button, Dropdown, Empty, Typography } from "antd";
 import { BellOutlined, CloseOutlined, TeamOutlined, UserOutlined } from "@ant-design/icons";
 import { useNavigate } from "react-router-dom";
 import {
@@ -7,48 +7,144 @@ import {
   getCollabUnread,
   type CollabUnreadItem,
 } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 type Props = {
   enabled?: boolean;
 };
+
+type UnreadPreview = {
+  key: string;
+  item: CollabUnreadItem;
+};
+
+const PREVIEW_LIFETIME_MS = 30_000;
+const MAX_VISIBLE_PREVIEWS = 5;
+
+function previewKey(item: CollabUnreadItem) {
+  return `${item.room_id}:${item.last_message?.id || item.updated_at}`;
+}
+
+function UnreadPreviewToast({
+  preview,
+  onOpen,
+  onDismiss,
+}: {
+  preview: UnreadPreview;
+  onOpen: (item: CollabUnreadItem) => void;
+  onDismiss: (key: string) => void;
+}) {
+  const { item } = preview;
+  const senderName = item.last_message?.sender || item.title || "成员";
+  const avatarSrc = authenticatedAvatarUrl(item.last_message?.sender_avatar_url);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => onDismiss(preview.key), PREVIEW_LIFETIME_MS);
+    return () => window.clearTimeout(timer);
+  }, [onDismiss, preview.key]);
+
+  return (
+    <aside
+      className="collab-unread-toast"
+      role="status"
+      aria-label={`来自${item.title}的新消息`}
+    >
+      <button
+        type="button"
+        className="collab-unread-toast-main"
+        onClick={() => onOpen(item)}
+      >
+        <Avatar
+          size={42}
+          src={avatarSrc || undefined}
+          className="collab-unread-toast-avatar"
+        >
+          {senderName.trim().slice(0, 1).toUpperCase()
+            || (item.room_kind === "group" ? <TeamOutlined /> : <UserOutlined />)}
+        </Avatar>
+        <span className="collab-unread-toast-copy">
+          <span className="collab-unread-toast-heading">
+            <strong>{item.title}</strong>
+            <small>{item.last_message?.created_at
+              ? new Date(item.last_message.created_at).toLocaleTimeString("zh-CN", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "刚刚"}</small>
+          </span>
+          <span className="collab-unread-toast-sender">{senderName}</span>
+          <span className="collab-unread-toast-content">
+            {item.last_message?.content || "发来一条新消息"}
+          </span>
+          <small className="collab-unread-toast-hint">点击进入会话</small>
+        </span>
+      </button>
+      <button
+        type="button"
+        className="collab-unread-toast-close"
+        aria-label={`关闭来自${item.title}的消息提醒`}
+        onClick={() => onDismiss(preview.key)}
+      >
+        <CloseOutlined />
+      </button>
+    </aside>
+  );
+}
 
 export default function CollabUnreadBell({ enabled = true }: Props) {
   const nav = useNavigate();
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<CollabUnreadItem[]>([]);
   const [open, setOpen] = useState(false);
-  const [preview, setPreview] = useState<CollabUnreadItem | null>(null);
-  const latestPreviewKeyRef = useRef("");
+  const [previews, setPreviews] = useState<UnreadPreview[]>([]);
+  const latestPreviewKeyByRoomRef = useRef(new Map<string, string>());
 
   const openRoom = useCallback((item: CollabUnreadItem) => {
     setOpen(false);
-    setPreview(null);
+    setPreviews((current) => current.filter((entry) => entry.item.room_id !== item.room_id));
     nav(`/collab?room=${encodeURIComponent(item.room_id)}`);
   }, [nav]);
+
+  const dismissPreview = useCallback((key: string) => {
+    setPreviews((current) => current.filter((entry) => entry.key !== key));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!enabled || !getAuthToken()) {
       setTotal(0);
       setItems([]);
-      setPreview(null);
-      latestPreviewKeyRef.current = "";
+      setPreviews([]);
+      latestPreviewKeyByRoomRef.current.clear();
       return;
     }
     try {
       const data = await getCollabUnread();
       const nextItems = data.results || [];
-      const latest = nextItems[0];
-      const latestKey = latest
-        ? `${latest.room_id}:${latest.last_message?.id || latest.updated_at}`
-        : "";
       setTotal(data.total_unread || 0);
       setItems(nextItems);
-      if (latestKey && latestKey !== latestPreviewKeyRef.current) {
-        latestPreviewKeyRef.current = latestKey;
-        setPreview(latest);
-      } else if (!latestKey) {
-        latestPreviewKeyRef.current = "";
-        setPreview(null);
+      const unreadRoomIds = new Set(nextItems.map((item) => item.room_id));
+      for (const roomId of latestPreviewKeyByRoomRef.current.keys()) {
+        if (!unreadRoomIds.has(roomId)) latestPreviewKeyByRoomRef.current.delete(roomId);
+      }
+      const incoming = nextItems
+        .map((item) => ({ key: previewKey(item), item }))
+        .filter((entry) => (
+          latestPreviewKeyByRoomRef.current.get(entry.item.room_id) !== entry.key
+        ));
+      nextItems.forEach((item) => (
+        latestPreviewKeyByRoomRef.current.set(item.room_id, previewKey(item))
+      ));
+      if (incoming.length) {
+        setPreviews((current) => {
+          const merged = [...current];
+          for (const entry of incoming) {
+            if (!merged.some((existing) => existing.key === entry.key)) merged.push(entry);
+          }
+          return merged.slice(-MAX_VISIBLE_PREVIEWS);
+        });
+      } else if (!nextItems.length) {
+        latestPreviewKeyByRoomRef.current.clear();
+        setPreviews([]);
       }
     } catch {
       /* 未登录或无权限时静默 */
@@ -70,12 +166,6 @@ export default function CollabUnreadBell({ enabled = true }: Props) {
   useEffect(() => {
     if (open) void refresh();
   }, [open, refresh]);
-
-  useEffect(() => {
-    if (!preview) return undefined;
-    const timer = window.setTimeout(() => setPreview(null), 30_000);
-    return () => window.clearTimeout(timer);
-  }, [preview]);
 
   const menu = {
     items: items.length
@@ -111,48 +201,20 @@ export default function CollabUnreadBell({ enabled = true }: Props) {
 
   return (
     <>
-      {preview && !open ? (
-        <aside
-          key={`${preview.room_id}:${preview.last_message?.id || preview.updated_at}`}
-          className="collab-unread-toast"
-          role="status"
-          aria-label={`来自${preview.title}的新消息`}
+      {previews.length ? (
+        <div
+          className={`collab-unread-toast-stack${open ? " is-hidden" : ""}`}
+          aria-hidden={open}
         >
-          <button
-            type="button"
-            className="collab-unread-toast-main"
-            onClick={() => openRoom(preview)}
-          >
-            <span className="collab-unread-toast-icon" aria-hidden>
-              {preview.room_kind === "group" ? <TeamOutlined /> : <UserOutlined />}
-            </span>
-            <span className="collab-unread-toast-copy">
-              <span className="collab-unread-toast-heading">
-                <strong>{preview.title}</strong>
-                <small>{preview.last_message?.created_at
-                  ? new Date(preview.last_message.created_at).toLocaleTimeString("zh-CN", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : "刚刚"}</small>
-              </span>
-              <span className="collab-unread-toast-content">
-                {preview.last_message
-                  ? `${preview.last_message.sender}：${preview.last_message.content || "发来一条新消息"}`
-                  : "有新消息，点击查看"}
-              </span>
-              <small className="collab-unread-toast-hint">点击进入会话</small>
-            </span>
-          </button>
-          <button
-            type="button"
-            className="collab-unread-toast-close"
-            aria-label="关闭消息提醒"
-            onClick={() => setPreview(null)}
-          >
-            <CloseOutlined />
-          </button>
-        </aside>
+          {previews.map((preview) => (
+            <UnreadPreviewToast
+              key={preview.key}
+              preview={preview}
+              onOpen={openRoom}
+              onDismiss={dismissPreview}
+            />
+          ))}
+        </div>
       ) : null}
 
       <Dropdown

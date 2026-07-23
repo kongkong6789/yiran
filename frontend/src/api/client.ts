@@ -2416,6 +2416,7 @@ export interface CollabRoom {
     id: number;
     content: string;
     sender: string;
+    sender_avatar_url?: string;
     created_at: string;
   };
   messages?: CollabMessage[];
@@ -3108,6 +3109,7 @@ export type CollabUnreadItem = {
     id: number;
     content: string;
     sender: string;
+    sender_avatar_url?: string;
     created_at: string;
   };
   updated_at: string;

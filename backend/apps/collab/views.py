@@ -500,10 +500,12 @@ def _room_payload_from_parts(
                 bits.append(f"[附件×{files}]" if files > 1 else "[附件]")
             preview = " ".join(bits) or "[附件]"
         sender_nick = nick_by_id.get(last.sender_id, "")
+        sender_profile = profiles.get(last.sender_id) or {}
         payload["last_message"] = {
             "id": last.id,
             "content": (preview or "[消息]")[:80],
             "sender": sender_nick or last.sender.username,
+            "sender_avatar_url": sender_profile.get("avatar_url") or "",
             "created_at": last.created_at.isoformat(),
         }
     if include_messages:

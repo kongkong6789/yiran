@@ -115,6 +115,22 @@ class CollabConversationIntelligenceTests(TestCase):
         self.assertEqual(automated["小策bot"]["kind"], "bot")
         self.assertEqual(automated["良策AI"]["kind"], "bot")
 
+    def test_unread_preview_includes_the_sender_avatar(self):
+        UserSettings.objects.create(user=self.member, avatar="member-avatar.png")
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get("/api/collab/unread/")
+
+        self.assertEqual(response.status_code, 200)
+        item = next(
+            row for row in response.data["results"]
+            if row["room_id"] == str(self.room.id)
+        )
+        self.assertEqual(
+            item["last_message"]["sender_avatar_url"],
+            "/api/auth/avatars/member-avatar.png/",
+        )
+
     @patch("apps.collab.summary.llm.chat_messages_result")
     def test_summary_requires_a_configured_llm(self, mock_llm):
         mock_llm.return_value = {

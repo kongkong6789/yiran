@@ -202,10 +202,18 @@ test("chat supports stable bottom scrolling, team grouping, translation, and ini
 
 test("unread notifications preview safely and deep-link without a blank screen", () => {
   assert.match(unreadBellSource, /className="collab-unread-toast"/);
-  assert.match(unreadBellSource, /window\.setTimeout\(\(\) => setPreview\(null\), 30_000\)/);
+  assert.match(unreadBellSource, /className=\{`collab-unread-toast-stack\$\{open \? " is-hidden" : ""\}`\}/);
+  assert.match(unreadBellSource, /const MAX_VISIBLE_PREVIEWS = 5/);
+  assert.match(unreadBellSource, /merged\.slice\(-MAX_VISIBLE_PREVIEWS\)/);
+  assert.match(unreadBellSource, /window\.setTimeout\(\(\) => onDismiss\(preview\.key\), PREVIEW_LIFETIME_MS\)/);
+  assert.match(unreadBellSource, /authenticatedAvatarUrl\(item\.last_message\?\.sender_avatar_url\)/);
+  assert.match(unreadBellSource, /<Avatar[\s\S]*?className="collab-unread-toast-avatar"/);
   assert.match(unreadBellSource, /openRoom\(item\)/);
   assert.match(globalStyles, /@keyframes collab-unread-toast-lifecycle/);
-  assert.match(globalStyles, /backdrop-filter:\s*blur\(24px\) saturate\(165%\)/);
+  assert.match(globalStyles, /\.collab-unread-toast-stack\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?gap:\s*10px;/);
+  assert.match(globalStyles, /background:\s*color-mix\(in srgb, var\(--lc-canvas\) 66%, transparent\)/);
+  assert.match(globalStyles, /backdrop-filter:\s*blur\(26px\) saturate\(175%\)/);
+  assert.match(globalStyles, /\.collab-unread-toast-avatar\s*\{/);
   assert.match(chatSource, /participants:\s*\[\]/);
   assert.match(chatSource, /\(activeRoom\.participants \|\| \[\]\)\.some/);
   assert.match(chatSource, /nextParams\.delete\("room"\)/);
