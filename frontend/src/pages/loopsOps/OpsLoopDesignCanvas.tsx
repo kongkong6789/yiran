@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -19,7 +19,6 @@ import {
   type Node,
   type NodeProps,
   type OnNodeDrag,
-  type OnSelectionChangeParams,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -31,7 +30,7 @@ export type OpsCanvasPhaseCard = {
   tone: string;
   subtitle: string;
   bullets: string[];
-  selected: boolean;
+  selected?: boolean;
 };
 
 export type OpsCanvasLayout = Record<string, { x: number; y: number }>;
@@ -40,13 +39,13 @@ type PhaseNodeData = OpsCanvasPhaseCard & Record<string, unknown>;
 
 type GoalNodeData = {
   condition: string;
-  selected: boolean;
+  selected?: boolean;
 } & Record<string, unknown>;
 
 type EndNodeData = {
   title: string;
   hint: string;
-  selected: boolean;
+  selected?: boolean;
 } & Record<string, unknown>;
 
 const DEFAULT_LAYOUT: OpsCanvasLayout = {
@@ -67,35 +66,38 @@ const PHASE_COLORS: Record<string, string> = {
   learn: "#d97706",
 };
 
-function PhaseCardNode({ data }: NodeProps) {
+function PhaseCardNode({ data, selected }: NodeProps) {
   const d = data as PhaseNodeData;
+  const bullets = Array.isArray(d.bullets) ? d.bullets : [];
+  const active = Boolean(selected || d.selected);
   return (
-    <div className={`ops-flow-node ${d.tone}${d.selected ? " selected" : ""}`}>
-      <Handle type="target" position={Position.Left} className="ops-flow-handle" />
+    <div className={`ops-flow-node ${d.tone || ""}${active ? " selected" : ""}`}>
+      <Handle type="target" position={Position.Left} id="left" className="ops-flow-handle" />
       <Handle type="target" position={Position.Top} id="top" className="ops-flow-handle" />
-      <div className={`ops-flow-banner ${d.tone}`}>
-        <span>{d.label}</span>
+      <div className={`ops-flow-banner ${d.tone || ""}`}>
+        <span>{d.label || "节点"}</span>
         <em>已配置</em>
       </div>
       <div className="ops-flow-body">
-        <div className="ops-flow-sub">{d.subtitle}</div>
+        <div className="ops-flow-sub">{d.subtitle || ""}</div>
         <ul>
-          {d.bullets.map((line) => (
-            <li key={line}>{line}</li>
+          {bullets.map((line, index) => (
+            <li key={`${index}-${line}`}>{line}</li>
           ))}
         </ul>
       </div>
-      <Handle type="source" position={Position.Right} className="ops-flow-handle" />
+      <Handle type="source" position={Position.Right} id="right" className="ops-flow-handle" />
       <Handle type="source" position={Position.Bottom} id="bottom" className="ops-flow-handle" />
     </div>
   );
 }
 
-function GoalDiamondNode({ data }: NodeProps) {
+function GoalDiamondNode({ data, selected }: NodeProps) {
   const d = data as GoalNodeData;
+  const active = Boolean(selected || d.selected);
   return (
-    <div className={`ops-flow-goal${d.selected ? " selected" : ""}`}>
-      <Handle type="target" position={Position.Top} className="ops-flow-handle" />
+    <div className={`ops-flow-goal${active ? " selected" : ""}`}>
+      <Handle type="target" position={Position.Top} id="top" className="ops-flow-handle" />
       <div className="ops-flow-diamond">
         <div className="ops-flow-diamond-inner">
           <strong>是否达成目标？</strong>
@@ -108,13 +110,14 @@ function GoalDiamondNode({ data }: NodeProps) {
   );
 }
 
-function EndMonitorNode({ data }: NodeProps) {
+function EndMonitorNode({ data, selected }: NodeProps) {
   const d = data as EndNodeData;
+  const active = Boolean(selected || d.selected);
   return (
-    <div className={`ops-flow-end${d.selected ? " selected" : ""}`}>
-      <Handle type="target" position={Position.Left} className="ops-flow-handle" />
-      <strong>{d.title}</strong>
-      <span>{d.hint}</span>
+    <div className={`ops-flow-end${active ? " selected" : ""}`}>
+      <Handle type="target" position={Position.Left} id="left" className="ops-flow-handle" />
+      <strong>{d.title || "保持平衡"}</strong>
+      <span>{d.hint || "持续监控"}</span>
     </div>
   );
 }
@@ -178,13 +181,28 @@ type Props = {
   onLayoutChange: (layout: OpsCanvasLayout) => void;
 };
 
-function buildNodes(phases: OpsCanvasPhaseCard[], loopCondition: string, layout: OpsCanvasLayout, selectedId: string): Node[] {
+function posOf(layout: OpsCanvasLayout, id: string) {
+  return layout[id] || DEFAULT_LAYOUT[id] || { x: 0, y: 0 };
+}
+
+function buildNodes(
+  phases: OpsCanvasPhaseCard[],
+  loopCondition: string,
+  layout: OpsCanvasLayout,
+  selectedId: string,
+): Node[] {
   const phaseNodes: Node[] = phases.map((phase) => ({
     id: phase.id,
     type: "phase",
-    position: layout[phase.id] || DEFAULT_LAYOUT[phase.id],
+    position: posOf(layout, phase.id),
     selected: selectedId === phase.id,
-    data: { ...phase, selected: selectedId === phase.id } as PhaseNodeData,
+    data: {
+      id: phase.id,
+      label: phase.label,
+      tone: phase.tone,
+      subtitle: phase.subtitle,
+      bullets: phase.bullets || [],
+    } as PhaseNodeData,
     draggable: true,
   }));
 
@@ -193,23 +211,21 @@ function buildNodes(phases: OpsCanvasPhaseCard[], loopCondition: string, layout:
     {
       id: "goal",
       type: "goal",
-      position: layout.goal || DEFAULT_LAYOUT.goal,
+      position: posOf(layout, "goal"),
       selected: selectedId === "goal",
       data: {
         condition: loopCondition,
-        selected: selectedId === "goal",
       } as GoalNodeData,
       draggable: true,
     },
     {
       id: "monitor",
       type: "end",
-      position: layout.monitor || DEFAULT_LAYOUT.monitor,
+      position: posOf(layout, "monitor"),
       selected: selectedId === "monitor",
       data: {
         title: "保持平衡",
         hint: "持续监控 · 不强制进入下一轮",
-        selected: selectedId === "monitor",
       } as EndNodeData,
       draggable: true,
     },
@@ -224,15 +240,52 @@ function buildEdges(): Edge[] {
     height: 16,
   });
   return [
-    { id: "e-obs-ori", source: "observe", target: "orient", type: "labeled", style: { stroke: "#94a3b8", strokeWidth: 2 }, markerEnd: arrow("#94a3b8") },
-    { id: "e-ori-dec", source: "orient", target: "decide", type: "labeled", style: { stroke: "#94a3b8", strokeWidth: 2 }, markerEnd: arrow("#94a3b8") },
-    { id: "e-dec-act", source: "decide", target: "act", type: "labeled", style: { stroke: "#94a3b8", strokeWidth: 2 }, markerEnd: arrow("#94a3b8") },
-    { id: "e-act-learn", source: "act", target: "learn", type: "labeled", style: { stroke: "#94a3b8", strokeWidth: 2 }, markerEnd: arrow("#94a3b8") },
+    {
+      id: "e-obs-ori",
+      source: "observe",
+      sourceHandle: "right",
+      target: "orient",
+      targetHandle: "left",
+      type: "labeled",
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
+      markerEnd: arrow("#94a3b8"),
+    },
+    {
+      id: "e-ori-dec",
+      source: "orient",
+      sourceHandle: "right",
+      target: "decide",
+      targetHandle: "left",
+      type: "labeled",
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
+      markerEnd: arrow("#94a3b8"),
+    },
+    {
+      id: "e-dec-act",
+      source: "decide",
+      sourceHandle: "right",
+      target: "act",
+      targetHandle: "left",
+      type: "labeled",
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
+      markerEnd: arrow("#94a3b8"),
+    },
+    {
+      id: "e-act-learn",
+      source: "act",
+      sourceHandle: "right",
+      target: "learn",
+      targetHandle: "left",
+      type: "labeled",
+      style: { stroke: "#94a3b8", strokeWidth: 2 },
+      markerEnd: arrow("#94a3b8"),
+    },
     {
       id: "e-learn-goal",
       source: "learn",
       sourceHandle: "bottom",
       target: "goal",
+      targetHandle: "top",
       type: "labeled",
       style: { stroke: "#818cf8", strokeWidth: 2 },
       markerEnd: arrow("#818cf8"),
@@ -254,6 +307,7 @@ function buildEdges(): Edge[] {
       source: "goal",
       sourceHandle: "yes",
       target: "monitor",
+      targetHandle: "left",
       type: "labeled",
       data: { label: "是 · 保持平衡", tone: "yes" },
       style: { stroke: "#22c55e", strokeWidth: 2 },
@@ -264,36 +318,66 @@ function buildEdges(): Edge[] {
 
 function CanvasInner({ phases, loopCondition, layout, selectedId, onSelect, onLayoutChange }: Props) {
   const mergedLayout = useMemo(() => ({ ...DEFAULT_LAYOUT, ...(layout || {}) }), [layout]);
+  const contentKey = useMemo(
+    () => JSON.stringify({
+      phases: phases.map((p) => ({ id: p.id, label: p.label, tone: p.tone, subtitle: p.subtitle, bullets: p.bullets })),
+      loopCondition,
+    }),
+    [phases, loopCondition],
+  );
+  const layoutKey = useMemo(() => JSON.stringify(mergedLayout), [mergedLayout]);
+  const lastContentKey = useRef("");
+  const lastLayoutKey = useRef("");
+
   const [nodes, setNodes, onNodesChange] = useNodesState(
     buildNodes(phases, loopCondition, mergedLayout, selectedId),
   );
-  const [edges, setEdges, onEdgesChange] = useEdgesState(buildEdges());
+  const [edges, , onEdgesChange] = useEdgesState(buildEdges());
 
   useEffect(() => {
-    setNodes(buildNodes(phases, loopCondition, mergedLayout, selectedId));
-  }, [phases, loopCondition, mergedLayout, selectedId, setNodes]);
+    const contentChanged = lastContentKey.current !== contentKey;
+    const layoutChanged = lastLayoutKey.current !== layoutKey;
+    lastContentKey.current = contentKey;
+    lastLayoutKey.current = layoutKey;
 
-  useEffect(() => {
-    setEdges(buildEdges());
-  }, [setEdges]);
+    if (contentChanged || layoutChanged) {
+      setNodes((prev) => {
+        const next = buildNodes(phases, loopCondition, mergedLayout, selectedId);
+        if (!layoutChanged) {
+          const posMap = new Map(prev.map((n) => [n.id, n.position]));
+          return next.map((n) => ({
+            ...n,
+            position: posMap.get(n.id) || n.position,
+            selected: n.id === selectedId,
+          }));
+        }
+        return next;
+      });
+      return;
+    }
 
-  const onSelectionChange = useCallback(
-    ({ nodes: selectedNodes }: OnSelectionChangeParams) => {
-      const first = selectedNodes[0];
-      if (first) onSelect(first.id);
+    setNodes((prev) => prev.map((n) => ({
+      ...n,
+      selected: n.id === selectedId,
+    })));
+  }, [contentKey, layoutKey, selectedId, phases, loopCondition, mergedLayout, setNodes]);
+
+  const onNodeClick = useCallback(
+    (_event: MouseEvent, node: Node) => {
+      if (node?.id) onSelect(node.id);
     },
     [onSelect],
   );
 
   const onNodeDragStop: OnNodeDrag = useCallback(
     (_event, _node, allNodes) => {
-      const next: OpsCanvasLayout = {};
+      const next: OpsCanvasLayout = { ...mergedLayout };
       allNodes.forEach((n) => {
         next[n.id] = { x: n.position.x, y: n.position.y };
       });
       onLayoutChange(next);
     },
-    [onLayoutChange],
+    [mergedLayout, onLayoutChange],
   );
 
   return (
@@ -304,11 +388,11 @@ function CanvasInner({ phases, loopCondition, layout, selectedId, onSelect, onLa
       edgeTypes={EDGE_TYPES}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
-      onSelectionChange={onSelectionChange}
+      onNodeClick={onNodeClick}
       onNodeDragStop={onNodeDragStop}
       fitView
-      fitViewOptions={{ padding: 0.18, maxZoom: 1.05 }}
-      minZoom={0.35}
+      fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+      minZoom={0.3}
       maxZoom={1.6}
       nodesConnectable={false}
       edgesReconnectable={false}

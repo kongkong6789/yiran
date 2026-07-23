@@ -124,7 +124,7 @@ const COMMERCE_GROUPS: NavGroup[] = [
     key: "commerce-insight",
     label: "业务经营",
     items: [
-      { key: "commerce-loops", path: "/commerce/loops", icon: <SyncOutlined />, label: "经营回路", keywords: "经营 分析" },
+      { key: "commerce-loops-library", path: "/commerce/loops/library", icon: <ApartmentOutlined />, label: "因果回路库", keywords: "经营 分析 反馈回路" },
       { key: "commerce-loops-diy", path: "/commerce/loops/diy", icon: <FormOutlined />, label: "回路 DIY", keywords: "回路 画布 因果 证据" },
     ],
   },
@@ -137,6 +137,13 @@ const LOOPS_OPS_GROUPS: NavGroup[] = [
     items: [
       { key: "loops-home", path: "/loops", icon: <SyncOutlined />, label: "Loops 列表", keywords: "OODA 闭环 运营" },
       { key: "loops-monitor", path: "/loops/monitor", icon: <PlayCircleOutlined />, label: "运行监控", keywords: "执行 监控 进度" },
+    ],
+  },
+  {
+    key: "loops-graph-group",
+    label: "维度图谱",
+    items: [
+      { key: "loops-graph", path: "/loops/graph", icon: <ApartmentOutlined />, label: "回路图谱", keywords: "公司 SKU 维度 图谱 上卷" },
     ],
   },
   {
@@ -225,7 +232,7 @@ const FULL_BLEED = new Set([
   "/ontology",
   "/connectors",
   "/tables",
-  "/commerce/loops",
+  "/commerce/loops/library",
   "/commerce/loops/diy",
   "/agents",
   "/agent-dashboard",

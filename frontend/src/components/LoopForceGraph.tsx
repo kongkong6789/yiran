@@ -1,22 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 import { forceCollide, forceLink } from "d3-force";
+import { useNavigate } from "react-router-dom";
 import {
   App, Button, Form, Input, Modal, Radio, Segmented, Select, Space, Tag, Typography,
 } from "antd";
-import {
-  AimOutlined,
-  CaretRightOutlined,
-  DeleteOutlined,
-  LinkOutlined,
-  PauseCircleOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  SaveOutlined,
-} from "@ant-design/icons";
+import { CpdExplainTiles } from "./CpdExplainTiles";
 import {
   buildLoopForceGraph,
-  emptyCustomState,
   LEVEL_COLOR,
   loadLoopCustomState,
   nodeColorFor,
@@ -31,27 +23,94 @@ import {
   type LoopGraphCustomState,
 } from "../loopsHierarchy/forceGraphData";
 import { LEVEL_LABEL, LEVEL_ORDER, type LoopLevel } from "../loopsHierarchy/types";
-import { LOOP_LEVEL_ONTOLOGY } from "../loopsHierarchy/commerceLevels";
-import { getCommerceFactsHealth, type FactTableHealth } from "../api/client";
+import {
+  applyDraftLabelsToNodes,
+  applyDraftsToGraphLoops,
+  cpdLoopsByKindMerged as cpdLoopsByKind,
+  findMergedCpdLoop as findCpdLoop,
+  listCpdDrafts,
+  resolveDraftLevel,
+  resyncAllCpdDraftsToGraph,
+} from "../loopsHierarchy/cpdDraftStore";
+import type { CpdLoopKind } from "../loopsHierarchy/cpdCatalog";
+import { getCpdExplain } from "../loopsHierarchy/cpdLoopExplain";
+import { getLevelModel } from "../loopsHierarchy/data";
 import { graphTooltipStyle, useVisualizationTheme } from "../theme/visualization";
 
 type FgData = { nodes: LoopGNode[]; links: LoopGLink[] };
 type EdgeMode = "all" | "causal" | "rollup";
 type EditMode = "view" | "link";
 type RollupChain = "sales" | "profit" | "resource" | "source";
-type FactAvailability = FactTableHealth["status"];
+type PathHop = {
+  edgeId: string;
+  fromCode: string;
+  fromName: string;
+  toCode: string;
+  toName: string;
+  label: string;
+  polarity: "+" | "-";
+  delay?: boolean;
+  step: string;
+};
 type FgApi = ForceGraphMethods<LoopGNode, LoopGLink> & {
   centerAt?: (x: number, y: number, ms?: number) => void;
   zoom?: (z: number, ms?: number) => void;
   zoomToFit?: (ms?: number, padding?: number) => void;
 };
 
-const FACT_STATUS_META: Record<FactAvailability, { label: string; color: string; tag: string }> = {
-  ok: { label: "已接入", color: "#15803d", tag: "green" },
-  partial: { label: "部分接入", color: "#b45309", tag: "gold" },
-  empty: { label: "表空无数据", color: "#b45309", tag: "orange" },
-  missing: { label: "数据缺失", color: "#b91c1c", tag: "red" },
+const VIEW_LEVELS = [...LEVEL_ORDER];
+
+const KIND_LABEL: Record<CpdLoopKind | "all", string> = {
+  all: "全部",
+  R: "增强",
+  B: "调节",
+  C: "复合",
 };
+
+function buildLoopHops(loop: {
+  code?: string;
+  edgeIds?: string[];
+  steps?: string[];
+}, nodes: LoopGNode[]): PathHop[] {
+  const flows = getLevelModel("company").flows;
+  const draft = loop.code ? listCpdDrafts().find((d) => d.code === loop.code) : null;
+  const draftEdges = new Map((draft?.edges || []).map((e) => [e.id, e]));
+  const byStock = new Map(nodes.filter((n) => n.level === "company").map((n) => [n.id, n]));
+  // 子图模式下 nodes 已过滤；用 code 再兜底一次
+  const byCode = new Map(nodes.map((n) => [n.code.toLowerCase(), n]));
+
+  return (loop.edgeIds || []).map((eid, index) => {
+    const flow = flows.find((f) => f.id === eid);
+    const dedge = draftEdges.get(eid);
+    const fromId = flow?.from || dedge?.from || "";
+    const toId = flow?.to || dedge?.to || "";
+    const from = byStock.get(`company:${fromId}`)
+      || byCode.get((fromId || "").toUpperCase())
+      || byCode.get(fromId || "");
+    const to = byStock.get(`company:${toId}`)
+      || byCode.get((toId || "").toUpperCase())
+      || byCode.get(toId || "");
+    const fromCode = from?.code || (fromId || "?").toUpperCase();
+    const toCode = to?.code || (toId || "?").toUpperCase();
+    const fromName = from?.name || fromCode;
+    const toName = to?.name || toCode;
+    const label = dedge?.label || flow?.label || "因果";
+    const polarity = dedge?.polarity || flow?.polarity || "+";
+    const step = loop.steps?.[index]
+      || `${fromName} 因「${label}」${polarity === "-" ? "削弱" : "增强"} ${toName}`;
+    return {
+      edgeId: `company-${eid}`,
+      fromCode,
+      fromName,
+      toCode,
+      toName,
+      label,
+      polarity,
+      delay: flow?.delay,
+      step,
+    };
+  });
+}
 
 function linkEnds(link: LoopGLink): { s: string; t: string } {
   const s = typeof link.source === "object" ? link.source.id : String(link.source);
@@ -107,13 +166,15 @@ function rollupChainOf(link: LoopGLink): RollupChain | null {
 }
 
 export default function LoopForceGraph() {
-  const { message, modal } = App.useApp();
+  const navigate = useNavigate();
+  const { message } = App.useApp();
   const visualTheme = useVisualizationTheme();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const fgRef = useRef<FgApi | undefined>(undefined);
   const didFitRef = useRef(false);
   const hoverIdRef = useRef<string | null>(null);
   const animRef = useRef(0);
+  const leaveRef = useRef(false);
   const revealAtRef = useRef(performance.now());
   const flashAtRef = useRef(0);
   const tourTimerRef = useRef<number | null>(null);
@@ -126,19 +187,17 @@ export default function LoopForceGraph() {
   const [selected, setSelected] = useState<LoopGNode | null>(null);
   const [hoverNode, setHoverNode] = useState<LoopGNode | null>(null);
   const [focusLoop, setFocusLoop] = useState<string | null>(null);
+  /** false=全图高亮定位；true=双击进入回路子图 */
+  const [immerseLoop, setImmerseLoop] = useState(false);
   const [focusChain, setFocusChain] = useState<RollupChain | null>(null);
+  const [cpdKind, setCpdKind] = useState<CpdLoopKind | "all">("all");
   const [tick, setTick] = useState(0);
   const [frame, setFrame] = useState(0);
-  const [touring, setTouring] = useState(false);
   const [flashLabel, setFlashLabel] = useState("");
   const [custom, setCustom] = useState<LoopGraphCustomState>(() => loadLoopCustomState());
   const [editMode, setEditMode] = useState<EditMode>("view");
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [factHealth, setFactHealth] = useState<FactTableHealth[]>([]);
-  const [factSummary, setFactSummary] = useState<{ total: number; ok: number; partial: number; missing: number } | null>(null);
   const [addForm] = Form.useForm<{
     level: LoopLevel;
     code: string;
@@ -150,47 +209,89 @@ export default function LoopForceGraph() {
   customRef.current = custom;
   linkFromRef.current = linkFrom;
 
+  // 把已有 CPD 草稿同步进图谱（含补齐孤立新节点的连线）
   useEffect(() => {
-    let alive = true;
-    getCommerceFactsHealth()
-      .then((h) => {
-        if (!alive) return;
-        setFactHealth(h.facts || []);
-        setFactSummary(h.facts_summary || null);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setFactHealth([]);
-        setFactSummary(null);
-      });
-    return () => {
-      alive = false;
-    };
+    if (!resyncAllCpdDraftsToGraph()) return;
+    setCustom(loadLoopCustomState());
+    setTick((t) => t + 1);
   }, []);
 
-  const factById = useMemo(() => {
-    const m = new Map<string, FactTableHealth>();
-    factHealth.forEach((f) => m.set(f.id, f));
-    return m;
-  }, [factHealth]);
-
-  const factStatusOf = useCallback((node: LoopGNode): FactTableHealth | null => {
-    if (node.level !== "fact" || node.kind !== "stock") return null;
-    const sid = node.id.includes(":") ? node.id.split(":").pop()! : node.id;
-    return factById.get(sid) || factById.get(node.code.toLowerCase()) || null;
-  }, [factById]);
-
   // 仅结构变化时重建图谱；拖拽只改 positions，避免整图重算导致“一松手就还原”
-  const bundle = useMemo(
-    () => buildLoopForceGraph(filterLevel, custom),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- positions 由拖拽直接钉在节点上
-    [filterLevel, custom.stocks, custom.links, tick],
-  );
+  const bundle = useMemo(() => {
+    const raw = buildLoopForceGraph(filterLevel, custom);
+    const nodes = applyDraftLabelsToNodes(raw.nodes, custom);
+    const drafts = listCpdDrafts();
+    const draftEdgeLabels = new Map<string, { label: string; polarity: "+" | "-" }>();
+    for (const d of drafts) {
+      const level = resolveDraftLevel(d);
+      for (const e of d.edges) {
+        draftEdgeLabels.set(`${level}-${e.id}`, { label: e.label, polarity: e.polarity });
+        // 兼容旧版只写了 company- 前缀的同步结果
+        if (level === "company") {
+          draftEdgeLabels.set(`company-${e.id}`, { label: e.label, polarity: e.polarity });
+        }
+      }
+    }
+    const links = raw.links.map((l) => {
+      const hit = draftEdgeLabels.get(l.id);
+      if (!hit) return l;
+      return { ...l, label: hit.label || l.label, polarity: hit.polarity || l.polarity };
+    });
+    const loops = applyDraftsToGraphLoops(raw.loops);
+    return { ...raw, nodes, links, loops };
+  },
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- positions 由拖拽直接钉在节点上
+  [filterLevel, custom.stocks, custom.links, custom.labels, tick]);
 
   const focusEdgeSet = useMemo(() => {
-    const loop = bundle.loops.find((l) => l.code === focusLoop);
+    if (!focusLoop) return new Set<string>();
+    const cpd = findCpdLoop(focusLoop);
+    if (cpd?.edgeIds?.length) {
+      return new Set(cpd.edgeIds.map((eid) => `company-${eid}`));
+    }
+    const loop = bundle.loops.find(
+      (l) => l.code === focusLoop || l.code.endsWith(`·${focusLoop}`),
+    );
     return new Set(loop?.edgeIds || []);
   }, [bundle.loops, focusLoop]);
+
+  /** 路径节点：stockPath ∪ 高亮边端点，避免漏掉中间 Stock */
+  const focusStockSet = useMemo(() => {
+    if (!focusLoop) return null as Set<string> | null;
+    const ids = new Set<string>();
+    const cpd = findCpdLoop(focusLoop);
+    (cpd?.stockPath || []).forEach((id) => {
+      ids.add(id.includes(":") ? id : `company:${id}`);
+    });
+    bundle.links.forEach((l) => {
+      if (!focusEdgeSet.has(l.id)) return;
+      const { s, t } = linkEnds(l);
+      ids.add(s);
+      ids.add(t);
+    });
+    return ids.size ? ids : null;
+  }, [bundle.links, focusEdgeSet, focusLoop]);
+
+  const activeCpdLoop = useMemo(
+    () => (focusLoop ? findCpdLoop(focusLoop) : undefined),
+    [focusLoop],
+  );
+
+  const activeExplain = useMemo(
+    () => (activeCpdLoop ? (activeCpdLoop.explain || getCpdExplain(activeCpdLoop.code)) : undefined),
+    [activeCpdLoop],
+  );
+
+  const cpdSideLoops = useMemo(() => cpdLoopsByKind(cpdKind), [cpdKind, tick]);
+  const editedLoopCodes = useMemo(
+    () => new Set(listCpdDrafts().map((d) => d.code)),
+    [tick],
+  );
+
+  const focusPathHops = useMemo(() => {
+    if (!activeCpdLoop?.edgeIds?.length) return [] as PathHop[];
+    return buildLoopHops(activeCpdLoop, bundle.nodes);
+  }, [activeCpdLoop, bundle.nodes]);
 
   const chainEdgeSet = useMemo(() => {
     if (!focusChain) return new Set<string>();
@@ -228,17 +329,60 @@ export default function LoopForceGraph() {
   }, [bundle.nodes, chainNodeIds, focusChain]);
 
   const fgData: FgData = useMemo(() => {
-    const links = bundle.links.filter((l) => {
+    const modeLinks = bundle.links.filter((l) => {
       if (edgeMode === "all") return true;
       if (edgeMode === "causal") return l.kind === "causal";
       if (edgeMode === "rollup") return l.kind === "rollup";
       return true;
     });
+
+    // 双击进入后才裁成回路子图；单击只在全图上高亮定位
+    if (immerseLoop && focusLoop && focusStockSet?.size && focusEdgeSet.size) {
+      const cpd = findCpdLoop(focusLoop);
+      const orderedIds: string[] = [];
+      const seen = new Set<string>();
+      (cpd?.stockPath || []).forEach((id) => {
+        const full = id.includes(":") ? id : `company:${id}`;
+        if (!focusStockSet.has(full) || seen.has(full)) return;
+        seen.add(full);
+        orderedIds.push(full);
+      });
+      focusStockSet.forEach((id) => {
+        if (seen.has(id)) return;
+        seen.add(id);
+        orderedIds.push(id);
+      });
+
+      const n = Math.max(orderedIds.length, 1);
+      const cx = 420;
+      const cy = 260;
+      // 半径随节点数放大，保证 zoomToFit 后仍铺满可视区
+      const radius = Math.max(200, 70 + n * 48);
+      const pos = new Map<string, { x: number; y: number }>();
+      orderedIds.forEach((id, i) => {
+        const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+        pos.set(id, { x: cx + radius * Math.cos(a), y: cy + radius * Math.sin(a) });
+      });
+
+      return {
+        nodes: bundle.nodes
+          .filter((node) => focusStockSet.has(node.id))
+          .map((node) => {
+            const p = pos.get(node.id);
+            if (!p) return { ...node };
+            return { ...node, fx: p.x, fy: p.y, x: p.x, y: p.y };
+          }),
+        links: modeLinks
+          .filter((l) => focusEdgeSet.has(l.id))
+          .map((l) => ({ ...l })),
+      };
+    }
+
     return {
       nodes: bundle.nodes.map((n) => ({ ...n })),
-      links: links.map((l) => ({ ...l })),
+      links: modeLinks.map((l) => ({ ...l })),
     };
-  }, [bundle, edgeMode, tick]);
+  }, [bundle, edgeMode, focusEdgeSet, focusLoop, focusStockSet, immerseLoop, tick]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -253,43 +397,75 @@ export default function LoopForceGraph() {
     return () => ro.disconnect();
   }, []);
 
+  // 仅在入场/闪标动画期间 setState；若每帧都 setFrame，会把
+  // BrowserRouter v7_startTransition 的路由跳转饿死（表现为点编辑不跳转、刷新才行）
   useEffect(() => {
     let alive = true;
+    let id = 0;
     const step = () => {
-      if (!alive) return;
-      animRef.current = performance.now();
+      if (!alive || leaveRef.current) return;
+      const t = performance.now();
+      animRef.current = t;
+      const revealing = t - revealAtRef.current < 750;
+      const flashing = flashAtRef.current > 0 && t - flashAtRef.current < 900;
+      if (revealing || flashing) {
+        setFrame((f) => (f + 1) % 1_000_000);
+        id = requestAnimationFrame(step);
+      } else {
+        id = 0;
+      }
+    };
+    id = requestAnimationFrame(step);
+    return () => {
+      alive = false;
+      if (id) cancelAnimationFrame(id);
+    };
+  }, []);
+
+  const kickAnimLoop = useCallback(() => {
+    if (leaveRef.current) return;
+    const step = () => {
+      if (leaveRef.current) return;
+      const t = performance.now();
+      animRef.current = t;
+      const revealing = t - revealAtRef.current < 750;
+      const flashing = flashAtRef.current > 0 && t - flashAtRef.current < 900;
+      if (!revealing && !flashing) return;
       setFrame((f) => (f + 1) % 1_000_000);
       requestAnimationFrame(step);
     };
-    const id = requestAnimationFrame(step);
-    return () => {
-      alive = false;
-      cancelAnimationFrame(id);
-    };
+    requestAnimationFrame(step);
   }, []);
 
   const triggerReveal = useCallback((label: string) => {
     revealAtRef.current = performance.now();
     flashAtRef.current = performance.now();
     setFlashLabel(label);
+    kickAnimLoop();
     window.setTimeout(() => setFlashLabel(""), 900);
-  }, []);
+  }, [kickAnimLoop]);
 
   useEffect(() => {
     didFitRef.current = false;
     setSelected(null);
-    setFocusLoop(null);
-    if (filterLevel !== "all") setFocusChain(null);
-    const label =
-      filterLevel === "all"
-        ? edgeMode === "rollup"
-          ? "上卷贯通"
-          : edgeMode === "causal"
-            ? "层内因果"
-            : "全景"
-        : `聚焦 · ${LEVEL_LABEL[filterLevel]}`;
-    triggerReveal(label);
-  }, [filterLevel, edgeMode, triggerReveal]);
+    triggerReveal(
+      filterLevel === "all" ? "全景" : `聚焦 · ${LEVEL_LABEL[filterLevel]}`,
+    );
+  }, [filterLevel, triggerReveal]);
+
+  // 全图且未聚焦闭环时，强制露出上卷边（避免此前点回路把 edgeMode 切成 causal）
+  useEffect(() => {
+    if (filterLevel === "all" && !focusLoop && edgeMode !== "all") {
+      setEdgeMode("all");
+    }
+  }, [edgeMode, filterLevel, focusLoop]);
+
+  useEffect(() => {
+    if (edgeMode === "causal") setFocusChain(null);
+    triggerReveal(
+      edgeMode === "rollup" ? "上卷贯通" : edgeMode === "causal" ? "层内因果" : "全部边",
+    );
+  }, [edgeMode, triggerReveal]);
 
   useEffect(() => {
     const fg = fgRef.current;
@@ -315,19 +491,9 @@ export default function LoopForceGraph() {
   const flyToLevel = useCallback((level: LoopLevel | "all", ms = 900) => {
     const fg = fgRef.current;
     if (!fg) return;
-    if (level === "all") {
-      fg.zoomToFit?.(ms, 70);
-      return;
-    }
-    const y = ROW_Y[level];
-    const hubs = fgData.nodes.filter((n) => n.level === level);
-    const cx =
-      hubs.length
-        ? hubs.reduce((a, n) => a + (n.fx ?? n.x ?? 0), 0) / hubs.length
-        : 320;
-    fg.centerAt?.(cx, y, ms);
-    fg.zoom?.(level === "sku" || level === "fact" || level === "company" ? 1.55 : 1.75, ms);
-  }, [fgData.nodes]);
+    // 单层已环形铺开，与全图一样用 zoomToFit，避免压成一条扁线
+    fg.zoomToFit?.(ms, level === "all" ? 70 : 100);
+  }, []);
 
   const fitOverview = useCallback(() => {
     flyToLevel("all", 700);
@@ -353,35 +519,11 @@ export default function LoopForceGraph() {
   }, [filterLevel, edgeMode, tick]);
 
   const stopTour = useCallback(() => {
-    setTouring(false);
     if (tourTimerRef.current) {
       window.clearTimeout(tourTimerRef.current);
       tourTimerRef.current = null;
     }
   }, []);
-
-  const startTour = useCallback(() => {
-    stopTour();
-    setTouring(true);
-    setEdgeMode("causal");
-    const sequence: (LoopLevel | "all")[] = ["all", ...LEVEL_ORDER, "all"];
-    let i = 0;
-    const play = () => {
-      const lv = sequence[i];
-      setFilterLevel(lv);
-      if (lv === "all" && i === sequence.length - 1) {
-        setEdgeMode("rollup");
-        window.setTimeout(() => {
-          setEdgeMode("all");
-          setTouring(false);
-        }, 1600);
-        return;
-      }
-      i += 1;
-      tourTimerRef.current = window.setTimeout(play, i === 1 ? 1400 : 1600);
-    };
-    play();
-  }, [stopTour]);
 
   useEffect(() => () => stopTour(), [stopTour]);
 
@@ -407,31 +549,10 @@ export default function LoopForceGraph() {
   void frame;
 
   const markDirty = useCallback((next: LoopGraphCustomState) => {
+    customRef.current = next;
     setCustom(next);
-    setDirty(true);
+    saveLoopCustomState(next);
   }, []);
-
-  const handleSave = useCallback(() => {
-    setSaving(true);
-    try {
-      // 同步拖拽后的坐标
-      const positions = { ...customRef.current.positions };
-      fgData.nodes.forEach((n) => {
-        if (n.x == null || n.y == null) return;
-        positions[n.id] = { x: n.x, y: n.y };
-      });
-      const next: LoopGraphCustomState = { ...customRef.current, positions };
-      saveLoopCustomState(next);
-      setCustom(next);
-      setDirty(false);
-      message.success("回路图谱已保存到本机");
-      triggerReveal("已保存");
-    } catch {
-      message.error("保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }, [fgData.nodes, message, triggerReveal]);
 
   const handleAddNode = async () => {
     try {
@@ -465,43 +586,6 @@ export default function LoopForceGraph() {
     }
   };
 
-  const handleDeleteSelected = () => {
-    if (!selected) return;
-    if (selected.kind === "hub") {
-      message.info("层级壳不可删除");
-      return;
-    }
-    if (!selected.custom) {
-      modal.confirm({
-        title: "隐藏内置节点？",
-        content: "内置节点暂不支持删除，可拖动位置后保存；自定义节点才可删除。",
-        okText: "知道了",
-        cancelButtonProps: { style: { display: "none" } },
-      });
-      return;
-    }
-    modal.confirm({
-      title: `删除节点 ${selected.code}？`,
-      content: "将同时移除与它相连的自定义连线。",
-      okText: "删除",
-      okButtonProps: { danger: true },
-      onOk: () => {
-        const id = selected.id;
-        const positions = { ...custom.positions };
-        delete positions[id];
-        markDirty({
-          ...custom,
-          stocks: custom.stocks.filter((s) => s.id !== id),
-          links: custom.links.filter((l) => l.source !== id && l.target !== id),
-          positions,
-        });
-        setSelected(null);
-        setTick((t) => t + 1);
-        message.success("已删除");
-      },
-    });
-  };
-
   const finishLink = (fromId: string, toId: string) => {
     if (fromId === toId) {
       message.warning("不能连到自身");
@@ -530,25 +614,25 @@ export default function LoopForceGraph() {
     setLinkFrom(null);
     setEditMode("view");
     setTick((t) => t + 1);
-    message.success("已添加连线（记得点保存）");
+    message.success("已添加连线");
     triggerReveal("新连线");
   };
 
   const onChangeLevel = (v: LoopLevel | "all") => {
     stopTour();
+    setFocusLoop(null);
+    setImmerseLoop(false);
+    setFocusChain(null);
     setFilterLevel(v);
-  };
-
-  const onChangeEdge = (v: EdgeMode) => {
-    stopTour();
-    setEdgeMode(v);
-    if (v === "causal") setFocusChain(null);
+    // 全图必须露出上卷链；层内因果模式下会把 rollup 滤掉
+    setEdgeMode(v === "all" ? "all" : "causal");
   };
 
   const focusRollupChain = useCallback((chain: RollupChain) => {
     const next = focusChain === chain ? null : chain;
     setFocusChain(next);
     setFocusLoop(null);
+    setImmerseLoop(false);
     setSelected(null);
     setEdgeMode("all");
     if (!next) {
@@ -593,7 +677,9 @@ export default function LoopForceGraph() {
       const n = node as LoopGNode;
       const muted = focusChain
         ? !chainNodeIds.has(n.id)
-        : Boolean(neighborIds && !neighborIds.has(n.id));
+        : focusStockSet
+          ? !focusStockSet.has(n.id)
+          : Boolean(neighborIds && !neighborIds.has(n.id));
       const focusDim =
         focusLevelIdx >= 0 && n.level !== filterLevel
           ? 0.22
@@ -609,11 +695,12 @@ export default function LoopForceGraph() {
       const x = n.x || 0;
       const y = n.y || 0;
       const linking = editMode === "link" && linkFrom === n.id;
+      const inCpdPath = Boolean(focusStockSet?.has(n.id));
 
       ctx.save();
       ctx.globalAlpha = alpha;
 
-      const selectedHub = selected?.id === n.id || (n.kind === "hub" && filterLevel === n.level);
+      const selectedHub = selected?.id === n.id || (n.kind === "hub" && filterLevel === n.level) || inCpdPath;
       if (selectedHub || n.kind === "hub" || linking) {
         const pulse = 0.5 + 0.5 * Math.sin(now / 420 + idx);
         const ringR = Math.max(r + 1, r + 4 + pulse * (n.kind === "hub" ? 10 : 5));
@@ -662,19 +749,6 @@ export default function LoopForceGraph() {
         ctx.stroke();
       }
 
-      const factAvail = factStatusOf(n);
-      if (factAvail && !muted) {
-        const meta = FACT_STATUS_META[factAvail.status];
-        ctx.beginPath();
-        ctx.arc(x, y, r + 2.2 / Math.max(globalScale, 0.25), 0, Math.PI * 2);
-        ctx.strokeStyle = meta.color;
-        ctx.lineWidth = (factAvail.status === "ok" ? 1.2 : 2) / Math.max(globalScale, 0.25);
-        if (factAvail.status === "missing" || factAvail.status === "empty") {
-          ctx.setLineDash([3.5 / Math.max(globalScale, 0.25), 3 / Math.max(globalScale, 0.25)]);
-        }
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
 
       const fontSize = Math.max(n.kind === "hub" ? 13 : 11, (n.kind === "hub" ? 14 : 11) / globalScale);
       ctx.font = `${n.kind === "hub" ? 700 : 600} ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
@@ -690,22 +764,12 @@ export default function LoopForceGraph() {
         ctx.fillStyle = muted ? visualTheme.mutedText : visualTheme.labelText;
         ctx.fillText(line, x, baseY + i * (fontSize + 2));
       });
-      if (factAvail && (factAvail.status === "missing" || factAvail.status === "empty" || factAvail.status === "partial")) {
-        const badge = FACT_STATUS_META[factAvail.status].label;
-        const badgeSize = Math.max(9, 10 / globalScale);
-        ctx.font = `600 ${badgeSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
-        const bw = ctx.measureText(badge).width;
-        const by = baseY + lines.length * (fontSize + 2) + 2;
-        ctx.fillStyle = visualTheme.labelBg;
-        ctx.fillRect(x - bw / 2 - 3, by - 1, bw + 6, badgeSize + 3);
-        ctx.fillStyle = FACT_STATUS_META[factAvail.status].color;
-        ctx.fillText(badge, x, by);
-      }
 
       ctx.restore();
     },
     [
       neighborIds,
+      focusStockSet,
       focusLevelIdx,
       filterLevel,
       reveal,
@@ -715,40 +779,142 @@ export default function LoopForceGraph() {
       linkFrom,
       focusChain,
       chainNodeIds,
-      factStatusOf,
       visualTheme,
     ],
   );
 
   const sideLoops = useMemo(() => {
+    if (filterLevel === "company") return [];
     if (filterLevel === "all") {
-      return bundle.loops.filter((l) => l.level === "company" || l.level === "sku").slice(0, 10);
+      return bundle.loops.filter((l) => l.level !== "company");
     }
     return bundle.loops.filter((l) => l.level === filterLevel);
   }, [bundle.loops, filterLevel]);
 
-  const focusLoopByCode = (code: string) => {
-    const loop = bundle.loops.find((l) => l.code === code);
-    if (!loop?.edgeIds?.length) return;
-    const ids = new Set<string>();
-    bundle.links.forEach((l) => {
-      if (!loop.edgeIds!.includes(l.id)) return;
-      ids.add(typeof l.source === "string" ? l.source : l.source.id);
-      ids.add(typeof l.target === "string" ? l.target : l.target.id);
+  const sideLoopsByLevel = useMemo(() => {
+    const groups: { level: LoopLevel; label: string; loops: typeof sideLoops }[] = [];
+    for (const level of LEVEL_ORDER) {
+      if (level === "company") continue;
+      const loops = sideLoops.filter((l) => l.level === level);
+      if (!loops.length) continue;
+      groups.push({ level, label: LEVEL_LABEL[level], loops });
+    }
+    return groups;
+  }, [sideLoops]);
+
+  const focusLoopRef = useRef<string | null>(null);
+  focusLoopRef.current = focusLoop;
+
+  const fitNodesInView = useCallback((nodes: LoopGNode[], label?: string) => {
+    const positioned = nodes.filter((n) => {
+      const x = n.x ?? n.fx;
+      const y = n.y ?? n.fy;
+      return x != null && y != null;
     });
+    if (!positioned.length) {
+      fitOverviewRef.current();
+      return;
+    }
+    // 小 padding + 贴近画布边缘，消除左右留白
+    fgRef.current?.zoomToFit?.(480, 28);
+    if (label) triggerReveal(label);
+  }, [triggerReveal]);
+
+  const focusLoopByCode = useCallback((code: string) => {
+    const cpd = findCpdLoop(code);
+    const loop = bundle.loops.find((l) => l.code === code || l.code.endsWith(`·${code}`));
+    const edgeIds = new Set(
+      cpd?.edgeIds?.map((eid) => `company-${eid}`) || loop?.edgeIds || [],
+    );
+    const ids = new Set<string>();
+    (cpd?.stockPath || []).forEach((id) => {
+      ids.add(id.includes(":") ? id : `company:${id}`);
+    });
+    bundle.links.forEach((l) => {
+      if (!edgeIds.has(l.id)) return;
+      const { s, t } = linkEnds(l);
+      ids.add(s);
+      ids.add(t);
+    });
+    if (!ids.size) return;
+
     window.setTimeout(() => {
-      const nodes = (fgData.nodes || []).filter((n) => ids.has(n.id) && n.x != null);
-      if (!nodes.length) {
-        fitOverview();
-        return;
-      }
-      const fg = fgRef.current;
-      const cx = nodes.reduce((a, n) => a + (n.x || 0), 0) / nodes.length;
-      const cy = nodes.reduce((a, n) => a + (n.y || 0), 0) / nodes.length;
-      fg?.centerAt?.(cx, cy, 700);
-      fg?.zoom?.(2.1, 700);
-      triggerReveal(`回路 · ${loop.name}`);
-    }, 120);
+      const fromGraph = (fgData.nodes || []).filter((n) => ids.has(n.id));
+      const fallback = bundle.nodes.filter((n) => ids.has(n.id));
+      fitNodesInView(
+        fromGraph.length ? fromGraph : fallback,
+        `回路 · ${cpd?.name || loop?.name || code}`,
+      );
+    }, 180);
+  }, [bundle.links, bundle.loops, bundle.nodes, fgData.nodes, fitNodesInView]);
+
+  const openLoopEdit = (
+    loopCode: string,
+    e?: { preventDefault(): void; stopPropagation(): void },
+    level?: LoopLevel,
+  ) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    // 立刻停掉动画帧 setState，再同步提交路由，避免被 startTransition 饿死
+    leaveRef.current = true;
+    const parts = loopCode.includes("·") ? loopCode.split("·") : [loopCode];
+    const bare = parts.slice(-1)[0];
+    const label = parts.length > 1 ? parts[0] : null;
+    const fromLabel = label
+      ? (Object.entries(LEVEL_LABEL) as [LoopLevel, string][]).find(([, v]) => v === label)?.[0]
+      : undefined;
+    const lv = level || fromLabel || "company";
+    flushSync(() => {
+      navigate(`/loops/graph/edit/${encodeURIComponent(bare)}?level=${encodeURIComponent(lv)}`);
+    });
+  };
+
+  const loopClickTimerRef = useRef<number | null>(null);
+
+  /** 单击：留在全图，高亮并缩放到该回路所在位置（多为公司层） */
+  const highlightCpdLoop = (code: string) => {
+    setFocusChain(null);
+    setImmerseLoop(false);
+    if (focusLoop === code) {
+      setFocusLoop(null);
+      setEdgeMode("all");
+      window.setTimeout(() => fitOverviewRef.current(), 80);
+      return;
+    }
+    if (filterLevel !== "all") setFilterLevel("all");
+    setEdgeMode("all");
+    setFocusLoop(code);
+    window.setTimeout(() => focusLoopByCode(code), 140);
+  };
+
+  /** 双击：进入回路子图 */
+  const immerseCpdLoop = (code: string) => {
+    setFocusChain(null);
+    if (filterLevel !== "company" && filterLevel !== "all") {
+      setFilterLevel("company");
+    }
+    setFocusLoop(code);
+    setImmerseLoop(true);
+    window.setTimeout(() => focusLoopByCode(code), 140);
+  };
+
+  const onCpdLoopClick = (code: string) => {
+    if (loopClickTimerRef.current) {
+      window.clearTimeout(loopClickTimerRef.current);
+      loopClickTimerRef.current = null;
+    }
+    loopClickTimerRef.current = window.setTimeout(() => {
+      loopClickTimerRef.current = null;
+      highlightCpdLoop(code);
+    }, 260);
+  };
+
+  const onCpdLoopDoubleClick = (code: string) => {
+    if (loopClickTimerRef.current) {
+      window.clearTimeout(loopClickTimerRef.current);
+      loopClickTimerRef.current = null;
+    }
+    immerseCpdLoop(code);
   };
 
   const particleCount = (l: object) => {
@@ -758,126 +924,31 @@ export default function LoopForceGraph() {
     if (edgeMode === "rollup" && link.kind === "rollup") return 4;
     if (link.kind === "rollup") return 2;
     if (focusEdgeSet.size) return focusEdgeSet.has(link.id) ? 4 : 0;
+    // 单层默认不撒粒子，悬停邻边时才动，避免满屏乱闪
+    if (filterLevel !== "all" && link.kind === "causal" && neighborIds) {
+      const { s, t } = linkEnds(link);
+      if (neighborIds.has(s) && neighborIds.has(t)) return 3;
+      return 0;
+    }
     if (neighborIds) {
       const { s, t } = linkEnds(link);
       return neighborIds.has(s) && neighborIds.has(t) ? 3 : 0;
     }
-    return 1;
+    return 0;
   };
 
   return (
     <div className="loop-kg">
-      <div className="loop-kg-toolbar">
-        <Segmented
-          size="small"
-          value={filterLevel}
-          onChange={(v) => onChangeLevel(v as LoopLevel | "all")}
-          options={[
-            { value: "all", label: "全图" },
-            ...LEVEL_ORDER.map((lv) => ({ value: lv, label: LEVEL_LABEL[lv] })),
-          ]}
-        />
-        <Space wrap size={8}>
-          <Segmented
-            size="small"
-            value={edgeMode}
-            onChange={(v) => onChangeEdge(v as EdgeMode)}
-            options={[
-              { value: "all", label: "因果+上卷" },
-              { value: "causal", label: "层内因果" },
-              { value: "rollup", label: "只看上卷" },
-            ]}
-          />
-          <Button
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => {
-              stopTour();
-              addForm.setFieldsValue({
-                level: filterLevel === "all" ? "sku" : filterLevel,
-                dataKind: "fact",
-                code: "",
-                name: "",
-                sub: "",
-              });
-              setAddOpen(true);
-            }}
-          >
-            加节点
-          </Button>
-          <Button
-            size="small"
-            type={editMode === "link" ? "primary" : "default"}
-            icon={<LinkOutlined />}
-            onClick={() => {
-              stopTour();
-              if (editMode === "link") {
-                setEditMode("view");
-                setLinkFrom(null);
-              } else {
-                setEditMode("link");
-                setLinkFrom(null);
-                message.info("连线模式：先点起点，再点终点");
-              }
-            }}
-          >
-            {editMode === "link" ? (linkFrom ? "再选终点…" : "选起点…") : "连线"}
-          </Button>
-          <Button
-            size="small"
-            danger
-            disabled={!selected || selected.kind === "hub" || !selected.custom}
-            icon={<DeleteOutlined />}
-            onClick={handleDeleteSelected}
-          >
-            删除
-          </Button>
-          <Button
-            size="small"
-            type="primary"
-            icon={<SaveOutlined />}
-            loading={saving}
-            onClick={handleSave}
-          >
-            保存{dirty ? " *" : ""}
-          </Button>
-          <Button
-            size="small"
-            type={touring ? "default" : "default"}
-            icon={touring ? <PauseCircleOutlined /> : <CaretRightOutlined />}
-            onClick={() => (touring ? stopTour() : startTour())}
-          >
-            {touring ? "停止巡游" : "镜头巡游"}
-          </Button>
-          <Button size="small" icon={<AimOutlined />} onClick={fitOverview}>适应画布</Button>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            onClick={() => {
-              modal.confirm({
-                title: "重置自定义？",
-                content: "将清除本机保存的自定义节点、连线与位置，恢复默认自上而下布局。",
-                okText: "重置",
-                okButtonProps: { danger: true },
-                onOk: () => {
-                  const empty = emptyCustomState();
-                  saveLoopCustomState(empty);
-                  setCustom(empty);
-                  setDirty(false);
-                  didFitRef.current = false;
-                  setTick((t) => t + 1);
-                  triggerReveal("已重置");
-                },
-              });
-            }}
-          >
-            重置
-          </Button>
-        </Space>
-      </div>
-
       <div className="loop-kg-legend">
-        {LEVEL_ORDER.map((lv) => (
+        <button
+          type="button"
+          className={`loop-kg-leg-item is-btn${filterLevel === "all" ? " is-active" : ""}`}
+          onClick={() => onChangeLevel("all")}
+        >
+          <i style={{ background: "linear-gradient(135deg,#64748b,#c4924a)" }} />
+          全图
+        </button>
+        {VIEW_LEVELS.map((lv) => (
           <button
             key={lv}
             type="button"
@@ -888,37 +959,9 @@ export default function LoopForceGraph() {
             {LEVEL_LABEL[lv]}
           </button>
         ))}
-        <span className="loop-kg-leg-item">
-          <i style={{ background: shadeLevelColor("#3D6FA8", 0.08), border: "1px solid #3D6FA8" }} />
-          基础数据（浅）
-        </span>
-        <span className="loop-kg-leg-item">
-          <i style={{ background: shadeLevelColor("#3D6FA8", 0.9) }} />
-          衍生数据（深）
-        </span>
-        <span className="loop-kg-leg-item"><b style={{ color: "#15803d" }}>●</b> 已接入</span>
-        <span className="loop-kg-leg-item"><b style={{ color: "#b45309" }}>◌</b> 部分接入</span>
-        <span className="loop-kg-leg-item"><b style={{ color: "#b91c1c" }}>◌</b> 数据缺失</span>
-        {factSummary ? (
-          <span className="loop-kg-leg-item" style={{ opacity: 0.85 }}>
-            F1–F8 · 接入{factSummary.ok}/部分{factSummary.partial}/缺失{factSummary.missing}
-          </span>
-        ) : null}
-        <span className="loop-kg-leg-item"><b style={{ color: "#3D6FA8" }}>—</b> 层内因果</span>
-        <span className="loop-kg-leg-item"><b style={{ color: "#C4924A" }}>—</b> 上卷</span>
-        <span className="loop-kg-legend-divider" />
-        {(["sales", "profit", "resource"] as RollupChain[]).map((chain) => (
-          <button
-            key={chain}
-            type="button"
-            className={`loop-kg-chain-chip${focusChain === chain ? " is-active" : ""}`}
-            aria-pressed={focusChain === chain}
-            onClick={() => focusRollupChain(chain)}
-          >
-            <i style={{ background: CHAIN_META[chain].color }} />
-            {CHAIN_META[chain].name}
-          </button>
-        ))}
+        <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+          点击上卷线突出贯通链 · 点空白处返回
+        </Typography.Text>
       </div>
 
       <div className="loop-kg-body">
@@ -930,10 +973,11 @@ export default function LoopForceGraph() {
             <span>{flashLabel}</span>
           </div>
           <div className="loop-kg-vignette" />
-          <Typography.Text type="secondary" className="loop-kg-hint">
-            点击任意金色跨层线可查看整条链路；再次点击取消。浅=基础、深=衍生。
-            {editMode === "link" ? " 【连线中】" : ""}
-          </Typography.Text>
+          {editMode === "link" ? (
+            <Typography.Text type="secondary" className="loop-kg-hint">
+              【连线中】先点起点，再点终点
+            </Typography.Text>
+          ) : null}
           <ForceGraph2D
             ref={fgRef}
             width={size.w}
@@ -945,11 +989,10 @@ export default function LoopForceGraph() {
             nodeVal={(n) => (n as LoopGNode).val}
             nodeLabel={(n) => {
               const node = n as LoopGNode;
-              const title = node.kind === "hub" ? `层级 · ${node.name}` : `${node.code} · ${node.name}`;
-              const kindLabel = node.kind === "hub" ? "层级壳" : node.dataKind === "fact" ? "基础数据" : "衍生数据";
+              const title = `${node.code} · ${node.name}`;
               return `<div style="${graphTooltipStyle(visualTheme)}">
                 <b style="color:${visualTheme.tooltipText}">${title}</b><br/>
-                <span style="color:${visualTheme.mutedText}">${node.levelLabel} · ${kindLabel}${node.sub ? ` · ${node.sub}` : ""}${node.custom ? " · 自定义" : ""}</span>
+                <span style="color:${visualTheme.mutedText}">${node.levelLabel}${node.sub ? ` · ${node.sub}` : ""}</span>
               </div>`;
             }}
             nodeCanvasObjectMode={() => "replace"}
@@ -957,6 +1000,8 @@ export default function LoopForceGraph() {
             linkColor={(link) => {
               const l = link as LoopGLink;
               const { s, t } = linkEnds(l);
+              const levelFocus = filterLevel !== "all";
+              const hot = Boolean(neighborIds && neighborIds.has(s) && neighborIds.has(t));
               if (focusChain) {
                 return chainEdgeSet.has(l.id)
                   ? CHAIN_META[focusChain].color
@@ -964,6 +1009,9 @@ export default function LoopForceGraph() {
               }
               if (focusEdgeSet.size && l.kind === "causal" && !focusEdgeSet.has(l.id)) {
                 return "rgba(180,190,205,0.1)";
+              }
+              if (focusStockSet && !focusStockSet.has(s) && !focusStockSet.has(t)) {
+                return "rgba(180,190,205,0.08)";
               }
               if (neighborIds && !neighborIds.has(s) && !neighborIds.has(t)) {
                 return "rgba(180,190,205,0.08)";
@@ -976,19 +1024,41 @@ export default function LoopForceGraph() {
                 }
               }
               if (l.custom) return "#C4924A";
-              if (l.kind === "rollup") return edgeMode === "causal" ? "rgba(196,146,74,0)" : "#C4924A";
-              if (l.polarity === "-") return "#c53d3d";
-              return "rgba(61,111,168,0.42)";
+              if (l.kind === "rollup") {
+                if (edgeMode === "causal") return "rgba(196,146,74,0)";
+                return focusChain ? "rgba(196,146,74,0.28)" : "rgba(196,146,74,0.7)";
+              }
+              if (l.polarity === "-") {
+                if (focusEdgeSet.size) return "#c53d3d";
+                if (levelFocus) return hot ? "#c53d3d" : "rgba(197,61,61,0.28)";
+                return "rgba(197,61,61,0.35)";
+              }
+              if (focusEdgeSet.size) return "rgba(61,111,168,0.75)";
+              if (levelFocus) return hot ? "rgba(61,111,168,0.85)" : "rgba(61,111,168,0.22)";
+              return "rgba(61,111,168,0.22)";
             }}
             linkWidth={(link) => {
               const l = link as LoopGLink;
+              const levelFocus = filterLevel !== "all";
+              const { s, t } = linkEnds(l);
+              const hot = Boolean(neighborIds && neighborIds.has(s) && neighborIds.has(t));
               if (focusChain) return chainEdgeSet.has(l.id) ? 4.2 : 0.6;
               if (l.custom) return 2.2;
-              if (focusEdgeSet.has(l.id)) return 2.6;
-              if (l.kind === "rollup") return edgeMode === "rollup" ? 2.6 : 2.0;
-              return 1.15;
+              if (focusEdgeSet.has(l.id)) return 2.8;
+              if (l.kind === "rollup") return focusChain ? 1.2 : 2.2;
+              // 单层：默认细线，悬停/选中邻边才加粗（像回路）
+              if (levelFocus && l.kind === "causal") return hot ? 2.8 : 1.15;
+              return focusEdgeSet.size ? 0.7 : 1.05;
             }}
-            linkCurvature={0}
+            linkCurvature={(link) => {
+              const l = link as LoopGLink;
+              // 仅回路高亮时轻微弯曲；单层用直线，减少乱麻
+              if (!focusEdgeSet.has(l.id)) return 0;
+              let hash = 0;
+              for (let i = 0; i < l.id.length; i += 1) hash = (hash + l.id.charCodeAt(i) * (i + 1)) % 7;
+              const amp = l.polarity === "-" ? 0.28 : 0.18;
+              return ((hash % 2 === 0 ? 1 : -1) * amp);
+            }}
             linkDirectionalParticles={particleCount}
             linkDirectionalParticleWidth={(l) => ((l as LoopGLink).kind === "rollup" ? 3 : 2)}
             linkDirectionalParticleSpeed={0.006}
@@ -1010,13 +1080,15 @@ export default function LoopForceGraph() {
             linkCanvasObjectMode={() => "after"}
             linkCanvasObject={(link, ctx, globalScale) => {
               const l = link as LoopGLink;
-              // 默认保持简洁；选中链路后展示该链全部边标签
-              if (
-                l.kind !== "rollup"
-                || edgeMode === "causal"
-                || (focusChain && !chainEdgeSet.has(l.id))
-                || (!focusChain && edgeMode !== "rollup")
-              ) return;
+              const { s, t } = linkEnds(l);
+              const hop = focusPathHops.find((h) => h.edgeId === l.id);
+              const hot = Boolean(neighborIds && neighborIds.has(s) && neighborIds.has(t));
+              const showCausalLabel = focusEdgeSet.has(l.id)
+                || (filterLevel !== "all" && l.kind === "causal" && hot && Boolean(selected || hoverNode));
+              const showRollupLabel = l.kind === "rollup"
+                && Boolean(focusChain)
+                && chainEdgeSet.has(l.id);
+              if (!showCausalLabel && !showRollupLabel) return;
               const src = typeof l.source === "object" ? l.source : null;
               const tgt = typeof l.target === "object" ? l.target : null;
               if (!src || !tgt || src.x == null || tgt.x == null) return;
@@ -1026,15 +1098,21 @@ export default function LoopForceGraph() {
               ctx.font = `600 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
-              const text = l.label;
+              const text = hop
+                ? `${hop.fromCode}${hop.polarity === "-" ? "⊖" : "→"}${hop.toCode} ${hop.label}`
+                : (l.label || (l.polarity === "-" ? "抑制" : "促进"));
               const w = ctx.measureText(text).width;
               ctx.fillStyle = visualTheme.labelBg;
               ctx.fillRect(x - w / 2 - 4, y - fontSize / 2 - 2, w + 8, fontSize + 4);
-              ctx.fillStyle = "#8A6A35";
+              ctx.fillStyle = showCausalLabel
+                ? (l.polarity === "-" ? "#b91c1c" : "#1d4ed8")
+                : "#8A6A35";
               ctx.fillText(text, x, y);
             }}
             onLinkClick={(link) => {
-              const chain = rollupChainOf(link as LoopGLink);
+              const l = link as LoopGLink;
+              if (l.kind !== "rollup") return;
+              const chain = rollupChainOf(l);
               if (chain) focusRollupChain(chain);
             }}
             linkPointerAreaPaint={(link, color, ctx) => {
@@ -1051,14 +1129,25 @@ export default function LoopForceGraph() {
               ctx.stroke();
             }}
             onRenderFramePre={(ctx, globalScale) => {
-              // 仅用轻量分隔线标识层级，避免大面积白色泳道框遮挡图谱
+              // 全图才画层级分隔线；单层聚焦用环形布局，不再画水平扁线
+              if (filterLevel !== "all") {
+                const fontSize = Math.max(14, 18 / globalScale);
+                ctx.save();
+                ctx.font = `700 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+                ctx.textAlign = "left";
+                ctx.textBaseline = "top";
+                ctx.fillStyle = LEVEL_COLOR[filterLevel];
+                ctx.globalAlpha = 0.9;
+                ctx.fillText(LEVEL_LABEL[filterLevel], 12, 12);
+                ctx.restore();
+                return;
+              }
               const fontSize = Math.max(12, 14 / globalScale);
               ctx.save();
               ctx.font = `700 ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
               ctx.textAlign = "right";
               ctx.textBaseline = "middle";
               LEVEL_ORDER.forEach((lv) => {
-                if (filterLevel !== "all" && filterLevel !== lv) return;
                 const y = ROW_Y[lv];
                 const label = LEVEL_LABEL[lv];
                 ctx.fillStyle = LEVEL_COLOR[lv];
@@ -1068,7 +1157,7 @@ export default function LoopForceGraph() {
                 ctx.setLineDash([4 / Math.max(globalScale, 0.25), 7 / Math.max(globalScale, 0.25)]);
                 ctx.beginPath();
                 ctx.moveTo(-4, y);
-                ctx.lineTo(1400, y);
+                ctx.lineTo(2100, y);
                 ctx.stroke();
               });
               ctx.restore();
@@ -1095,7 +1184,7 @@ export default function LoopForceGraph() {
               };
               customRef.current = next;
               setCustom(next);
-              setDirty(true);
+              saveLoopCustomState(next);
             }}
             onNodeHover={(n) => {
               const id = (n as LoopGNode | null)?.id ?? null;
@@ -1128,6 +1217,24 @@ export default function LoopForceGraph() {
               if (editMode === "link") {
                 setLinkFrom(null);
               }
+              if (immerseLoop) {
+                setImmerseLoop(false);
+                if (focusLoop) {
+                  window.setTimeout(() => focusLoopByCode(focusLoop), 100);
+                } else {
+                  window.setTimeout(() => fitOverviewRef.current(), 60);
+                }
+                return;
+              }
+              if (focusLoop) {
+                setFocusLoop(null);
+                window.setTimeout(() => fitOverviewRef.current(), 60);
+                return;
+              }
+              if (focusChain) {
+                setFocusChain(null);
+                window.setTimeout(() => fitOverviewRef.current(), 60);
+              }
             }}
             warmupTicks={30}
             cooldownTicks={50}
@@ -1136,72 +1243,33 @@ export default function LoopForceGraph() {
             onEngineStop={() => {
               if (didFitRef.current) return;
               didFitRef.current = true;
+              if (focusLoopRef.current) return;
               fitOverview();
             }}
           />
         </div>
 
         <aside className="loop-kg-side">
-          <Typography.Text strong>层级 ↔ Ontology（上→下）</Typography.Text>
-          <div className="loop-kg-map">
-            {LEVEL_ORDER.map((lv) => {
-              const ont = LOOP_LEVEL_ONTOLOGY[lv];
-              return (
-                <button
-                  key={lv}
-                  type="button"
-                  className={`loop-kg-map-row is-btn${filterLevel === lv ? " is-active" : ""}`}
-                  onClick={() => onChangeLevel(filterLevel === lv ? "all" : lv)}
-                >
-                  <span className="loop-kg-map-lv">{LEVEL_LABEL[lv]}</span>
-                  <span className="loop-kg-map-ot">{ont.otype}</span>
-                  <span className="loop-kg-map-key">{ont.typeKey}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {factHealth.length ? (
-            <>
-              <Typography.Text strong style={{ display: "block", marginTop: 14 }}>
-                基础数据接入
-              </Typography.Text>
-              <div className="loop-kg-map" style={{ marginTop: 6 }}>
-                {factHealth.map((f) => {
-                  const meta = FACT_STATUS_META[f.status];
-                  return (
-                    <button
-                      key={f.id}
-                      type="button"
-                      className="loop-kg-map-row is-btn"
-                      onClick={() => {
-                        onChangeLevel("fact");
-                        const node = fgData.nodes.find((n) => n.id === `fact:${f.id}` || n.code === f.code);
-                        if (node) setSelected(node);
-                        triggerReveal(`${f.code} · ${meta.label}`);
-                      }}
-                    >
-                      <span className="loop-kg-map-lv" style={{ color: meta.color }}>{f.code}</span>
-                      <span className="loop-kg-map-ot">{f.name}</span>
-                      <span className="loop-kg-map-key" style={{ color: meta.color }}>{meta.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>
+          {selected ? (
+            <div className="loop-kg-detail loop-kg-detail--top">
+              <Space wrap size={4}>
+                <Tag>{selected.levelLabel}</Tag>
+                {selected.code ? <Tag color="blue">{selected.code}</Tag> : null}
+              </Space>
+              <Typography.Title level={5} style={{ margin: "6px 0 2px", fontSize: 15 }}>
+                {selected.name}
+              </Typography.Title>
+              {selected.sub ? (
+                <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
+                  {selected.sub}
+                </Typography.Paragraph>
+              ) : null}
+            </div>
           ) : null}
 
           {focusChain ? (
             <div className="loop-kg-chain-detail">
-              <Space align="center" style={{ width: "100%", justifyContent: "space-between" }}>
-                <Typography.Text strong>{CHAIN_META[focusChain].name}</Typography.Text>
-                <Button size="small" type="text" onClick={() => focusRollupChain(focusChain)}>
-                  退出聚焦
-                </Button>
-              </Space>
-              <Typography.Paragraph type="secondary" style={{ margin: "4px 0 10px", fontSize: 12 }}>
-                {CHAIN_META[focusChain].desc}
-              </Typography.Paragraph>
+              <Typography.Text strong>{CHAIN_META[focusChain].name}</Typography.Text>
               <div className="loop-kg-chain-steps">
                 {chainSteps.map((node, index) => (
                   <div className="loop-kg-chain-step" key={node.id}>
@@ -1219,117 +1287,172 @@ export default function LoopForceGraph() {
             </div>
           ) : null}
 
-          <Typography.Text strong style={{ display: "block", marginTop: 14 }}>选中说明</Typography.Text>
-          {selected ? (
-            <div className="loop-kg-detail">
-              <div style={{ marginTop: 8 }}>
-                <Tag color={selected.kind === "hub" ? "gold" : selected.dataKind === "fact" ? "blue" : "purple"}>
-                  {selected.kind === "hub" ? "层级壳" : selected.dataKind === "fact" ? "基础·浅" : "衍生·深"}
-                </Tag>
-                <Tag>{selected.levelLabel}</Tag>
-                {selected.kind === "stock" ? <Tag color="blue">{selected.code}</Tag> : null}
-                {selected.custom ? <Tag color="gold">自定义</Tag> : null}
-                {(() => {
-                  const fh = factStatusOf(selected);
-                  if (!fh) return null;
-                  const meta = FACT_STATUS_META[fh.status];
-                  return <Tag color={meta.tag}>{meta.label}</Tag>;
-                })()}
+          <div className="loop-kg-cpd-head">
+            <Typography.Text strong>经营回路</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              单击定位全图 · 双击进入回路
+            </Typography.Text>
+          </div>
+          <Segmented
+            size="small"
+            block
+            value={cpdKind}
+            onChange={(v) => setCpdKind(v as CpdLoopKind | "all")}
+            options={[
+              { value: "all", label: KIND_LABEL.all },
+              { value: "R", label: KIND_LABEL.R },
+              { value: "B", label: KIND_LABEL.B },
+              { value: "C", label: KIND_LABEL.C },
+            ]}
+          />
+          {activeCpdLoop ? (
+            <div className="loop-kg-cpd-detail">
+              <Space wrap size={4} style={{ width: "100%", justifyContent: "space-between" }}>
+                <Space wrap size={4}>
+                  <Tag color={activeCpdLoop.kind === "R" ? "orange" : activeCpdLoop.kind === "B" ? "blue" : "purple"}>
+                    {activeCpdLoop.code}
+                  </Tag>
+                  <Typography.Text strong style={{ fontSize: 13 }}>{activeCpdLoop.name}</Typography.Text>
+                  <button
+                    type="button"
+                    className="loop-kg-loop-edit"
+                    title="编辑闭环 SOP"
+                    aria-label={`编辑 ${activeCpdLoop.code}`}
+                    onClick={(e) => openLoopEdit(activeCpdLoop.code, e, "company")}
+                  >
+                    🖊
+                  </button>
+                </Space>
+                <Button size="small" type="link" onClick={() => {
+                  setFocusLoop(null);
+                  setImmerseLoop(false);
+                  setEdgeMode("all");
+                  if (filterLevel !== "all") setFilterLevel("all");
+                  window.setTimeout(() => fitOverviewRef.current(), 60);
+                }}>
+                  清除
+                </Button>
+              </Space>
+              {immerseLoop ? (
+                <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>
+                  已进入回路子图 · 点空白返回全图定位
+                </Typography.Text>
+              ) : (
+                <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 4 }}>
+                  已在全图定位（多为公司层）· 双击可进入
+                </Typography.Text>
+              )}
+              <div className="loop-kg-cpd-pathline">
+                {(activeCpdLoop.stockPath || [])
+                  .map((s) => s.toUpperCase())
+                  .filter((s, i, arr) => i === 0 || s !== arr[i - 1])
+                  .join(" → ")}
               </div>
-              <Typography.Title level={5} style={{ margin: "8px 0 4px" }}>
-                {selected.name}
-              </Typography.Title>
-              {selected.sub ? (
-                <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
-                  {selected.sub}
-                </Typography.Paragraph>
-              ) : null}
-              {(() => {
-                const fh = factStatusOf(selected);
-                if (!fh) return null;
-                return (
-                  <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.6 }}>
-                    <div>
-                      <Typography.Text type="secondary">数据源 </Typography.Text>
-                      {fh.source || "—"}
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">粒度 </Typography.Text>
-                      {fh.grain || "—"}
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">行数 </Typography.Text>
-                      {fh.rows == null ? "—" : fh.rows}
-                    </div>
-                    <div>
-                      <Typography.Text type="secondary">命中表 </Typography.Text>
-                      {fh.matched_tables.length
-                        ? fh.matched_tables.map((t) => t.table).join(", ")
-                        : "无"}
-                    </div>
-                    <Typography.Paragraph
-                      style={{
-                        margin: "8px 0 0",
-                        fontSize: 12,
-                        color: FACT_STATUS_META[fh.status].color,
-                      }}
-                    >
-                      {fh.note}
-                    </Typography.Paragraph>
-                  </div>
-                );
-              })()}
-              {selected.details?.length ? (
-                <ul>{selected.details.map((d) => <li key={d}>{d}</li>)}</ul>
-              ) : null}
-              {selected.kind === "hub" ? (
-                <Typography.Paragraph type="secondary" style={{ marginTop: 8, fontSize: 12 }}>
-                  再点一次该层可回到全图；布局已改为自上而下。
-                </Typography.Paragraph>
+
+              {activeExplain ? (
+                <CpdExplainTiles explain={activeExplain} seed={activeCpdLoop?.code || "loop"} compact />
               ) : null}
             </div>
-          ) : (
-            <Typography.Paragraph type="secondary" style={{ marginTop: 8, fontSize: 12 }}>
-              点层级球飞入该行；浅色为基础数据，深色为衍生计算。
-            </Typography.Paragraph>
-          )}
-
-          <Typography.Text strong style={{ display: "block", marginTop: 16 }}>
-            自定义
-          </Typography.Text>
-          <Typography.Paragraph type="secondary" style={{ margin: "6px 0 0", fontSize: 12 }}>
-            节点 {custom.stocks.length} · 连线 {custom.links.length}
-            {dirty ? " · 未保存" : " · 已同步本机"}
-          </Typography.Paragraph>
-
-          <Typography.Text strong style={{ display: "block", marginTop: 16 }}>代表回路</Typography.Text>
-          <div className="loop-kg-loops">
-            {sideLoops.map((loop) => (
-              <button
+          ) : null}
+          <div className="loop-kg-loops" style={{ marginTop: 8 }}>
+            {cpdSideLoops.map((loop) => (
+              <div
                 key={loop.code}
-                type="button"
-                className={`loop-kg-loop${focusLoop === loop.code ? " is-active" : ""}`}
-                onClick={() => {
-                  const next = focusLoop === loop.code ? null : loop.code;
-                  setFocusChain(null);
-                  setFocusLoop(next);
-                  if (next) {
-                    setEdgeMode("causal");
-                    if (filterLevel !== "all" && filterLevel !== loop.level) {
-                      setFilterLevel(loop.level);
-                    }
-                    focusLoopByCode(next);
-                  }
-                }}
+                className={`loop-kg-loop${focusLoop === loop.code ? " is-active" : ""}${focusLoop === loop.code && immerseLoop ? " is-immerse" : ""}`}
               >
-                <Tag color={loop.kind === "R" ? "orange" : loop.kind === "B" ? "blue" : "purple"}>
-                  {loop.kind}
-                </Tag>
-                <span className="loop-kg-loop-name">{loop.name}</span>
-                <span className="loop-kg-loop-path">{loop.path}</span>
-              </button>
+                <button
+                  type="button"
+                  className="loop-kg-loop-main"
+                  onClick={() => onCpdLoopClick(loop.code)}
+                  onDoubleClick={(e) => {
+                    e.preventDefault();
+                    onCpdLoopDoubleClick(loop.code);
+                  }}
+                >
+                  <Tag color={loop.kind === "R" ? "orange" : loop.kind === "B" ? "blue" : "purple"}>
+                    {loop.code}
+                  </Tag>
+                  <span className="loop-kg-loop-name">{loop.name}</span>
+                  {editedLoopCodes.has(loop.code) ? (
+                    <Tag color="gold" style={{ marginInlineStart: 4 }}>已改</Tag>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  className="loop-kg-loop-edit"
+                  title="编辑闭环 SOP"
+                  aria-label={`编辑 ${loop.code}`}
+                  onClick={(e) => openLoopEdit(loop.code, e, "company")}
+                >
+                  🖊
+                </button>
+              </div>
             ))}
           </div>
+
+          {sideLoopsByLevel.length ? (
+            <>
+              <Typography.Text strong style={{ display: "block", marginTop: 14, fontSize: 12 }}>
+                {filterLevel === "all" ? "各层经营回路" : "本层回路"}
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>
+                单击定位该层路径
+              </Typography.Text>
+              {sideLoopsByLevel.map((group) => (
+                <div key={group.level} style={{ marginBottom: 8 }}>
+                  {filterLevel === "all" ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", margin: "6px 0 4px" }}>
+                      {group.label}
+                      <span style={{ marginLeft: 6, opacity: 0.7 }}>{group.loops.length}</span>
+                    </Typography.Text>
+                  ) : null}
+                  <div className="loop-kg-loops">
+                    {group.loops.map((loop) => (
+                      <div
+                        key={loop.code}
+                        className={`loop-kg-loop${focusLoop === loop.code ? " is-active" : ""}`}
+                      >
+                        <button
+                          type="button"
+                          className="loop-kg-loop-main"
+                          onClick={() => {
+                            const next = focusLoop === loop.code ? null : loop.code;
+                            setFocusChain(null);
+                            setImmerseLoop(false);
+                            setFocusLoop(next);
+                            if (next) {
+                              if (filterLevel !== "all" && filterLevel !== loop.level) {
+                                setFilterLevel(loop.level);
+                              }
+                              focusLoopByCode(next);
+                            } else {
+                              setEdgeMode("all");
+                              window.setTimeout(() => fitOverviewRef.current(), 60);
+                            }
+                          }}
+                        >
+                          <Tag color={loop.kind === "R" ? "orange" : loop.kind === "B" ? "blue" : "purple"}>
+                            {loop.kind}
+                          </Tag>
+                          <span className="loop-kg-loop-name">{loop.name}</span>
+                          <span className="loop-kg-loop-path">{loop.path}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="loop-kg-loop-edit"
+                          title="编辑闭环回路"
+                          aria-label={`编辑 ${loop.code}`}
+                          onClick={(e) => openLoopEdit(loop.code, e, loop.level)}
+                        >
+                          🖊
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : null}
         </aside>
       </div>
 
@@ -1348,9 +1471,9 @@ export default function LoopForceGraph() {
         >
           <Form.Item name="level" label="所属层级" rules={[{ required: true }]}>
             <Select
-              options={LEVEL_ORDER.map((lv) => ({
+              options={VIEW_LEVELS.map((lv) => ({
                 value: lv,
-                label: `${LEVEL_LABEL[lv]}（${LOOP_LEVEL_ONTOLOGY[lv].otype}）`,
+                label: LEVEL_LABEL[lv],
               }))}
             />
           </Form.Item>
