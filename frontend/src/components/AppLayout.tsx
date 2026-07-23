@@ -10,6 +10,7 @@ import {
   CheckSquareOutlined,
   CommentOutlined,
   ContactsOutlined,
+  DashboardOutlined,
   DownOutlined,
   FileSearchOutlined,
   FileTextOutlined,
@@ -57,7 +58,7 @@ type NavItem = {
   keywords?: string;
 };
 type NavGroup = { key: string; label: string; items: NavItem[] };
-type SectionKey = "common" | "knowledge";
+type SectionKey = "common" | "knowledge" | "loops";
 type NavSection = {
   key: SectionKey;
   label: string;
@@ -95,6 +96,7 @@ const WORK_GROUPS: NavGroup[] = [
     label: "工作工具",
     items: [
       { key: "work-overview", path: "/home", icon: <HomeOutlined />, label: "工作概览", keywords: "工作台 首页" },
+      { key: "work-visual-interface", path: "/visual-interface", icon: <DashboardOutlined />, label: "可视化面板", keywords: "可视化 驾驶舱 面板 数据 Ontology Loop CPD" },
       { key: "work-connectors", path: "/connectors", icon: <ApiOutlined />, label: "连接管理", keywords: "连接器 MCP 企业微信" },
     ],
   },
@@ -124,6 +126,24 @@ const COMMERCE_GROUPS: NavGroup[] = [
     items: [
       { key: "commerce-loops", path: "/commerce/loops", icon: <SyncOutlined />, label: "经营回路", keywords: "经营 分析" },
       { key: "commerce-loops-diy", path: "/commerce/loops/diy", icon: <FormOutlined />, label: "回路 DIY", keywords: "回路 画布 因果 证据" },
+    ],
+  },
+];
+
+const LOOPS_OPS_GROUPS: NavGroup[] = [
+  {
+    key: "loops-ops",
+    label: "业务闭环",
+    items: [
+      { key: "loops-home", path: "/loops", icon: <SyncOutlined />, label: "Loops 列表", keywords: "OODA 闭环 运营" },
+      { key: "loops-monitor", path: "/loops/monitor", icon: <PlayCircleOutlined />, label: "运行监控", keywords: "执行 监控 进度" },
+    ],
+  },
+  {
+    key: "loops-create",
+    label: "创建与设计",
+    items: [
+      { key: "loops-discover", path: "/loops/discover", icon: <BulbOutlined />, label: "AI 发现", keywords: "发现 候选 知识" },
     ],
   },
 ];
@@ -164,6 +184,16 @@ const SECTIONS: NavSection[] = [
     defaultPath: "/knowledge",
     groups: KNOWLEDGE_GROUPS,
   },
+  {
+    key: "loops",
+    label: "Loops",
+    description: "业务闭环运营",
+    sidebarTitle: "Loops 管理",
+    eyebrow: "LOOPS",
+    icon: <SyncOutlined />,
+    defaultPath: "/loops",
+    groups: LOOPS_OPS_GROUPS,
+  },
 ];
 
 const ALL_VISIBLE_NAV = SECTIONS.flatMap((section) => section.groups.flatMap((group) => group.items));
@@ -181,14 +211,14 @@ const HIDDEN_ROUTE_SECTION: Array<[string, SectionKey]> = [
   ["/my/favorites", "knowledge"],
   ["/commerce/bench", "common"],
   ["/commerce", "common"],
-  ["/datalake", "common"],
-  ["/audit", "common"],
+  ["/datalake", "knowledge"],
   ["/logs", "common"],
   ["/tables", "knowledge"],
 ];
 
 const FULL_BLEED = new Set([
   "/home",
+  "/visual-interface",
   "/agent",
   "/collab",
   "/work",
@@ -278,7 +308,7 @@ export default function AppLayout() {
     : sidebarWidth < 224
       ? "compact"
       : "full";
-  const isFullBleed = FULL_BLEED.has(loc.pathname);
+  const isFullBleed = FULL_BLEED.has(loc.pathname) || loc.pathname.startsWith("/loops/");
 
   const selectedKeys = useMemo(() => {
     const key = navKeyForLocation(loc.pathname, loc.search);

@@ -142,6 +142,68 @@ class TeamMembership(models.Model):
         return f"{self.team_id}:{self.user_id}:{self.role}"
 
 
+class TaskTemplate(models.Model):
+    """可复用的任务配置预设；底层动作契约仍由 orchestration 管理。"""
+
+    class Visibility(models.TextChoices):
+        PERSONAL = "personal", "仅自己"
+        WORKSPACE = "workspace", "当前工作空间"
+
+    class Category(models.TextChoices):
+        REPORT = "report", "经营报告"
+        OPERATION = "operation", "日常运营"
+        ANALYSIS = "analysis", "数据分析"
+        COLLAB = "collab", "协作跟进"
+
+    template_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    builtin_key = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="task_templates",
+    )
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="created_task_templates",
+    )
+    updated_by = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="updated_task_templates",
+    )
+    name = models.CharField(max_length=128)
+    description = models.CharField(max_length=300, blank=True, default="")
+    category = models.CharField(max_length=20, choices=Category.choices, default=Category.REPORT, db_index=True)
+    action_name = models.CharField(max_length=96, db_index=True)
+    prompt = models.TextField()
+    defaults = models.JSONField(default=dict, blank=True)
+    output_config = models.JSONField(default=dict, blank=True)
+    assignment_config = models.JSONField(default=dict, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    estimated_minutes = models.PositiveSmallIntegerField(default=10)
+    visibility = models.CharField(max_length=16, choices=Visibility.choices, default=Visibility.PERSONAL, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["category", "name", "id"]
+        indexes = [models.Index(fields=["organization", "visibility", "is_active"], name="core_tasktpl_scope_idx")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "builtin_key"],
+                condition=models.Q(builtin_key__isnull=False),
+                name="core_tasktpl_builtin_org_uniq",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class ChatSession(models.Model):
     """持久化的 Agent 对话。"""
 

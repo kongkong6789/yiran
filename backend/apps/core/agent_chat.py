@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from django.conf import settings
-from django.db.models import Q
 
 from apps.council import llm
 from apps.council import images as image_svc
@@ -21,6 +21,7 @@ from apps.skills.runner import (
 )
 from apps.agentctx.assembler import assemble_context
 from apps.agentctx.memory import maybe_update_memory
+from .chat_harness import ConversationHarness, HARNESS_SYSTEM_APPEND
 from .attachments import format_attachment_context, vision_image_parts
 from .cancellation import raise_if_cancelled
 from .progress import emit_progress
@@ -86,16 +87,13 @@ def _selected_knowledge_context(
     if mode == "none":
         return "", []
     try:
-        from apps.knowledge.models import KnowledgeBase
-        from apps.knowledge.traditional_rag import keyword_search, semantic_search
+        from apps.knowledge.access import visible_knowledge_bases
+        from apps.knowledge.traditional_rag import hybrid_search
     except Exception:
         return "", []
     if not getattr(user, "is_authenticated", False):
         return "", []
-    qs = KnowledgeBase.objects.filter(archived_at__isnull=True).filter(
-        Q(visibility__in=[KnowledgeBase.Visibility.TEAM, KnowledgeBase.Visibility.COMPANY])
-        | Q(visibility=KnowledgeBase.Visibility.PRIVATE, owner_user_id=user.id)
-    )
+    qs = visible_knowledge_bases(user)
     ids = [int(item) for item in (knowledge_base_ids or []) if str(item).strip().isdigit()]
     if mode == "selected":
         if not ids:
@@ -111,23 +109,10 @@ def _selected_knowledge_context(
     blocks: list[str] = []
     per_base_limit = 3 if mode == "auto" else 4
     for base in bases:
-        chunks = []
-        keyword_chunks = []
-        semantic_chunks = []
         try:
-            keyword_chunks = keyword_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
+            chunks = hybrid_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
         except Exception:
-            keyword_chunks = []
-        try:
-            semantic_chunks = semantic_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
-        except Exception:
-            semantic_chunks = []
-        seen_chunk_ids: set[int] = set()
-        for chunk in [*keyword_chunks, *semantic_chunks]:
-            if chunk.id in seen_chunk_ids:
-                continue
-            seen_chunk_ids.add(chunk.id)
-            chunks.append(chunk)
+            chunks = []
         if not chunks:
             continue
         lines = []
@@ -153,6 +138,48 @@ def _selected_knowledge_context(
         return f"\u3010\u77e5\u8bc6\u5e93\u3011\u5df2\u9009\u62e9: {names}, \u4f46\u6ca1\u6709\u68c0\u7d22\u5230\u76f4\u63a5\u76f8\u5173\u5207\u7247\u3002", refs
     return "\n\n".join(blocks), refs
 
+
+_KNOWLEDGE_SOURCE_TERMS = (
+    "知识库", "内部资料", "公司资料", "企业资料", "参考资料", "资料库",
+    "制度", "政策", "规定", "规范", "手册", "档案", "合同", "条款", "口径",
+    "sop", "历史任务", "历史记录", "历史数据", "知识图谱", "业务图谱",
+    "成分", "配方", "备案", "备案号", "备案编号", "备案信息", "货品", "货品ID", "商品编码", "条形码",
+    "sku", "SKU", "功效宣称", "使用人群", "产品备案", "包装声明",
+)
+_BUSINESS_EVIDENCE_TERMS = (
+    "gmv", "sku", "经营数据", "业务数据", "指标", "数据分析", "分析数据", "数据口径",
+    "销售", "销量", "订单", "退款", "库存", "库龄", "缺货", "断货", "备货", "补货",
+    "成本", "利润", "毛利", "预算", "财务", "采购", "供应商", "商品", "店铺",
+    "渠道", "客户", "业绩", "经营", "运营分析", "市场分析", "竞品", "品牌分析",
+    "同比", "环比", "趋势", "异常预警", "异常分析", "回路分析", "因果图",
+)
+
+
+def should_retrieve_knowledge(
+    message: str,
+    knowledge_mode: str = "auto",
+    knowledge_base_ids: list[int] | None = None,
+    *,
+    doc_mode: bool = False,
+) -> bool:
+    """判断本轮是否需要检索企业知识。
+
+    auto 模式仅在用户明确询问内部资料或经营证据时检索，避免创建待办、
+    改写、翻译、闲聊等请求误跑知识库。显式选定知识库时仍强制检索。
+    """
+    mode = knowledge_mode if knowledge_mode in {"auto", "none", "selected"} else "auto"
+    if mode == "none":
+        return False
+    if mode == "selected" or knowledge_base_ids:
+        return True
+    if doc_mode:
+        return False
+    text = re.sub(r"\s+", "", str(message or "")).casefold()
+    if not text:
+        return False
+    return any(term in text for term in (*_KNOWLEDGE_SOURCE_TERMS, *_BUSINESS_EVIDENCE_TERMS))
+
+
 def run_chat(
     message: str,
     history: list[dict] | None = None,
@@ -172,10 +199,13 @@ def run_chat(
     history = history or []
     attachments = attachments or []
     model_override = (model or "").strip() or None
+    harness = ConversationHarness(progress_callback=progress_callback)
+    progress_callback = harness.emit_progress
     if not message and not attachments:
         return {"ok": False, "error": "\u8bf7\u8f93\u5165\u6d88\u606f\u6216\u4e0a\u4f20\u9644\u4ef6\u3002"}
 
     raise_if_cancelled(cancel_check)
+    harness.assess_message_risk(message)
     emit_progress(progress_callback, "understanding", "running")
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
@@ -216,13 +246,27 @@ def run_chat(
 
     knowledge = ""
     graph: dict = {"refs": []}
-    emit_progress(progress_callback, "knowledge_search", "running")
-    if not doc_mode:
+    selected_knowledge = ""
+    selected_knowledge_refs: list[dict] = []
+    retrieve_knowledge = should_retrieve_knowledge(
+        message,
+        knowledge_mode,
+        knowledge_base_ids,
+        doc_mode=doc_mode,
+    )
+    if retrieve_knowledge:
+        emit_progress(progress_callback, "knowledge_search", "running")
         knowledge = gather_knowledge(message, top_k=4, user=user)
         raise_if_cancelled(cancel_check)
         graph = search_graph(message, top_k=4, max_edges=6)
         raise_if_cancelled(cancel_check)
-    selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(message, knowledge_mode, knowledge_base_ids, user=user)
+        selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(
+            message,
+            knowledge_mode,
+            knowledge_base_ids,
+            user=user,
+        )
+        emit_progress(progress_callback, "knowledge_search", "completed")
 
     try:
         mcp = (
@@ -247,7 +291,6 @@ def run_chat(
     nas_files = nas.get("files") or []
     context_attachments = [*attachments, *nas_files]
     raise_if_cancelled(cancel_check)
-    emit_progress(progress_callback, "knowledge_search", "completed")
     tool_count = (
         len(script_blocks)
         + (1 if mcp.get("attempted") else 0)
@@ -333,13 +376,15 @@ def run_chat(
             "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
         )
 
+    reference_blocks = harness.trim_reference_blocks(reference_blocks)
+
     ctx_pack = assemble_context(
         message=message,
         history=history,
         user=user,
         session_key=session_key,
         reference_blocks=reference_blocks,
-        history_limit=30,
+        history_limit=harness.config.history_limit,
     )
     user_block = ctx_pack.user_block
     clean_history = ctx_pack.clean_history
@@ -410,6 +455,7 @@ def run_chat(
 
     system = (
         SYSTEM_PROMPT
+        + HARNESS_SYSTEM_APPEND
         + (DOC_SYSTEM_APPEND if doc_mode else "")
         + (SKILL_EXEC_APPEND if active_skills else "")
         + build_skill_system_block(active_skills)
@@ -421,6 +467,11 @@ def run_chat(
     max_tokens = 3500 if has_script_data else (2500 if wants_table and mcp.get("content") else 900)
     if image_parts:
         max_tokens = max(max_tokens, 1200)
+    budget_report = harness.finalize_budget(messages=messages, max_output_tokens=max_tokens)
+    if budget_report.get("over_soft_budget") and not image_parts:
+        remaining = harness.config.soft_turn_token_budget - budget_report["prompt_tokens_estimated"]
+        max_tokens = max(500, min(max_tokens, remaining))
+        harness.finalize_budget(messages=messages, max_output_tokens=max_tokens)
 
     skip_llm = image_intent in ("generate", "edit") and (
         bool(generated_images)
@@ -563,6 +614,7 @@ def run_chat(
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
         "nas_files": refs["nas"],
+        "harness": harness.metadata(),
         "attachments": [
             {
                 "id": a.get("id"),

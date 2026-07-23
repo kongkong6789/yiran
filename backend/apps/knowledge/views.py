@@ -5,11 +5,14 @@ from django.db.models import Q
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+
+from apps.core.models import Team, TeamMembership
+from apps.core.organizations import is_organization_admin
 
 from .models import (
     KnowledgeAuditLog,
@@ -32,10 +35,16 @@ from .serializers import (
     KnowledgeSourceBindingSerializer,
     KnowledgeTemplateSerializer,
 )
+from .access import (
+    can_manage_knowledge_base,
+    sync_default_permissions,
+    visible_knowledge_bases,
+)
 from .traditional_rag import (
     TraditionalRagError,
     enqueue_file_reingest,
     enqueue_ingest_upload,
+    hybrid_search,
     keyword_search,
     read_stored_file,
     semantic_search,
@@ -66,20 +75,54 @@ def _log(user, knowledge_base, action: str, target_type: str = "", target_id: st
     )
 
 
-def _can_manage_knowledge_base(user, kb: KnowledgeBase) -> bool:
+def _team_ids_from_request(request) -> list[int] | None:
+    raw = request.data.get("teamIds", request.data.get("team_ids", request.data.get("teamId")))
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, list):
+        raw = [raw]
+    team_ids: list[int] = []
+    for value in raw:
+        try:
+            team_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(team_ids))
+
+
+def _can_assign_team(user, team: Team) -> bool:
     if not getattr(user, "is_authenticated", False):
         return False
-    return bool(user.is_staff or user.is_superuser or kb.owner_user_id == user.id)
+    if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+        return True
+    if TeamMembership.objects.filter(team=team, user=user).exists():
+        return True
+    if team.kind == Team.Kind.ENTERPRISE and team.organization_id:
+        return is_organization_admin(user, team.organization_id)
+    return False
+
+
+def _validated_team_ids_from_request(request, *, required: bool = False) -> list[int] | None:
+    team_ids = _team_ids_from_request(request)
+    if not team_ids:
+        if required:
+            raise ValidationError({"teamIds": "Please select at least one team for a team knowledge base."})
+        return team_ids
+    teams = list(Team.objects.filter(id__in=team_ids, is_active=True))
+    found_ids = {team.id for team in teams}
+    invalid_ids = [team_id for team_id in team_ids if team_id not in found_ids]
+    forbidden_ids = [team.id for team in teams if not _can_assign_team(request.user, team)]
+    if invalid_ids or forbidden_ids:
+        raise ValidationError({"teamIds": "One or more selected teams are unavailable or not assignable."})
+    return team_ids
+
+
+def _can_manage_knowledge_base(user, kb: KnowledgeBase) -> bool:
+    return can_manage_knowledge_base(user, kb)
 
 
 def _visible_knowledge_bases(user):
-    qs = KnowledgeBase.objects.filter(archived_at__isnull=True)
-    if not getattr(user, "is_authenticated", False):
-        return qs.none()
-    return qs.filter(
-        Q(visibility__in=[KnowledgeBase.Visibility.TEAM, KnowledgeBase.Visibility.COMPANY])
-        | Q(visibility=KnowledgeBase.Visibility.PRIVATE, owner_user_id=user.id)
-    )
+    return visible_knowledge_bases(user)
 
 
 class KnowledgeTemplateViewSet(viewsets.ModelViewSet):
@@ -94,15 +137,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        qs = KnowledgeBase.objects.select_related("template").filter(archived_at__isnull=True)
-        if getattr(user, "is_authenticated", False):
-            qs = qs.filter(
-                Q(visibility__in=[KnowledgeBase.Visibility.TEAM, KnowledgeBase.Visibility.COMPANY])
-                | Q(visibility=KnowledgeBase.Visibility.PRIVATE, owner_user_id=user.id)
-            )
-        else:
-            qs = qs.none()
+        qs = visible_knowledge_bases(self.request.user).select_related("template")
         query = (self.request.query_params.get("q") or "").strip()
         category = (self.request.query_params.get("category") or "").strip()
         visibility = (self.request.query_params.get("visibility") or "").strip()
@@ -116,20 +151,26 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        visibility = serializer.validated_data.get("visibility", KnowledgeBase.Visibility.TEAM)
+        team_ids = _validated_team_ids_from_request(self.request, required=visibility == KnowledgeBase.Visibility.TEAM)
         kb = serializer.save(owner_user_id=user.id if getattr(user, "is_authenticated", False) else None)
+        sync_default_permissions(kb, user, team_ids=team_ids)
         _log(self.request.user, kb, "knowledge_base.created", "knowledge_base", kb.id)
 
     def perform_update(self, serializer):
         kb = self.get_object()
         if not _can_manage_knowledge_base(self.request.user, kb):
-            raise PermissionDenied("Only the knowledge base owner can edit it")
+            raise PermissionDenied("You do not have permission to edit this knowledge base")
+        visibility = serializer.validated_data.get("visibility", kb.visibility)
+        team_ids = _validated_team_ids_from_request(self.request, required=visibility == KnowledgeBase.Visibility.TEAM)
         kb = serializer.save()
+        sync_default_permissions(kb, self.request.user, team_ids=team_ids)
         _log(self.request.user, kb, "knowledge_base.updated", "knowledge_base", kb.id)
 
     def destroy(self, request, *args, **kwargs):
         kb = self.get_object()
         if not _can_manage_knowledge_base(request.user, kb):
-            raise PermissionDenied("Only the knowledge base owner can delete it")
+            raise PermissionDenied("You do not have permission to delete this knowledge base")
         with transaction.atomic():
             purge = _purge_knowledge_base_vectors(kb)
             kb.status = KnowledgeBase.Status.ARCHIVED
@@ -163,13 +204,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
     def upload(self, request, pk=None):
         kb = self.get_object()
         if not _can_manage_knowledge_base(request.user, kb):
-            raise PermissionDenied("Only the knowledge base owner can upload files")
+            raise PermissionDenied("You do not have permission to upload files")
         upload = request.FILES.get("file")
         if upload is None:
             return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             chunk_size = request.data.get("chunk_size")
             chunk_overlap = request.data.get("chunk_overlap")
+            asset_role = (request.data.get("asset_role") or "upload").strip()
             result = enqueue_ingest_upload(
                 knowledge_base=kb,
                 upload=upload,
@@ -177,6 +219,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                 segment_mode=request.data.get("segment_mode") or "general",
                 chunk_size=int(chunk_size) if chunk_size not in (None, "") else None,
                 chunk_overlap=int(chunk_overlap) if chunk_overlap not in (None, "") else None,
+                asset_role=asset_role,
             )
         except TraditionalRagError as error:
             return Response({"error": error.code, "message": error.message}, status=status.HTTP_400_BAD_REQUEST)
@@ -210,11 +253,14 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         query = (request.query_params.get("q") or "").strip()
         try:
             limit = int(request.query_params.get("limit") or 10)
-            mode = (request.query_params.get("mode") or "keyword").strip().lower()
+            mode = (request.query_params.get("mode") or "hybrid").strip().lower()
             if mode == "semantic":
                 rows = semantic_search(query=query, knowledge_base_id=kb.id, limit=limit)
-            else:
+            elif mode == "keyword":
                 rows = keyword_search(query=query, knowledge_base_id=kb.id, limit=limit)
+            else:
+                mode = "hybrid"
+                rows = hybrid_search(query=query, knowledge_base_id=kb.id, limit=limit)
         except TraditionalRagError as error:
             return Response({"error": error.code, "message": error.message}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError:
@@ -242,12 +288,17 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
             qs = qs.filter(knowledge_base_id=kb_id)
         return qs
     def perform_create(self, serializer):
+        kb = serializer.validated_data.get("knowledge_base")
+        if kb and not _can_manage_knowledge_base(self.request.user, kb):
+            raise PermissionDenied("You do not have permission to add files to this knowledge base")
         file = serializer.save(uploaded_by=None)
         KnowledgeBase.objects.filter(id=file.knowledge_base_id).update(file_count=file.knowledge_base.files.filter(archived_at__isnull=True).count())
         _log(self.request.user, file.knowledge_base, "file.created", "knowledge_file", file.id, {"filename": file.original_filename})
 
     def destroy(self, request, *args, **kwargs):
         file = self.get_object()
+        if not _can_manage_knowledge_base(request.user, file.knowledge_base):
+            raise PermissionDenied("You do not have permission to delete this file")
         with transaction.atomic():
             purge = _purge_knowledge_file_vectors(file)
             file.status = KnowledgeFile.Status.ARCHIVED
@@ -276,7 +327,7 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
     def content(self, request, pk=None):
         """Read/write plain-text document body (Markdown docs in knowledge workspace)."""
         file = self.get_object()
-        # 可见即可读写；私有库仍由 queryset 限制可见范围（飞书式协作）
+        # Reads require visibility; writes require knowledge-base management permission.
         if request.method == "GET":
             if not file.storage_path:
                 return Response({"content": "", "file": KnowledgeFileSerializer(file).data})
@@ -290,6 +341,9 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
                 "encoding": "utf-8",
                 "file": KnowledgeFileSerializer(file).data,
             })
+
+        if not _can_manage_knowledge_base(request.user, file.knowledge_base):
+            raise PermissionDenied("You do not have permission to edit this file")
 
         body = request.data if isinstance(request.data, dict) else {}
         content = body.get("content")
@@ -318,7 +372,7 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
                 .replace(">", "_")
                 .replace("|", "_")
                 .strip()
-                or "未命名文档"
+                or "Untitled document"
             )
             original = file.original_filename or ""
             lower_original = original.lower()
@@ -419,6 +473,8 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["delete"], url_path=r"chunks/(?P<chunk_id>[^/.]+)")
     def delete_chunk(self, request, pk=None, chunk_id=None):
         file = self.get_object()
+        if not _can_manage_knowledge_base(request.user, file.knowledge_base):
+            raise PermissionDenied("You do not have permission to delete this chunk")
         deleted, _ = file.chunk_refs.filter(id=chunk_id).delete()
         if deleted:
             file.chunk_count = file.chunk_refs.count()
@@ -429,6 +485,8 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def start_ingest(self, request, pk=None):
         file = self.get_object()
+        if not _can_manage_knowledge_base(request.user, file.knowledge_base):
+            raise PermissionDenied("You do not have permission to ingest this file")
         job = KnowledgeIngestJob.objects.create(
             file=file,
             status=KnowledgeIngestJob.Status.PENDING,
@@ -449,20 +507,33 @@ class TraditionalRagSearchViewSet(viewsets.ViewSet):
         query = (request.query_params.get("q") or "").strip()
         knowledge_base_id = request.query_params.get("knowledge_base")
         try:
+            visible_ids = set(_visible_knowledge_bases(request.user).values_list("id", flat=True))
+            selected_kb_id = int(knowledge_base_id) if knowledge_base_id else None
+            if selected_kb_id and selected_kb_id not in visible_ids:
+                raise PermissionDenied("You do not have permission to search this knowledge base")
             limit = int(request.query_params.get("limit") or 10)
-            mode = (request.query_params.get("mode") or "keyword").strip().lower()
+            mode = (request.query_params.get("mode") or "hybrid").strip().lower()
             if mode == "semantic":
                 rows = semantic_search(
                     query=query,
-                    knowledge_base_id=int(knowledge_base_id) if knowledge_base_id else None,
+                    knowledge_base_id=selected_kb_id,
+                    limit=limit,
+                )
+            elif mode == "keyword":
+                rows = keyword_search(
+                    query=query,
+                    knowledge_base_id=selected_kb_id,
                     limit=limit,
                 )
             else:
-                rows = keyword_search(
+                mode = "hybrid"
+                rows = hybrid_search(
                     query=query,
-                    knowledge_base_id=int(knowledge_base_id) if knowledge_base_id else None,
+                    knowledge_base_id=selected_kb_id,
                     limit=limit,
                 )
+            if selected_kb_id is None:
+                rows = [row for row in rows if row.file.knowledge_base_id in visible_ids]
         except TraditionalRagError as error:
             return Response({"error": error.code, "message": error.message}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError:
@@ -506,6 +577,22 @@ class KnowledgeSourceBindingViewSet(viewsets.ModelViewSet):
             knowledge_base__in=_visible_knowledge_bases(self.request.user)
         )
 
+    def perform_create(self, serializer):
+        kb = serializer.validated_data.get("knowledge_base")
+        if kb and not _can_manage_knowledge_base(self.request.user, kb):
+            raise PermissionDenied("You do not have permission to update this knowledge base")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if not _can_manage_knowledge_base(self.request.user, self.get_object().knowledge_base):
+            raise PermissionDenied("You do not have permission to update this knowledge base")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not _can_manage_knowledge_base(self.request.user, instance.knowledge_base):
+            raise PermissionDenied("You do not have permission to update this knowledge base")
+        instance.delete()
+
 
 class KnowledgePermissionViewSet(viewsets.ModelViewSet):
     serializer_class = KnowledgePermissionSerializer
@@ -515,6 +602,22 @@ class KnowledgePermissionViewSet(viewsets.ModelViewSet):
         return KnowledgePermission.objects.select_related("knowledge_base").filter(
             knowledge_base__in=_visible_knowledge_bases(self.request.user)
         )
+
+    def perform_create(self, serializer):
+        kb = serializer.validated_data.get("knowledge_base")
+        if kb and not _can_manage_knowledge_base(self.request.user, kb):
+            raise PermissionDenied("You do not have permission to update permissions")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if not _can_manage_knowledge_base(self.request.user, self.get_object().knowledge_base):
+            raise PermissionDenied("You do not have permission to update permissions")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not _can_manage_knowledge_base(self.request.user, instance.knowledge_base):
+            raise PermissionDenied("You do not have permission to update permissions")
+        instance.delete()
 
 
 class KnowledgeAuditLogViewSet(viewsets.ReadOnlyModelViewSet):

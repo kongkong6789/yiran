@@ -6,6 +6,7 @@ import {
   ConfigProvider,
   DatePicker,
   Drawer,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -21,33 +22,37 @@ import {
   Upload,
   message,
 } from "antd";
-import type { UploadProps } from "antd";
+import type { MenuProps, UploadFile, UploadProps } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import {
   AppstoreOutlined,
   BarChartOutlined,
   CheckCircleFilled,
   ClockCircleOutlined,
-  CloudOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
   FileTextOutlined,
   FolderOpenOutlined,
   GlobalOutlined,
   ImportOutlined,
+  InboxOutlined,
+  InfoCircleOutlined,
   LockOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SearchOutlined,
+  SettingOutlined,
   ShareAltOutlined,
   ShopOutlined,
   StarOutlined,
   TeamOutlined,
   ToolOutlined,
-  UserOutlined,
 } from "@ant-design/icons";
 import {
   adoptSkillAsset,
@@ -64,7 +69,6 @@ import {
   updateSkillAssetCategory,
   updateSkillAssetOwner,
   updateSkillAssetVisibility,
-  uploadSkillAsset,
   uploadSkillAssetFolder,
   type SkillAnalyticsResponse,
   type SkillAnalyticsRow,
@@ -80,6 +84,7 @@ import {
   type SkillUsageEventItem,
   type UserSkillItem,
 } from "../api/client";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 type Props = {
   onInvoke?: (skill: UserSkillItem) => void;
@@ -91,6 +96,7 @@ type ScopeFilter = "all" | "mine" | "shared" | "uploaded" | "skillhub";
 type StatusFilter = "all" | "enabled" | "disabled";
 type SortKey = "recent" | "usage" | "reuse";
 type RankingMode = "skills" | "people";
+type WorkspaceTab = "manage" | "analytics";
 type UploadActivity = {
   mode: "files" | "folder";
   stage: "uploading" | "processing";
@@ -137,10 +143,9 @@ type SkillEntry = {
 };
 
 const PAGE_SIZE = 8;
-const MAX_SKILL_MARKDOWN_BYTES = 512_000;
 const MAX_SKILL_PACKAGE_BYTES = 20 * 1024 * 1024;
 const MAX_SKILL_FOLDER_FILES = 200;
-const MAX_SKILL_BATCH_FILES = 20;
+const MAX_SKILL_BATCH_FOLDERS = 20;
 const MAX_SKILL_BATCH_BYTES = 100 * 1024 * 1024;
 
 function formatFileSize(bytes: number): string {
@@ -148,25 +153,65 @@ function formatFileSize(bytes: number): string {
   return `${Math.round(bytes / 1024)}KB`;
 }
 
-function validateSkillFiles(files: File[]): string | null {
-  if (files.length > MAX_SKILL_BATCH_FILES) return `一次最多上传 ${MAX_SKILL_BATCH_FILES} 个技能文件`;
-  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-  if (totalSize > MAX_SKILL_BATCH_BYTES) return `本批文件总大小不能超过 ${formatFileSize(MAX_SKILL_BATCH_BYTES)}`;
-  for (const file of files) {
-    const lowerName = file.name.toLowerCase();
-    if (!lowerName.endsWith(".md") && !lowerName.endsWith(".markdown") && !lowerName.endsWith(".zip")) {
-      return `${file.name} 格式不支持，仅支持 .md、.markdown 和 .zip`;
-    }
-    const limit = lowerName.endsWith(".zip") ? MAX_SKILL_PACKAGE_BYTES : MAX_SKILL_MARKDOWN_BYTES;
-    if (file.size > limit) return `${file.name} 超过 ${formatFileSize(limit)} 上限`;
-  }
-  return null;
-}
-
 function validateSkillFolder(files: File[]): string | null {
   if (files.length > MAX_SKILL_FOLDER_FILES) return `技能文件夹最多包含 ${MAX_SKILL_FOLDER_FILES} 个文件`;
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
   if (totalSize > MAX_SKILL_PACKAGE_BYTES) return `技能文件夹总大小不能超过 ${formatFileSize(MAX_SKILL_PACKAGE_BYTES)}`;
+  return null;
+}
+
+type BatchSkillFolder = {
+  root: string;
+  name: string;
+  files: File[];
+  size: number;
+};
+
+function normalizeSkillPath(file: File): string {
+  return (file.webkitRelativePath || file.name).replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function groupSkillFolders(files: File[]): { folders: BatchSkillFolder[]; ignoredFiles: number } {
+  const entries = files.map((file) => ({ file, path: normalizeSkillPath(file) }));
+  const roots = Array.from(new Set(entries
+    .filter(({ path }) => path.split("/").pop()?.toLowerCase() === "skill.md")
+    .map(({ path }) => path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "")))
+    .sort((a, b) => b.length - a.length);
+  const grouped = new Map<string, File[]>();
+
+  entries.forEach(({ file, path }) => {
+    const root = roots.find((candidate) => (
+      candidate ? path === candidate || path.startsWith(`${candidate}/`) : !path.includes("/")
+    ));
+    if (!root && root !== "") return;
+    grouped.set(root, [...(grouped.get(root) || []), file]);
+  });
+
+  const folders = roots
+    .map((root) => {
+      const folderFiles = grouped.get(root) || [];
+      return {
+        root,
+        name: root.split("/").pop() || "Skill",
+        files: folderFiles,
+        size: folderFiles.reduce((sum, file) => sum + file.size, 0),
+      };
+    })
+    .filter((folder) => folder.files.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+  const groupedFileCount = folders.reduce((sum, folder) => sum + folder.files.length, 0);
+  return { folders, ignoredFiles: Math.max(0, files.length - groupedFileCount) };
+}
+
+function validateSkillFolderBatch(folders: BatchSkillFolder[]): string | null {
+  if (!folders.length) return "没有识别到包含 SKILL.md 的技能文件夹";
+  if (folders.length > MAX_SKILL_BATCH_FOLDERS) return `一次最多上传 ${MAX_SKILL_BATCH_FOLDERS} 个技能文件夹`;
+  const totalSize = folders.reduce((sum, folder) => sum + folder.size, 0);
+  if (totalSize > MAX_SKILL_BATCH_BYTES) return `本批技能总大小不能超过 ${formatFileSize(MAX_SKILL_BATCH_BYTES)}`;
+  for (const folder of folders) {
+    const validationError = validateSkillFolder(folder.files);
+    if (validationError) return `${folder.name}：${validationError}`;
+  }
   return null;
 }
 
@@ -237,6 +282,11 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value || 0);
 }
 
+function rankingBarWidth(value: number, maxValue: number, minimumVisiblePercent: number): string {
+  if (value <= 0) return "0%";
+  return `${Math.max(minimumVisiblePercent, value / Math.max(1, maxValue) * 100)}%`;
+}
+
 function formatDateTime(value?: string | null): string {
   if (!value) return "尚未使用";
   const date = new Date(value);
@@ -247,6 +297,14 @@ function formatDateTime(value?: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function skillScopeLabel(entry: SkillEntry): { label: string; tone: string } {
+  if (entry.asset?.source === "skillhub") return { label: "SkillHub", tone: "skillhub" };
+  if (entry.asset?.visibility === "shared") return { label: "企业共享", tone: "shared" };
+  if (entry.asset?.is_uploader) return { label: "我的上传", tone: "uploaded" };
+  if (entry.personal) return { label: "个人", tone: "personal" };
+  return { label: "可采用", tone: "available" };
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -263,11 +321,12 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [skills, setSkills] = useState<UserSkillItem[]>([]);
   const [assets, setAssets] = useState<SkillAssetItem[]>([]);
   const [analytics, setAnalytics] = useState<SkillAnalyticsResponse | null>(null);
-  const [cosEnabled, setCosEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
   const [trendLoading, setTrendLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadActivity, setUploadActivity] = useState<UploadActivity | null>(null);
+  const [batchUploadOpen, setBatchUploadOpen] = useState(false);
+  const [batchUploadFiles, setBatchUploadFiles] = useState<UploadFile[]>([]);
   const [skillHubOpen, setSkillHubOpen] = useState(false);
   const [skillHubLoading, setSkillHubLoading] = useState(false);
   const [skillHubImporting, setSkillHubImporting] = useState<string | null>(null);
@@ -290,10 +349,12 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [usagePage, setUsagePage] = useState(1);
   const [usageAsset, setUsageAsset] = useState<{ id: number; name: string } | null>(null);
   const [actionSkillId, setActionSkillId] = useState<string | null>(null);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("manage");
   const [governanceView, setGovernanceView] = useState<GovernanceView>("all");
   const [scope, setScope] = useState<ScopeFilter>("all");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [category, setCategory] = useState<SkillCategoryKey>("all");
+  const [dashboardCategory, setDashboardCategory] = useState<SkillCategoryKey>("all");
   const [uploadCategory, setUploadCategory] = useState<SkillAssetCategory>("general");
   const [ownerId, setOwnerId] = useState<number | "all">("all");
   const [sortKey, setSortKey] = useState<SortKey>("usage");
@@ -301,12 +362,19 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const [responsibilityPanelView, setResponsibilityPanelView] = useState<"overview" | "manage">("overview");
   const [trendRange, setTrendRange] = useState<[Dayjs, Dayjs]>([
     dayjs().subtract(6, "day"),
     dayjs(),
   ]);
   const trendRangeRef = useRef(trendRange);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const batchFolderSelection = useMemo(() => groupSkillFolders(batchUploadFiles
+    .map((file) => file.originFileObj)
+    .filter((file): file is NonNullable<typeof file> => Boolean(file))), [batchUploadFiles]);
+  const batchFolderValidation = useMemo(
+    () => batchUploadFiles.length ? validateSkillFolderBatch(batchFolderSelection.folders) : null,
+    [batchFolderSelection, batchUploadFiles.length],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -321,7 +389,6 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
       ]);
       setSkills(personal.results || []);
       setAssets(repository.results || []);
-      setCosEnabled(Boolean(repository.cos_enabled));
       setAnalytics(insight);
     } catch (error: unknown) {
       message.error(getErrorMessage(error, "技能治理数据加载失败"));
@@ -333,10 +400,6 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
-
-  useEffect(() => {
-    folderInputRef.current?.setAttribute("webkitdirectory", "");
-  }, []);
 
   const handleTrendRangeChange = useCallback(async (nextRange: [Dayjs, Dayjs]) => {
     setTrendLoading(true);
@@ -355,78 +418,17 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     }
   }, []);
 
-  const handleSkillFileBatch = async (files: File[]) => {
-    if (uploading || !files.length) return;
-    const validationError = validateSkillFiles(files);
-    if (validationError) {
-      message.error(validationError);
-      return;
-    }
-
-    setUploading(true);
-    let successCount = 0;
-    const failures: string[] = [];
-    try {
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
-        setUploadActivity({ mode: "files", stage: "uploading", label: file.name, current: index + 1, total: files.length, percent: Math.round(index / files.length * 100) });
-        try {
-          await uploadSkillAsset(file, true, uploadCategory, (event) => {
-            const filePercent = event.total ? Math.min(99, event.loaded / event.total * 100) : 0;
-            setUploadActivity({
-              mode: "files",
-              stage: filePercent >= 99 ? "processing" : "uploading",
-              label: file.name,
-              current: index + 1,
-              total: files.length,
-              percent: Math.round((index + filePercent / 100) / files.length * 100),
-            });
-          });
-          successCount += 1;
-        } catch (error: unknown) {
-          failures.push(`${file.name}：${getErrorMessage(error, "上传失败")}`);
-        }
-      }
-
-      if (successCount > 0) await load();
-      if (!failures.length) {
-        message.success(`已成功上传 ${successCount} 个技能并加入我的技能`);
-      } else if (successCount > 0) {
-        message.warning(`成功 ${successCount} 个，失败 ${failures.length} 个：${failures.slice(0, 2).join("；")}`);
-      } else {
-        message.error(failures.slice(0, 2).join("；"));
-      }
-    } finally {
-      setUploadActivity(null);
-      setUploading(false);
-    }
-  };
-
-  const uploadProps: UploadProps = {
-    showUploadList: false,
-    accept: ".md,.markdown,.zip",
-    multiple: true,
-    beforeUpload: (file, fileList) => {
-      if (file.uid === fileList[0]?.uid) void handleSkillFileBatch(Array.from(fileList));
-      return false;
-    },
-  };
-
-  const handleFolderUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-    const files = Array.from(input.files || []);
+  const handleFolderUpload = async (files: File[]) => {
     if (!files.length) return;
 
     const paths = files.map((file) => file.webkitRelativePath || file.name);
     const validationError = validateSkillFolder(files);
     if (validationError) {
       message.error(validationError);
-      input.value = "";
       return;
     }
     if (!paths.some((path) => path.split("/").pop()?.toLowerCase() === "skill.md")) {
       message.error("所选文件夹中没有 SKILL.md，请选择完整的技能目录");
-      input.value = "";
       return;
     }
 
@@ -443,9 +445,90 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     } catch (error: unknown) {
       message.error(getErrorMessage(error, "文件夹上传失败"));
     } finally {
-      input.value = "";
       setUploadActivity(null);
       setUploading(false);
+    }
+  };
+
+  const batchUploadPickerProps: UploadProps = {
+    directory: true,
+    multiple: true,
+    disabled: uploading,
+    fileList: batchUploadFiles,
+    showUploadList: false,
+    beforeUpload: () => false,
+    onChange: ({ fileList }) => {
+      setBatchUploadFiles(fileList);
+    },
+  };
+
+  const folderUploadProps: UploadProps = {
+    showUploadList: false,
+    directory: true,
+    multiple: true,
+    disabled: uploading,
+    beforeUpload: (file, fileList) => {
+      if (file.uid === fileList[0]?.uid) void handleFolderUpload(Array.from(fileList));
+      return Upload.LIST_IGNORE;
+    },
+  };
+
+  const handleBatchUploadConfirm = async () => {
+    const folders = batchFolderSelection.folders;
+    if (!folders.length) {
+      message.warning("请选择包含一个或多个 Skill 的根目录");
+      return;
+    }
+    const validationError = validateSkillFolderBatch(folders);
+    if (validationError) {
+      message.error(validationError);
+      return;
+    }
+
+    setUploading(true);
+    let successCount = 0;
+    const failures: Array<{ folder: BatchSkillFolder; message: string }> = [];
+    try {
+      for (let index = 0; index < folders.length; index += 1) {
+        const folder = folders[index];
+        setUploadActivity({ mode: "files", stage: "uploading", label: folder.name, current: index + 1, total: folders.length, percent: Math.round(index / folders.length * 100) });
+        try {
+          await uploadSkillAssetFolder(folder.files, true, uploadCategory, (event) => {
+            const folderPercent = event.total ? Math.min(99, event.loaded / event.total * 100) : 0;
+            setUploadActivity({
+              mode: "files",
+              stage: folderPercent >= 99 ? "processing" : "uploading",
+              label: folder.name,
+              current: index + 1,
+              total: folders.length,
+              percent: Math.round((index + folderPercent / 100) / folders.length * 100),
+            });
+          });
+          successCount += 1;
+        } catch (error: unknown) {
+          failures.push({ folder, message: `${folder.name}：${getErrorMessage(error, "上传失败")}` });
+        }
+      }
+
+      if (successCount > 0) await load();
+      if (!failures.length) {
+        message.success(`已成功上传 ${successCount} 个技能并加入我的技能`);
+      } else if (successCount > 0) {
+        message.warning(`成功 ${successCount} 个，失败 ${failures.length} 个：${failures.slice(0, 2).map((item) => item.message).join("；")}`);
+      } else {
+        message.error(failures.slice(0, 2).map((item) => item.message).join("；"));
+      }
+    } finally {
+      setUploadActivity(null);
+      setUploading(false);
+    }
+
+    if (!failures.length) {
+      setBatchUploadFiles([]);
+      setBatchUploadOpen(false);
+    } else {
+      const failedFiles = new Set(failures.flatMap(({ folder }) => folder.files));
+      setBatchUploadFiles((current) => current.filter((file) => file.originFileObj && failedFiles.has(file.originFileObj)));
     }
   };
 
@@ -526,6 +609,86 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     }
   };
 
+  const rowActionItems = (entry: SkillEntry): MenuProps["items"] => {
+    const canEditAsset = Boolean(entry.asset && (entry.asset.is_uploader || analytics?.can_manage));
+    const items: MenuProps["items"] = [
+      {
+        key: "manage",
+        icon: <EditOutlined />,
+        label: canEditAsset ? "编辑设置" : "管理设置",
+      },
+    ];
+
+    if (entry.personal) {
+      items.push({
+        key: "toggle",
+        icon: entry.personal.enabled ? <PauseCircleOutlined /> : <PlayCircleOutlined />,
+        label: entry.personal.enabled ? "停用技能" : "启用技能",
+      });
+    } else {
+      items.push({ key: "adopt", icon: <ImportOutlined />, label: "添加到我的技能" });
+    }
+
+    if (entry.asset?.is_uploader) {
+      items.push({
+        key: "visibility",
+        icon: entry.asset.visibility === "shared" ? <LockOutlined /> : <ShareAltOutlined />,
+        label: entry.asset.visibility === "shared" ? "取消共享" : "发布共享",
+      });
+    }
+
+    if (entry.asset?.is_uploader || entry.personal) {
+      items.push({ type: "divider" });
+      items.push({
+        key: "delete",
+        danger: true,
+        icon: <DeleteOutlined />,
+        label: entry.asset?.is_uploader ? "删除技能资产" : "从我的技能移除",
+      });
+    }
+
+    return items;
+  };
+
+  const handleRowAction = (entry: SkillEntry, key: string) => {
+    if (key === "manage") {
+      setSelectedSkillId(entry.skillId);
+      setResponsibilityPanelView("manage");
+      return;
+    }
+    if (key === "toggle" && entry.personal) {
+      const enabled = !entry.personal.enabled;
+      void runAction(entry.skillId, () => toggleSkill(entry.skillId, enabled), enabled ? "技能已启用" : "技能已停用");
+      return;
+    }
+    if (key === "adopt") {
+      void runAction(entry.skillId, () => adoptSkillAsset(entry.skillId), "已添加到我的技能");
+      return;
+    }
+    if (key === "visibility" && entry.asset?.is_uploader) {
+      const visibility = entry.asset.visibility === "shared" ? "private" : "shared";
+      const success = visibility === "shared" ? "已发布到共享仓库，团队成员可主动采用" : "已取消共享，并撤销其他成员的采用入口";
+      void runAction(entry.skillId, () => updateSkillAssetVisibility(entry.asset!.id, visibility), success);
+      return;
+    }
+    if (key !== "delete" || (!entry.asset?.is_uploader && !entry.personal)) return;
+
+    const deletesAsset = Boolean(entry.asset?.is_uploader);
+    Modal.confirm({
+      title: deletesAsset ? `删除“${entry.name}”？` : `从我的技能中移除“${entry.name}”？`,
+      content: deletesAsset ? "技能资产及所有成员的采用入口会一并移除，此操作无法撤销。" : "只会移除你的个人入口，不会影响共享技能资产。",
+      okText: deletesAsset ? "确认删除" : "确认移除",
+      okType: "danger",
+      cancelText: "取消",
+      centered: true,
+      onOk: () => runAction(
+        entry.skillId,
+        () => deletesAsset ? deleteSkillAsset(entry.skillId) : deleteSkill(entry.skillId),
+        deletesAsset ? "技能资产已删除" : "已从我的技能移除",
+      ),
+    });
+  };
+
   const handleCreateSkill = async () => {
     const skillId = createDraft.skillId.trim();
     const name = createDraft.name.trim();
@@ -552,7 +715,9 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
         category: createDraft.category,
         adopt: createDraft.adopt,
       });
-      message.success(`已创建并纳管技能：${result.asset.name}`);
+      message.success(createDraft.adopt
+        ? `技能已创建并加入“我的技能”：${result.asset.name}`
+        : `技能已创建：${result.asset.name}`);
       setCreateOpen(false);
       setCreateDraft(EMPTY_CREATE_SKILL);
       setScope("uploaded");
@@ -680,9 +845,9 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
         : scope === "skillhub"
           ? "SkillHub 仓库"
           : "全部技能";
-  const activeCategory = SKILL_CATEGORIES.find((item) => item.key === category) || SKILL_CATEGORIES[0];
+  const activeCategory = SKILL_CATEGORIES.find((item) => item.key === dashboardCategory) || SKILL_CATEGORIES[0];
   const trendSeries = useMemo<SkillTrendSeries>(() => {
-    const scoped = analytics?.trend_by_category?.[category];
+    const scoped = analytics?.trend_by_category?.[dashboardCategory];
     if (scoped) return scoped;
     const points = (analytics?.trend || []).map((point) => ({
       ...point,
@@ -701,7 +866,7 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
       peak_label: peak.count ? peak.label : "暂无峰值",
       peak_count: peak.count,
     };
-  }, [analytics?.trend, analytics?.trend_by_category, category]);
+  }, [analytics?.trend, analytics?.trend_by_category, dashboardCategory]);
 
   const governanceCounts = useMemo(() => ({
     all: scopedEntries.length,
@@ -718,143 +883,261 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     skillhub: libraryEntries.filter((entry) => entry.asset?.source === "skillhub").length,
   }), [libraryEntries]);
 
+  const dashboardCategoryCounts = useMemo(() => {
+    const result = new Map<SkillCategoryKey, number>([["all", libraryEntries.length]]);
+    libraryEntries.forEach((entry) => result.set(entry.category, (result.get(entry.category) || 0) + 1));
+    return result;
+  }, [libraryEntries]);
+
+  const hasManagementFilters = Boolean(query.trim())
+    || scope !== "all"
+    || category !== "all"
+    || governanceView !== "all"
+    || status !== "all"
+    || ownerId !== "all"
+    || sortKey !== "usage";
+
+  const resetManagementFilters = () => {
+    setQuery("");
+    setScope("all");
+    setCategory("all");
+    setGovernanceView("all");
+    setStatus("all");
+    setOwnerId("all");
+    setSortKey("usage");
+    setPage(1);
+  };
+
   return (
     <div className="skill-governance">
-      <section className="skill-governance-kpis" aria-label="技能治理核心指标">
-        <GovernanceMetric icon={<AppstoreOutlined />} tone="blue" label="技能资产" value={formatNumber(summary?.total_skills ?? libraryEntries.length)} note={`${analytics?.scope_label || "当前范围"} · 已归档`} />
-        <GovernanceMetric icon={<BarChartOutlined />} tone="green" label="累计调用" value={formatNumber(summary?.total_invocations || 0)} note={`近 30 日 ${formatNumber(summary?.invocations_30d || 0)} 次`} />
-        <GovernanceMetric icon={<CheckCircleFilled />} tone="violet" label="技能使用率" value={`${summary?.utilization_rate || 0}%`} note={`近 30 日活跃 ${summary?.active_skills_30d || 0} 个`} />
-        <GovernanceMetric icon={<TeamOutlined />} tone="amber" label="共享采用" value={formatNumber(summary?.shared_adoptions || 0)} note={`${summary?.shared_skills || 0} 个共享技能`} />
-        <GovernanceMetric icon={<SafetyCertificateOutlined />} tone="cyan" label="责任覆盖" value={`${summary?.responsibility_coverage || 0}%`} note={`${summary?.owner_count || 0} 位责任人`} />
-      </section>
-
-      <section className="skill-governance-toolbar" aria-label="技能筛选与操作">
-        <div className="skill-governance-toolbar__scope" role="group" aria-label="技能范围">
-          {([
-            ["all", `全部 ${libraryEntries.length}`],
-            ["mine", `我的 ${libraryEntries.filter((entry) => entry.personal).length}`],
-            ["shared", `共享 ${assets.filter((asset) => asset.visibility === "shared").length}`],
-          ] as Array<[ScopeFilter, string]>).map(([value, label]) => (
-            <button key={value} type="button" aria-pressed={scope === value} className={scope === value ? "is-active" : ""} onClick={() => { setScope(value); setPage(1); }}>{label}</button>
-          ))}
+      <section className="skill-workspace-tabs" aria-label="技能工作区">
+        <div className="skill-workspace-tabs__list" role="tablist" aria-label="技能页面视图">
+          <button
+            id="skill-workspace-tab-manage"
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "manage"}
+            aria-controls="skill-workspace-panel-manage"
+            tabIndex={workspaceTab === "manage" ? 0 : -1}
+            className={workspaceTab === "manage" ? "is-active" : ""}
+            onClick={() => setWorkspaceTab("manage")}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowRight") return;
+              event.preventDefault();
+              setWorkspaceTab("analytics");
+              event.currentTarget.nextElementSibling instanceof HTMLButtonElement && event.currentTarget.nextElementSibling.focus();
+            }}
+          >
+            <span className="skill-workspace-tabs__icon"><AppstoreOutlined /></span>
+            <strong>技能管理</strong>
+          </button>
+          <button
+            id="skill-workspace-tab-analytics"
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "analytics"}
+            aria-controls="skill-workspace-panel-analytics"
+            tabIndex={workspaceTab === "analytics" ? 0 : -1}
+            className={workspaceTab === "analytics" ? "is-active" : ""}
+            onClick={() => setWorkspaceTab("analytics")}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft") return;
+              event.preventDefault();
+              setWorkspaceTab("manage");
+              event.currentTarget.previousElementSibling instanceof HTMLButtonElement && event.currentTarget.previousElementSibling.focus();
+            }}
+          >
+            <span className="skill-workspace-tabs__icon"><BarChartOutlined /></span>
+            <strong>数据看板</strong>
+          </button>
         </div>
-        <Input
-          className="skill-governance-search"
-          allowClear
-          prefix={<SearchOutlined />}
-          placeholder="搜索技能、Skill ID、责任人或团队"
-          aria-label="搜索技能"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <div className="skill-governance-toolbar__actions">
-          <label className="skill-upload-category">
-            <span>上传归类</span>
-            <Select aria-label="上传技能的能力分类" value={uploadCategory} onChange={setUploadCategory} options={SKILL_CATEGORY_OPTIONS} />
-          </label>
-          <Button icon={<GlobalOutlined />} onClick={openSkillHub}>SkillHub 技能库</Button>
-          <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建技能</Button>
-          <Tooltip title="刷新治理数据"><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button></Tooltip>
-          <Tooltip title={uploadActivity?.mode === "files" ? `正在上传 ${uploadActivity.label}` : "支持批量选择；Markdown 最大 512KB，ZIP 单个最大 20MB，一次最多 20 个"}>
-            <Upload {...uploadProps}>
-              <Button icon={<CloudUploadOutlined />} loading={uploading}>
-                {uploadActivity?.mode === "files"
-                  ? `${uploadActivity.current}/${uploadActivity.total} · ${uploadActivity.stage === "processing" ? "处理中" : `${uploadActivity.percent}%`}`
-                  : "批量上传 · 20MB/个"}
-              </Button>
-            </Upload>
-          </Tooltip>
-          <input ref={folderInputRef} type="file" multiple hidden disabled={uploading} tabIndex={-1} aria-hidden="true" onChange={(event) => void handleFolderUpload(event)} />
-          <Tooltip title={uploadActivity?.mode === "folder" ? `正在上传 ${uploadActivity.label}，共 ${uploadActivity.total} 个文件` : "选择包含 SKILL.md、scripts 等内容的完整技能目录；最大 20MB、200 个文件"}>
-            <Button type="primary" icon={<FolderOpenOutlined />} loading={uploading} aria-label="上传技能文件夹" onClick={() => folderInputRef.current?.click()}>
-              {uploadActivity?.mode === "folder"
-                ? (uploadActivity.stage === "processing" ? "处理中" : `${uploadActivity.percent}%`)
-                : "上传文件夹 · 20MB"}
-            </Button>
-          </Tooltip>
+        <div className="skill-workspace-tabs__context" aria-live="polite">
+          <strong>{workspaceTab === "manage" ? `${filteredEntries.length} 项技能` : `${activeCategory.label} · ${trendRange[0].format("MM/DD")}–${trendRange[1].format("MM/DD")}`}</strong>
         </div>
       </section>
 
-      <div className="skill-governance-workspace">
-        <section className="skill-governance-row skill-governance-row--primary" aria-label="技能治理与责任台账">
-          <aside className="skill-governance-sidebar skill-governance-view-panel" aria-label="技能仓库">
-            <div className="skill-governance-panel-head">
-              <div><span className="skill-governance-eyebrow">Repository</span><Typography.Title level={5}>技能仓库</Typography.Title></div>
-              <Tag bordered={false}>{repositoryCounts[scope]} 项</Tag>
+      {workspaceTab === "manage" ? (
+        <div id="skill-workspace-panel-manage" className="skill-workspace-panel" role="tabpanel" aria-labelledby="skill-workspace-tab-manage">
+          <section className="skill-governance-toolbar" aria-label="技能筛选与操作">
+            <div className="skill-governance-toolbar__primary">
+              <div className="skill-governance-toolbar__scope" role="group" aria-label="技能仓库范围">
+                {([
+                  ["all", "全部"],
+                  ["mine", "我的"],
+                  ["shared", "共享"],
+                  ["uploaded", "上传"],
+                  ["skillhub", "SkillHub"],
+                ] as Array<[ScopeFilter, string]>).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={scope === value}
+                    className={scope === value ? "is-active" : ""}
+                    onClick={() => { setScope(value); setPage(1); }}
+                  >
+                    <span>{label}</span>
+                    <b>{repositoryCounts[value]}</b>
+                  </button>
+                ))}
+              </div>
+              <div className="skill-governance-toolbar__actions">
+                <Button icon={<GlobalOutlined />} onClick={openSkillHub}>技能市场</Button>
+                <label className="skill-upload-category">
+                  <span>上传至</span>
+                  <Select aria-label="上传技能的能力分类" value={uploadCategory} onChange={setUploadCategory} options={SKILL_CATEGORY_OPTIONS} />
+                </label>
+                <Tooltip title="选择包含多个 Skill 的根目录，或把多个技能文件夹拖入弹窗；最多 20 个 Skill，整批不超过 100MB">
+                  <Button
+                    icon={<CloudUploadOutlined />}
+                    loading={uploading && uploadActivity?.mode === "files"}
+                    disabled={uploading && uploadActivity?.mode !== "files"}
+                    onClick={() => setBatchUploadOpen(true)}
+                  >
+                    批量上传
+                  </Button>
+                </Tooltip>
+                <Tooltip title="选择包含 SKILL.md、scripts 等内容的完整技能目录；最多 200 个文件，目录总大小不超过 20MB">
+                  <Upload {...folderUploadProps}>
+                    <Button
+                      icon={<FolderOpenOutlined />}
+                      loading={uploading && uploadActivity?.mode === "folder"}
+                      disabled={uploading && uploadActivity?.mode !== "folder"}
+                    >
+                      {uploadActivity?.mode === "folder"
+                        ? (uploadActivity.stage === "processing" ? "处理中" : `${uploadActivity.percent}%`)
+                        : "上传文件夹"}
+                    </Button>
+                  </Upload>
+                </Tooltip>
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建技能</Button>
+                <Tooltip title="刷新数据"><Button aria-label="刷新技能数据" icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} /></Tooltip>
+              </div>
             </div>
-            <nav className="skill-governance-view-nav">
-              {([
-                ["all", <AppstoreOutlined />, "全部技能", "跨仓库完整台账"],
-                ["shared", <TeamOutlined />, "企业共享仓库", "成员可主动采用"],
-                ["mine", <UserOutlined />, "我的技能", "我已启用或采用"],
-                ["uploaded", <CloudUploadOutlined />, "我的上传", "由我创建和维护"],
-                ["skillhub", <GlobalOutlined />, "SkillHub 仓库", "在线下载并纳管"],
-              ] as Array<[ScopeFilter, ReactNode, string, string]>).map(([value, icon, label, note]) => (
-                <button key={value} type="button" className={scope === value ? "is-active" : ""} onClick={() => { setScope(value); setPage(1); }}>
-                  <span className="skill-governance-view-icon">{icon}</span>
-                  <span><strong>{label}</strong><small>{note}</small></span>
-                  <b>{repositoryCounts[value]}</b>
-                </button>
-              ))}
-            </nav>
-          </aside>
 
+            <div className="skill-governance-toolbar__secondary">
+              <Input
+                className="skill-governance-search"
+                allowClear
+                prefix={<SearchOutlined />}
+                placeholder="搜索技能名称、Skill ID、责任人"
+                aria-label="搜索技能"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <div className="skill-register-filters">
+                <Select aria-label="能力分类筛选" value={category} onChange={setCategory} options={SKILL_CATEGORIES.map((item) => ({ value: item.key, label: `${item.label} ${categoryCounts.get(item.key) || 0}` }))} />
+                <Select aria-label="治理状态" value={governanceView} onChange={setGovernanceView} options={[
+                  { value: "all", label: `全部治理状态 ${governanceCounts.all}` },
+                  { value: "used", label: `近期活跃 ${governanceCounts.used}` },
+                  { value: "idle", label: `待激活 ${governanceCounts.idle}` },
+                  { value: "unowned", label: `待认领 ${governanceCounts.unowned}` },
+                ]} />
+                <Select aria-label="启用状态" value={status} onChange={setStatus} options={[{ value: "all", label: "全部状态" }, { value: "enabled", label: "已启用" }, { value: "disabled", label: "未启用" }]} />
+                {analytics?.can_manage && <Select aria-label="责任人筛选" value={ownerId} onChange={setOwnerId} options={[{ value: "all", label: "全部责任人" }, ...(analytics.owner_options || []).map((owner) => ({ value: owner.id, label: owner.name }))]} />}
+                <Select aria-label="排序方式" value={sortKey} onChange={setSortKey} options={[{ value: "usage", label: "调用量优先" }, { value: "recent", label: "最近使用" }, { value: "reuse", label: "采用人数" }]} />
+                {hasManagementFilters && <Button type="text" className="skill-register-reset" onClick={resetManagementFilters}>重置</Button>}
+              </div>
+            </div>
+
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: [
+                  { key: "create", icon: <PlusOutlined />, label: "创建技能" },
+                  { key: "market", icon: <GlobalOutlined />, label: "从技能市场导入" },
+                  { key: "refresh", icon: <ReloadOutlined />, label: "刷新数据" },
+                ],
+                onClick: ({ key }) => {
+                  if (key === "create") setCreateOpen(true);
+                  if (key === "market") openSkillHub();
+                  if (key === "refresh") void load();
+                },
+              }}
+            >
+              <Button className="skill-governance-mobile-actions" type="primary" icon={<PlusOutlined />} loading={uploading}>新建 / 导入</Button>
+            </Dropdown>
+            <div className="skill-governance-mobile-upload-actions" aria-label="上传技能">
+              <Tooltip title="选择包含多个 Skill 的根目录，或拖入多个技能文件夹；最多 20 个 Skill，整批不超过 100MB">
+                <Button icon={<CloudUploadOutlined />} loading={uploading && uploadActivity?.mode === "files"} disabled={uploading && uploadActivity?.mode !== "files"} onClick={() => setBatchUploadOpen(true)}>批量上传</Button>
+              </Tooltip>
+              <Upload {...folderUploadProps}>
+                <Tooltip title="最多 200 个文件，目录总大小不超过 20MB">
+                  <Button icon={<FolderOpenOutlined />} loading={uploading && uploadActivity?.mode === "folder"} disabled={uploading && uploadActivity?.mode !== "folder"}>上传文件夹</Button>
+                </Tooltip>
+              </Upload>
+            </div>
+          </section>
+
+          <div className="skill-governance-workspace skill-governance-workspace--manage">
+            <section className="skill-governance-row skill-governance-row--management" aria-label="技能治理与责任台账">
           <section className="skill-register" aria-labelledby="skill-register-title">
             <header className="skill-register-head">
               <div>
-                <span className="skill-governance-eyebrow">Responsibility register</span>
-                <Typography.Title id="skill-register-title" level={4}>仓库技能列表</Typography.Title>
-                <Typography.Text type="secondary">当前：{scopeLabel} · {filteredEntries.length} 个结果 · 指标来自实际启用与调用记录</Typography.Text>
+                <Typography.Title id="skill-register-title" level={4}>技能列表</Typography.Title>
+                <Typography.Text type="secondary">{scopeLabel} · 共 {filteredEntries.length} 项</Typography.Text>
               </div>
-              <div className="skill-register-filters">
-                <Select
-                  aria-label="治理状态"
-                  value={governanceView}
-                  onChange={setGovernanceView}
-                  options={[
-                    { value: "all", label: `全部治理状态 ${governanceCounts.all}` },
-                    { value: "used", label: `近期活跃 ${governanceCounts.used}` },
-                    { value: "idle", label: `待激活 ${governanceCounts.idle}` },
-                    { value: "unowned", label: `待认领 ${governanceCounts.unowned}` },
-                  ]}
-                />
-                <Select aria-label="启用状态" value={status} onChange={setStatus} options={[{ value: "all", label: "全部状态" }, { value: "enabled", label: "已启用" }, { value: "disabled", label: "未启用" }]} />
-                {analytics?.can_manage && (
-                  <Select
-                    aria-label="责任人筛选"
-                    value={ownerId}
-                    onChange={setOwnerId}
-                    options={[{ value: "all", label: "全部责任人" }, ...(analytics.owner_options || []).map((owner) => ({ value: owner.id, label: owner.name }))]}
-                  />
-                )}
-                <Select aria-label="排序方式" value={sortKey} onChange={setSortKey} options={[{ value: "usage", label: "按调用量" }, { value: "recent", label: "按最近使用" }, { value: "reuse", label: "按共用人数" }]} />
-              </div>
+              <span className="skill-register-head__hint">选择一行，在右侧查看详情与管理设置</span>
             </header>
 
             <Spin spinning={loading}>
               {pagedEntries.length ? (
                 <div className="skill-register-table-wrap">
                   <table className="skill-register-table">
-                    <thead><tr><th>技能资产</th><th>责任人</th><th>近 30 日使用</th><th>共用情况</th><th>最近使用</th><th>状态</th></tr></thead>
+                    <thead><tr><th>技能名称 / Skill ID</th><th>归属</th><th>责任人</th><th>能力分类</th><th>状态</th><th>近 30 日调用</th><th>最近使用</th><th>操作</th></tr></thead>
                     <tbody>
                       {pagedEntries.map((entry) => {
                         const stats = entry.analytics;
                         const enabled = Boolean(entry.personal?.enabled);
+                        const scopeMeta = skillScopeLabel(entry);
                         return (
                           <tr
                             key={entry.skillId}
                             className={selectedEntry?.skillId === entry.skillId ? "is-selected" : ""}
                             tabIndex={0}
                             aria-selected={selectedEntry?.skillId === entry.skillId}
-                            onClick={() => setSelectedSkillId(entry.skillId)}
-                            onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelectedSkillId(entry.skillId); }}
+                            onClick={() => { setSelectedSkillId(entry.skillId); setResponsibilityPanelView("overview"); }}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              setSelectedSkillId(entry.skillId);
+                              setResponsibilityPanelView("overview");
+                            }}
                           >
-                            <td><div className="skill-register-identity"><span className={`skill-register-icon tone-${entry.category}`}>{categoryIcon(entry.category)}</span><div><strong>{entry.name}{entry.asset?.source === "skillhub" && <em className="skill-source-badge">SkillHub</em>}</strong><code>{entry.skillId}</code></div></div></td>
-                            <td><div className="skill-owner-cell"><Avatar size={28}>{initials(stats?.owner || "待")}</Avatar><div><strong>{stats?.owner || "待认领"}</strong><span>{stats?.owner_team || "未归属团队"}</span></div></div></td>
-                            <td><div className="skill-number-cell"><strong>{formatNumber(stats?.usage_count_30d || 0)}</strong><span>{stats?.unique_users_30d || 0} 位使用者</span></div></td>
-                            <td><div className="skill-number-cell"><strong>{stats?.adoption_count || 0} 人采用</strong><span>{stats?.enabled_count || 0} 人已启用</span></div></td>
-                            <td><div className="skill-latest-cell"><strong>{formatDateTime(stats?.last_used_at)}</strong><span>{stats?.last_used_by || "暂无调用"}</span></div></td>
+                            <td><div className="skill-register-identity"><span className={`skill-register-icon tone-${entry.category}`}>{categoryIcon(entry.category)}</span><div><strong>{entry.name}</strong><code>{entry.skillId}</code></div></div></td>
+                            <td><Tag bordered={false} className={`skill-scope-tag tone-${scopeMeta.tone}`}>{scopeMeta.label}</Tag></td>
+                            <td><div className="skill-owner-cell"><Avatar size={24} src={authenticatedAvatarUrl(stats?.owner_avatar_url)}>{initials(stats?.owner || "待")}</Avatar><div><strong>{stats?.owner || "待认领"}</strong><span>{stats?.owner_team || "未归属团队"}</span></div></div></td>
+                            <td><span className="skill-category-cell">{categoryIcon(entry.category)}{SKILL_CATEGORY_OPTIONS.find((item) => item.value === entry.category)?.label || "通用能力"}</span></td>
                             <td><Tag bordered={false} className={`skill-register-status ${enabled ? "is-enabled" : entry.personal ? "is-paused" : "is-available"}`}>{enabled ? "启用" : entry.personal ? "停用" : "可采用"}</Tag></td>
+                            <td><div className="skill-number-cell"><strong>{formatNumber(stats?.usage_count_30d || 0)}</strong><span>{stats?.unique_users_30d || 0} 位使用者</span></div></td>
+                            <td><div className="skill-latest-cell"><strong>{formatDateTime(stats?.last_used_at)}</strong><span>{stats?.last_used_by || "暂无调用"}</span></div></td>
+                            <td>
+                              <Dropdown
+                                trigger={["click"]}
+                                placement="bottomRight"
+                                overlayClassName="skill-row-action-menu"
+                                menu={{
+                                  items: rowActionItems(entry),
+                                  onClick: ({ key, domEvent }) => {
+                                    domEvent.stopPropagation();
+                                    handleRowAction(entry, key);
+                                  },
+                                }}
+                              >
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  className="skill-row-actions"
+                                  aria-label={`打开 ${entry.name} 的操作菜单`}
+                                  aria-haspopup="menu"
+                                  icon={<SettingOutlined />}
+                                  loading={actionSkillId === entry.skillId}
+                                  onClick={(event) => event.stopPropagation()}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                >
+                                  操作
+                                </Button>
+                              </Dropdown>
+                            </td>
                           </tr>
                         );
                       })}
@@ -862,7 +1145,7 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
                   </table>
                 </div>
               ) : (
-                <div className="skill-register-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前条件下没有匹配的技能"><Button onClick={() => { setQuery(""); setCategory("all"); setGovernanceView("all"); setOwnerId("all"); setScope("all"); setStatus("all"); }}>清除筛选</Button></Empty></div>
+                <div className="skill-register-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前条件下没有匹配的技能"><Button onClick={resetManagementFilters}>清除筛选</Button></Empty></div>
               )}
             </Spin>
 
@@ -872,47 +1155,10 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
             </footer>
           </section>
 
-          <RankingSwitcher
-            mode={rankingMode}
-            onModeChange={setRankingMode}
-            skillRows={analytics?.ranking || []}
-            peopleRows={analytics?.people_ranking || []}
-            selectedSkillId={selectedEntry?.skillId}
-            onSelectSkill={setSelectedSkillId}
-          />
-        </section>
-
-        <section className="skill-governance-row skill-governance-row--secondary" aria-label="能力分类与使用洞察">
-          <aside className="skill-governance-sidebar skill-governance-category-panel" aria-label="技能能力分类">
-            <div className="skill-governance-panel-head">
-              <div><span className="skill-governance-eyebrow">Capability taxonomy</span><Typography.Title level={5}>能力分类</Typography.Title></div>
-              <Tag bordered={false}>{categoryCounts.get(category) || 0} 项</Tag>
-            </div>
-            <div className="skill-governance-sidebar-section">
-              <div className="skill-governance-category-list">
-                {SKILL_CATEGORIES.map((item) => (
-                  <button key={item.key} type="button" aria-pressed={category === item.key} aria-controls="skill-usage-trend" className={category === item.key ? "is-active" : ""} onClick={() => setCategory(item.key)}>
-                    <span>{categoryIcon(item.key)}</span><em>{item.label}</em><b>{categoryCounts.get(item.key) || 0}</b>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className={`skill-governance-storage${cosEnabled ? " is-online" : ""}`}>
-              <CloudOutlined />
-              <div><strong>{cosEnabled ? "共享仓库在线" : "本地仓库在线"}</strong><span>{cosEnabled ? "团队技能可持续复用" : "上传可用，配置 COS 后开放共享存储"}</span></div>
-            </div>
-          </aside>
-
-          <UsageTrend
-            series={trendSeries}
-            categoryLabel={activeCategory.label}
-            dateRange={trendRange}
-            loading={loading || trendLoading}
-            onDateRangeChange={handleTrendRangeChange}
-          />
-
           <SkillResponsibilityPanel
             entry={selectedEntry}
+            panelView={responsibilityPanelView}
+            onPanelViewChange={setResponsibilityPanelView}
             canManage={Boolean(analytics?.can_manage)}
             owners={analytics?.owner_options || []}
             actionLoading={Boolean(selectedEntry && actionSkillId === selectedEntry.skillId)}
@@ -946,13 +1192,150 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
               );
             }}
           />
-        </section>
-      </div>
+            </section>
+          </div>
+        </div>
+      ) : (
+        <div id="skill-workspace-panel-analytics" className="skill-workspace-panel skill-workspace-panel--analytics" role="tabpanel" aria-labelledby="skill-workspace-tab-analytics">
+          <section className="skill-governance-kpis" aria-label="技能治理核心指标">
+            <GovernanceMetric icon={<AppstoreOutlined />} tone="blue" label="技能资产" value={formatNumber(summary?.total_skills ?? libraryEntries.length)} note={`${analytics?.scope_label || "当前范围"} · 已归档`} />
+            <GovernanceMetric icon={<BarChartOutlined />} tone="green" label="累计调用" value={formatNumber(summary?.total_invocations || 0)} note={`近 30 日 ${formatNumber(summary?.invocations_30d || 0)} 次`} />
+            <GovernanceMetric icon={<CheckCircleFilled />} tone="violet" label="技能使用率" value={`${summary?.utilization_rate || 0}%`} note={`近 30 日活跃 ${summary?.active_skills_30d || 0} 个`} />
+            <GovernanceMetric icon={<TeamOutlined />} tone="amber" label="共享采用" value={formatNumber(summary?.shared_adoptions || 0)} note={`${summary?.shared_skills || 0} 个共享技能`} />
+            <GovernanceMetric icon={<SafetyCertificateOutlined />} tone="cyan" label="责任覆盖" value={`${summary?.responsibility_coverage || 0}%`} note={`${summary?.owner_count || 0} 位责任人`} />
+          </section>
+
+          <section className="skill-dashboard-filterbar" aria-labelledby="skill-dashboard-filter-title">
+            <div className="skill-dashboard-filterbar__label">
+              <Typography.Title id="skill-dashboard-filter-title" level={4}>数据范围</Typography.Title>
+              <Typography.Text type="secondary">分类会同步更新趋势与排行</Typography.Text>
+            </div>
+            <div className="skill-dashboard-category-tabs" role="group" aria-label="看板能力分类">
+              {SKILL_CATEGORIES.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  aria-pressed={dashboardCategory === item.key}
+                  aria-controls="skill-usage-trend"
+                  className={dashboardCategory === item.key ? "is-active" : ""}
+                  onClick={() => setDashboardCategory(item.key)}
+                >
+                  <span>{categoryIcon(item.key)}</span>
+                  <strong>{item.label}</strong>
+                  <b>{dashboardCategoryCounts.get(item.key) || 0}</b>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <div className="skill-dashboard-grid">
+            <UsageTrend
+              series={trendSeries}
+              categoryLabel={activeCategory.label}
+              dateRange={trendRange}
+              loading={loading || trendLoading}
+              onDateRangeChange={handleTrendRangeChange}
+            />
+            <RankingSwitcher
+              mode={rankingMode}
+              onModeChange={setRankingMode}
+              skillRows={analytics?.ranking || []}
+              peopleRows={analytics?.people_ranking || []}
+              selectedSkillId={selectedEntry?.skillId}
+              onSelectSkill={(skillId) => {
+                setScope("all");
+                setCategory("all");
+                setGovernanceView("all");
+                setStatus("all");
+                setOwnerId("all");
+                setQuery("");
+                setSelectedSkillId(skillId);
+                setWorkspaceTab("manage");
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      <Modal
+        title={(
+          <span className="skill-batch-upload-title">
+            批量上传技能
+            <Tooltip title="最多 20 个 Skill；每个目录最多 200 个文件、20MB，整批不超过 100MB">
+              <InfoCircleOutlined aria-label="查看上传限制" />
+            </Tooltip>
+          </span>
+        )}
+        open={batchUploadOpen}
+        okText={batchFolderSelection.folders.length ? `上传 ${batchFolderSelection.folders.length} 个技能` : "开始上传"}
+        cancelText="取消"
+        confirmLoading={uploading}
+        okButtonProps={{ disabled: !batchFolderSelection.folders.length || Boolean(batchFolderValidation) }}
+        closable={!uploading}
+        maskClosable={!uploading}
+        getContainer={false}
+        destroyOnHidden
+        onCancel={() => {
+          if (uploading) return;
+          setBatchUploadOpen(false);
+          setBatchUploadFiles([]);
+        }}
+        onOk={() => void handleBatchUploadConfirm()}
+      >
+        <div className="skill-batch-upload-modal">
+          <div className="skill-batch-upload-meta">
+            <label>
+              <span>上传到</span>
+              <Select aria-label="批量上传技能的能力分类" value={uploadCategory} onChange={setUploadCategory} options={SKILL_CATEGORY_OPTIONS} />
+            </label>
+            <span aria-live="polite">
+              已识别 {batchFolderSelection.folders.length} 个技能
+              {batchUploadFiles.length > 0 ? ` · ${batchUploadFiles.length} 个文件 · ${formatFileSize(batchUploadFiles.reduce((sum, file) => sum + (file.size || 0), 0))}` : ""}
+            </span>
+          </div>
+          <Upload.Dragger {...batchUploadPickerProps} className="skill-batch-upload-dragger">
+            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+            <p className="ant-upload-text">拖入一个或多个技能文件夹</p>
+            <p className="ant-upload-hint">或点击选择共同的上级目录（如 .workbuddy/skills），自动识别其中每个 SKILL.md</p>
+          </Upload.Dragger>
+          {batchFolderValidation ? <Typography.Text type="danger" className="skill-batch-upload-error">{batchFolderValidation}</Typography.Text> : null}
+          {batchFolderSelection.ignoredFiles > 0 ? (
+            <Typography.Text type="secondary" className="skill-batch-upload-note">
+              已忽略 {batchFolderSelection.ignoredFiles} 个不属于任何 Skill 目录的文件
+            </Typography.Text>
+          ) : null}
+          {batchFolderSelection.folders.length > 0 ? (
+            <div className="skill-batch-upload-folders" aria-label="已识别的技能文件夹">
+              {batchFolderSelection.folders.map((folder) => (
+                <div key={folder.root || folder.name} className="skill-batch-upload-folder">
+                  <FolderOpenOutlined />
+                  <span>
+                    <strong>{folder.name}</strong>
+                    <small>{folder.files.length} 个文件 · {formatFileSize(folder.size)}</small>
+                  </span>
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    disabled={uploading}
+                    aria-label={`移除 ${folder.name}`}
+                    icon={<DeleteOutlined />}
+                    onClick={() => {
+                      const folderFiles = new Set(folder.files);
+                      setBatchUploadFiles((current) => current.filter((file) => !file.originFileObj || !folderFiles.has(file.originFileObj)));
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </Modal>
 
       <Modal
         title="创建技能"
         open={createOpen}
-        okText="创建并纳管"
+        okText={createDraft.adopt ? "创建并加入我的技能" : "创建技能"}
         cancelText="取消"
         confirmLoading={createSaving}
         destroyOnHidden
@@ -981,7 +1364,7 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
             <div className="skill-usage-history-list">
               {usageRows.map((event) => (
                 <article key={event.id}>
-                  <Avatar size={34}>{initials(event.user)}</Avatar>
+                  <Avatar size={34} src={authenticatedAvatarUrl(event.avatar_url)}>{initials(event.user)}</Avatar>
                   <div><strong>{event.user}</strong><span>{event.source_label} · {event.skill_name || event.skill_id}</span></div>
                   <time dateTime={event.used_at}>{formatDateTime(event.used_at)}</time>
                 </article>
@@ -1230,7 +1613,7 @@ function SkillHubDrawer({
                         <Tag bordered={false} icon={<StarOutlined />}>{formatNumber(skill.stars)}</Tag>
                         {skill.requires_api_key && <Tag bordered={false} color="gold">需要 API Key</Tag>}
                         {skill.verified && <Tag bordered={false} color="blue" icon={<SafetyCertificateOutlined />}>认证作者</Tag>}
-                        {installed && <Tag bordered={false} color="green">已纳管 {installed.source_version}</Tag>}
+                        {installed && <Tag bordered={false} color="green">已下载 {installed.source_version}</Tag>}
                       </div>
                     </div>
                     <div className="skillhub-result-card__actions">
@@ -1242,7 +1625,7 @@ function SkillHubDrawer({
                         disabled={Boolean(importingSlug) || isLatest}
                         onClick={() => onImport(skill)}
                       >
-                        {isLatest ? "已是最新版" : installed ? "更新纳管" : "下载并纳管"}
+                        {isLatest ? "已是最新版" : installed ? "更新到最新版" : "下载并启用"}
                       </Button>
                     </div>
                   </article>
@@ -1309,16 +1692,15 @@ function UsageTrend({ series, categoryLabel, dateRange, loading, onDateRangeChan
     <section id="skill-usage-trend" className="skill-usage-trend" aria-labelledby="skill-trend-title">
       <header>
         <div>
-          <span className="skill-governance-eyebrow">Usage signal · {categoryLabel}</span>
-          <Typography.Title id="skill-trend-title" level={5}>调用趋势</Typography.Title>
-          <Typography.Text type="secondary">已跟随左侧能力分类筛选 · {rangeLabel}，共 {rangeDays} 天</Typography.Text>
+          <Typography.Title id="skill-trend-title" level={5}>{categoryLabel}调用趋势</Typography.Title>
+          <Typography.Text type="secondary">{rangeLabel} · 共 {rangeDays} 天</Typography.Text>
         </div>
         <div className="skill-trend-head-actions">
           <ConfigProvider theme={{ token: {
-            colorPrimary: "#2f66d9",
-            colorPrimaryHover: "#4b7de1",
-            colorPrimaryActive: "#2758be",
-            colorPrimaryBg: "#edf3ff",
+            colorPrimary: "#2563eb",
+            colorPrimaryHover: "#1d4ed8",
+            colorPrimaryActive: "#1e40af",
+            colorPrimaryBg: "#eff6ff",
           } }}>
             <DatePicker.RangePicker
               className="skill-trend-range"
@@ -1352,7 +1734,7 @@ function UsageTrend({ series, categoryLabel, dateRange, loading, onDateRangeChan
       <div className="skill-usage-chart">
         <div className="skill-usage-chart__legend"><span><i />调用次数</span><span>悬停或聚焦数据点查看当日明细</span></div>
         <svg viewBox={`0 0 ${width} 160`} role="img" aria-label={`${categoryLabel}${rangeLabel}调用趋势，共 ${series.total} 次，峰值 ${peakSummary}`}>
-          <defs><linearGradient id="skillTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2f66d9" stopOpacity="0.24" /><stop offset="100%" stopColor="#2f66d9" stopOpacity="0.015" /></linearGradient></defs>
+          <defs><linearGradient id="skillTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#2563eb" stopOpacity="0.2" /><stop offset="100%" stopColor="#2563eb" stopOpacity="0.02" /></linearGradient></defs>
           {yTicks.map((tick) => {
             const y = plotBottom - (tick / yMax) * (plotBottom - plotTop);
             return <g key={tick}><line x1={plotLeft} y1={y} x2={plotRight} y2={y} className="chart-grid" /><text x={plotLeft - 10} y={y + 3} textAnchor="end" className="chart-tick">{Number.isInteger(tick) ? tick : tick.toFixed(1)}</text></g>;
@@ -1416,7 +1798,7 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
   return (
     <section className="skill-insight-panel skill-ranking-switcher" aria-labelledby="usage-ranking-title">
       <header className="skill-ranking-switcher__head">
-        <div><span className="skill-governance-eyebrow">Usage ranking</span><Typography.Title id="usage-ranking-title" level={5}>使用排行</Typography.Title></div>
+        <div><Typography.Title id="usage-ranking-title" level={5}>使用排行</Typography.Title></div>
         <div className="skill-ranking-switcher__tabs" role="tablist" aria-label="排行维度">
           <button type="button" role="tab" aria-selected={mode === "skills"} className={mode === "skills" ? "is-active" : ""} onClick={() => onModeChange("skills")}>技能</button>
           <button type="button" role="tab" aria-selected={mode === "people"} className={mode === "people" ? "is-active" : ""} onClick={() => onModeChange("people")}>人员</button>
@@ -1426,7 +1808,7 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
       <div className="skill-ranking-switcher__content" role="tabpanel">
         {mode === "skills" ? (
           <div className="skill-ranking-panel">
-            {skillRows.length ? <ol>{skillRows.map((row, index) => <li key={row.asset_id} className={selectedSkillId === row.skill_id ? "is-active" : ""}><button type="button" onClick={() => onSelectSkill(row.skill_id)}><b>{index + 1}</b><div><strong>{row.name}</strong><span><i style={{ width: `${Math.max(4, row.usage_count_30d / skillMax * 100)}%` }} /></span></div><em>{formatNumber(row.usage_count_30d)}</em></button></li>)}</ol> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无调用数据" />}
+            {skillRows.length ? <ol>{skillRows.map((row, index) => <li key={row.asset_id} className={selectedSkillId === row.skill_id ? "is-active" : ""}><button type="button" onClick={() => onSelectSkill(row.skill_id)}><b>{index + 1}</b><div><strong>{row.name}</strong><span><i style={{ width: rankingBarWidth(row.usage_count_30d, skillMax, 4) }} /></span></div><em>{formatNumber(row.usage_count_30d)}</em></button></li>)}</ol> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无调用数据" />}
           </div>
         ) : (
           <div className="skill-people-ranking-panel">
@@ -1435,10 +1817,10 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
                 {peopleRows.map((row, index) => (
                   <li key={row.user_id} aria-label={`第 ${index + 1} 名，${row.user}，调用 ${row.usage_count_30d} 次`}>
                     <b>{index + 1}</b>
-                    <Avatar size={30}>{initials(row.user)}</Avatar>
+                    <Avatar size={30} src={authenticatedAvatarUrl(row.avatar_url)}>{initials(row.user)}</Avatar>
                     <div>
                       <span className="skill-people-ranking-name"><strong>{row.user}</strong><em>{row.skill_count_30d} 项技能</em></span>
-                      <span className="skill-people-ranking-bar"><i style={{ width: `${Math.max(5, row.usage_count_30d / peopleMax * 100)}%` }} /></span>
+                      <span className="skill-people-ranking-bar"><i style={{ width: rankingBarWidth(row.usage_count_30d, peopleMax, 5) }} /></span>
                       <small>{row.team || `最近使用 ${formatDateTime(row.last_used_at)}`}</small>
                     </div>
                     <span className="skill-people-ranking-value"><strong>{formatNumber(row.usage_count_30d)}</strong><small>次</small></span>
@@ -1453,8 +1835,10 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
   );
 }
 
-function SkillResponsibilityPanel({ entry, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onDelete }: {
+function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onDelete }: {
   entry: SkillEntry | null;
+  panelView: "overview" | "manage";
+  onPanelViewChange: (view: "overview" | "manage") => void;
   canManage: boolean;
   owners: Array<{ id: number; name: string; username: string }>;
   actionLoading: boolean;
@@ -1467,21 +1851,20 @@ function SkillResponsibilityPanel({ entry, canManage, owners, actionLoading, onO
   onVisibilityChange: (visibility: "shared" | "private") => void;
   onDelete: () => void;
 }) {
-  const [panelView, setPanelView] = useState<"overview" | "manage">("overview");
   if (!entry) return <section className="skill-insight-panel"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择技能查看详情" /></section>;
   const stats = entry.analytics;
   const categoryLabel = SKILL_CATEGORY_OPTIONS.find((item) => item.value === entry.category)?.label || "通用能力";
   return (
     <section className="skill-insight-panel skill-responsibility-panel">
-      <header><div><span className="skill-governance-eyebrow">Accountability</span><Typography.Title level={5}>责任与使用详情</Typography.Title></div><Tag bordered={false}>{entry.asset?.visibility === "shared" ? "共享" : "仅自己"}</Tag></header>
+      <header><div><Typography.Title level={5}>技能详情</Typography.Title></div><Tag bordered={false}>{entry.asset?.visibility === "shared" ? "共享" : "仅自己"}</Tag></header>
       <div className="skill-responsibility-title"><span className={`skill-register-icon tone-${entry.category}`}>{categoryIcon(entry.category)}</span><div><strong>{entry.name}</strong><code>{entry.skillId}</code></div></div>
       <div className="skill-responsibility-meta" aria-label="技能责任摘要">
         <span>责任人 <strong>{stats?.owner || entry.asset?.owner || "待认领"}</strong></span>
         <span>分类 <strong>{categoryLabel}</strong></span>
       </div>
       <div className="skill-responsibility-tabs" role="tablist" aria-label="责任详情视图">
-        <button type="button" role="tab" aria-selected={panelView === "overview"} className={panelView === "overview" ? "is-active" : ""} onClick={() => setPanelView("overview")}>使用概览</button>
-        <button type="button" role="tab" aria-selected={panelView === "manage"} className={panelView === "manage" ? "is-active" : ""} onClick={() => setPanelView("manage")}>管理设置</button>
+        <button type="button" role="tab" aria-selected={panelView === "overview"} className={panelView === "overview" ? "is-active" : ""} onClick={() => onPanelViewChange("overview")}>使用概览</button>
+        <button type="button" role="tab" aria-selected={panelView === "manage"} className={panelView === "manage" ? "is-active" : ""} onClick={() => onPanelViewChange("manage")}>管理设置</button>
       </div>
       <div className="skill-responsibility-body">
         {panelView === "overview" ? (
@@ -1490,7 +1873,7 @@ function SkillResponsibilityPanel({ entry, canManage, owners, actionLoading, onO
             <div className="skill-responsibility-progress"><div><span>共用启用率</span><b>{stats?.adoption_count ? Math.round((stats.enabled_count / stats.adoption_count) * 100) : 0}%</b></div><Progress percent={stats?.adoption_count ? Math.round((stats.enabled_count / stats.adoption_count) * 100) : 0} showInfo={false} strokeColor="#2f66d9" trailColor="rgba(47, 102, 217, 0.09)" /></div>
             <div className="skill-recent-usage">
               <div className="skill-insight-subhead"><span>最近使用</span>{entry.asset ? <button type="button" onClick={onViewUsageHistory}>查看全部记录</button> : <small>最近 2 次</small>}</div>
-              {stats?.recent_usage?.length ? <ul>{stats.recent_usage.slice(0, 2).map((event) => <li key={event.id}><Avatar size={24}>{initials(event.user)}</Avatar><div><strong>{event.user}</strong><span>{event.source_label}</span></div><time dateTime={event.used_at}>{formatDateTime(event.used_at)}</time></li>)}</ul> : <div className="skill-recent-empty"><ClockCircleOutlined /> 暂无使用记录</div>}
+              {stats?.recent_usage?.length ? <ul>{stats.recent_usage.slice(0, 2).map((event) => <li key={event.id}><Avatar size={24} src={authenticatedAvatarUrl(event.avatar_url)}>{initials(event.user)}</Avatar><div><strong>{event.user}</strong><span>{event.source_label}</span></div><time dateTime={event.used_at}>{formatDateTime(event.used_at)}</time></li>)}</ul> : <div className="skill-recent-empty"><ClockCircleOutlined /> 暂无使用记录</div>}
             </div>
           </>
         ) : (
@@ -1499,7 +1882,7 @@ function SkillResponsibilityPanel({ entry, canManage, owners, actionLoading, onO
               <span>技能责任人</span>
               {canManage && entry.asset ? (
                 <Select value={stats?.owner_id ?? undefined} allowClear placeholder="指派责任人" loading={actionLoading} onChange={(value) => onOwnerChange(value ?? null)} options={owners.map((owner) => ({ value: owner.id, label: owner.name }))} />
-              ) : <div><Avatar size={30}>{initials(stats?.owner || entry.asset?.owner || "待")}</Avatar><span><strong>{stats?.owner || entry.asset?.owner || "待认领"}</strong><small>{stats?.owner_team || "未归属团队"}</small></span></div>}
+              ) : <div><Avatar size={30} src={authenticatedAvatarUrl(stats?.owner_avatar_url)}>{initials(stats?.owner || entry.asset?.owner || "待")}</Avatar><span><strong>{stats?.owner || entry.asset?.owner || "待认领"}</strong><small>{stats?.owner_team || "未归属团队"}</small></span></div>}
             </div>
             <div className="skill-responsibility-category">
               <span>能力分类</span>

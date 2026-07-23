@@ -524,6 +524,17 @@ export default function Logs() {
                 <dd className="logs-cell-mono">{detailRow.traceId || "—"}</dd>
               </div>
             </dl>
+            <details className="logs-raw-detail">
+              <summary>原始审计与门禁详情</summary>
+              <pre className="audit-debug">
+                {JSON.stringify({
+                  decision: detailRow.decision,
+                  payload: detailRow.payload,
+                  checks: detailRow.checks,
+                  result: detailRow.result,
+                }, null, 2)}
+              </pre>
+            </details>
           </div>
         ) : null}
       </Modal>

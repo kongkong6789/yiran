@@ -547,6 +547,19 @@ def sync_to_datalake() -> dict:
     """拉取商品+订单汇总,写入 PG(优先)或 DuckDB,并重跑管道。"""
     goods_raw, goods_mode, goods_error = pull_goods()
     trades_raw, trades_mode, trades_error = pull_trades()
+    if not settings.YIRAN_ALLOW_FIXTURE_DATA and (
+        goods_mode != "live" or trades_mode != "live"
+    ):
+        return {
+            "ok": False,
+            "connector": "jackyun",
+            "status": "blocked",
+            "code": "certified_source_required",
+            "goods_mode": goods_mode,
+            "trades_mode": trades_mode,
+            "errors": {"goods": goods_error, "trades": trades_error},
+            "written": {"products": 0, "shops": 0, "sales": 0, "backend": "none"},
+        }
     goods = [_norm_goods(g) for g in goods_raw if _norm_goods(g)["sku"]]
     trades = [_norm_trade(t) for t in trades_raw if _norm_trade(t)["sku"]]
 

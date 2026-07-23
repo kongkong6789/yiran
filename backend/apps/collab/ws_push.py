@@ -22,6 +22,10 @@ def publish_room(room_id, event: str, data: dict | None = None) -> None:
             room_group(room_id),
             {
                 "type": "room.push",
+                # Bind every event to the room selected by the publisher.  The
+                # consumer verifies this value before forwarding the payload,
+                # so a stale/mistargeted channel-layer event cannot cross rooms.
+                "room_id": str(room_id),
                 "event": event,
                 "data": data or {},
             },

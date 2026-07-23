@@ -181,12 +181,22 @@ class XiaoceApiTests(APITestCase):
             "understanding",
         )
         self.assertEqual(response.data["message"]["meta"]["run_id"], str(run_id))
+        # Viewer-relative presence must not ride on a room-wide message event.
+        self.assertNotIn("peer_online", response.data["room"])
+        self.assertNotIn("online_count", response.data["room"])
         thread_cls.return_value.start.assert_called_once()
         thread_args = thread_cls.call_args.kwargs["args"]
         self.assertEqual(thread_args, (run_id,))
 
         detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
         self.assertEqual(detail.data["active_xiaoce_run"]["id"], str(run_id))
+        self.assertTrue(detail.data["peer_online"])
+
+        presence = self.client.get(
+            "/api/collab/presence/",
+            {"user_ids": str(self.bot.id)},
+        )
+        self.assertTrue(presence.data["users"][str(self.bot.id)]["online"])
 
     @patch("apps.collab.views.threading.Thread")
     def test_second_send_is_rejected_without_creating_an_orphan_message(self, _thread_cls):

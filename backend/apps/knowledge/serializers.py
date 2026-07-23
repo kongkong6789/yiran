@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from .access import can_manage_knowledge_base
 from .models import (
     KnowledgeAuditLog,
     KnowledgeBase,
@@ -22,6 +23,7 @@ class KnowledgeTemplateSerializer(serializers.ModelSerializer):
 class KnowledgeBaseSerializer(serializers.ModelSerializer):
     owner_username = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
+    team_ids = serializers.SerializerMethodField()
 
     def get_owner_username(self, obj):
         if not obj.owner_user_id:
@@ -34,7 +36,18 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not getattr(user, "is_authenticated", False):
             return False
-        return bool(user.is_staff or user.is_superuser or obj.owner_user_id == user.id)
+        return can_manage_knowledge_base(user, obj)
+
+    def get_team_ids(self, obj):
+        if obj.visibility != KnowledgeBase.Visibility.TEAM:
+            return []
+        return [
+            int(subject_id)
+            for subject_id in obj.permissions.filter(
+                subject_type=KnowledgePermission.SubjectType.TEAM,
+            ).values_list("subject_id", flat=True)
+            if str(subject_id).isdigit()
+        ]
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -48,7 +61,7 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
             owner_user_id = user.id
 
         if not name:
-            raise serializers.ValidationError({"name": "请填写知识库名称。"})
+            raise serializers.ValidationError({"name": "Please enter a knowledge base name."})
 
         duplicates = KnowledgeBase.objects.filter(
             archived_at__isnull=True,
@@ -62,11 +75,11 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
 
         if duplicates.exists():
             if visibility == KnowledgeBase.Visibility.PRIVATE:
-                message = "你的个人知识库中已存在同名知识库。"
+                message = "A private knowledge base with this name already exists."
             elif visibility == KnowledgeBase.Visibility.TEAM:
-                message = "团队知识库中已存在同名知识库。"
+                message = "A team knowledge base with this name already exists."
             else:
-                message = "公司知识库中已存在同名知识库。"
+                message = "A company knowledge base with this name already exists."
             raise serializers.ValidationError({"name": message})
 
         attrs["name"] = name

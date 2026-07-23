@@ -185,6 +185,42 @@ class OrganizationOwnershipApiTests(APITestCase):
             ).exists(),
         )
 
+    def test_organization_admin_cannot_delete_member_shared_with_another_enterprise(self):
+        other_owner = User.objects.create_user("other-delete-owner", password="password123")
+        other_organization = create_personal_organization(
+            other_owner,
+            name="账号删除边界企业",
+        ).organization
+        assign_user_to_organization(
+            self.member,
+            other_organization,
+            role=OrganizationMembership.Role.MEMBER,
+            make_primary=False,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.delete(
+            f"/api/auth/admin/users/{self.member.id}/",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.member.refresh_from_db()
+        self.assertTrue(self.member.is_active)
+        self.assertTrue(
+            OrganizationMembership.objects.filter(
+                user=self.member,
+                organization=self.organization,
+                is_active=True,
+            ).exists(),
+        )
+        self.assertTrue(
+            OrganizationMembership.objects.filter(
+                user=self.member,
+                organization=other_organization,
+                is_active=True,
+            ).exists(),
+        )
+
     def test_account_delete_rejects_self_owner_and_superuser(self):
         self.client.force_authenticate(self.admin)
         self_response = self.client.delete(
@@ -419,6 +455,21 @@ class OrganizationOwnershipApiTests(APITestCase):
         self.client.force_authenticate(platform_admin)
         admin_non_member_result = self.client.get("/api/auth/teams/", {"kind": "platform"})
         self.assertEqual(admin_non_member_result.data["results"], [])
+
+    def test_enterprise_team_creator_is_automatically_added_as_lead(self):
+        self.client.force_authenticate(self.owner)
+        created = self.client.post(
+            "/api/auth/teams/",
+            {"name": "创建者可见的企业团队", "kind": "enterprise", "memberIds": [self.member.id]},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        team_id = created.data["team"]["id"]
+        creator_membership = TeamMembership.objects.get(team_id=team_id, user=self.owner)
+        self.assertEqual(creator_membership.role, TeamMembership.Role.LEAD)
+        self.assertTrue(
+            TeamMembership.objects.filter(team_id=team_id, user=self.member).exists()
+        )
 
     def test_platform_team_creator_is_automatically_added_as_member(self):
         platform_admin = User.objects.create_user(

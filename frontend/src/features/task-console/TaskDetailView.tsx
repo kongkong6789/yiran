@@ -44,6 +44,7 @@ export default function TaskDetailView({
   const { message, modal } = App.useApp();
   const [snapshot, setSnapshot] = useState<TaskBusinessResult | null>(null);
   const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const [technicalOpen, setTechnicalOpen] = useState(false);
 
   useEffect(() => {
     setSnapshot(null);
@@ -242,6 +243,11 @@ export default function TaskDetailView({
             <Collapse
               ghost
               className="task-detail-technical"
+              activeKey={technicalOpen ? ["technical"] : []}
+              onChange={(keys) => {
+                const active = Array.isArray(keys) ? keys : [keys];
+                setTechnicalOpen(active.includes("technical"));
+              }}
               items={[{
                 key: "technical",
                 label: "查看技术详情",

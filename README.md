@@ -14,8 +14,8 @@
 | 6 | `apps.harness` | 闸机层:Schema/权限/预算/状态/一致性校验 + Dry-run + 高风险审批 + 审计 |
 | 7 | `apps.connectors` | 业务系统执行层:金蝶 / 吉客云 / 企微智能表格 / 飞瓜蝉妈妈 / 店铺后台 / 审批 |
 
-> 说明:第 2 层 LightRAG、第 4 层 LangGraph 目前用轻量自研接口占位(接口已对齐,
-> 便于后续替换为真实库);DuckDB 数据底座为真实接入。
+> 说明:第 2 层 LightRAG 仍保留可替换适配层；第 4 层已使用进程内 LangGraph，
+> 不需要独立的 2024 后端。DuckDB/PostgreSQL 数据底座为真实接入。
 
 ## 技术栈
 
@@ -51,6 +51,7 @@ source .venv/bin/activate         # macOS / Linux
 # .venv\Scripts\activate          # Windows PowerShell
 python -m pip install -r requirements.txt  # 首次运行或依赖更新后
 python manage.py migrate
+python manage.py audit_fusion_migration --dry-run
 python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -89,6 +90,18 @@ Nginx、Caddy 或云负载均衡终止 TLS，再反向代理到 `http://127.0.0.
 | GET | `/api/datalake/{tables,metrics,anomalies}/` | 数据底座 |
 | GET | `/api/wiki/pages/` | Wiki 页面 |
 | GET | `/api/audit-logs/` | 闸机审计日志 |
+| GET/POST | `/api/datalake/snapshots/` | 企业隔离的不可变来源快照 |
+| POST | `/api/datalake/snapshots/compose/` | 将已对账销售窗口与库存快照组合为补货分析 Snapshot |
+| GET | `/api/datalake/metric-contracts/` | 认证指标契约 |
+| POST | `/api/datalake/metric-results/resolve/` | 基于 Snapshot 计算认证指标 |
+| GET/POST | `/api/datalake/import-contracts/` | 企业隔离的 governed Raw 导入契约 |
+| GET/POST | `/api/datalake/reference-mappings/` | 渠道、商品和仓库映射版本 |
+| GET | `/api/datalake/raw-imports/` | Raw 导入批次、隔离统计与对账状态 |
+| POST | `/api/datalake/raw-imports/sales-ledger/` | 按 Manifest 和契约导入销售明细账 XLSX |
+| POST | `/api/datalake/raw-imports/{id}/reconcile/` | 企业管理员完成外部对账并生成可信 Snapshot |
+| GET | `/api/loops/{id}/versions/` | 回路版本、Stock/Flow 与绑定 |
+| POST | `/api/loops/{id}/simulate/` | 只读、幂等的库存补货情景分析 |
+| GET | `/api/loops/simulation-runs/{id}/` | 查询可追溯 Simulation Run |
 | GET/PATCH | `/api/auth/organization/` | 查询当前企业、成员和角色，企业管理员可修改企业名称 |
 | GET/POST | `/api/auth/admin/organizations/` | 超级管理员查询或创建企业；创建时可传 `ownerUserId`，并自动建立唯一所有者关系 |
 | POST | `/api/auth/admin/organizations/assign-users/` | 超级管理员将一个或多个已有平台用户批量分配到指定企业 |
@@ -236,8 +249,24 @@ python manage.py sync_wecom_contacts --max-age-hours 24
 - `GET /api/tasks/{trace_id}/artifacts/{artifact_id}/download/`：下载任务产物；仅任务发起人和已绑定的平台负责人可访问。
 
 完整接口说明：[工作任务 API](docs/work-tasks-api.md)。
-- `GET /api/council/agents/`：返回“管理 → 对象”中真实保存的智能体，任务页直接使用该列表，不再维护前端假数据。
-- `POST /api/orchestration/run/`：任务页通过 `agent_id` 指定真实智能体；后端校验智能体是否存在、是否启用、额度是否可用，并使用其执行权限运行 SOP。
+- `GET /api/council/agents/`：只返回当前企业、未归档的数字员工，同时返回当前企业与 `can_create` / `can_manage_all` 权限摘要；任务页直接使用该列表，不再维护前端假数据。
+- `GET /api/council/agents/{id}/`：读取当前企业中的数字员工详情；跨企业 ID 统一返回 404，避免泄露员工是否存在。
+- `POST /api/council/agents/`：仅企业所有者或管理员可创建；后端自动写入企业、创建人、负责人和员工编号。
+- `PATCH /api/council/agents/{id}/`：仅员工负责人或企业管理员可修改；只有企业管理员能变更负责人，且负责人必须是当前企业的启用成员。
+- `DELETE /api/council/agents/{id}/`：执行软归档并保留历史引用，不再物理删除员工。
+- 创建与修改接口支持通过 `skill_ids`、`knowledge_base_ids`、`capability_instructions` 和 `lifecycle_status` 保存能力绑定、调用规则与草稿/发布/停用状态；只允许绑定当前用户可访问的 Skill 与知识库。
+- `POST /api/orchestration/run/`：任务页通过 `agent_id` 指定真实智能体；后端校验智能体状态与额度，并将其调用规则、Skill 指令和指定知识库检索结果加载进 SOP 上下文。圆桌会议发言也复用相同能力上下文。
+
+智能体能力绑定示例：
+
+```json
+PATCH /api/council/agents/1/
+{
+  "skill_ids": ["wecom-todo"],
+  "knowledge_base_ids": [1, 2],
+  "capability_instructions": "涉及制度判断时必须先检索知识库；工具失败时明确说明原因和补救步骤。"
+}
+```
 
 ### 示例:运行 SOP
 
@@ -259,7 +288,7 @@ POST /api/orchestration/run/
 - 高风险动作审批流续跑 ✅(`/api/harness/approvals/`, `/api/orchestration/resume/`)
 - RAG 混合检索(AGE 实体 + Wiki + SOP 语料) ✅
 - Ontology「从数仓导入」UI ✅
-- 第 2 层替换为完整 LightRAG SDK,第 4 层替换为 LangGraph
+- 第 2 层按需要替换为完整 LightRAG SDK；LangGraph 已在 Django 进程内运行
 - 第 7 层其余 connector 接真实业务系统写 API
 - 用户体系与 RBAC 鉴权(当前骨架放开权限)
 - Loops 自动因果发现 / 模拟 / PDC

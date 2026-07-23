@@ -7,7 +7,7 @@ from rest_framework.test import APIClient
 
 from apps.core.models import UserSettings
 
-from .models import (
+from apps.collab.models import (
     CollabMessage,
     CollabMessageRead,
     CollabParticipant,
@@ -15,7 +15,7 @@ from .models import (
     CollabRoom,
     CollabSummary,
 )
-from .analyze import analyze_room_messages
+from apps.collab.analyze import analyze_room_messages
 
 
 User = get_user_model()

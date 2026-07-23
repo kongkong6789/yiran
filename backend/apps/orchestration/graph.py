@@ -14,6 +14,7 @@ import json
 import re
 import uuid
 
+from django.conf import settings
 from django.utils import timezone
 
 from apps.ontology.registry import get_action, list_actions, ACTIONS
@@ -25,7 +26,8 @@ from apps.core.models import AuditLog
 
 # 意图 -> 动作契约名 的规则映射(降级方案)
 _INTENT_RULES = [
-    (["日报", "报告", "汇报", "report"], "report.generate"),
+    (["补货分析", "库存诊断", "库存补货分析", "reorder shadow"], "inventory.reorder.shadow"),
+    (["日报", "周报", "月报", "报告", "汇报", "复盘", "经营分析", "销售分析", "数据分析", "洞察", "report"], "report.generate"),
     (["改价", "调价", "价格", "price"], "price_change.apply"),
     (["采购", "补货", "进货", "purchase"], "purchase.create"),
     (["同步", "拉取", "吉客云", "jackyun"], "jackyun.sync"),
@@ -41,21 +43,28 @@ def recognize_intent_rules(text: str) -> tuple[str, str]:
     return ("未识别到明确动作", "")
 
 
-def recognize_intent(text: str) -> tuple[str, str]:
+def recognize_intent(text: str, user=None, capability_context: str = "") -> tuple[str, str]:
     """优先 LLM 意图识别,失败则关键词规则。"""
     from apps.council import llm
 
+    # 已注册的明确业务词优先走确定性规则，避免模型把“周报”等请求误判为空动作。
+    rule_intent, rule_action = recognize_intent_rules(text)
+    if rule_action:
+        return rule_intent, rule_action
+
     action_names = list(ACTIONS.keys())
     catalog = "\n".join(f"- {a.name}: {a.title}" for a in ACTIONS.values())
-    if llm.llm_available():
+    if llm.llm_available(user):
         system = (
             "你是 SOP 意图识别器。根据用户请求选择唯一动作名。"
             "只输出 JSON: {\"action\":\"动作名或空串\",\"reason\":\"一句话\"}。"
             f"可选动作:\n{catalog}"
         )
+        if capability_context:
+            system += f"\n\n所选智能体已绑定以下能力，请遵守其规则并用于理解请求：\n{capability_context[:8000]}"
         out = llm.chat(
             system, f"用户请求:{text}",
-            temperature=0.1, max_tokens=120, model=llm.fast_model(), timeout=20,
+            temperature=0.1, max_tokens=120, model=llm.fast_model(user), timeout=20, llm_user=user,
         )
         if out:
             m = re.search(r"\{[\s\S]*\}", out)
@@ -70,7 +79,7 @@ def recognize_intent(text: str) -> tuple[str, str]:
                         return (reason or "LLM 未识别到明确动作", "")
                 except json.JSONDecodeError:
                     pass
-    return recognize_intent_rules(text)
+    return rule_intent, rule_action
 
 
 def _step(name, status, detail, data=None):
@@ -112,6 +121,14 @@ def _execute_action(action_name: str, payload: dict) -> dict:
     action = get_action(action_name)
     if not action:
         return {"ok": False, "error": f"未知动作 {action_name}"}
+    if settings.YIRAN_PILOT_READ_ONLY and action.connector != "internal":
+        return {
+            "ok": False,
+            "blocked": True,
+            "code": "pilot_read_only",
+            "error": "影子试点已关闭所有外部 Connector 写入与同步执行",
+            "action": action_name,
+        }
     # 吉客云同步走专用入口
     if action_name == "jackyun.sync":
         from apps.connectors.jackyun import sync_to_datalake
@@ -120,11 +137,13 @@ def _execute_action(action_name: str, payload: dict) -> dict:
     return connector.execute(action_name, payload) if connector else {"ok": False}
 
 
-def run_sop(
+def run_sop_legacy(
     text: str,
     payload: dict | None = None,
     role: str = "operator",
     trace_id: str | None = None,
+    capability_context: str = "",
+    capability_summary: dict | None = None,
 ) -> dict:
     """执行一次完整 SOP 编排,返回逐节点轨迹与最终结论。"""
     payload = payload or {}
@@ -133,7 +152,21 @@ def run_sop(
 
     steps.append(_step("固定流程开头", "done", f"接收到请求: {text}", {"trace_id": trace_id}))
 
-    intent_desc, action_name = recognize_intent(text)
+    if capability_summary:
+        skill_count = len(capability_summary.get("skills") or [])
+        knowledge_count = len(capability_summary.get("configured_knowledge_base_ids") or [])
+        steps.append(_step(
+            "智能体能力加载",
+            "done" if capability_context else "warn",
+            f"已加载 {skill_count} 个 Skill、{knowledge_count} 个指定知识库",
+            {
+                "skills": capability_summary.get("skills") or [],
+                "knowledge_bases": capability_summary.get("knowledge_bases") or [],
+                "configured_knowledge_base_ids": capability_summary.get("configured_knowledge_base_ids") or [],
+            },
+        ))
+
+    intent_desc, action_name = recognize_intent(text, capability_context=capability_context)
     steps.append(_step(
         "意图识别", "done" if action_name else "warn", intent_desc,
         {"action": action_name},
@@ -238,6 +271,28 @@ def run_sop(
     return out
 
 
+def run_sop(
+    text: str,
+    payload: dict | None = None,
+    role: str = "operator",
+    trace_id: str | None = None,
+    *,
+    user=None,
+    organization=None,
+) -> dict:
+    """通过 Django 进程内 LangGraph 执行；不依赖 2024 服务。"""
+    from .runtime_graph import run_in_process_graph
+
+    return run_in_process_graph(
+        text=text,
+        payload=payload or {},
+        role=role,
+        trace_id=trace_id,
+        user=user,
+        organization=organization,
+    )
+
+
 def resume_approval(approval_id: int, *, approve: bool, approver: str = "manager",
                     comment: str = "") -> dict:
     """审批通过后真正执行;驳回则只更新状态。"""
@@ -273,6 +328,23 @@ def resume_approval(approval_id: int, *, approve: bool, approver: str = "manager
 
     action = get_action(appr.action)
     result = _execute_action(appr.action, appr.payload)
+    if result.get("blocked"):
+        appr.status = ApprovalRequest.Status.REJECTED
+        appr.result = result
+        appr.save(update_fields=["status", "approver", "comment", "decided_at", "result"])
+        _write_audit(
+            trace_id=appr.trace_id, role=approver, intent_desc=appr.intent or "审批通过续跑",
+            action_name=appr.action, payload=appr.payload, decision="block",
+            checks=appr.checks, result=result,
+        )
+        return {
+            "ok": False,
+            "approval_id": appr.id,
+            "status": str(appr.status),
+            "decision": "block",
+            "action": appr.action,
+            "result": result,
+        }
     appr.status = ApprovalRequest.Status.EXECUTED
     appr.result = result
     appr.save(update_fields=["status", "approver", "comment", "decided_at", "result"])

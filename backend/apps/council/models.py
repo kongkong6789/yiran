@@ -1,5 +1,11 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
+import uuid
+
+
+def generate_employee_code() -> str:
+    return f"DE-{uuid.uuid4().hex[:8].upper()}"
 
 
 class AgentProfile(models.Model):
@@ -8,8 +14,44 @@ class AgentProfile(models.Model):
         MANAGER = "manager", "主管"
         DIRECTOR = "director", "总监"
 
+    class LifecycleStatus(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        PUBLISHED = "published", "已发布"
+        DISABLED = "disabled", "已停用"
+        ARCHIVED = "archived", "已归档"
+
     """对象 Agent:一个有人设/专长的参会角色。"""
 
+    organization = models.ForeignKey(
+        "core.Organization",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="agent_profiles",
+        verbose_name="所属企业",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_agent_profiles",
+        verbose_name="创建人",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="owned_agent_profiles",
+        verbose_name="负责人",
+    )
+    employee_code = models.CharField(
+        "员工编号",
+        max_length=24,
+        default=generate_employee_code,
+        db_index=True,
+    )
     name = models.CharField("名称", max_length=64)
     emoji = models.CharField("头像 emoji", max_length=8, default="🤖")
     group = models.CharField("分类", max_length=64, blank=True, default="未分类")
@@ -25,16 +67,45 @@ class AgentProfile(models.Model):
     is_active = models.BooleanField("可用于任务执行", default=True)
     quota_limit = models.PositiveBigIntegerField("任务额度上限", default=10000)
     quota_used = models.PositiveBigIntegerField("已使用额度", default=0)
+    skill_ids = models.JSONField("绑定 Skill ID", default=list, blank=True)
+    knowledge_base_ids = models.JSONField("绑定知识库 ID", default=list, blank=True)
+    capability_instructions = models.TextField("能力调用规则", blank=True, default="")
+    lifecycle_status = models.CharField(
+        "生命周期",
+        max_length=16,
+        choices=LifecycleStatus.choices,
+        default=LifecycleStatus.PUBLISHED,
+        db_index=True,
+    )
+    archived_at = models.DateTimeField("归档时间", null=True, blank=True, db_index=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
 
     @property
     def quota_remaining(self) -> int:
         return max(0, self.quota_limit - self.quota_used)
 
+    def set_active(self, active: bool) -> None:
+        self.is_active = bool(active)
+        self.lifecycle_status = (
+            self.LifecycleStatus.PUBLISHED if active else self.LifecycleStatus.DISABLED
+        )
+        self.archived_at = None
+
+    def archive(self) -> None:
+        self.is_active = False
+        self.lifecycle_status = self.LifecycleStatus.ARCHIVED
+        self.archived_at = timezone.now()
+
     class Meta:
         verbose_name = "对象 Agent"
         verbose_name_plural = "对象 Agent"
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "employee_code"],
+                name="uniq_agent_employee_code_per_org",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.emoji} {self.name}"
@@ -159,7 +230,10 @@ class MeetingInvite(models.Model):
         verbose_name_plural = "会议邀请"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["user", "status", "-created_at"]),
+            models.Index(
+                fields=["user", "status", "-created_at"],
+                name="council_mee_user_id_7f9a1c_idx",
+            ),
         ]
         constraints = [
             models.UniqueConstraint(fields=["meeting", "user"], name="uniq_council_invite_meeting_user"),

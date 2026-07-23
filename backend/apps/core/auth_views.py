@@ -636,7 +636,7 @@ def admin_users(request):
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def admin_user_detail(request, user_id: int):
-    """管理员：改密 / 启停 / 角色 / 删除。"""
+    """管理员：改密 / 启停 / 角色 / 删除账号。"""
     denied = _require_staff(request.user)
     if denied:
         return denied
@@ -664,6 +664,26 @@ def admin_user_detail(request, user_id: int):
             return Response({"ok": False, "error": "超级管理员账号不能删除"}, status=400)
         if target.is_staff and not request.user.is_superuser:
             return Response({"ok": False, "error": "仅超级管理员可以删除平台管理员"}, status=403)
+        if not (request.user.is_staff or request.user.is_superuser):
+            managed_organization_ids = OrganizationMembership.objects.filter(
+                user=request.user,
+                role__in={
+                    OrganizationMembership.Role.OWNER,
+                    OrganizationMembership.Role.ADMIN,
+                },
+                is_active=True,
+                organization__is_active=True,
+            ).values_list("organization_id", flat=True)
+            belongs_to_unmanaged_organization = OrganizationMembership.objects.filter(
+                user=target,
+                is_active=True,
+                organization__is_active=True,
+            ).exclude(organization_id__in=managed_organization_ids).exists()
+            if belongs_to_unmanaged_organization:
+                return Response(
+                    {"ok": False, "error": "目标账号同时属于其他企业，仅平台管理员可以删除"},
+                    status=403,
+                )
         owner_membership = OrganizationMembership.objects.filter(
             user=target,
             role=OrganizationMembership.Role.OWNER,

@@ -52,12 +52,12 @@ import WeComNotificationManager from "../features/wecom-bindings/WeComNotificati
 import OrganizationManager from "../features/organizations/OrganizationManager";
 import TeamManager from "../features/teams/TeamManager";
 import { AvatarPreview } from "../components/AvatarPreview";
-import { authenticatedAvatarUrl } from "../utils/avatar";
 import ManagementDetailModal, {
   handleDetailRowKey,
   isInteractiveTableTarget,
 } from "../components/ManagementDetailModal";
 import { formatPhoneMasked, hasFilledPhone } from "../utils/phone";
+import { authenticatedAvatarUrl } from "../utils/avatar";
 
 function AccountEditModalHead({
   icon,

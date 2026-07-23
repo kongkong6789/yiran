@@ -4,10 +4,13 @@ import {
 } from "antd";
 import type { TooltipPlacement } from "antd/es/tooltip";
 import {
-  AlertOutlined, CheckOutlined, ClearOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, EditOutlined, FileOutlined, FileTextOutlined,
-  ApartmentOutlined, CloseOutlined, DownOutlined, HistoryOutlined, LoadingOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined, RollbackOutlined,
-  SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined, MessageOutlined, ForwardOutlined, CheckSquareOutlined,
-  TeamOutlined, TranslationOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined, UsergroupAddOutlined,
+  AlertOutlined, ApartmentOutlined, CheckOutlined, CheckSquareOutlined, ClearOutlined,
+  CloseOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined,
+  FileOutlined, FileTextOutlined, ForwardOutlined, HistoryOutlined, LoadingOutlined,
+  MessageOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined,
+  RollbackOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
+  TeamOutlined, TranslationOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
+  UsergroupAddOutlined,
 } from "@ant-design/icons";
 import {
   addCollabRoomMembers,
@@ -70,13 +73,16 @@ import { useThemeMode } from "../theme/mode";
 import {
   applyRoomMutation,
   beginRoomSelection,
+  collabParticipantOnline,
   createXiaoceRunId,
+  deleteAtomicMentionAtCaret,
   findXiaoceReferenceRooms,
   isRoomAsyncResultCurrent,
   isRoomSelectionCurrent,
   isXiaoceTaskRunning,
   isXiaoceRoom,
   mergeOlderRoomPage,
+  mentionMenuScrollTop,
   mergeXiaoceRunSnapshot,
   mergeXiaoceRunSnapshots,
   partitionXiaoceRooms,
@@ -611,6 +617,7 @@ function participantsPresenceEqual(
       || (a[i].display_name || "") !== (b[i].display_name || "")
       || (a[i].nickname || "") !== (b[i].nickname || "")
       || (a[i].avatar_url || "") !== (b[i].avatar_url || "")
+      || (a[i].last_seen || null) !== (b[i].last_seen || null)
       || (a[i].last_read_message_id || 0) !== (b[i].last_read_message_id || 0)
     ) {
       return false;
@@ -827,6 +834,7 @@ export default function CollabRisk({
   const [forwardSubmitting, setForwardSubmitting] = useState(false);
   const [mention, setMention] = useState<MentionState>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
   const [hasMoreBefore, setHasMoreBefore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -1688,6 +1696,7 @@ export default function CollabRisk({
   // 进入页面后定时心跳，维持「在线」；仅用轻量 presence 刷新在线态，避免每 15 秒全量拉房间列表
   useEffect(() => {
     let stopped = false;
+    let beatInFlight = false;
     const applyPresenceToRooms = (
       users: Record<string, { online: boolean; last_seen: string | null }>,
     ) => {
@@ -1697,18 +1706,21 @@ export default function CollabRisk({
           const participants = room.participants.map((p) => {
             const hit = users[String(p.id)];
             if (!hit) return p;
-            if (Boolean(p.online) === Boolean(hit.online) && (p.last_seen || null) === (hit.last_seen || null)) {
+            const online = collabParticipantOnline(p, hit.online);
+            if (Boolean(p.online) === online && (p.last_seen || null) === (hit.last_seen || null)) {
               return p;
             }
             changed = true;
-            return { ...p, online: hit.online, last_seen: hit.last_seen };
+            return { ...p, online, last_seen: hit.last_seen };
           });
           if (participants === room.participants) return room;
-          const onlineCount = participants.filter((p) => p.online).length;
+          const onlineCount = participants.filter((p) => collabParticipantOnline(p)).length;
           let peerOnline = room.peer_online;
-          if (room.room_kind === "dm" && me?.id) {
+          if (isXiaoceRoom(room)) {
+            peerOnline = true;
+          } else if (room.room_kind === "dm" && me?.id) {
             const peer = participants.find((p) => p.id !== me.id);
-            peerOnline = Boolean(peer?.online);
+            peerOnline = collabParticipantOnline(peer);
           }
           return {
             ...room,
@@ -1724,11 +1736,12 @@ export default function CollabRisk({
         const next = prev.map((c) => {
           const hit = users[String(c.id)];
           if (!hit) return c;
-          if (Boolean(c.online) === Boolean(hit.online) && (c.last_seen || null) === (hit.last_seen || null)) {
+          const online = collabParticipantOnline(c, hit.online);
+          if (Boolean(c.online) === online && (c.last_seen || null) === (hit.last_seen || null)) {
             return c;
           }
           changed = true;
-          return { ...c, online: hit.online, last_seen: hit.last_seen };
+          return { ...c, online, last_seen: hit.last_seen };
         });
         return changed ? next : prev;
       });
@@ -1737,13 +1750,19 @@ export default function CollabRisk({
         const participants = prev.participants.map((p) => {
           const hit = users[String(p.id)];
           if (!hit) return p;
-          return { ...p, online: hit.online, last_seen: hit.last_seen };
+          return {
+            ...p,
+            online: collabParticipantOnline(p, hit.online),
+            last_seen: hit.last_seen,
+          };
         });
-        const onlineCount = participants.filter((p) => p.online).length;
+        const onlineCount = participants.filter((p) => collabParticipantOnline(p)).length;
         let peerOnline = prev.peer_online;
-        if (prev.room_kind === "dm" && me?.id) {
+        if (isXiaoceRoom(prev)) {
+          peerOnline = true;
+        } else if (prev.room_kind === "dm" && me?.id) {
           const peer = participants.find((p) => p.id !== me.id);
-          peerOnline = Boolean(peer?.online);
+          peerOnline = collabParticipantOnline(peer);
         }
         if (
           prev.online_count === onlineCount
@@ -1762,7 +1781,8 @@ export default function CollabRisk({
     };
 
     const beat = async () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || beatInFlight) return;
+      beatInFlight = true;
       try {
         await collabPresenceHeartbeat();
         if (stopped) return;
@@ -1777,6 +1797,8 @@ export default function CollabRisk({
         applyPresenceToRooms(presence.users || {});
       } catch {
         /* ignore */
+      } finally {
+        beatInFlight = false;
       }
     };
     beat();
@@ -2782,6 +2804,11 @@ export default function CollabRisk({
 
   const onDraftChange = (value: string, caret?: number | null) => {
     setDraft(value);
+    const contextRoom = referencedRoomRef.current;
+    if (contextRoom) {
+      const contextTitle = contextRoom.display_title || contextRoom.title || "小策bot 历史任务";
+      if (!value.includes(`@「${contextTitle}」`)) setReferencedRoom(null);
+    }
     // Ant Design TextArea 的 onChange 里 selectionStart 偶发仍是 0；追加输入时按末尾算
     const resolved =
       caret == null
@@ -3334,6 +3361,7 @@ export default function CollabRisk({
     room.display_title || room.title || peerLabel(room);
 
   const presenceLabel = (room: CollabRoom) => {
+    if (isXiaoceRoom(room)) return "在线";
     if (room.room_kind === "group") {
       const n = room.online_count ?? room.participants.filter((p) => p.online).length;
       return n > 0 ? `${n} 人在线` : "暂无人在线";
@@ -3348,6 +3376,7 @@ export default function CollabRisk({
   };
 
   const roomPeerOnline = (room: CollabRoom) => {
+    if (isXiaoceRoom(room)) return true;
     if (room.room_kind === "group") {
       return (room.online_count ?? room.participants.filter((p) => p.online).length) > 0;
     }
@@ -3458,9 +3487,29 @@ export default function CollabRisk({
     [mention, activeRoom, me, xiaoceRoom, rooms, activeId],
   );
 
+  const atomicMentionTokens = useMemo(() => [
+    "@所有人",
+    "@AI",
+    ...(activeRoom?.participants || []).map((participant) => `@${participant.username}`),
+  ], [activeRoom]);
+
   useEffect(() => {
     setMentionIndex(0);
   }, [mention?.query, mentionOptions.length]);
+
+  useEffect(() => {
+    const menu = mentionMenuRef.current;
+    if (!menu || mentionIndex < 0 || mentionIndex >= mentionOptions.length) return;
+    const option = menu.children.item(mentionIndex) as HTMLElement | null;
+    if (!option) return;
+    const nextScrollTop = mentionMenuScrollTop(
+      menu.scrollTop,
+      menu.clientHeight,
+      option.offsetTop,
+      option.offsetHeight,
+    );
+    if (nextScrollTop !== menu.scrollTop) menu.scrollTop = nextScrollTop;
+  }, [mention?.query, mentionIndex, mentionOptions.length]);
 
   const jumpEvidence = (mid: number) => {
     setHighlightId(mid);
@@ -4502,13 +4551,15 @@ export default function CollabRisk({
 
             {xiaoceBusy && activeXiaoceRun ? (
               <div className="xiaoce-live-process">
-                <span className="xiaoce-live-process-label">小策bot</span>
-                <XiaoceProcess
-                  steps={activeXiaoceRun.progress_steps}
-                  status={activeXiaoceRun.status}
-                  live
-                  errorMessage={activeXiaoceRun.error_message}
-                />
+                <div className="xiaoce-live-process-inner">
+                  <span className="xiaoce-live-process-label">小策bot</span>
+                  <XiaoceProcess
+                    steps={activeXiaoceRun.progress_steps}
+                    status={activeXiaoceRun.status}
+                    live
+                    errorMessage={activeXiaoceRun.error_message}
+                  />
+                </div>
               </div>
             ) : null}
 
@@ -4535,6 +4586,7 @@ export default function CollabRisk({
                   <strong>松开即可添加到当前会话</strong>
                 </div>
               ) : null}
+              <div className="collab-agent-input-inner">
               {referencedRoom ? (
                 <div className="collab-context-composer">
                   <HistoryOutlined aria-hidden />
@@ -4623,7 +4675,7 @@ export default function CollabRisk({
                 className={`agent-chat-composer collab-agent-composer${draftCoach || draftCoachLoading ? " has-coach" : ""}${mention && mentionOptions.length > 0 ? " has-mention" : ""}`}
               >
                 {mention && mentionOptions.length > 0 ? (
-                  <div className="collab-mention-menu" role="listbox">
+                  <div ref={mentionMenuRef} className="collab-mention-menu" role="listbox">
                     {mentionOptions.map((opt, idx) => (
                       <button
                         key={opt.id}
@@ -4777,7 +4829,9 @@ export default function CollabRisk({
                     }, 0);
                   }}
                   onKeyDown={(e) => {
-                    if (mention && mentionOptions.length > 0) {
+                    const nativeEvent = e.nativeEvent as KeyboardEvent;
+                    const isComposing = nativeEvent.isComposing || nativeEvent.keyCode === 229;
+                    if (!isComposing && mention && mentionOptions.length > 0) {
                       if (e.key === "ArrowDown") {
                         e.preventDefault();
                         setMentionIndex((i) => (i + 1) % mentionOptions.length);
@@ -4804,7 +4858,29 @@ export default function CollabRisk({
                         return;
                       }
                     }
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (
+                      !isComposing
+                      && (e.key === "Backspace" || e.key === "Delete")
+                    ) {
+                      const el = e.currentTarget;
+                      const edit = deleteAtomicMentionAtCaret(
+                        el.value,
+                        el.selectionStart ?? el.value.length,
+                        el.selectionEnd ?? el.value.length,
+                        e.key === "Backspace" ? "backward" : "forward",
+                        atomicMentionTokens,
+                      );
+                      if (edit) {
+                        e.preventDefault();
+                        onDraftChange(edit.value, edit.caret);
+                        requestAnimationFrame(() => {
+                          el.focus();
+                          el.setSelectionRange(edit.caret, edit.caret);
+                        });
+                        return;
+                      }
+                    }
+                    if (!isComposing && e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();
                     }
@@ -4861,6 +4937,7 @@ export default function CollabRisk({
                     )}
                   </div>
                 </div>
+              </div>
               </div>
             </div>
           </>
@@ -6336,6 +6413,12 @@ const css = `
   position: relative;
   z-index: 40;
   overflow: visible;
+}
+.collab-agent-input-inner {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
 }
 .collab-reply-composer {
   display: flex;

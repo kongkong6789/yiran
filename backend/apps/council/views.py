@@ -1,16 +1,71 @@
 from rest_framework.decorators import api_view
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
+from apps.core.organizations import is_organization_admin
+
+from .access import (
+    agent_queryset_for_user,
+    can_create_agent,
+    can_manage_agent,
+    organization_for_user,
+    organization_member_ids,
+)
 from .models import AgentProfile, Meeting, Deliverable, MeetingInvite
 from .serializers import AgentProfileSerializer
 from . import engine, llm, graph_knowledge
 from . import invites as invite_svc
 
 
-def _agent_dict(a: AgentProfile) -> dict:
-    return AgentProfileSerializer(a).data
+def _agent_dict(a: AgentProfile, request=None) -> dict:
+    return AgentProfileSerializer(a, context={"request": request} if request else {}).data
+
+
+def _meeting_queryset(request):
+    organization = organization_for_user(request.user)
+    if organization is None:
+        return Meeting.objects.none()
+    return Meeting.objects.filter(participants__organization=organization).distinct()
+
+
+def _validated_agent_ids(request, values) -> tuple[list[int], str | None]:
+    requested: list[int] = []
+    for value in values or []:
+        try:
+            requested.append(int(value))
+        except (TypeError, ValueError):
+            return [], "智能体 ID 格式无效"
+    requested = list(dict.fromkeys(requested))
+    visible = set(
+        agent_queryset_for_user(request.user)
+        .filter(
+            id__in=requested,
+            is_active=True,
+            lifecycle_status=AgentProfile.LifecycleStatus.PUBLISHED,
+        )
+        .values_list("id", flat=True)
+    )
+    if visible != set(requested):
+        return [], "所选智能体不存在、未发布或无权访问"
+    return requested, None
+
+
+def _validated_user_ids(request, values) -> tuple[list[int], str | None]:
+    organization = organization_for_user(request.user)
+    if organization is None:
+        return [], "当前账号没有可用企业"
+    requested: list[int] = []
+    for value in values or []:
+        try:
+            requested.append(int(value))
+        except (TypeError, ValueError):
+            return [], "成员 ID 格式无效"
+    requested = list(dict.fromkeys(requested))
+    if not set(requested).issubset(organization_member_ids(organization)):
+        return [], "所选成员不属于当前企业或已停用"
+    return requested, None
 
 
 def _human_dict(u) -> dict:
@@ -33,25 +88,59 @@ def _human_dict(u) -> dict:
 
 @api_view(["GET", "POST"])
 def agents(request):
+    organization = organization_for_user(request.user)
     if request.method == "POST":
-        serializer = AgentProfileSerializer(data=request.data)
+        if organization is None or not can_create_agent(request.user, organization):
+            raise PermissionDenied("仅企业所有者或管理员可以创建数字员工。")
+        serializer = AgentProfileSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
+        owner_id = serializer.validated_data.get("owner_id") or request.user.id
         a = serializer.save(
+            organization=organization,
+            created_by=request.user,
+            owner_id=owner_id,
             emoji=serializer.validated_data.get("emoji") or "🤖",
             group=serializer.validated_data.get("group") or "未分类",
         )
-        return Response(_agent_dict(a), status=status.HTTP_201_CREATED)
-    data = [_agent_dict(a) for a in AgentProfile.objects.all()]
-    return Response({"count": len(data), "results": data, "llm": llm.llm_available()})
+        return Response(_agent_dict(a, request), status=status.HTTP_201_CREATED)
+    data = [_agent_dict(a, request) for a in agent_queryset_for_user(request.user)]
+    return Response({
+        "count": len(data),
+        "results": data,
+        "llm": llm.llm_available(),
+        "organization": (
+            {"id": organization.id, "name": organization.name}
+            if organization else None
+        ),
+        "permissions": {
+            "can_create": can_create_agent(request.user, organization),
+            "can_manage_all": bool(
+                organization and is_organization_admin(request.user, organization)
+            ),
+        },
+    })
 
 
-@api_view(["PATCH", "DELETE"])
+@api_view(["GET", "PATCH", "DELETE"])
 def agent_detail(request, agent_id: int):
-    a = get_object_or_404(AgentProfile, id=agent_id)
+    a = get_object_or_404(
+        agent_queryset_for_user(request.user, include_archived=True),
+        id=agent_id,
+    )
+    if request.method == "GET":
+        return Response(_agent_dict(a, request))
+    if not can_manage_agent(request.user, a):
+        raise PermissionDenied("只有数字员工负责人或企业管理员可以修改该员工。")
     if request.method == "DELETE":
-        a.delete()
+        a.archive()
+        a.save(update_fields=["is_active", "lifecycle_status", "archived_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
-    serializer = AgentProfileSerializer(a, data=request.data, partial=True)
+    serializer = AgentProfileSerializer(
+        a,
+        data=request.data,
+        partial=True,
+        context={"request": request},
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -94,8 +183,8 @@ def meetings(request):
         title = (d.get("title") or "").strip()
         intro = (d.get("intro") or "").strip()
         question = (d.get("question") or "").strip() or intro or title
-        agent_ids = d.get("agent_ids") or []
-        user_ids = d.get("user_ids") or []
+        agent_ids, agent_error = _validated_agent_ids(request, d.get("agent_ids") or [])
+        user_ids, user_error = _validated_user_ids(request, d.get("user_ids") or [])
         start_now = d.get("start_now", True)
         if isinstance(start_now, str):
             start_now = start_now.strip().lower() in ("1", "true", "yes", "y")
@@ -104,6 +193,10 @@ def meetings(request):
 
         if not question:
             return Response({"error": "请填写会议标题或简介/核心问题"}, status=status.HTTP_400_BAD_REQUEST)
+        if agent_error:
+            return Response({"error": agent_error}, status=status.HTTP_400_BAD_REQUEST)
+        if user_error:
+            return Response({"error": user_error}, status=status.HTTP_400_BAD_REQUEST)
         if not agent_ids:
             return Response({"error": "请至少选择 1 个 AI 对象"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -149,7 +242,9 @@ def meetings(request):
         )
     data = [
         _meeting_dict(m, brief=True)
-        for m in Meeting.objects.prefetch_related("participants", "human_participants", "deliverables").all()
+        for m in _meeting_queryset(request).prefetch_related(
+            "participants", "human_participants", "deliverables"
+        )
     ]
     return Response({"count": len(data), "results": data})
 
@@ -157,7 +252,7 @@ def meetings(request):
 @api_view(["POST"])
 def meeting_start(request, meeting_id: int):
     """草稿/暂停 → 正式开始。"""
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     was_draft = m.status == Meeting.Status.DRAFT
     try:
         engine.activate_meeting(m)
@@ -181,7 +276,7 @@ def meeting_start(request, meeting_id: int):
 @api_view(["POST"])
 def meeting_pause(request, meeting_id: int):
     """进行中 → 已暂停。"""
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     try:
         engine.pause_meeting(m)
     except ValueError as exc:
@@ -203,7 +298,15 @@ def meetings_pause_active(request):
             meeting_ids = [int(x) for x in raw_ids]
         except (TypeError, ValueError):
             return Response({"error": "meeting_ids 无效"}, status=status.HTTP_400_BAD_REQUEST)
-    paused = engine.pause_active_meetings(meeting_ids=meeting_ids)
+    visible_active_ids = list(
+        _meeting_queryset(request)
+        .filter(status=Meeting.Status.ACTIVE)
+        .values_list("id", flat=True)
+    )
+    if meeting_ids is not None:
+        requested_ids = set(meeting_ids)
+        visible_active_ids = [item for item in visible_active_ids if item in requested_ids]
+    paused = engine.pause_active_meetings(meeting_ids=visible_active_ids)
     return Response({
         "ok": True,
         "paused_count": len(paused),
@@ -224,7 +327,7 @@ def graph_preview(request):
 @api_view(["GET"])
 def meeting_detail(request, meeting_id: int):
     m = get_object_or_404(
-        Meeting.objects.prefetch_related(
+        _meeting_queryset(request).prefetch_related(
             "participants", "human_participants", "messages", "deliverables",
         ),
         id=meeting_id,
@@ -255,11 +358,15 @@ def meeting_detail(request, meeting_id: int):
 @api_view(["POST"])
 def meeting_invite(request, meeting_id: int):
     """会中继续拉 AI 对象 / 同事入会。"""
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     if m.status == Meeting.Status.STOPPED:
         return Response({"error": "会议已结束，无法加人"}, status=status.HTTP_400_BAD_REQUEST)
-    agent_ids = request.data.get("agent_ids") or []
-    user_ids = request.data.get("user_ids") or []
+    agent_ids, agent_error = _validated_agent_ids(request, request.data.get("agent_ids") or [])
+    user_ids, user_error = _validated_user_ids(request, request.data.get("user_ids") or [])
+    if agent_error:
+        return Response({"error": agent_error}, status=status.HTTP_400_BAD_REQUEST)
+    if user_error:
+        return Response({"error": user_error}, status=status.HTTP_400_BAD_REQUEST)
     if not agent_ids and not user_ids:
         return Response({"error": "请选择要拉入的对象或同事"}, status=status.HTTP_400_BAD_REQUEST)
     m, added_users = engine.invite_participants(m, agent_ids=agent_ids, user_ids=user_ids)
@@ -320,7 +427,7 @@ def deliverable_download(request, meeting_id: int, deliverable_id: int):
     import base64
     from django.http import HttpResponse
 
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     d = get_object_or_404(Deliverable, id=deliverable_id, meeting=m)
     fname = d.filename or f"deliverable.{d.kind}"
     if d.kind == Deliverable.Kind.XLSX:
@@ -340,7 +447,7 @@ def deliverable_download(request, meeting_id: int, deliverable_id: int):
 @api_view(["GET"])
 def meeting_messages(request, meeting_id: int):
     """轮询新消息:?after=<last_id>"""
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     after = int(request.query_params.get("after", 0))
     qs = m.messages.filter(id__gt=after)
     return Response({
@@ -352,13 +459,13 @@ def meeting_messages(request, meeting_id: int):
 
 @api_view(["POST"])
 def meeting_tick(request, meeting_id: int):
-    m = get_object_or_404(Meeting, id=meeting_id)
-    return Response(engine.tick_round(m))
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
+    return Response(engine.tick_round(m, user=request.user))
 
 
 @api_view(["POST"])
 def meeting_interject(request, meeting_id: int):
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     text = (request.data.get("text") or "").strip()
     if not text:
         return Response({"error": "text 必填"}, status=status.HTTP_400_BAD_REQUEST)
@@ -368,10 +475,10 @@ def meeting_interject(request, meeting_id: int):
     if request.user and request.user.is_authenticated:
         speaker = engine._display_name(request.user)
         m.human_participants.add(request.user)
-    return Response(engine.interject(m, text, speaker_name=speaker))
+    return Response(engine.interject(m, text, speaker_name=speaker, user=request.user))
 
 
 @api_view(["POST"])
 def meeting_stop(request, meeting_id: int):
-    m = get_object_or_404(Meeting, id=meeting_id)
+    m = get_object_or_404(_meeting_queryset(request), id=meeting_id)
     return Response(engine.stop(m))

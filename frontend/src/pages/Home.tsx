@@ -11,7 +11,7 @@ import {
   ReloadOutlined,
   RightOutlined,
 } from "@ant-design/icons";
-import { getAgeStats, listAgents, listMeetings, getAuditLogs } from "../api/client";
+import { getAgeStats, listAgents, listMeetings, getAuditOverview } from "../api/client";
 import { useVisualizationTheme } from "../theme/visualization";
 import OperatingMapV2 from "../components/OperatingMapV2";
 
@@ -188,10 +188,10 @@ export default function Home() {
       const n = d?.count ?? d?.results?.length;
       if (n != null) setStats((s) => ({ ...s, meetings: n }));
     }).catch(() => undefined);
-    getAuditLogs().then((d: any) => {
-      const rows = (d?.results || []).slice(0, 4).map((r: any) => ({
-        text: String(r.action || r.intent || "系统动作"),
-        meta: `${r.decision || "记录"} · ${(r.created_at || "").slice(11, 16) || "刚刚"}`,
+    getAuditOverview({ page: 1, pageSize: 5 }).then((d: any) => {
+      const rows = (d?.rows || []).slice(0, 4).map((r: any) => ({
+        text: String(r.detail || r.content || "系统动作"),
+        meta: `${r.status?.label || "记录"} · ${(r.time || "").slice(11, 16) || "刚刚"}`,
       }));
       if (rows.length) setFeed(rows);
     }).catch(() => undefined);
@@ -771,7 +771,7 @@ export default function Home() {
   } : undefined;
 
   return (
-    <div className={`kgv3-page ${mode === "map" ? "map-mode" : ""}`}>
+    <div className={`kgv3-page theme-${visualTheme.mode} ${mode === "map" ? "map-mode" : ""}`}>
       <style>{css}</style>
 
       <main className="kgv3-workspace">
@@ -817,7 +817,7 @@ export default function Home() {
           <canvas ref={canvasRef} className="kgv3-canvas" />
 
           {mode === "map" && (
-            <OperatingMapV2 onSelectDomain={selectDomain} onNavigate={nav} />
+            <OperatingMapV2 themeMode={visualTheme.mode} onSelectDomain={selectDomain} onNavigate={nav} />
           )}
 
           {mode !== "map" && selected && selectedDomain && (
@@ -1072,9 +1072,28 @@ const css = `
 .kgv3-page.map-mode .kgv3-zoom,
 .kgv3-page.map-mode .kgv3-legend { display: none; }
 .kgv3-page.map-mode .kgv3-canvas { display: none; }
-.kgv3-page.map-mode { grid-template-columns: minmax(0, 1fr); }
-.kgv3-page.map-mode .kgv3-toolbar { right: 346px; }
+.kgv3-page.map-mode {
+  grid-template-columns: minmax(0, 1fr);
+  background: #fbfcff;
+}
+.kgv3-page.map-mode .kgv3-toolbar { right: 370px; }
 .kgv3-page.map-mode .kgv3-tool-btn { visibility: hidden; }
+.kgv3-page.map-mode.theme-dark {
+  --kg-line: rgba(111,153,222,.22);
+  --kg-brand: #79aaff;
+  background: #071126;
+}
+.kgv3-page.map-mode.theme-dark .kgv3-mode {
+  border-color: rgba(111,153,222,.2);
+  background: rgba(7,18,42,.8);
+  box-shadow: 0 10px 30px rgba(0,5,18,.32), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.kgv3-page.map-mode.theme-dark .kgv3-mode-pill {
+  background: rgba(35,69,129,.8);
+  box-shadow: 0 0 22px rgba(58,126,240,.24), inset 0 0 0 1px rgba(123,174,255,.18);
+}
+.kgv3-page.map-mode.theme-dark .kgv3-mode button { color: #7389aa; }
+.kgv3-page.map-mode.theme-dark .kgv3-mode button.active { color: #dcecff; }
 
 .kgv3-right {
   min-width: 0; min-height: 0;
@@ -1248,10 +1267,10 @@ const css = `
 }
 
 @media (max-width: 1500px) {
-  .kgv3-page.map-mode .kgv3-toolbar { right: 322px; }
+  .kgv3-page.map-mode .kgv3-toolbar { right: 338px; }
 }
 @media (max-width: 1250px) {
-  .kgv3-page.map-mode .kgv3-toolbar { right: 300px; }
+  .kgv3-page.map-mode .kgv3-toolbar { right: 312px; }
 }
 @media (max-width: 1100px) {
   .kgv3-page { grid-template-columns: 1fr; height: auto; min-height: calc(100vh - 68px); }

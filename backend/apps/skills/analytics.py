@@ -71,6 +71,13 @@ def _owner_team(user) -> str:
     return membership.team.name if membership else ""
 
 
+def user_avatar_url(user) -> str:
+    if user is None:
+        return ""
+    settings = getattr(user, "settings", None)
+    return settings.avatar_url if settings else ""
+
+
 def _event_payload(event: SkillUsageEvent) -> dict:
     return {
         "id": event.id,
@@ -78,6 +85,7 @@ def _event_payload(event: SkillUsageEvent) -> dict:
         "skill_name": event.skill_name or event.skill_id,
         "user_id": event.user_id,
         "user": _user_label(event.user),
+        "avatar_url": user_avatar_url(event.user),
         "source": event.source,
         "source_label": event.get_source_display(),
         "used_at": event.used_at.isoformat(),
@@ -92,7 +100,12 @@ def build_skill_analytics(
 ) -> dict:
     can_manage, scope_label, scoped_user_ids = management_scope(user)
 
-    assets = SkillAsset.objects.select_related("owner", "uploader").prefetch_related(
+    assets = SkillAsset.objects.select_related(
+        "owner",
+        "owner__settings",
+        "uploader",
+        "uploader__settings",
+    ).prefetch_related(
         "owner__team_memberships__team"
     )
     if scoped_user_ids is not None and can_manage:
@@ -107,7 +120,7 @@ def build_skill_analytics(
         if asset.uploader_id == user.id or asset.owner_id == user.id
     }
 
-    events = SkillUsageEvent.objects.select_related("user", "asset")
+    events = SkillUsageEvent.objects.select_related("user", "user__settings", "asset")
     if can_manage and scoped_user_ids is not None:
         events = events.filter(user_id__in=scoped_user_ids)
     elif not can_manage:
@@ -159,6 +172,7 @@ def build_skill_analytics(
             "visibility": asset.visibility,
             "owner_id": asset.owner_id,
             "owner": _user_label(asset.owner) if asset.owner_id else "待认领",
+            "owner_avatar_url": user_avatar_url(asset.owner),
             "owner_team": _owner_team(asset.owner),
             "uploader": _user_label(asset.uploader),
             "is_uploader": asset.uploader_id == user.id,
@@ -255,12 +269,13 @@ def build_skill_analytics(
         person.id: person
         for person in get_user_model().objects.filter(
             id__in=[row["user_id"] for row in people_usage],
-        ).prefetch_related("team_memberships__team")
+        ).select_related("settings").prefetch_related("team_memberships__team")
     }
     people_ranking = [
         {
             "user_id": row["user_id"],
             "user": _user_label(people.get(row["user_id"])),
+            "avatar_url": user_avatar_url(people.get(row["user_id"])),
             "team": _owner_team(people.get(row["user_id"])),
             "usage_count_30d": row["usage_count"],
             "skill_count_30d": row["skill_count"],
@@ -274,11 +289,16 @@ def build_skill_analytics(
 
     owner_options: list[dict] = []
     if can_manage:
-        owners = get_user_model().objects.filter(is_active=True).order_by("username")
+        owners = get_user_model().objects.filter(is_active=True).select_related("settings").order_by("username")
         if scoped_user_ids is not None:
             owners = owners.filter(id__in=scoped_user_ids)
         owner_options = [
-            {"id": owner.id, "name": _user_label(owner), "username": owner.username}
+            {
+                "id": owner.id,
+                "name": _user_label(owner),
+                "username": owner.username,
+                "avatar_url": user_avatar_url(owner),
+            }
             for owner in owners
         ]
 

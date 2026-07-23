@@ -5,7 +5,6 @@ import {
 } from "@ant-design/icons";
 import type { UploadProps } from "antd";
 import {
-  adoptSkillAsset,
   getSkillAssets,
   getSkills,
   uploadSkillAsset,
@@ -34,7 +33,6 @@ export default function ChatSkillPicker({ onSelect, refreshKey = 0 }: Props) {
   const [loading, setLoading] = useState(false);
   const [skills, setSkills] = useState<UserSkillItem[]>([]);
   const [sharedSkills, setSharedSkills] = useState<SkillAssetItem[]>([]);
-  const [adoptingSkillId, setAdoptingSkillId] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
 
   const load = useCallback(async () => {
@@ -69,26 +67,22 @@ export default function ChatSkillPicker({ onSelect, refreshKey = 0 }: Props) {
     };
   }, [skills, sharedSkills, keyword]);
 
-  const adoptSharedSkill = useCallback(async (skill: SkillAssetItem) => {
-    setAdoptingSkillId(skill.skill_id);
-    try {
-      const result = await adoptSkillAsset(skill.skill_id);
-      setSkills((current) => [
-        result.personal,
-        ...current.filter((item) => item.skill_id !== result.personal.skill_id),
-      ]);
-      setSharedSkills((current) => current.filter((item) => item.skill_id !== skill.skill_id));
-      message.success(`已采用并启用：${result.personal.name}`);
-      onSelect(result.personal);
-      setOpen(false);
-    } catch (error: unknown) {
-      const response = typeof error === "object" && error !== null && "response" in error
-        ? (error as { response?: { data?: { error?: string } } }).response
-        : undefined;
-      message.error(response?.data?.error || "采用共享 Skill 失败");
-    } finally {
-      setAdoptingSkillId(null);
-    }
+  const selectSharedSkill = useCallback((skill: SkillAssetItem) => {
+    onSelect({
+      id: -skill.id,
+      skill_id: skill.skill_id,
+      name: skill.name,
+      description: skill.description,
+      enabled: true,
+      source_asset_id: skill.id,
+      storage: skill.storage,
+      cos_url: skill.cos_url,
+      created_at: skill.created_at,
+      updated_at: skill.updated_at,
+      owner_id: skill.owner_id,
+      owner: skill.owner,
+    });
+    setOpen(false);
   }, [onSelect]);
 
   const uploadProps: UploadProps = {
@@ -151,25 +145,21 @@ export default function ChatSkillPicker({ onSelect, refreshKey = 0 }: Props) {
               </button>
             ))}
             {filtered.shared.length > 0 && <div className="chat-skill-section-label"><TeamOutlined /> 团队共享</div>}
-            {filtered.shared.map((skill) => {
-              const adopting = adoptingSkillId === skill.skill_id;
-              return (
+            {filtered.shared.map((skill) => (
                 <button
                   key={`shared-${skill.skill_id}`}
                   type="button"
                   className="chat-skill-item chat-skill-item--shared"
-                  disabled={Boolean(adoptingSkillId)}
-                  onClick={() => void adoptSharedSkill(skill)}
+                  onClick={() => selectSharedSkill(skill)}
                 >
                   <Avatar size={36} className="chat-skill-avatar chat-skill-avatar--shared">{skillInitial(skill)}</Avatar>
                   <span className="chat-skill-meta">
                     <strong>{skill.name}</strong>
-                    <em>{skill.owner ? `${skill.owner} 负责 · 点击采用` : "团队共享 · 点击采用"}</em>
+                    <em>{skill.owner ? `${skill.owner} 负责 · 点击使用` : "团队共享 · 点击使用"}</em>
                   </span>
-                  <span className="chat-skill-adopt-action">{adopting ? <Spin size="small" /> : "采用"}</span>
+                  <span className="chat-skill-adopt-action">使用</span>
                 </button>
-              );
-            })}
+            ))}
           </>
         )}
       </div>

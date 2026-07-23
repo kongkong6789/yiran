@@ -8,6 +8,7 @@ backend/.env
 backend/chat_attachments/
 backend/skill_workspaces/
 backend/profile_avatars/
+backend/backups/
 
 # Node
 frontend/node_modules/

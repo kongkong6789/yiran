@@ -5,15 +5,18 @@ import RequireAuth from "./components/RequireAuth";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import AgentChat from "./pages/AgentChat";
-import DataLake from "./pages/DataLake";
 import Accounts from "./pages/Accounts";
-import Audit from "./pages/Audit";
 import Logs from "./pages/Logs";
 import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
 import LoopsDiy from "./pages/LoopsDiy";
+import LoopsHome from "./pages/loopsOps/LoopsHome";
+import LoopsMonitor from "./pages/loopsOps/LoopsMonitor";
+import LoopDiscover from "./pages/loopsOps/LoopDiscover";
+import LoopDesignWorkspace from "./pages/loopsOps/LoopDesignWorkspace";
+import LoopRunWorkspace from "./pages/loopsOps/LoopRunWorkspace";
 import CommerceHub from "./pages/CommerceHub";
 import CommerceFusion from "./pages/CommerceFusion";
 import Connectors from "./pages/Connectors";
@@ -22,6 +25,7 @@ import AgentMemory from "./pages/AgentMemory";
 import Knowledge from "./pages/Knowledge";
 import SectionHub from "./pages/SectionHub";
 import WorkHub from "./pages/WorkHub";
+import VisualInterface from "./pages/VisualInterface";
 
 function LegacyCouncilRedirect() {
   const location = useLocation();
@@ -38,6 +42,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/collab" replace />} />
           <Route path="home" element={<Home />} />
+          <Route path="visual-interface" element={<VisualInterface />} />
           <Route path="agent" element={<AgentChat />} />
           <Route path="collab" element={<TeamCollaboration />} />
           <Route path="ontology" element={<OntologyGraph />} />
@@ -49,7 +54,11 @@ export default function App() {
           <Route path="commerce/bench" element={<CommerceFusion />} />
           <Route path="commerce/loops" element={<Loops />} />
           <Route path="commerce/loops/diy" element={<LoopsDiy />} />
-          <Route path="loops" element={<Navigate to="/commerce/loops" replace />} />
+          <Route path="loops" element={<LoopsHome />} />
+          <Route path="loops/monitor" element={<LoopsMonitor />} />
+          <Route path="loops/discover" element={<LoopDiscover />} />
+          <Route path="loops/:id/design" element={<LoopDesignWorkspace />} />
+          <Route path="loops/:id/run" element={<LoopRunWorkspace />} />
           <Route path="loops/diy" element={<Navigate to="/commerce/loops/diy" replace />} />
           <Route path="work" element={<WorkHub />} />
           <Route path="console" element={<Navigate to="/work" replace />} />
@@ -58,7 +67,7 @@ export default function App() {
           <Route path="connectors" element={<Connectors />} />
           <Route path="tables" element={<Navigate to="/knowledge" replace />} />
           <Route path="nocodb" element={<Navigate to="/knowledge" replace />} />
-          <Route path="datalake" element={<DataLake />} />
+          <Route path="datalake" element={<Navigate to="/knowledge?tab=enterprise-data" replace />} />
           <Route path="my/knowledge" element={(
             <SectionHub
               title="我的知识库"
@@ -85,7 +94,7 @@ export default function App() {
           )} />
           <Route path="agents" element={<Agents />} />
           <Route path="accounts" element={<Accounts />} />
-          <Route path="audit" element={<Audit />} />
+          <Route path="audit" element={<Navigate to="/logs" replace />} />
           <Route path="logs" element={<Logs />} />
         </Route>
       </Route>

@@ -453,6 +453,8 @@ export interface KnowledgeBaseItem {
   owner_username?: string;
   owner_user_id?: number | null;
   can_edit?: boolean;
+  team_ids?: number[];
+  teamIds?: number[];
   name: string;
   description: string;
   category: string;
@@ -537,13 +539,21 @@ export const listKnowledgeFiles = (knowledgeBaseId: number, params?: { q?: strin
 export const uploadKnowledgeFile = (
   knowledgeBaseId: number,
   file: File,
-  body?: { segment_mode?: string; chunk_size?: number; chunk_overlap?: number; onUploadProgress?: (event: AxiosProgressEvent) => void },
+  body?: {
+    segment_mode?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    /** upload = ?????smart_doc / mindmap = ?????? */
+    asset_role?: "upload" | "smart_doc" | "mindmap";
+    onUploadProgress?: (event: AxiosProgressEvent) => void;
+  },
 ) => {
   const form = new FormData();
   form.append("file", file);
   if (body?.segment_mode) form.append("segment_mode", body.segment_mode);
   if (body?.chunk_size) form.append("chunk_size", String(body.chunk_size));
   if (body?.chunk_overlap !== undefined) form.append("chunk_overlap", String(body.chunk_overlap));
+  form.append("asset_role", body?.asset_role || "upload");
   return api.post<{
     file: KnowledgeFileItem;
     job: KnowledgeIngestJobItem;
@@ -589,7 +599,7 @@ export const deleteKnowledgeChunk = (fileId: number, chunkId: number) =>
   api.delete<{ deleted: boolean; chunk_id: number }>(`/knowledge/files/${fileId}/chunks/${chunkId}/`)
     .then((r) => r.data);
 
-export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic"; limit?: number }) =>
+export const searchKnowledge = (params: { q: string; knowledge_base?: number; mode?: "keyword" | "semantic" | "hybrid"; limit?: number }) =>
   api.get<{ query: string; mode?: string; count: number; results: KnowledgeChunkItem[] }>("/knowledge/traditional-search/", { params })
     .then((r) => r.data);
 
@@ -988,6 +998,7 @@ export interface SkillAnalyticsRow {
   visibility: "shared" | "private";
   owner_id: number | null;
   owner: string;
+  owner_avatar_url: string;
   owner_team: string;
   uploader: string;
   is_uploader: boolean;
@@ -1008,6 +1019,7 @@ export interface SkillUsageEventItem {
   skill_name: string;
   user_id: number | null;
   user: string;
+  avatar_url: string;
   source: "agent" | "collab" | "direct";
   source_label: string;
   used_at: string;
@@ -1025,6 +1037,7 @@ export interface SkillUsageHistoryResponse {
 export interface SkillPeopleRankingItem {
   user_id: number;
   user: string;
+  avatar_url: string;
   team: string;
   usage_count_30d: number;
   skill_count_30d: number;
@@ -1061,7 +1074,7 @@ export interface SkillAnalyticsResponse {
   trend_range: { start: string; end: string; days: number };
   trend_by_category: Record<string, SkillTrendSeries>;
   recent_usage: SkillUsageEventItem[];
-  owner_options: Array<{ id: number; name: string; username: string }>;
+  owner_options: Array<{ id: number; name: string; username: string; avatar_url: string }>;
 }
 
 export interface SopStep {
@@ -1093,6 +1106,28 @@ export interface ActionContract {
   to_state: string | null;
   budget_field: string | null;
   high_risk: boolean;
+}
+
+export interface TaskTemplateItem {
+  id?: number;
+  key: string;
+  name: string;
+  description: string;
+  category: "report" | "operation" | "analysis" | "collab";
+  actionName: string;
+  prompt: string;
+  defaults: Record<string, unknown>;
+  outputConfig: Record<string, unknown>;
+  assignmentConfig: Record<string, unknown>;
+  tags: string[];
+  estimatedMinutes: number;
+  visibility: "personal" | "workspace";
+  builtin: boolean;
+  overridden: boolean;
+  canReset: boolean;
+  canEdit: boolean;
+  createdBy?: string | null;
+  updatedAt?: string | null;
 }
 
 // ---- API ?? ----
@@ -1145,7 +1180,11 @@ export const runSop = (body: {
   role?: string;
   agent_id?: number;
   trace_id?: string;
-}) => api.post<SopResult>("/orchestration/run/", body).then((r) => r.data);
+  mode?: "task_create";
+}) => api.post<SopResult>("/orchestration/run/", body, {
+  // 经营分析需要读取可信快照并等待模型生成，不能沿用普通 API 的 20 秒超时。
+  timeout: 180_000,
+}).then((r) => r.data);
 
 export const resumeSop = (body: {
   approval_id: number;
@@ -1164,6 +1203,125 @@ export const resumeSop = (body: {
 
 export const getCatalog = () =>
   api.get<{ actions: ActionContract[] }>("/orchestration/catalog/").then((r) => r.data);
+
+export const listTaskTemplates = () =>
+  api.get<{ results: TaskTemplateItem[] }>("/task-templates/").then((r) => r.data);
+
+export const getTaskTemplate = (key: string) =>
+  api.get<TaskTemplateItem>(`/task-templates/${key}/`).then((r) => r.data);
+
+export const createTaskTemplate = (body: Partial<TaskTemplateItem>) =>
+  api.post<TaskTemplateItem>("/task-templates/", body).then((r) => r.data);
+
+export const updateTaskTemplate = (key: string, body: Partial<TaskTemplateItem>) =>
+  api.patch<TaskTemplateItem>(`/task-templates/${key}/`, body).then((r) => r.data);
+
+export const deleteTaskTemplate = (key: string) =>
+  api.delete(`/task-templates/${key}/`);
+
+export const duplicateTaskTemplate = (key: string) =>
+  api.post<TaskTemplateItem>(`/task-templates/${key}/duplicate/`, {}).then((r) => r.data);
+
+export interface SopGraphNode {
+  key: string;
+  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end";
+  title: string;
+  config: Record<string, unknown>;
+}
+
+export interface SopGraphEdge {
+  source: string;
+  target: string;
+  condition: string;
+  priority: number;
+}
+
+export interface SopVersionItem {
+  id: number;
+  version: string;
+  status: "draft" | "published" | "retired";
+  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown>;
+  triggerIntents: string[];
+  utteranceExamples: string[];
+  contentHash: string;
+  changeSummary: string;
+  publishedAt?: string | null;
+  createdAt: string;
+}
+
+export interface SopDefinitionItem {
+  id: number;
+  key: string;
+  name: string;
+  businessDomain: string;
+  description: string;
+  actionName: string;
+  status: "draft" | "published" | "archived";
+  currentVersion: string;
+  system: boolean;
+  canEdit: boolean;
+  hasDraft: boolean;
+  draftVersion: string | null;
+  callCount: number;
+  successRate: number;
+  nodeCount: number;
+  updatedAt: string;
+  version?: SopVersionItem;
+}
+
+export const listSops = () =>
+  api.get<{ results: SopDefinitionItem[] }>("/orchestration/sops/").then((r) => r.data);
+
+export const getSop = (key: string) =>
+  api.get<SopDefinitionItem>(`/orchestration/sops/${key}/`).then((r) => r.data);
+
+export const createSop = (body: Record<string, unknown>) =>
+  api.post<SopDefinitionItem>("/orchestration/sops/", body).then((r) => r.data);
+
+export const updateSop = (key: string, body: Record<string, unknown>) =>
+  api.patch<SopDefinitionItem>(`/orchestration/sops/${key}/`, body).then((r) => r.data);
+
+export const duplicateSop = (key: string, body: { key?: string; name?: string } = {}) =>
+  api.post<SopDefinitionItem>(`/orchestration/sops/${key}/duplicate/`, body).then((r) => r.data);
+
+export const createSopVersion = (key: string, body: Record<string, unknown>) =>
+  api.post<SopVersionItem>(`/orchestration/sops/${key}/versions/`, body).then((r) => r.data);
+
+export const listSopVersions = (key: string) =>
+  api.get<{ results: SopVersionItem[] }>(`/orchestration/sops/${key}/versions/`).then((r) => r.data);
+
+export const getSopVersion = (key: string, version: string) =>
+  api.get<SopVersionItem>(`/orchestration/sops/${key}/versions/${version}/`).then((r) => r.data);
+
+export const updateSopVersion = (key: string, version: string, body: Record<string, unknown>) =>
+  api.patch<SopVersionItem>(`/orchestration/sops/${key}/versions/${version}/`, body).then((r) => r.data);
+
+export const publishSopVersion = (key: string, version: string) =>
+  api.post<SopDefinitionItem>(`/orchestration/sops/${key}/versions/${version}/publish/`, {}).then((r) => r.data);
+
+export interface SopDraftPayload {
+  key: string;
+  name: string;
+  businessDomain: string;
+  description: string;
+  actionName: string;
+  version: string;
+  triggerIntents: string[];
+  utteranceExamples: string[];
+  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+}
+
+export const rewriteSopWithAi = (body: {
+  instruction: string;
+  draft: SopDraftPayload;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+}) => api.post<{ assistant: string; draft: SopDraftPayload; model: string }>(
+  "/orchestration/sops/ai/rewrite/",
+  body,
+  { timeout: 90_000 },
+).then((r) => r.data);
 
 export const syncJackyun = () =>
   api.post<{
@@ -1193,13 +1351,50 @@ export const queryJackyun = (body: {
 
 export const getTables = () =>
   api.get("/datalake/tables/").then((r) => r.data);
+export const getDataAssetPreview = (table: string, limit = 50) =>
+  api.get(`/datalake/assets/${encodeURIComponent(table)}/preview/`, { params: { limit } }).then((r) => r.data);
+export const publishDataAsset = (body: {
+  table: string;
+  asset_key: string;
+  display_name: string;
+  as_of: string;
+  confirm_complete: boolean;
+}) => api.post("/datalake/assets/publish/", body).then((r) => r.data);
+export const getReportOptions = () =>
+  api.get<{
+    brands: Array<{ label: string; value: string }>;
+    platforms: Array<{ label: string; value: string }>;
+  }>("/datalake/report-options/").then((r) => r.data);
 export const getMetrics = () =>
   api.get("/datalake/metrics/").then((r) => r.data);
 export const getAnomalies = () =>
   api.get("/datalake/anomalies/").then((r) => r.data);
-
-export const getAuditLogs = () =>
-  api.get("/audit-logs/").then((r) => r.data);
+export const getSourceSnapshots = () =>
+  api.get("/datalake/snapshots/").then((r) => r.data);
+export const getMetricContracts = () =>
+  api.get("/datalake/metric-contracts/").then((r) => r.data);
+export const getRawImports = () =>
+  api.get("/datalake/raw-imports/").then((r) => r.data);
+export const getImportContracts = () =>
+  api.get("/datalake/import-contracts/").then((r) => r.data);
+export const getReferenceMappings = () =>
+  api.get("/datalake/reference-mappings/").then((r) => r.data);
+export const createReferenceMapping = (body: {
+  mapping_key: string;
+  kind: "channel" | "product" | "warehouse";
+  version?: string;
+  mappings: Record<string, unknown>;
+}) => api.post("/datalake/reference-mappings/", body).then((r) => r.data);
+export const confirmReferenceMapping = (id: number) =>
+  api.post(`/datalake/reference-mappings/${id}/confirm/`, {}).then((r) => r.data);
+export const uploadSalesLedger = (form: FormData) =>
+  api.post("/datalake/raw-imports/sales-ledger/", form, { timeout: 10 * 60_000 }).then((r) => r.data);
+export const reconcileRawImport = (id: number, reconciliation_hash: string) =>
+  api.post(`/datalake/raw-imports/${id}/reconcile/`, { reconciliation_hash }).then((r) => r.data);
+export const composeInventorySalesSnapshot = (body: {
+  inventory_snapshot_id: number;
+  sales_snapshot_id: number;
+}) => api.post("/datalake/snapshots/compose/", body).then((r) => r.data);
 
 export type AuditLogCategory = "operation" | "login" | "system" | "security" | "data_change";
 export interface AuditKpi { value: number; deltaPct: number; trend: "up" | "down" | "flat" }
@@ -1218,6 +1413,10 @@ export interface AuditRow {
   ip: string;
   status: { key: string; label: string };
   traceId: string;
+  decision: string;
+  payload: Record<string, unknown>;
+  checks: unknown[];
+  result: Record<string, unknown>;
 }
 export interface AuditOverview {
   ok: boolean;
@@ -1395,6 +1594,9 @@ export interface Agent {
   quota_used: number;
   quota_remaining: number;
   status: "available" | "disabled" | "quota_exhausted";
+  skill_ids: string[];
+  knowledge_base_ids: number[];
+  capability_instructions: string;
   created_at: string;
 }
 
@@ -1472,7 +1674,10 @@ export interface GraphWriteback {
 }
 
 export const listAgents = () =>
-  api.get<{ results: Partial<Agent>[]; llm: boolean }>("/council/agents/").then((r) => ({
+  api.get<{
+    results: Partial<Agent>[];
+    llm: boolean;
+  }>("/council/agents/").then((r) => ({
     ...r.data,
     results: (r.data.results || []).map((row) => {
       const quotaLimit = Number(row.quota_limit ?? 10000);
@@ -1493,6 +1698,11 @@ export const listAgents = () =>
         quota_used: quotaUsed,
         quota_remaining: quotaRemaining,
         status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
+        skill_ids: Array.isArray(row.skill_ids) ? row.skill_ids.map(String) : [],
+        knowledge_base_ids: Array.isArray(row.knowledge_base_ids)
+          ? row.knowledge_base_ids.map(Number).filter(Number.isFinite)
+          : [],
+        capability_instructions: String(row.capability_instructions || ""),
         created_at: String(row.created_at || ""),
       } satisfies Agent;
     }),
@@ -2083,6 +2293,50 @@ export const listCausalCandidates = () =>
   api.get<{ results: (OntRelation & { source_name?: string; target_name?: string })[] }>(
     "/loops/causal-candidates/",
   ).then((r) => r.data);
+
+export interface BrandLoopEvidence {
+  label: string;
+  value?: string | number | null;
+  unit?: string | null;
+}
+
+export interface BrandLoopNode {
+  id: string;
+  name: string;
+  value?: string | number | null;
+  unit?: string | null;
+  status: string;
+  data_status?: string | null;
+  evidence?: BrandLoopEvidence[];
+}
+
+export interface BrandLoopLink {
+  source: string;
+  target: string;
+  polarity?: string;
+  label?: string;
+}
+
+export interface BrandManagementLoopData {
+  brand: {
+    id?: string;
+    name: string;
+    product_count?: number | null;
+  };
+  period: string;
+  metrics: {
+    sales_quantity?: number | null;
+    inventory_cover_days?: number | null;
+    [key: string]: unknown;
+  };
+  stocks: BrandLoopNode[];
+  flows: BrandLoopNode[];
+  links: BrandLoopLink[];
+  data_status: Record<string, string>;
+}
+
+export const getBrandManagementLoop = (params?: { brand_id?: string; period?: string }) =>
+  api.get<BrandManagementLoopData>("/loops/brand-management/", { params }).then((r) => r.data);
 
 // ================= ???? =================
 export interface CollabUserBrief {
@@ -2834,6 +3088,7 @@ export const collabPresenceQuery = (userIds: number[]) =>
   api
     .get<{
       ok: boolean;
+      window_seconds: number;
       me: { id: number; online: boolean; last_seen: string };
       users: Record<string, { online: boolean; last_seen: string | null }>;
     }>("/collab/presence/", {

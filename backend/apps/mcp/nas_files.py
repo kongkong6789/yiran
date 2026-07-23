@@ -414,6 +414,18 @@ def _reference_to_virtual(configured_path: str, root: Path | None, reference: st
         return "/" + "/".join(_virtual_parts(raw))
 
     if raw.startswith(("/", "\\")) and not raw.startswith("\\\\"):
+        # POSIX native paths and NAS virtual paths both start with ``/``.  Prefer
+        # a real path inside the configured root when one was pasted, then fall
+        # back to the user-facing virtual-path interpretation (for example
+        # ``/合同/条款.txt``).  ``relative_to`` keeps either form confined to the
+        # configured NAS root, including after symlink resolution.
+        try:
+            candidate = Path(raw).resolve(strict=True)
+            relative = candidate.relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        else:
+            return "/" + "/".join(relative.parts)
         return "/" + "/".join(_virtual_parts(raw))
     try:
         candidate = Path(raw).resolve(strict=True)

@@ -34,7 +34,8 @@ function sourceBetween(start: string, end: string) {
 test("navigation hides requested entries while routes remain available", () => {
   const work = sourceBetween("const WORK_GROUPS", "const KNOWLEDGE_GROUPS");
   const knowledge = sourceBetween("const KNOWLEDGE_GROUPS", "const COMMERCE_GROUPS");
-  const commerce = sourceBetween("const COMMERCE_GROUPS", "const ADMIN_GROUPS");
+  const commerce = sourceBetween("const COMMERCE_GROUPS", "const LOOPS_OPS_GROUPS");
+  const loops = sourceBetween("const LOOPS_OPS_GROUPS", "const ADMIN_GROUPS");
   const admin = sourceBetween("const ADMIN_GROUPS", "const LOGS_NAV");
 
   assert.doesNotMatch(work, /path:\s*"\/agent"/);
@@ -45,6 +46,9 @@ test("navigation hides requested entries while routes remain available", () => {
   assert.match(commerce, /\/commerce\/loops/);
   assert.match(commerce, /\/commerce\/loops\/diy|回路 DIY/);
   assert.doesNotMatch(commerce, /\/commerce\/bench|label:\s*"经营首页"/);
+  assert.match(loops, /path:\s*"\/loops"/);
+  assert.match(loops, /path:\s*"\/loops\/discover"/);
+  assert.match(layoutSource, /key:\s*"loops"[\s\S]*label:\s*"Loops"/);
   assert.doesNotMatch(admin, /\/audit/);
 
   for (const route of [
@@ -57,10 +61,13 @@ test("navigation hides requested entries while routes remain available", () => {
     "tables",
     "datalake",
     "audit",
+    "loops",
+    "loops/discover",
   ]) {
     assert.match(appSource, new RegExp(`path="${route.replace("/", "\\/")}"`));
   }
   assert.match(appSource, /path="tables"\s+element=\{<Navigate to="\/knowledge"/);
+  assert.match(appSource, /path="loops"\s+element=\{<LoopsHome/);
 });
 
 test("workspace uses top-level modules and a fixed contextual sidebar", () => {
@@ -120,8 +127,10 @@ test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(monitorStyles, /\.collab-msg:not\(\.system\):hover \.collab-bubble/);
   assert.match(monitorStyles, /@media \(prefers-reduced-motion:\s*reduce\)/);
   assert.match(monitorStyles, /\.collab-summary-controls \.ant-btn-primary[\s\S]*?linear-gradient\(135deg, #6d5eea, #5145c7\)/);
-  assert.match(chatSource, /if \(document\.visibilityState !== "visible"\) return;/);
+  assert.match(chatSource, /if \(document\.visibilityState !== "visible" \|\| beatInFlight\) return;/);
+  assert.match(chatSource, /finally \{[\s\S]*?beatInFlight = false;/);
   assert.match(liveSource, /const pageIsVisible = \(\) => document\.visibilityState === "visible"/);
+  assert.match(liveSource, /!pageIsVisible\(\) \|\| presenceInFlight/);
   assert.match(liveSource, /document\.addEventListener\("visibilitychange", onVisibilityChange\)/);
   assert.match(liveSource, /closeWebSocketQuietly\(ws\);[\s\S]*?ws = null;/);
 });

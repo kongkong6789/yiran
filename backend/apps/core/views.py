@@ -134,7 +134,9 @@ def health(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def audit_logs(request):
-    """审计日志列表(第6层闸机产生的记录)。"""
+    """兼容用原始审计接口，仅供超级管理员访问。"""
+    if not request.user.is_superuser:
+        return Response({"ok": False, "detail": "仅超级管理员可查看日志。"}, status=403)
     limit = int(request.query_params.get("limit", 50))
     logs = AuditLog.objects.all()[:limit]
     data = [
@@ -403,6 +405,10 @@ def audit_overview(request):
             "ip": str(payload.get("ip") or payload.get("ip_address") or "-"),
             "status": {"key": status_key, "label": status_label},
             "traceId": log.trace_id,
+            "decision": log.decision,
+            "payload": log.payload if isinstance(log.payload, dict) else {},
+            "checks": log.checks if isinstance(log.checks, list) else [],
+            "result": log.result if isinstance(log.result, dict) else {},
         }
 
     rows = [_row_payload(log) for log in page_rows]
@@ -615,6 +621,7 @@ def _humanize_mapping(value: dict, depth: int = 0) -> list[str]:
 def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: dict) -> list[WorkTaskArtifact]:
     from openpyxl import Workbook
 
+    report_markdown = str(result_data.get("report_markdown") or "").strip()
     summary = [
         f"# {row.title}",
         "",
@@ -645,7 +652,7 @@ def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: 
         "",
         "> 如需查看完整原始数据，请下载 JSON 或 Excel 附件。",
     ])
-    markdown = "\n".join(summary).encode("utf-8")
+    markdown = (report_markdown or "\n".join(summary)).encode("utf-8")
     json_bytes = json.dumps({
         "traceId": row.trace_id, "task": row.title, "sopId": row.sop_id,
         "priority": row.priority, "parameters": parameters, "result": result_data,
@@ -673,12 +680,35 @@ def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: 
     _flatten("", result_data, flattened)
     for values in flattened:
         result_sheet.append(values)
+    if report_markdown:
+        evidence_sheet = workbook.create_sheet("数据证据")
+        evidence_sheet.append(("Snapshot ID", "数据资产", "名称", "截至时间", "行数", "内容 Hash"))
+        for evidence in result_data.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            evidence_sheet.append((
+                evidence.get("snapshot_id"), evidence.get("asset_key"), evidence.get("display_name"),
+                evidence.get("as_of"), evidence.get("row_count"), evidence.get("content_hash"),
+            ))
+        profile_sheet = workbook.create_sheet("数据摘要")
+        profile_sheet.append(("数据资产", "名称", "行数", "字段", "业务日期范围", "实际观测日期数"))
+        for profile in result_data.get("data_profiles") or []:
+            if not isinstance(profile, dict):
+                continue
+            dt_range = (profile.get("date_ranges") or {}).get("dt") or {}
+            date_label = ""
+            if dt_range:
+                date_label = f"{dt_range.get('minimum', '')} 至 {dt_range.get('maximum', '')}"
+            profile_sheet.append((
+                profile.get("asset_key"), profile.get("display_name"), profile.get("row_count"),
+                "、".join(map(str, profile.get("columns") or [])), date_label, dt_range.get("observed_count"),
+            ))
     stream = io.BytesIO()
     workbook.save(stream)
     artifacts = [
-        (WorkTaskArtifact.Kind.MARKDOWN, "任务执行报告", _safe_filename(row.title, "md"), "text/markdown; charset=utf-8", markdown),
-        (WorkTaskArtifact.Kind.JSON, "任务原始数据", _safe_filename(row.title, "json"), "application/json; charset=utf-8", json_bytes),
-        (WorkTaskArtifact.Kind.XLSX, "任务执行数据", _safe_filename(row.title, "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", stream.getvalue()),
+        (WorkTaskArtifact.Kind.MARKDOWN, "AI 经营分析报告" if report_markdown else "任务执行报告", _safe_filename(row.title, "md"), "text/markdown; charset=utf-8", markdown),
+        (WorkTaskArtifact.Kind.JSON, "分析结果与证据" if report_markdown else "任务原始数据", _safe_filename(row.title, "json"), "application/json; charset=utf-8", json_bytes),
+        (WorkTaskArtifact.Kind.XLSX, "分析数据与证据" if report_markdown else "任务执行数据", _safe_filename(row.title, "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", stream.getvalue()),
     ]
     result = []
     for kind, name, filename, content_type, content in artifacts:

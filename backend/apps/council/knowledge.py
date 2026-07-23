@@ -112,7 +112,7 @@ def _metrics_block() -> str:
                     + f"(口径:{r['formula']})"
                     for r in rows
                 ]
-                return "【关键业务指标(PostgreSQL·统一口径)】\n" + "\n".join(lines)
+                return "【知识库·关键业务指标】\n" + "\n".join(lines)
         except Exception:
             pass
     metrics = _safe_query(
@@ -124,7 +124,7 @@ def _metrics_block() -> str:
         f"- {m['metric']}({m['dim']}):值={m['value']},环比={m['mom']},同比={m['yoy']}"
         for m in metrics
     ]
-    return "【关键业务指标(DuckDB)】\n" + "\n".join(lines)
+    return "【知识库·关键业务指标】\n" + "\n".join(lines)
 
 
 def _anomaly_block() -> str:
@@ -138,7 +138,7 @@ def _anomaly_block() -> str:
                     f"{r['detail']}(规则:{r['rule']})"
                     for r in rows
                 ]
-                return "【异常预警(PostgreSQL)】\n" + "\n".join(lines)
+                return "【知识库·异常预警】\n" + "\n".join(lines)
         except Exception:
             pass
     anomalies = _safe_query(
@@ -150,7 +150,7 @@ def _anomaly_block() -> str:
         f"- [{a['level']}] {a['scope']} · {a['metric']}:{a['detail']}"
         for a in anomalies
     ]
-    return "【异常预警(DuckDB)】\n" + "\n".join(lines)
+    return "【知识库·异常预警】\n" + "\n".join(lines)
 
 
 def _orders_block(question: str) -> str:
@@ -182,7 +182,7 @@ def _orders_block(question: str) -> str:
         f"订单={r['orders']}笔,件数={r['units']},GMV={_fmt_num(r['gmv'])},退款={_fmt_num(r['refund_amt'])}"
         for r in rows
     ]
-    return "【订单/销售明细(PostgreSQL·dwd_sales_detail)】\n" + "\n".join(lines)
+    return "【知识库·订单/销售明细】\n" + "\n".join(lines)
 
 
 def _inventory_block(question: str) -> str:
@@ -228,7 +228,7 @@ def _inventory_block(question: str) -> str:
                     "- " + ", ".join(f"{k}={r.get(k)}" for k in keys)
                     for r in rows
                 ]
-                return f"【库存快照(PostgreSQL·{name})】\n" + "\n".join(lines)
+                return "【知识库·库存快照】\n" + "\n".join(lines)
     return ""
 
 
@@ -240,7 +240,7 @@ def gather_knowledge(question: str, top_k: int = 3, *, user=None) -> str:
     docs = rag_retrieve(question, top_k=top_k)
     if docs:
         lines = [f"- [{d['kind']}] {d['title']}:{d['content']}" for d in docs]
-        blocks.append("【制度/SOP/规则(RAG 检索)】\n" + "\n".join(lines))
+        blocks.append("【知识库·制度/SOP/规则】\n" + "\n".join(lines))
 
     # 第5层 本体图谱:相关实体与关系子图(AGE)
     gb = graph_knowledge.search_graph(question).get("card")

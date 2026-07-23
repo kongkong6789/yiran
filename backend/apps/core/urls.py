@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import auth_views, team_views, views
+from . import auth_views, task_templates, team_views, views
 
 urlpatterns = [
     path("health/", views.health, name="health"),
@@ -42,6 +42,9 @@ urlpatterns = [
     path("task-results/<str:trace_id>/follow-ups/", views.task_result_follow_up, name="task-result-follow-up"),
     path("task-results/<str:trace_id>/attention/<str:item_id>/resolve/", views.task_attention_resolve, name="task-attention-resolve"),
     path("tasks/", views.work_tasks, name="work-tasks"),
+    path("task-templates/", task_templates.task_templates, name="task-templates"),
+    path("task-templates/<str:template_key>/", task_templates.task_template_detail, name="task-template-detail"),
+    path("task-templates/<str:template_key>/duplicate/", task_templates.task_template_duplicate, name="task-template-duplicate"),
     path("automations/", views.work_automations, name="work-automations"),
     path("automations/<int:automation_id>/", views.work_automation_detail, name="work-automation-detail"),
     path("tasks/<str:trace_id>/", views.work_task_detail, name="work-task-detail"),
