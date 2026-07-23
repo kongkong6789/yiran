@@ -115,6 +115,15 @@ class SkillAsset(models.Model):
     )
     package_manifest = models.JSONField("包文件清单", default=list, blank=True)
     skill_md_key = models.CharField("SKILL.md COS Key", max_length=512, blank=True, default="")
+    sop_callable = models.BooleanField("可用于 SOP", default=False, db_index=True)
+    action_key = models.CharField(
+        "SOP 动作键",
+        max_length=96,
+        blank=True,
+        default="",
+        help_text="为空时自动使用 skill:<asset_id>",
+    )
+    sop_high_risk = models.BooleanField("SOP 高风险（需确认）", default=False)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 

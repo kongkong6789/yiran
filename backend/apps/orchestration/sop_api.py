@@ -16,15 +16,23 @@ from apps.core.organizations import ensure_current_organization, is_organization
 from apps.council import llm
 from apps.ontology.registry import get_action, list_actions
 
-from .models import SopDefinition, SopVersion
+from .models import SopDefinition, SopNodeRun, SopRun, SopVersion
 from .sop_schema import graph_hash, validate_graph
+from .skill_actions import is_skill_action
 
 
-def _available_catalog(organization) -> dict:
+def _known_action(name: str) -> bool:
+    text = str(name or "").strip()
+    return bool(text and (get_action(text) or is_skill_action(text)))
+
+
+def _available_catalog(organization, user=None) -> dict:
     """Assets + actions the editor/AI can bind."""
     from apps.datalake.models import SourceSnapshot
 
-    actions = list_actions()
+    from .action_catalog import list_catalog_actions
+
+    actions = list_catalog_actions(user=user, sop_ready_only=True)
     assets: list[dict] = []
     seen: set[str] = set()
     rows = (
@@ -55,7 +63,7 @@ def _pick_action_name(text: str, *, fallback: str = "", actions: list[dict] | No
     names = {str(item.get("name") or "") for item in catalog}
 
     def ok(name: str) -> str:
-        return name if name and (name in names or get_action(name)) else ""
+        return name if name and (name in names or get_action(name) or is_skill_action(name)) else ""
 
     if any(word in blob for word in ("库存", "补货", "缺货")):
         for name in ("inventory.reorder.shadow", "inventory.risk_scan"):
@@ -152,7 +160,7 @@ def _autofill_graph_bindings(
 
         if node_type in {"execute_action", "gate"}:
             action_name = str(config.get("action_name") or "").strip()
-            if not action_name or not get_action(action_name):
+            if not action_name or not _known_action(action_name):
                 action_name = _pick_action_name(hint, fallback=draft_action, actions=actions)
                 config["action_name"] = action_name
             allowed = [str(item) for item in (config.get("allowed_actions") or [])]
@@ -414,7 +422,7 @@ def _normalize_node_actions(graph: dict, fallback_action: str = "") -> dict:
             continue
         config = node.get("config") if isinstance(node.get("config"), dict) else {}
         action_name = str(config.get("action_name") or "").strip()
-        if action_name and not get_action(action_name):
+        if action_name and not _known_action(action_name):
             config["action_name"] = fallback
             allowed = [str(item) for item in (config.get("allowed_actions") or [])]
             allowed = [item for item in allowed if not item.startswith("call_action:")]
@@ -716,7 +724,7 @@ def _fallback_rewrite(instruction: str, draft: dict, target_node_key: str = "", 
             node["config"] = config
         if node.get("type") == "execute_action" and any(word in text for word in ("周报", "报告", "分析")):
             action_name = str(config.get("action_name") or result.get("actionName") or "report.generate")
-            if not get_action(action_name):
+            if not _known_action(action_name):
                 action_name = "report.generate" if get_action("report.generate") else action_name
             config["action_name"] = action_name
             if "周报" in text:
@@ -889,9 +897,149 @@ def _tool_step(name: str, summary: str, status: str = "ok") -> dict:
     return {"name": name, "summary": summary, "status": status}
 
 
+def _looks_like_consult(instruction: str) -> bool:
+    """True when the user is asking about capabilities / explaining, not editing the graph."""
+    text = str(instruction or "").strip()
+    text = re.sub(r"^【[^】]*】\s*", "", text).strip()
+    if not text:
+        return False
+    # Explicit edit intents win.
+    if any(token in text for token in (
+        "改成", "修改流程", "调整流程", "重写流程", "重建", "增加步骤", "添加步骤",
+        "删除步骤", "去掉一步", "加上一步", "插入", "换成", "生成流程", "创建流程",
+        "优化整条", "帮我改", "把步骤",
+    )):
+        return False
+    ask_tokens = (
+        "有哪些", "哪些技能", "哪些能力", "什么技能", "什么能力", "可用技能", "可用能力",
+        "业务能力", "怎么用", "如何用", "是什么", "说明一下", "解释一下", "当前流程",
+        "支持哪些", "能做什么", "有没有", "哪些动作", "技能列表", "能力列表", "怎么试跑",
+        "什么意思", "为什么", "是否",
+    )
+    if any(token in text for token in ask_tokens):
+        return True
+    if text.endswith(("?", "？", "吗", "呢", "么")):
+        return True
+    if re.search(r"(吗|呢|么)\s*[？?]?$", text):
+        return True
+    return False
+
+
+def _format_consult_catalog(*, actions: list, assets: list, draft: dict, graph: dict) -> str:
+    action_lines = []
+    for item in actions[:24]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        title = str(item.get("title") or name).strip()
+        desc = str(item.get("description") or "").strip()
+        group = str(item.get("group") or item.get("source") or "").strip()
+        if not name:
+            continue
+        suffix = f"（{group}）" if group else ""
+        action_lines.append(f"- **{title}** `{name}`{suffix}" + (f"：{desc[:80]}" if desc else ""))
+    node_titles = [
+        str(node.get("title") or node.get("key") or "")
+        for node in (graph.get("nodes") or [])
+        if isinstance(node, dict)
+    ]
+    bound = str(draft.get("actionName") or "").strip()
+    parts = []
+    if action_lines:
+        parts.append("当前可用业务能力/技能：\n" + "\n".join(action_lines))
+    else:
+        parts.append("当前没有可绑定的业务能力（请先在技能中心启用并勾选「可用于 SOP」）。")
+    if node_titles:
+        parts.append("当前流程步骤：\n" + "\n".join(f"{index + 1}. {title}" for index, title in enumerate(node_titles)))
+    if bound:
+        parts.append(f"流程当前绑定动作：`{bound}`。如需替换或新增步骤，直接说「把第 X 步改成…」即可。")
+    else:
+        parts.append("如需改流程，直接说要增加/替换哪一步即可；本次咨询不会自动改画布。")
+    if assets:
+        parts.append(f"当前可选企业数据资产 {min(len(assets), 40)} 项（试跑/绑定时可选用）。")
+    return "\n\n".join(parts)
+
+
+def _consult_sop_response(*, instruction: str, draft: dict, graph: dict, catalog: dict, user) -> Response:
+    actions = catalog.get("availableActions") or []
+    assets = catalog.get("availableAssets") or []
+    tools = [
+        _tool_step("read_graph", f"读取当前流程（{len(graph.get('nodes') or [])} 步）"),
+        _tool_step("list_actions", f"查阅可用能力（{len(actions)} 项）"),
+    ]
+    fallback_assistant = _format_consult_catalog(actions=actions, assets=assets, draft=draft, graph=graph)
+    if not llm.llm_available(user):
+        tools.append(_tool_step("answer", "基于能力目录直接回答"))
+        return Response({
+            "assistant": fallback_assistant[:1200],
+            "draft": draft,
+            "model": "catalog",
+            "scope": "consult",
+            "changed": False,
+            "tools": tools,
+        })
+
+    system = (
+        "你是 SOP 编辑助手。用户在咨询问题，不是要求修改流程。"
+        "只返回一个 JSON 对象：{\"assistant\":\"中文回答\",\"changed\":false}。"
+        "根据 availableActions / availableAssets / currentDraft 回答："
+        "有哪些可用技能/业务能力、当前流程在做什么、如何试跑等。"
+        "禁止返回 graph，禁止改节点/边/名称。回答简洁，可用列表。"
+        "若用户其实想改流程，在回答末尾提示他们用明确改法（如「增加一步推送」），但本次仍不要改图。"
+    )
+    payload_text = json.dumps({
+        "instruction": instruction,
+        "currentDraft": {
+            "name": draft.get("name"),
+            "actionName": draft.get("actionName"),
+            "description": draft.get("description"),
+            "graphSummary": [
+                {"key": node.get("key"), "type": node.get("type"), "title": node.get("title")}
+                for node in (graph.get("nodes") or []) if isinstance(node, dict)
+            ],
+        },
+        "availableActions": actions[:40],
+        "availableAssets": [
+            {"asset_key": row.get("asset_key"), "display_name": row.get("display_name")}
+            for row in (assets[:20] if isinstance(assets, list) else [])
+            if isinstance(row, dict)
+        ],
+    }, ensure_ascii=False)
+    result = llm.chat_messages_result(
+        system,
+        [{"role": "user", "content": payload_text}],
+        temperature=0.2,
+        max_tokens=1200,
+        timeout=45,
+        llm_user=user,
+        allow_images=False,
+    )
+    tools.append(_tool_step("answer", "回答咨询，不修改流程"))
+    assistant = fallback_assistant
+    if result.get("content"):
+        try:
+            generated = _extract_json_object(str(result["content"]))
+            assistant = str(generated.get("assistant") or "").strip() or fallback_assistant
+        except (ValueError, json.JSONDecodeError):
+            # Model may return plain text for Q&A — accept it.
+            plain = str(result.get("content") or "").strip()
+            if plain and not plain.startswith("{"):
+                assistant = plain[:1200]
+    return Response({
+        "assistant": assistant[:1200],
+        "draft": draft,
+        "model": result.get("model") or "consult",
+        "scope": "consult",
+        "changed": False,
+        "tools": tools,
+    })
+
+
 def _visible_sops(organization):
-    return SopDefinition.objects.filter(Q(organization=organization) | Q(organization__isnull=True)).order_by(
-        "business_domain", "name"
+    return (
+        SopDefinition.objects.filter(Q(organization=organization) | Q(organization__isnull=True))
+        .exclude(status=SopDefinition.Status.ARCHIVED)
+        .order_by("business_domain", "name")
     )
 
 
@@ -926,6 +1074,13 @@ def _sop_payload(row: SopDefinition, user, *, include_graph: bool = False) -> di
     draft = row.versions.filter(status=SopVersion.Status.DRAFT).order_by("-created_at").first() if editable else None
     selected = draft or current
     success_rate = round((row.success_count / row.call_count) * 100, 1) if row.call_count else 0
+    pending_evolution = row.evolution_proposals.exclude(
+        status__in=[
+            "accepted",
+            "rejected",
+            "expired",
+        ]
+    ).count()
     payload = {
         "id": row.id,
         "key": row.sop_key,
@@ -940,7 +1095,9 @@ def _sop_payload(row: SopDefinition, user, *, include_graph: bool = False) -> di
         "hasDraft": bool(draft),
         "draftVersion": draft.version if draft else None,
         "callCount": row.call_count,
+        "trialCount": row.trial_count,
         "successRate": success_rate,
+        "pendingEvolutionCount": pending_evolution,
         "nodeCount": len((selected.graph or {}).get("nodes") or []) if selected else 0,
         "updatedAt": row.updated_at.isoformat(),
     }
@@ -993,9 +1150,21 @@ def sop_ai_rewrite(request):
     target_keys = _resolve_target_keys(request.data if isinstance(request.data, dict) else {}, current_graph)
     edit_scope = "flow" if not target_keys else ("node" if len(target_keys) == 1 else "nodes")
     node_count = len((current_graph.get("nodes") or []))
-    catalog = _available_catalog(organization)
+    catalog = _available_catalog(organization, user=request.user)
     available_actions = catalog["availableActions"]
     available_assets = catalog["availableAssets"]
+
+    mode = str(request.data.get("mode") or "").strip().lower()
+    if mode == "consult" or (mode != "edit" and not images and _looks_like_consult(instruction)):
+        # Keep draft unchanged for Q&A / capability questions.
+        draft_out = draft if isinstance(draft, dict) else {}
+        return _consult_sop_response(
+            instruction=instruction,
+            draft=draft_out,
+            graph=current_graph if isinstance(current_graph, dict) else {},
+            catalog=catalog,
+            user=request.user,
+        )
 
     def _finalize_graph(graph: dict) -> dict:
         filled = _autofill_graph_bindings(
@@ -1135,6 +1304,7 @@ config 必须包含：
 2. 每个非终止节点都必须有出边，整条链路必须从 start 连到 terminals，禁止孤立节点。
 3. 节点 key 稳定且使用小写英文、数字、点、下划线或短横线；不要生成环。
 4. data_bind / execute_action 节点不要把企业数据留空；按用户意图从 availableAssets 选择。
+5. 若用户只是询问「有哪些技能/能力/怎么用」而没有明确改流程，不要改 graph，assistant 直接回答，并可在 JSON 加 "changed": false（仍需返回原 graph 原样）。
 若用户附带了图片，先理解图中的流程/表单/白板，再生成或修改整条 SOP。
 assistant 用简短中文说明本次修改、已绑定的企业数据/业务能力，以及仍需用户确认的信息。"""
     compact_history = [
@@ -1166,6 +1336,18 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
         return _soft_fallback(str(result.get("error") or "模型未返回内容，改用本地编排工具"))
     try:
         generated = _extract_json_object(str(result["content"]))
+        if generated.get("changed") is False:
+            return Response({
+                "assistant": str(generated.get("assistant") or "这是说明，未修改流程。")[:1200],
+                "draft": draft,
+                "model": result.get("model") or "",
+                "scope": "consult",
+                "changed": False,
+                "tools": [
+                    _tool_step("read_graph", f"读取当前流程（{node_count} 步）"),
+                    _tool_step("answer", "回答咨询，不修改流程"),
+                ],
+            })
         graph = _finalize_graph(_merge_flow_graph(
             current_graph,
             generated.get("graph") or current_graph,
@@ -1194,7 +1376,7 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
         except (ValueError, json.JSONDecodeError):
             return _soft_fallback("模型返回结构不完整，改用本地编排工具")
     action_name = str(generated.get("actionName") or draft.get("actionName") or "").strip()
-    if action_name and not get_action(action_name):
+    if action_name and not _known_action(action_name):
         action_name = str(draft.get("actionName") or "")
     if not action_name:
         action_name = _pick_action_name(instruction, fallback="", actions=available_actions)
@@ -1218,6 +1400,7 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
         "draft": revised,
         "model": result.get("model") or "",
         "scope": "flow",
+        "changed": True,
         "tools": tools,
     })
 
@@ -1235,7 +1418,7 @@ def sops(request):
     action_name = str(data.get("actionName") or "").strip()
     if not key or not name:
         return Response({"error": "SOP ID 和名称不能为空。"}, status=400)
-    if action_name and not get_action(action_name):
+    if action_name and not _known_action(action_name):
         return Response({"error": "绑定的动作契约不存在。"}, status=400)
     if SopDefinition.objects.filter(organization=organization, sop_key=key).exists():
         return Response({"error": "当前工作区已存在相同 SOP ID。"}, status=400)
@@ -1270,9 +1453,15 @@ def sop_detail(request, sop_key: str):
     if not _can_edit(sop, request.user):
         return Response({"error": "系统 SOP 请先复制到当前工作区后编辑。"}, status=403)
     if request.method == "DELETE":
-        sop.status = SopDefinition.Status.ARCHIVED
-        sop.updated_by = request.user
-        sop.save(update_fields=["status", "updated_by", "updated_at"])
+        if sop.is_system:
+            return Response({"error": "系统画廊 SOP 不能删除，请复制到工作区后再管理。"}, status=403)
+        # Hard-delete org SOP: clear protected run rows first, then cascade versions.
+        with transaction.atomic():
+            version_ids = list(sop.versions.values_list("id", flat=True))
+            run_qs = SopRun.objects.filter(version_id__in=version_ids)
+            SopNodeRun.objects.filter(run_id__in=run_qs.values_list("id", flat=True)).delete()
+            run_qs.delete()
+            sop.delete()
         return Response(status=204)
     for field, key, limit in [
         ("name", "name", 128), ("business_domain", "businessDomain", 64),
@@ -1280,7 +1469,7 @@ def sop_detail(request, sop_key: str):
     ]:
         if key in request.data:
             setattr(sop, field, str(request.data.get(key) or "")[:limit])
-    if sop.action_name and not get_action(sop.action_name):
+    if sop.action_name and not _known_action(sop.action_name):
         return Response({"error": "绑定的动作契约不存在。"}, status=400)
     sop.updated_by = request.user
     sop.save()

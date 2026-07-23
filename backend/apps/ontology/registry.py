@@ -22,6 +22,8 @@ class ActionContract:
     to_state: str | None = None                              # 执行后状态
     budget_field: str | None = None    # 预算校验所看的金额字段
     high_risk: bool = False            # 是否高风险(触发人工审批)
+    # SOP 编辑器 / 试跑是否已真正接通；False 表示仅契约占位，不应出现在可选能力里
+    sop_ready: bool = False
 
 
 # 业务对象定义:对象 -> 状态机
@@ -46,6 +48,11 @@ OBJECTS: dict[str, dict[str, Any]] = {
         "states": ["draft", "completed", "blocked"],
         "initial": "draft",
     },
+    "notification": {
+        "title": "用户通知",
+        "states": ["draft", "confirmed", "sent", "blocked"],
+        "initial": "draft",
+    },
 }
 
 # 角色与预算上限(权限继承 & 预算约束)
@@ -56,6 +63,7 @@ ROLE_BUDGET = {
 }
 
 # 可执行动作契约注册表
+# sop_ready=True：SOP 编辑器/试跑已接通；其余仅为后续对接占位，不对用户展示为可用能力
 ACTIONS: dict[str, ActionContract] = {
     "inventory.reorder.shadow": ActionContract(
         name="inventory.reorder.shadow",
@@ -67,6 +75,7 @@ ACTIONS: dict[str, ActionContract] = {
         from_states=["draft"],
         to_state="completed",
         high_risk=False,
+        sop_ready=True,
     ),
     "report.generate": ActionContract(
         name="report.generate",
@@ -78,6 +87,7 @@ ACTIONS: dict[str, ActionContract] = {
         from_states=["draft"],
         to_state="published",
         high_risk=False,
+        sop_ready=True,
     ),
     "price_change.apply": ActionContract(
         name="price_change.apply",
@@ -90,6 +100,7 @@ ACTIONS: dict[str, ActionContract] = {
         to_state="applied",
         budget_field=None,
         high_risk=True,
+        sop_ready=False,
     ),
     "purchase.create": ActionContract(
         name="purchase.create",
@@ -102,6 +113,7 @@ ACTIONS: dict[str, ActionContract] = {
         to_state="submitted",
         budget_field="amount",
         high_risk=True,
+        sop_ready=False,
     ),
     "jackyun.sync": ActionContract(
         name="jackyun.sync",
@@ -113,6 +125,19 @@ ACTIONS: dict[str, ActionContract] = {
         from_states=[],
         to_state=None,
         high_risk=False,
+        sop_ready=False,
+    ),
+    "notify.push": ActionContract(
+        name="notify.push",
+        title="推送给用户",
+        object_type="notification",
+        connector="internal",
+        required_fields={"destination": "str", "content": "str"},
+        required_roles=["operator", "manager", "director"],
+        from_states=["draft", "confirmed"],
+        to_state="sent",
+        high_risk=True,
+        sop_ready=True,
     ),
 }
 
@@ -121,9 +146,11 @@ def get_action(name: str) -> ActionContract | None:
     return ACTIONS.get(name)
 
 
-def list_actions() -> list[dict]:
+def list_actions(*, sop_ready_only: bool = False) -> list[dict]:
     out = []
     for a in ACTIONS.values():
+        if sop_ready_only and not a.sop_ready:
+            continue
         out.append(
             {
                 "name": a.name,
@@ -136,6 +163,7 @@ def list_actions() -> list[dict]:
                 "to_state": a.to_state,
                 "budget_field": a.budget_field,
                 "high_risk": a.high_risk,
+                "sop_ready": a.sop_ready,
             }
         )
     return out

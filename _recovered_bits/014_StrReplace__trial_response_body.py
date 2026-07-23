@@ -1,0 +1,1 @@
+    return Response(_trial_response_body(sop, row, result, graph=graph))

@@ -365,6 +365,8 @@ def resume_approval(approval_id: int, *, approve: bool, approver: str = "manager
     }
 
 
-def catalog() -> dict:
-    """可供前端展示的可执行动作目录。"""
-    return {"actions": list_actions()}
+def catalog(user=None) -> dict:
+    """SOP / 编排前端可选动作：内置已接通能力 + 用户启用的 SOP 技能。"""
+    from .action_catalog import list_catalog_actions
+
+    return {"actions": list_catalog_actions(user=user, sop_ready_only=True)}

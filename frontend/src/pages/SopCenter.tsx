@@ -17,10 +17,14 @@ import {
   PaperClipOutlined,
   PlayCircleOutlined,
   PlusOutlined,
+  ReloadOutlined,
   SaveOutlined,
   SendOutlined,
   ShoppingOutlined,
   StopOutlined,
+  ThunderboltOutlined,
+  UndoOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
 import {
   Background,
@@ -39,25 +43,36 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { App, Avatar, Button, Dropdown, Empty, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { App, Avatar, Button, Dropdown, Empty, Image, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip } from "antd";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
+  analyzeSopEvolution,
+  acceptSopEvolutionProposal,
   createSop,
   createSopVersion,
+  deleteSop,
+  draftSopEvolutionProposal,
   duplicateSop,
   getCatalog,
   getMe,
   getMetricContracts,
   getSop,
+  getSopRun,
   getSopVersion,
   getSourceSnapshots,
   listKnowledgeBases,
+  listSopEvolutionProposals,
+  listSopEvolutionSignals,
+  listSopRuns,
   listSops,
   listSopVersions,
   publishSopVersion,
+  rejectSopEvolutionProposal,
   rewriteSopWithAi,
+  trialSopEvolutionProposal,
+  trialSopVersion,
+  trialSopVersionStream,
   updateSop,
   updateSopVersion,
   type ActionContract,
@@ -65,10 +80,14 @@ import {
   type KnowledgeBaseItem,
   type SopDefinitionItem,
   type SopDraftPayload,
+  type SopEvolutionProposalItem,
+  type SopEvolutionSignalItem,
   type SopGraphNode,
+  type SopRunItem,
   type SopVersionItem,
 } from "../api/client";
 import { authenticatedAvatarUrl } from "../utils/avatar";
+import ChatMarkdown from "../components/ChatMarkdown";
 import SopBusinessNodePanel, { buildDataAssetOptions, fieldLabel, normalizeFieldKeys, type DataAssetOption } from "./sopBusinessPanel";
 
 const SOP_AI_AVATAR_URL =
@@ -86,6 +105,35 @@ const EMPTY_BINDINGS = {
 const EMPTY_KNOWLEDGE = {
   knowledge_base_ids: [] as number[],
   retrieval_hint: "",
+};
+
+const SOP_RUN_STATUS_LABEL: Record<string, string> = {
+  running: "运行中",
+  need_input: "等待输入",
+  completed: "已完成",
+  failed: "失败",
+  handoff: "转人工",
+};
+
+const SOP_SIGNAL_LABEL: Record<string, string> = {
+  need_input_loop: "反复等待输入",
+  checkpoint_reject: "确认驳回",
+  action_fail: "动作失败",
+  handoff: "转人工",
+  slow_node: "节点偏慢",
+  unused_branch: "冷门分支",
+  missing_field_repeat: "字段反复缺失",
+};
+
+const SOP_PROPOSAL_STATUS: Record<string, string> = {
+  proposed: "已提出",
+  validated: "已校验",
+  trial_passed: "试跑通过",
+  trial_failed: "试跑失败",
+  drafted: "已生成草稿",
+  accepted: "已采纳",
+  rejected: "已拒绝",
+  expired: "已过期",
 };
 
 const EMPTY_NODE_CONFIG = (actionName = "report.generate") => ({
@@ -168,7 +216,45 @@ const EMPTY_DRAFT: SopDraftPayload = {
   graph: EMPTY_GRAPH,
 };
 
-type SopToolStep = { name: string; summary: string; status: "ok" | "failed" | "running" };
+type SopToolStep = { name: string; summary: string; status: "ok" | "failed" | "running" | "waiting" };
+type TrialLog = { time: string; text: string; status: "ok" | "failed" | "running" | "waiting" };
+type TrialArtifact = {
+  id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  content: string;
+};
+type TrialPendingConfirm = {
+  kind: string;
+  nodeKey: string;
+  title: string;
+  instruction: string;
+  missing?: string[];
+};
+type TrialRunState = {
+  status: "running" | "completed" | "failed" | "awaiting_confirm";
+  total: number;
+  current: number;
+  currentTitle: string;
+  logs: TrialLog[];
+  startedAt?: number;
+  durationSec?: number;
+  outputLabel?: string;
+  artifacts?: TrialArtifact[];
+  note?: string;
+  pushedToUser?: boolean;
+  involvesPush?: boolean;
+  pendingConfirm?: TrialPendingConfirm;
+};
+type FlowChangeInfo = {
+  added: string[];
+  removed: string[];
+  modified: string[];
+  chain: string[];
+  applied: boolean;
+  undone?: boolean;
+};
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -177,6 +263,10 @@ type ChatMessage = {
   images?: string[];
   tools?: SopToolStep[];
   toolsLive?: boolean;
+  trial?: TrialRunState;
+  flowChange?: FlowChangeInfo;
+  undoDraft?: SopDraftPayload;
+  createdAt?: number;
 };
 type FlowNodeData = {
   kind: "meta" | "step";
@@ -190,16 +280,274 @@ type FlowNodeData = {
 };
 
 function mapToolStatus(status?: string): SopToolStep["status"] {
-  if (status === "failed" || status === "running") return status;
+  if (status === "failed" || status === "running" || status === "waiting") return status;
   return "ok";
+}
+
+function isTrialIntent(text: string): boolean {
+  const value = text.trim().replace(/^【[^】]*】\s*/, "").trim();
+  if (!value || value.length > 64) return false;
+  // Explicit edit requests should not be hijacked by the word “试跑”.
+  if (/(改成|增加步骤|删除步骤|修改流程|调整流程|重写流程|换成|加上一步|去掉一步)/.test(value)) {
+    return false;
+  }
+  return /(试跑|试运行|跑一[下遍]|跑流程|执行(一下|一遍)?(这个|本|当前)?流程|帮我跑|直接跑|dry[\s-]?run|(^|\s)run(\s|$))/i.test(value);
+}
+
+function isConsultIntent(text: string): boolean {
+  const value = text.trim().replace(/^【[^】]*】\s*/, "").trim();
+  if (!value) return false;
+  if (/(改成|修改流程|调整流程|重写流程|重建|增加步骤|添加步骤|删除步骤|去掉一步|加上一步|插入|换成|生成流程|创建流程|优化整条|帮我改|把步骤)/.test(value)) {
+    return false;
+  }
+  if (/(有哪些|哪些技能|哪些能力|什么技能|什么能力|可用技能|可用能力|业务能力|怎么用|如何用|是什么|说明一下|解释一下|当前流程|支持哪些|能做什么|有没有|哪些动作|技能列表|能力列表|怎么试跑|什么意思|为什么)/.test(value)) {
+    return true;
+  }
+  return /[吗呢么？?]\s*$/.test(value);
+}
+
+const SOP_TOOL_LABELS: Record<string, string> = {
+  read_graph: "读取当前流程",
+  read_intent: "理解你的意图",
+  list_actions: "查阅可用业务能力",
+  answer: "回答问题",
+  rewrite_flow: "改写整条流程",
+  rewrite_nodes: "修改选中步骤",
+  llm_rewrite: "调用模型改写",
+  validate_graph: "校验流程连线",
+  bind_assets: "绑定企业数据",
+  bind_actions: "绑定业务能力",
+  apply_draft: "写入流程草稿",
+  scaffold_flow: "搭建流程步骤",
+  repair_json: "修复流程结构",
+};
+
+function formatSopToolLabel(tool: { name: string; summary?: string }): string {
+  const friendly = SOP_TOOL_LABELS[tool.name] || tool.summary || tool.name;
+  const summary = String(tool.summary || "").trim();
+  if (summary && summary !== friendly && !friendly.includes(summary)) {
+    return `${friendly} · ${summary}`;
+  }
+  return friendly;
+}
+
+function errorText(error: unknown, fallback: string) {
+  const err = error as {
+    code?: string;
+    response?: { status?: number; data?: { error?: string; detail?: string; message?: string } };
+    message?: string;
+  };
+  const data = err?.response?.data;
+  const fromApi = data?.error || data?.detail || data?.message;
+  if (fromApi) return String(fromApi);
+  if (err?.code === "ECONNABORTED" || /timeout/i.test(String(err?.message || ""))) {
+    return "试跑超时了。流程执行可能仍在后台完成，请稍后重试或简化流程后再跑。";
+  }
+  if (err?.response?.status === 404) return "试跑接口不存在，请确认后端已重启。";
+  if (err?.message && /network|failed/i.test(err.message)) return `网络异常：${err.message}`;
+  return fallback;
+}
+
+function defaultWelcome(name?: string, nodes: SopGraphNode[] = []): ChatMessage {
+  const titles = nodes.map((node) => node.title).filter(Boolean);
+  const list = titles.length
+    ? titles.map((title, index) => `${index + 1}. ${title}`).join("\n")
+    : "1. 先描述目标，我会帮你生成步骤";
+  return {
+    id: "welcome",
+    role: "assistant",
+    createdAt: Date.now(),
+    content: name
+      ? `已加载「${name}」。\n\n当前流程包含：\n${list}\n\n你可以：\n- 修改任意步骤\n- 直接描述需求\n- 上传流程截图\n- 说「跑一遍流程」试跑`
+      : `你好，我是流程协作助手。\n\n当前还是空白流程，你可以：\n${list}\n\n也可以上传截图，或直接说「跑一遍流程」验证。`,
+  };
+}
+
+function diffFlowChange(before: SopDraftPayload, after: SopDraftPayload): Omit<FlowChangeInfo, "applied" | "undone"> {
+  const beforeMap = new Map(before.graph.nodes.map((node) => [node.key, node]));
+  const afterMap = new Map(after.graph.nodes.map((node) => [node.key, node]));
+  const added: string[] = [];
+  const removed: string[] = [];
+  const modified: string[] = [];
+  after.graph.nodes.forEach((node) => {
+    const prev = beforeMap.get(node.key);
+    if (!prev) added.push(node.title || node.key);
+    else if (JSON.stringify(prev) !== JSON.stringify(node)) modified.push(node.title || node.key);
+  });
+  before.graph.nodes.forEach((node) => {
+    if (!afterMap.has(node.key)) removed.push(node.title || node.key);
+  });
+  return {
+    added,
+    removed,
+    modified,
+    chain: after.graph.nodes.map((node) => node.title || node.key),
+  };
+}
+
+function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes: SopGraphNode[] = []): ChatMessage[] {
+  const rows = version?.editorChat;
+  if (!Array.isArray(rows) || !rows.length) return [defaultWelcome(fallbackName, nodes)];
+  const restored = rows
+    .filter((item) => item && (item.role === "user" || item.role === "assistant") && String(item.content || "").trim())
+    .map((item, index) => {
+      const rawTrial = (item as { trial?: TrialRunState }).trial;
+      const rawChange = (item as { flowChange?: FlowChangeInfo }).flowChange;
+      return {
+        id: item.id || `restored-${index}`,
+        role: item.role,
+        content: item.content,
+        model: item.model,
+        images: item.images,
+        tools: (item.tools || []).map((tool) => ({
+          name: tool.name,
+          summary: tool.summary,
+          status: mapToolStatus(tool.status),
+        })),
+        trial: rawTrial && typeof rawTrial === "object"
+          ? {
+              status: rawTrial.status === "running"
+                ? "completed"
+                : (rawTrial.status === "awaiting_confirm" ? "awaiting_confirm" : (rawTrial.status || "completed")),
+              total: Number(rawTrial.total) || 0,
+              current: Number(rawTrial.current) || 0,
+              currentTitle: String(rawTrial.currentTitle || ""),
+              durationSec: Number(rawTrial.durationSec) || undefined,
+              outputLabel: rawTrial.outputLabel ? String(rawTrial.outputLabel) : undefined,
+              note: rawTrial.note ? String(rawTrial.note) : undefined,
+              involvesPush: typeof rawTrial.involvesPush === "boolean" ? rawTrial.involvesPush : undefined,
+              pushedToUser: typeof rawTrial.pushedToUser === "boolean" ? rawTrial.pushedToUser : undefined,
+              pendingConfirm: rawTrial.pendingConfirm && typeof rawTrial.pendingConfirm === "object"
+                ? {
+                    kind: String(rawTrial.pendingConfirm.kind || "checkpoint"),
+                    nodeKey: String(rawTrial.pendingConfirm.nodeKey || ""),
+                    title: String(rawTrial.pendingConfirm.title || "人工确认"),
+                    instruction: String(rawTrial.pendingConfirm.instruction || ""),
+                    missing: Array.isArray(rawTrial.pendingConfirm.missing)
+                      ? rawTrial.pendingConfirm.missing.map(String)
+                      : undefined,
+                  }
+                : undefined,
+              artifacts: Array.isArray(rawTrial.artifacts)
+                ? rawTrial.artifacts.map((artifact) => ({
+                    id: String(artifact.id || "artifact"),
+                    kind: String(artifact.kind || "text"),
+                    title: String(artifact.title || "产物"),
+                    summary: String(artifact.summary || ""),
+                    content: String(artifact.content || "").slice(0, 20000),
+                  }))
+                : undefined,
+              logs: Array.isArray(rawTrial.logs)
+                ? rawTrial.logs.map((log) => ({
+                    time: String(log.time || ""),
+                    text: String(log.text || ""),
+                    status: mapToolStatus(log.status),
+                  }))
+                : [],
+            }
+          : undefined,
+        flowChange: rawChange && typeof rawChange === "object"
+          ? {
+              added: Array.isArray(rawChange.added) ? rawChange.added.map(String) : [],
+              removed: Array.isArray(rawChange.removed) ? rawChange.removed.map(String) : [],
+              modified: Array.isArray(rawChange.modified) ? rawChange.modified.map(String) : [],
+              chain: Array.isArray(rawChange.chain) ? rawChange.chain.map(String) : [],
+              applied: Boolean(rawChange.applied),
+              undone: Boolean(rawChange.undone),
+            }
+          : undefined,
+      };
+    });
+  return restored.length ? restored : [defaultWelcome(fallbackName, nodes)];
+}
+
+function persistableChat(messages: ChatMessage[]) {
+  return messages
+    .filter((item) => item.id !== "welcome" || messages.length === 1)
+    .slice(-60)
+    .map((item) => ({
+      id: item.id,
+      role: item.role,
+      content: item.content,
+      model: item.model || "",
+      tools: (item.tools || []).map((tool) => ({
+        name: tool.name,
+        summary: tool.summary,
+        status: tool.status,
+      })),
+      images: (item.images || []).filter((url) => url.startsWith("http://") || url.startsWith("https://")).slice(0, 4),
+      trial: item.trial
+        ? {
+            status: item.trial.status === "running" ? "completed" : item.trial.status,
+            total: item.trial.total,
+            current: item.trial.current,
+            currentTitle: item.trial.currentTitle,
+            durationSec: item.trial.durationSec,
+            outputLabel: item.trial.outputLabel,
+            note: item.trial.note,
+            involvesPush: item.trial.involvesPush,
+            pushedToUser: item.trial.pushedToUser,
+            pendingConfirm: item.trial.pendingConfirm,
+            artifacts: (item.trial.artifacts || []).map((artifact) => ({
+              ...artifact,
+              content: artifact.content.slice(0, 12000),
+            })).slice(0, 4),
+            logs: item.trial.logs.slice(-20),
+          }
+        : undefined,
+      flowChange: item.flowChange
+        ? {
+            added: item.flowChange.added,
+            removed: item.flowChange.removed,
+            modified: item.flowChange.modified,
+            chain: item.flowChange.chain,
+            applied: item.flowChange.applied,
+            undone: item.flowChange.undone,
+          }
+        : undefined,
+    }));
+}
+
+function SopPreviewableAvatar({
+  src,
+  onError,
+}: {
+  src?: string;
+  onError?: () => boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const url = src || "";
+  return (
+    <>
+      <Avatar
+        size={32}
+        className={`sop-chat-avatar${url ? " is-previewable" : ""}`}
+        src={url || undefined}
+        icon={!url ? <UserOutlined /> : undefined}
+        onClick={() => {
+          if (url) setOpen(true);
+        }}
+        onError={onError}
+      />
+      {url ? (
+        <Image
+          wrapperStyle={{ display: "none" }}
+          src={url}
+          preview={{
+            visible: open,
+            src: url,
+            onVisibleChange: (visible) => setOpen(visible),
+          }}
+        />
+      ) : null}
+    </>
+  );
 }
 
 function SopAiAvatar() {
   const [src, setSrc] = useState(SOP_AI_AVATAR_URL);
   return (
-    <Avatar
-      size={28}
-      className="sop-chat-avatar"
+    <SopPreviewableAvatar
       src={src}
       onError={() => {
         setSrc(SOP_AI_AVATAR_FALLBACK);
@@ -209,14 +557,24 @@ function SopAiAvatar() {
   );
 }
 
+function formatChatClock(ts?: number) {
+  return new Date(ts || Date.now()).toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatTrialClock(date = new Date()) {
+  return date.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 function SopToolProcess({ tools }: { tools: SopToolStep[] }) {
   if (!tools.length) return null;
   return (
     <ul className="sop-tool-process">
       {tools.map((tool, index) => {
-        const label = tool.summary
-          ? `调用工具 ${tool.name} · ${tool.summary}`
-          : `调用工具 ${tool.name}`;
+        const label = formatSopToolLabel(tool);
         return (
           <li key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
             {tool.status === "running" && <LoadingOutlined spin />}
@@ -227,6 +585,517 @@ function SopToolProcess({ tools }: { tools: SopToolStep[] }) {
         );
       })}
     </ul>
+  );
+}
+
+function looksLikeHtmlDocument(content: string): boolean {
+  const trimmed = content.trim();
+  return /^<!doctype html|<html[\s>]/i.test(trimmed);
+}
+
+function peelEmbeddedHtml(content: string): { html: string; markdown: string } {
+  const text = String(content || "");
+  if (!text.trim()) return { html: "", markdown: "" };
+
+  const closed = text.match(/```html\s*([\s\S]*?)```/i);
+  if (closed?.[1] && looksLikeHtmlDocument(closed[1])) {
+    return {
+      html: closed[1].trim(),
+      markdown: `${text.slice(0, closed.index ?? 0)}${text.slice((closed.index ?? 0) + closed[0].length)}`.trim(),
+    };
+  }
+
+  const open = text.match(/```html\s*([\s\S]*)$/i);
+  if (open?.[1]) {
+    const candidate = open[1].replace(/```\s*$/, "").trim();
+    if (looksLikeHtmlDocument(candidate)) {
+      return {
+        html: candidate,
+        markdown: text.slice(0, open.index ?? 0).trim(),
+      };
+    }
+  }
+
+  const doc = text.match(/(<!DOCTYPE\s+html[\s\S]*?<\/html>)/i);
+  if (doc?.[1]) {
+    return {
+      html: doc[1].trim(),
+      markdown: `${text.slice(0, doc.index ?? 0)}${text.slice((doc.index ?? 0) + doc[0].length)}`
+        .replace(/```html\s*$/i, "")
+        .replace(/^```\s*/, "")
+        .trim(),
+    };
+  }
+
+  if (looksLikeHtmlDocument(text)) {
+    return { html: text.trim(), markdown: "" };
+  }
+
+  return { html: "", markdown: text };
+}
+
+function normalizeTrialArtifacts(artifacts: TrialArtifact[]): TrialArtifact[] {
+  const next: TrialArtifact[] = [];
+  const seen = new Set<string>();
+  const push = (item: TrialArtifact) => {
+    const key = `${item.kind}:${item.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    next.push(item);
+  };
+
+  artifacts.forEach((item) => {
+    const content = String(item.content || "");
+    const peeled = peelEmbeddedHtml(content);
+
+    if (item.kind === "html") {
+      const htmlContent = peeled.html || (looksLikeHtmlDocument(content) ? content.trim() : "");
+      if (htmlContent) {
+        push({
+          ...item,
+          kind: "html",
+          title: item.title.includes("HTML") ? item.title : "经营分析报告（HTML）",
+          content: htmlContent,
+        });
+      }
+      if (peeled.markdown && !looksLikeHtmlDocument(peeled.markdown)) {
+        push({
+          id: `${item.id}_md`,
+          kind: "markdown",
+          title: "经营分析报告（Markdown）",
+          summary: item.summary || "文字摘要",
+          content: peeled.markdown,
+        });
+      }
+      return;
+    }
+
+    if (peeled.html) {
+      push({
+        id: `${item.id}_html`,
+        kind: "html",
+        title: "经营分析报告（HTML）",
+        summary: item.summary || "可网页预览",
+        content: peeled.html,
+      });
+      if (peeled.markdown) {
+        push({
+          ...item,
+          kind: "markdown",
+          title: item.title.includes("Markdown") ? item.title : "经营分析报告（Markdown）",
+          content: peeled.markdown,
+        });
+      }
+      return;
+    }
+
+    push(item);
+  });
+
+  return next.sort((a, b) => Number(b.kind === "html") - Number(a.kind === "html"));
+}
+
+function extractTrialArtifacts(response: {
+  artifacts?: TrialArtifact[];
+  result?: Record<string, unknown>;
+}): TrialArtifact[] {
+  if (Array.isArray(response.artifacts) && response.artifacts.length) {
+    return normalizeTrialArtifacts(response.artifacts.map((item) => ({
+      id: String(item.id || "artifact"),
+      kind: String(item.kind || "text"),
+      title: String(item.title || "产物"),
+      summary: String(item.summary || ""),
+      content: String(item.content || ""),
+    })));
+  }
+  const nested = (response.result?.result && typeof response.result.result === "object")
+    ? response.result.result as Record<string, unknown>
+    : {};
+  const artifacts: TrialArtifact[] = [];
+  const html = String(nested.report_html || "").trim();
+  if (html) {
+    artifacts.push({
+      id: "report_html",
+      kind: "html",
+      title: "经营分析报告（HTML）",
+      summary: String(nested.user_message || `共 ${html.length} 字`),
+      content: html.slice(0, 120000),
+    });
+  }
+  const report = String(nested.report_markdown || "").trim();
+  if (report) {
+    artifacts.push({
+      id: "report_markdown",
+      kind: "markdown",
+      title: html ? "经营分析报告（Markdown）" : "经营分析报告",
+      summary: String(nested.user_message || `共 ${report.length} 字`),
+      content: report.slice(0, 20000),
+    });
+  }
+  if (nested.evidence && typeof nested.evidence === "object") {
+    artifacts.push({
+      id: "evidence",
+      kind: "evidence",
+      title: "数据证据",
+      summary: "已记录执行证据",
+      content: JSON.stringify(nested.evidence, null, 2).slice(0, 8000),
+    });
+  }
+  return normalizeTrialArtifacts(artifacts);
+}
+
+function SopTrialStatusIcon({ status }: { status: TrialRunState["status"] }) {
+  return (
+    <span className={`sop-trial-card-mark is-${status}`} aria-hidden>
+      <svg viewBox="0 0 32 32" width="34" height="34" fill="none">
+        <circle cx="16" cy="16" r="15" className="sop-trial-card-mark-bg" />
+        {/* Clean flow-graph mark: three nodes + edges */}
+        <circle cx="10.5" cy="12" r="2.35" fill="currentColor" />
+        <circle cx="21.5" cy="12" r="2.35" fill="currentColor" />
+        <circle cx="16" cy="21.2" r="2.5" fill="currentColor" />
+        <path
+          d="M12.6 13.2 14.8 18.4M19.4 13.2 17.2 18.4M12.9 12h6.2"
+          stroke="currentColor"
+          strokeWidth="1.65"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity="0.88"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function SopTrialRunCard({
+  trial,
+  onRerun,
+  onStop,
+  onConfirm,
+  onReject,
+}: {
+  trial: TrialRunState;
+  onRerun?: () => void;
+  onStop?: () => void;
+  onConfirm?: () => void;
+  onReject?: () => void;
+}) {
+  const { message } = App.useApp();
+  const [open, setOpen] = useState(true);
+  const [showResult, setShowResult] = useState(Boolean(trial.artifacts?.length));
+  const [activeArtifactId, setActiveArtifactId] = useState(trial.artifacts?.[0]?.id || "");
+  const [confirming, setConfirming] = useState(false);
+  const artifacts = normalizeTrialArtifacts(trial.artifacts || []);
+  const active = artifacts.find((item) => item.id === activeArtifactId) || artifacts[0];
+  const htmlReady = Boolean(
+    active
+    && active.kind === "html"
+    && (trial.status === "completed" || /<\/html>/i.test(active.content) || active.content.length > 800),
+  );
+
+  useEffect(() => {
+    if (trial.status !== "awaiting_confirm") setConfirming(false);
+  }, [trial.status]);
+
+  useEffect(() => {
+    if (!artifacts.length) return;
+    setShowResult(true);
+    const preferred = artifacts.find((item) => item.kind === "html") || artifacts[0];
+    if (!activeArtifactId || !artifacts.some((item) => item.id === activeArtifactId)) {
+      setActiveArtifactId(preferred.id);
+    }
+  }, [artifacts, activeArtifactId]);
+  const safeTotal = Math.max(trial.total, 1);
+  const safeCurrent = Math.min(Math.max(trial.current, 0), safeTotal);
+  // While running: show "in this step" progress, never hit 100% until completed.
+  const progress = trial.status === "completed"
+    ? 100
+    : trial.status === "awaiting_confirm"
+      ? Math.min(92, Math.round((Math.max(safeCurrent, 1) / safeTotal) * 100))
+      : Math.min(94, Math.round(((Math.max(safeCurrent, 0.5) - 0.35) / safeTotal) * 100));
+  const heading = trial.status === "completed"
+    ? "流程执行完成"
+    : trial.status === "failed"
+      ? "流程执行失败"
+      : trial.status === "awaiting_confirm"
+        ? "等待人工确认"
+        : "流程执行中";
+  const summary = trial.status === "completed"
+    ? `已完成画布流程（${trial.total} 个节点）`
+    : trial.status === "failed"
+      ? (trial.currentTitle || "执行中断")
+      : trial.status === "awaiting_confirm"
+        ? (trial.pendingConfirm?.title || trial.currentTitle || "请确认后继续")
+        : `正在执行第 ${Math.max(safeCurrent, 1)} / ${safeTotal} 个步骤：${trial.currentTitle || "准备中"}`;
+  const barWidth = trial.status === "completed"
+    ? 100
+    : trial.status === "failed"
+      ? Math.max(progress, 8)
+      : Math.max(progress, trial.status === "running" ? 8 : 12);
+  const outputText = artifacts.length
+    ? `${artifacts.length} 个产物`
+    : (trial.outputLabel || "试跑结果已生成");
+
+  const copyArtifact = async () => {
+    if (!active?.content) return;
+    try {
+      await navigator.clipboard.writeText(active.content);
+      message.success("已复制到剪贴板");
+    } catch {
+      message.error("复制失败");
+    }
+  };
+
+  const downloadArtifact = () => {
+    if (!active?.content) return;
+    const ext = active.kind === "html" ? "html" : active.kind === "markdown" ? "md" : "txt";
+    const mime = active.kind === "html" ? "text/html;charset=utf-8" : "text/plain;charset=utf-8";
+    const blob = new Blob([active.content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${active.title || "试跑产物"}.${ext}`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const openHtmlPreview = () => {
+    if (!active?.content || active.kind !== "html") return;
+    const blob = new Blob([active.content], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
+
+  return (
+    <div className={`sop-trial-card is-${trial.status}`}>
+      <div className="sop-trial-card-head">
+        <div className="sop-trial-card-title">
+          <SopTrialStatusIcon status={trial.status} />
+          <div>
+            <strong>{heading}</strong>
+            <p>{summary}</p>
+          </div>
+        </div>
+        <div className="sop-trial-card-head-actions">
+          {trial.status === "running" && onStop && (
+            <Button size="small" danger icon={<StopOutlined />} onClick={onStop}>停止</Button>
+          )}
+          <button type="button" className="sop-trial-card-detail" onClick={() => setOpen((value) => !value)}>
+            {open ? "收起详情" : "查看详情"}
+          </button>
+        </div>
+      </div>
+
+      <div className="sop-trial-card-progress">
+        <div className="sop-trial-card-bar" aria-hidden>
+          <i style={{ width: `${barWidth}%` }} />
+        </div>
+        <em>{barWidth}%</em>
+      </div>
+
+      {trial.status === "completed" && (
+        <div className="sop-trial-result-meta">
+          {typeof trial.durationSec === "number" && <span>耗时 {trial.durationSec}s</span>}
+          <span>输出 {outputText}</span>
+          {trial.pushedToUser === false && <span className="is-muted">未真实推送</span>}
+        </div>
+      )}
+
+      {(trial.status === "completed" || trial.status === "awaiting_confirm") && trial.note && (
+        <p className="sop-trial-note">{trial.note}</p>
+      )}
+
+      {trial.status === "awaiting_confirm" && trial.pendingConfirm && (
+        <div className="sop-trial-confirm-box">
+          <strong>{trial.pendingConfirm.title || "人工确认"}</strong>
+          <p>{trial.pendingConfirm.instruction || "请确认后继续执行后续步骤。"}</p>
+        </div>
+      )}
+
+      {open && (
+        <ul className="sop-trial-card-logs">
+          {trial.logs.map((log, index) => (
+            <li key={`${log.text}-${index}`} className={`is-${log.status}`}>
+              <em>{log.time}</em>
+              <span>{log.text}</span>
+              {log.status === "ok" && <CheckCircleFilled />}
+              {log.status === "running" && (
+                <b className="sop-trial-running-label"><i className="sop-trial-dot" aria-hidden />执行中</b>
+              )}
+              {log.status === "waiting" && (
+                <b className="sop-trial-waiting-label">待确认</b>
+              )}
+              {log.status === "failed" && <CloseCircleFilled />}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {showResult && (trial.status === "completed" || artifacts.length > 0) && (
+        <div className="sop-trial-artifacts">
+          <div className="sop-trial-artifacts-head">
+            <strong>{trial.status === "running" ? "正在输出产物" : "试跑产物"}</strong>
+            <button type="button" onClick={() => setShowResult(false)}>收起</button>
+          </div>
+          {artifacts.length === 0 ? (
+            <p className="sop-trial-artifacts-empty">
+              本次试跑没有可下载的报告正文。若流程未配置报告生成节点，就不会产出报告。
+            </p>
+          ) : (
+            <>
+              <div className="sop-trial-artifact-tabs">
+                {artifacts.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={active?.id === item.id ? "is-active" : undefined}
+                    onClick={() => setActiveArtifactId(item.id)}
+                  >
+                    {item.kind === "html" ? "报告预览" : item.kind === "markdown" ? "文字摘要" : item.title}
+                  </button>
+                ))}
+              </div>
+              {active && (
+                <div className="sop-trial-artifact-body">
+                  <div className="sop-trial-artifact-meta">
+                    <span>{active.summary}</span>
+                    <Space size={8}>
+                      {active.kind === "html" && htmlReady && (
+                        <Button size="small" onClick={openHtmlPreview}>新窗口预览</Button>
+                      )}
+                      <Button size="small" icon={<CopyOutlined />} onClick={() => void copyArtifact()}>复制</Button>
+                      <Button size="small" onClick={downloadArtifact}>下载</Button>
+                    </Space>
+                  </div>
+                  {active.kind === "html" ? (
+                    htmlReady ? (
+                      <div className="sop-trial-artifact-html">
+                        <iframe
+                          title={active.title || "HTML 报告预览"}
+                          sandbox="allow-scripts allow-popups"
+                          srcDoc={active.content}
+                        />
+                      </div>
+                    ) : (
+                      <div className="sop-trial-artifact-html is-loading">
+                        <LoadingOutlined /> 正在生成可预览的 HTML…
+                      </div>
+                    )
+                  ) : active.kind === "markdown" || active.kind === "notify_preview" ? (
+                    <div className="sop-trial-artifact-md">
+                      <ChatMarkdown
+                        content={active.content
+                          .replace(/```html\s*[\s\S]*?```/gi, "\n\n> HTML 正文请切换到「报告预览」页签查看。\n")
+                          .replace(/```html\s*[\s\S]*$/gi, "\n\n> HTML 正文请切换到「报告预览」页签查看。\n")}
+                        variant="report"
+                      />
+                    </div>
+                  ) : (
+                    <pre className="sop-trial-artifact-raw">{active.content}</pre>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {(trial.status === "completed" || trial.status === "failed" || trial.status === "awaiting_confirm") && (
+        <div className="sop-trial-card-actions">
+          {trial.status === "awaiting_confirm" && onConfirm && (
+            <Button
+              size="small"
+              type="primary"
+              loading={confirming}
+              onClick={() => {
+                setConfirming(true);
+                onConfirm();
+              }}
+            >
+              确认并继续
+            </Button>
+          )}
+          {trial.status === "awaiting_confirm" && onReject && (
+            <Button
+              size="small"
+              disabled={confirming}
+              onClick={onReject}
+            >
+              驳回
+            </Button>
+          )}
+          {trial.status === "completed" && (
+            <Button
+              size="small"
+              onClick={() => {
+                setShowResult(true);
+                setOpen(false);
+                const preferred = artifacts.find((item) => item.kind === "html") || artifacts[0];
+                if (preferred) setActiveArtifactId(preferred.id);
+              }}
+            >
+              查看结果
+            </Button>
+          )}
+          {onRerun && trial.status !== "awaiting_confirm" && (
+            <Button size="small" type="primary" icon={<ReloadOutlined />} onClick={onRerun}>再次运行</Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SopFlowChangeCard({
+  change,
+  onApply,
+  onUndo,
+}: {
+  change: FlowChangeInfo;
+  onApply: () => void;
+  onUndo: () => void;
+}) {
+  return (
+    <div className={`sop-flow-change-card${change.undone ? " is-undone" : ""}${change.applied ? " is-applied" : ""}`}>
+      <div className="sop-flow-change-head">
+        <strong>流程变更</strong>
+        <span>{change.undone ? "已撤销" : change.applied ? "已应用" : "待确认"}</span>
+      </div>
+      {change.added.length > 0 && (
+        <div className="sop-flow-change-block">
+          <em>+ 新增节点</em>
+          <ul>{change.added.map((item) => <li key={`a-${item}`}>{item}</li>)}</ul>
+        </div>
+      )}
+      {change.removed.length > 0 && (
+        <div className="sop-flow-change-block is-remove">
+          <em>- 删除节点</em>
+          <ul>{change.removed.map((item) => <li key={`r-${item}`}>{item}</li>)}</ul>
+        </div>
+      )}
+      {change.modified.length > 0 && (
+        <div className="sop-flow-change-block is-modify">
+          <em>~ 调整节点</em>
+          <ul>{change.modified.map((item) => <li key={`m-${item}`}>{item}</li>)}</ul>
+        </div>
+      )}
+      {change.chain.length > 0 && (
+        <div className="sop-flow-change-chain">
+          {change.chain.map((title, index) => (
+            <Fragment key={`${title}-${index}`}>
+              {index > 0 && <span>↓</span>}
+              <strong>{title}</strong>
+            </Fragment>
+          ))}
+        </div>
+      )}
+      <div className="sop-flow-change-actions">
+        <Button size="small" icon={<UndoOutlined />} disabled={change.undone || !change.applied} onClick={onUndo}>撤销</Button>
+        <Button size="small" type="primary" disabled={change.applied && !change.undone} onClick={onApply}>
+          {change.applied && !change.undone ? "已应用" : "应用修改"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -306,10 +1175,6 @@ function sopMeta(row: SopDefinitionItem) {
 function sopStatusLabel(row: SopDefinitionItem) {
   if (row.hasDraft || row.status === "draft") return "draft";
   return "published";
-}
-
-function errorText(error: unknown, fallback: string) {
-  return (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
 }
 
 function MetaNode({ data }: NodeProps<Node<FlowNodeData>>) {
@@ -630,7 +1495,20 @@ function SopStructuredSource({ draft, disabled, onChange }: {
   }, []);
 
   const actionOptions = useMemo(
-    () => actions.map((action) => ({ value: action.name, label: `${action.title} (${action.name})` })),
+    () => [
+      {
+        label: "系统能力",
+        options: actions
+          .filter((action) => (action.group || action.source || "system") !== "skill")
+          .map((action) => ({ value: action.name, label: `${action.title} (${action.name})` })),
+      },
+      {
+        label: "我的技能",
+        options: actions
+          .filter((action) => action.group === "skill" || action.source === "skill")
+          .map((action) => ({ value: action.name, label: `${action.title} (${action.name})` })),
+      },
+    ].filter((group) => group.options.length > 0),
     [actions],
   );
   const allowedActionOptions = useMemo(() => [
@@ -889,24 +1767,34 @@ function SopStructuredSource({ draft, disabled, onChange }: {
   </div>;
 }
 
-const PROMPT_CHIPS = [
-  "每周一对天猫销售做周报，先确认日期和品牌，用企业销售数据",
-  "做库存风险分析，绑定库存数据，结果异常时转人工",
-  "生成报告前增加一步人工确认",
+const QUICK_ACTIONS: Array<{ text: string; icon: "play" | "plus" | "optimize" | "structure" | "edit"; accent?: boolean }> = [
+  { text: "跑一遍流程", icon: "play", accent: true },
+  { text: "生成报告前增加一步人工确认", icon: "plus" },
+  { text: "优化整条流程，让步骤更清晰可执行", icon: "optimize" },
+  { text: "用文字说明当前流程结构", icon: "structure" },
+  { text: "帮我修改选中节点的目标与能力", icon: "edit" },
 ];
 
 const NODE_PROMPT_CHIPS = [
-  "把这一步改成先确认品牌和日期",
-  "这一步改用销售台账数据",
-  "这一步需要人工确认后再继续",
-  "写清楚这一步要完成的目标",
+  { text: "把这一步改成先确认品牌和日期", icon: "edit" as const },
+  { text: "这一步改用销售台账数据", icon: "structure" as const },
+  { text: "这一步需要人工确认后再继续", icon: "plus" as const },
+  { text: "写清楚这一步要完成的目标", icon: "edit" as const },
 ];
 
 const MULTI_PROMPT_CHIPS = [
-  "这几步都改成需要确认品牌和日期",
-  "这几步统一改用企业销售数据",
-  "这几步都加上人工确认",
+  { text: "这几步都改成需要确认品牌和日期", icon: "edit" as const },
+  { text: "这几步统一改用企业销售数据", icon: "structure" as const },
+  { text: "这几步都加上人工确认", icon: "plus" as const },
 ];
+
+function chipIcon(kind: "play" | "plus" | "optimize" | "structure" | "edit") {
+  if (kind === "play") return <PlayCircleOutlined />;
+  if (kind === "plus") return <PlusOutlined />;
+  if (kind === "optimize") return <ThunderboltOutlined />;
+  if (kind === "structure") return <BranchesOutlined />;
+  return <FileTextOutlined />;
+}
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -917,33 +1805,46 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSaved }: {
+function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMount = false, onBack, onSaved }: {
   initial: SopDraftPayload;
   record?: SopDefinitionItem;
   openVersionsOnMount?: boolean;
+  autoTrialOnMount?: boolean;
   onBack: () => void;
   onSaved: (item: SopDefinitionItem) => void;
 }) {
-  const { message } = App.useApp();
-  const navigate = useNavigate();
+  const { message, modal } = App.useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(initial);
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([{
-    id: "welcome", role: "assistant",
-    content: record
-      ? `已加载「${initial.name}」。点选步骤可单改；Ctrl/⌘+点可多选统一改；点「整条流程」则整体编辑。支持上传/粘贴图片。`
-      : "先说整条流程目标；之后可点选一步或多步局部修改。对话框支持 Ctrl+V 贴图。",
-  }]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => chatFromVersion(record?.version, initial.name, initial.graph.nodes));
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [pendingDrafts, setPendingDrafts] = useState<Record<string, SopDraftPayload>>({});
+  const chatSaveTimer = useRef<number | null>(null);
+  const messagesRef = useRef(messages);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const autoTrialDone = useRef(false);
+  const trialAbortRef = useRef<AbortController | null>(null);
+  const activeTrialMessageIdRef = useRef<string | null>(null);
+  messagesRef.current = messages;
   const [view, setView] = useState<"flow" | "source">("flow");
   const [selectedNodeKeys, setSelectedNodeKeys] = useState<string[]>([]);
   const [versions, setVersions] = useState<SopVersionItem[]>(record?.version ? [record.version] : []);
   const [selectedVersion, setSelectedVersion] = useState<SopVersionItem | undefined>(record?.version);
   const [versionOpen, setVersionOpen] = useState(Boolean(openVersionsOnMount && record));
+  const [runsOpen, setRunsOpen] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runRows, setRunRows] = useState<SopRunItem[]>([]);
+  const [signalRows, setSignalRows] = useState<SopEvolutionSignalItem[]>([]);
+  const [proposalRows, setProposalRows] = useState<SopEvolutionProposalItem[]>([]);
+  const [analyzingEvolution, setAnalyzingEvolution] = useState(false);
+  const [proposalBusyId, setProposalBusyId] = useState<number | null>(null);
+  const [runDetail, setRunDetail] = useState<SopRunItem | null>(null);
+  const [runFilter, setRunFilter] = useState<"all" | "live" | "trial">("all");
   const [actions, setActions] = useState<ActionContract[]>([]);
   const [assets, setAssets] = useState<DataAssetOption[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
@@ -951,7 +1852,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
   const selectedNodes = draft.graph.nodes.filter((node) => selectedNodeKeys.includes(node.key));
   const selectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const editMode = selectedNodeKeys.length === 0 ? "flow" : selectedNodeKeys.length === 1 ? "node" : "nodes";
-  const activeChips = editMode === "flow" ? PROMPT_CHIPS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
+  const activeChips = editMode === "flow" ? QUICK_ACTIONS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
 
   const actionTitles = useMemo(
     () => Object.fromEntries(actions.map((action) => [action.name, action.title])),
@@ -968,6 +1869,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
   }, []);
 
   const connectEdge = useCallback((source: string, target: string) => {
+    setDirty(true);
     setDraft((cur) => {
       if (cur.graph.edges.some((edge) => edge.source === source && edge.target === target)) return cur;
       return {
@@ -1154,11 +2056,104 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
     catch (error) { message.error(errorText(error, "版本历史加载失败")); }
   }, [message, record]);
 
+  const refreshRuns = useCallback(async (filter: "all" | "live" | "trial" = runFilter) => {
+    if (!record) return;
+    setRunsLoading(true);
+    try {
+      const [runs, signals, proposals] = await Promise.all([
+        listSopRuns(record.key, {
+          limit: 40,
+          ...(filter === "trial" ? { trial: true } : filter === "live" ? { trial: false } : {}),
+        }),
+        listSopEvolutionSignals(record.key, { limit: 20 }),
+        listSopEvolutionProposals(record.key, { limit: 30 }),
+      ]);
+      setRunRows(runs.results || []);
+      setSignalRows(signals.results || []);
+      setProposalRows(proposals.results || []);
+    } catch (error) {
+      message.error(errorText(error, "运行记录加载失败"));
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [message, record, runFilter]);
+
+  const runAnalyzeEvolution = useCallback(async () => {
+    if (!record) return;
+    setAnalyzingEvolution(true);
+    try {
+      const result = await analyzeSopEvolution(record.key);
+      message.success(
+        result.count
+          ? `已生成 ${result.count} 条进化提案${result.autoDraftedIds?.length ? `，其中 ${result.autoDraftedIds.length} 条低风险已自动开草稿` : ""}`
+          : "暂无足够信号生成提案（正式运行信号累计 ≥ 2 才会触发）",
+      );
+      await refreshRuns();
+      await refreshVersions();
+    } catch (error) {
+      message.error(errorText(error, "进化分析失败"));
+    } finally {
+      setAnalyzingEvolution(false);
+    }
+  }, [message, record, refreshRuns, refreshVersions]);
+
+  const handleProposalAction = useCallback(async (
+    action: "trial" | "draft" | "accept" | "reject",
+    proposalId: number,
+  ) => {
+    if (!record) return;
+    setProposalBusyId(proposalId);
+    try {
+      if (action === "trial") await trialSopEvolutionProposal(record.key, proposalId);
+      if (action === "draft") await draftSopEvolutionProposal(record.key, proposalId);
+      if (action === "accept") await acceptSopEvolutionProposal(record.key, proposalId);
+      if (action === "reject") await rejectSopEvolutionProposal(record.key, proposalId);
+      message.success(
+        action === "trial" ? "提案试跑完成"
+          : action === "draft" ? "已生成草稿版本"
+            : action === "accept" ? "已采纳为草稿，请手动发布"
+              : "已拒绝提案",
+      );
+      await refreshRuns();
+      await refreshVersions();
+    } catch (error) {
+      message.error(errorText(error, "提案操作失败"));
+    } finally {
+      setProposalBusyId(null);
+    }
+  }, [message, record, refreshRuns, refreshVersions]);
+
+  const openRuns = useCallback(() => {
+    setRunsOpen(true);
+    setRunDetail(null);
+    void refreshRuns(runFilter);
+  }, [refreshRuns, runFilter]);
+
+  const openRunDetail = useCallback(async (runKey: string) => {
+    try {
+      setRunDetail(await getSopRun(runKey));
+    } catch (error) {
+      message.error(errorText(error, "运行详情加载失败"));
+    }
+  }, [message]);
+
   useEffect(() => { void refreshVersions(); }, [refreshVersions]);
 
   useEffect(() => {
     if (openVersionsOnMount && record) setVersionOpen(true);
   }, [openVersionsOnMount, record]);
+
+  useEffect(() => {
+    if (!record || !selectedVersion?.version) return;
+    if (chatSaveTimer.current) window.clearTimeout(chatSaveTimer.current);
+    chatSaveTimer.current = window.setTimeout(() => {
+      const payload = persistableChat(messagesRef.current);
+      void updateSopVersion(record.key, selectedVersion.version, { editorChat: payload }).catch(() => undefined);
+    }, 800);
+    return () => {
+      if (chatSaveTimer.current) window.clearTimeout(chatSaveTimer.current);
+    };
+  }, [messages, record, selectedVersion?.version]);
 
   const updateSelectedNode = (next: SopGraphNode) => {
     setDraft((current) => ({
@@ -1176,6 +2171,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
       const detail = await getSopVersion(record.key, version);
       setSelectedVersion(detail);
       setDraft({ ...draft, version: detail.version, triggerIntents: detail.triggerIntents || [], utteranceExamples: detail.utteranceExamples || [], graph: detail.graph });
+      setMessages(chatFromVersion(detail, draft.name || record.name, detail.graph.nodes));
       setSelectedNodeKeys([]);
       setVersionOpen(false);
     } catch (error) { message.error(errorText(error, "版本内容加载失败")); }
@@ -1190,45 +2186,575 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
       const created = await createSopVersion(record.key, { version: next, changeSummary: `基于 ${base} 创建` });
       setSelectedVersion(created);
       setDraft({ ...draft, version: created.version, graph: created.graph, triggerIntents: created.triggerIntents || [], utteranceExamples: created.utteranceExamples || [] });
+      setMessages([defaultWelcome(draft.name || record.name, created.graph.nodes || draft.graph.nodes)]);
       await refreshVersions();
       setVersionOpen(false);
       message.success(`已创建可编辑草稿 ${next}`);
     } catch (error) { message.error(errorText(error, "创建新版本失败")); }
   };
 
+  const runTrialInChat = async (
+    text: string,
+    assistantId: string,
+    override?: {
+      key?: string;
+      version?: string;
+      graph?: SopDraftPayload["graph"];
+      payload?: Record<string, unknown>;
+    },
+  ) => {
+    const key = override?.key || record?.key || draft.key;
+    const version = override?.version || selectedVersion?.version || draft.version || record?.version?.version;
+    const graph = override?.graph || draft.graph;
+    const trialPayload = override?.payload;
+    if ((!record && !override?.key) || !key || !version) {
+      setMessages((current) => current.map((item) => (
+        item.id === assistantId
+          ? {
+              ...item,
+              content: "请先保存 SOP，再在对话里说「跑一遍流程」或点右上角「试跑」。",
+              toolsLive: false,
+              trial: {
+                status: "failed",
+                total: draft.graph.nodes.length || 1,
+                current: 0,
+                currentTitle: "需要先保存",
+                logs: [{ time: formatTrialClock(), text: "试跑前请先保存当前流程", status: "failed" }],
+              },
+            }
+          : item
+      )));
+      return;
+    }
+
+    const nodes = graph.nodes;
+    const total = Math.max(nodes.length, 1);
+    const startedMs = Date.now();
+    const startedAt = formatTrialClock(new Date(startedMs));
+    const isConfirmResume = Boolean(
+      trialPayload
+      && (
+        trialPayload._checkpoint_confirm
+        || (Array.isArray(trialPayload._confirmed_nodes) && trialPayload._confirmed_nodes.length > 0)
+        || Object.keys(trialPayload).some((key) => key.startsWith("_confirm_"))
+      ),
+    );
+    let resumeFromStep = 0;
+    const patchTrial = (updater: (trial: TrialRunState) => TrialRunState, content?: string) => {
+      setMessages((current) => current.map((item) => {
+        if (item.id !== assistantId || !item.trial) return item;
+        return {
+          ...item,
+          content: content ?? item.content,
+          trial: updater(item.trial),
+        };
+      }));
+    };
+
+    setMessages((current) => current.map((item) => {
+      if (item.id !== assistantId) return item;
+      if (isConfirmResume && item.trial) {
+        resumeFromStep = Math.max(1, Math.min(item.trial.current || 1, item.trial.total || total));
+        const prevLogs = item.trial.logs.filter(
+          (log) => log.status !== "running" && log.status !== "waiting",
+        );
+        return {
+          ...item,
+          content: `已确认，继续执行「${draft.name || "当前流程"}」后续步骤…`,
+          toolsLive: true,
+          trial: {
+            ...item.trial,
+            status: "running",
+            current: resumeFromStep,
+            currentTitle: "正在执行后续业务能力",
+            pendingConfirm: undefined,
+            startedAt: item.trial.startedAt || startedMs,
+            note: "确认后继续真实执行后续节点（如报告生成）；前序收集/确认步骤会快速复核。",
+            logs: [
+              ...prevLogs,
+              { time: startedAt, text: "已确认，继续执行后续步骤", status: "ok" },
+              { time: startedAt, text: "正在执行后续业务节点（报告生成可能需要数十秒）…", status: "running" },
+            ].slice(-28),
+          },
+        };
+      }
+      return {
+        ...item,
+        content: `好的，正在为您执行「${draft.name || "当前流程"}」整条流程，结果会边跑边出来…`,
+        toolsLive: true,
+        trial: {
+          status: "running",
+          total,
+          current: 0,
+          currentTitle: "准备执行",
+          startedAt: startedMs,
+          note: "试跑会真实跑画布节点；收集信息用演示参数即时填入，报告生成等业务能力会真实调用。",
+          logs: [{ time: startedAt, text: "开始执行流程", status: "ok" }],
+          pendingConfirm: undefined,
+        },
+      };
+    }));
+
+    const appendRunning = (label: string) => {
+      patchTrial((trial) => {
+        const logs = trial.logs
+          .filter((log) => log.status !== "running")
+          .concat({ time: formatTrialClock(), text: label, status: "running" });
+        return {
+          ...trial,
+          currentTitle: label.replace(/^步骤\s*\d+\/\d+\s*/, "") || trial.currentTitle,
+          logs: logs.slice(-24),
+        };
+      });
+    };
+
+    trialAbortRef.current?.abort();
+    const controller = new AbortController();
+    trialAbortRef.current = controller;
+    activeTrialMessageIdRef.current = assistantId;
+
+    try {
+      await trialSopVersionStream(key, version, { text, graph, payload: trialPayload }, {
+        signal: controller.signal,
+        onHello: (data) => {
+          if (controller.signal.aborted) return;
+          patchTrial((trial) => ({
+            ...trial,
+            total: Math.max(Number(data.total) || trial.total, 1),
+            currentTitle: "连接试跑通道",
+          }));
+        },
+        onProgress: (data) => {
+          if (controller.signal.aborted) return;
+          const title = String(data.title || data.detail || "执行中");
+          const detail = String(data.detail || title);
+          // Resume after confirm: ignore the fresh "start" heartbeat so logs don't jump back.
+          if (isConfirmResume && data.kind === "start") return;
+          const status = mapToolStatus(data.status);
+          const index = Number(data.index) || 0;
+          const stepTotal = Math.max(Number(data.total) || total, 1);
+          // Skip replaying early completed steps after confirm — only show work from the pause point onward.
+          if (isConfirmResume && resumeFromStep > 0 && index > 0 && index < resumeFromStep && status === "ok") {
+            return;
+          }
+          patchTrial((trial) => {
+            const canvasTotal = Math.max(trial.total, stepTotal, 1);
+            // Never treat the last canvas node as "done" while still running.
+            const nextCurrent = status === "running" || status === "waiting"
+              ? Math.min(Math.max(index, 1), canvasTotal)
+              : Math.min(Math.max(index, trial.current), canvasTotal);
+            const logs = trial.logs
+              .filter((log) => log.status !== "running" && !log.text.startsWith("正在生成结果"))
+              .concat({
+                time: formatTrialClock(),
+                text: data.kind === "start"
+                  ? detail
+                  : data.kind === "finish" && status === "waiting"
+                    ? `等待确认：${title}`
+                    : `步骤 ${Math.max(index, 1)}/${canvasTotal} ${detail}`,
+                status: status === "failed" ? "failed" : status === "waiting" ? "waiting" : status === "running" ? "running" : "ok",
+              });
+            return {
+              ...trial,
+              total: canvasTotal,
+              current: nextCurrent,
+              currentTitle: title,
+              logs: logs.slice(-24),
+            };
+          });
+        },
+        onHeartbeat: (data) => {
+          if (controller.signal.aborted) return;
+          const messageText = String(data.message || "正在生成结果，请稍候…");
+          appendRunning(messageText);
+          patchTrial((trial) => ({
+            ...trial,
+            // Keep bar below 100% while LLM / report work is in flight.
+            current: Math.min(trial.current || resumeFromStep || 1, Math.max(trial.total - 1, 1)),
+            currentTitle: trial.currentTitle?.includes("确认后") ? "正在生成报告" : trial.currentTitle,
+          }));
+        },
+        onArtifactDelta: (data) => {
+          if (controller.signal.aborted) return;
+          patchTrial((trial) => {
+            const artifacts = [...(trial.artifacts || [])];
+            const existing = artifacts.find((item) => item.id === data.id);
+            if (existing) {
+              existing.content = `${existing.content || ""}${data.delta || ""}`;
+              existing.summary = data.summary || existing.summary;
+              existing.title = data.title || existing.title;
+              existing.kind = data.kind || existing.kind;
+            } else {
+              artifacts.push({
+                id: data.id,
+                kind: data.kind || "markdown",
+                title: data.title || "产物",
+                summary: data.summary || "生成中…",
+                content: data.delta || "",
+              });
+            }
+            const normalized = normalizeTrialArtifacts(artifacts);
+            const logs = trial.logs
+              .filter((log) => log.status !== "running")
+              .concat({
+                time: formatTrialClock(),
+                text: data.done ? `产物已生成：${data.title || "报告"}` : `正在输出：${data.title || "报告"}…`,
+                status: data.done ? "ok" : "running",
+              });
+            return {
+              ...trial,
+              outputLabel: `已生成 ${normalized.length} 个产物`,
+              artifacts: normalized,
+              logs: logs.slice(-24),
+            };
+          });
+        },
+        onDone: (response) => {
+          if (controller.signal.aborted) return;
+          const tools = (response.tools || []).map((tool) => ({
+            name: tool.name,
+            summary: tool.summary,
+            status: mapToolStatus(tool.status),
+          }));
+          const decision = String((response.result || {}).decision || "");
+          const awaitingRaw = response.trialMeta?.awaitingConfirm;
+          const pendingConfirm = awaitingRaw && typeof awaitingRaw === "object" && String(awaitingRaw.nodeKey || "").trim()
+            ? {
+                kind: String(awaitingRaw.kind || "checkpoint"),
+                nodeKey: String(awaitingRaw.nodeKey),
+                title: String(awaitingRaw.title || "人工确认"),
+                instruction: String(awaitingRaw.instruction || "请确认后继续执行后续步骤"),
+                missing: Array.isArray(awaitingRaw.missing) ? awaitingRaw.missing.map(String) : undefined,
+              }
+            : undefined;
+          const awaitingConfirm = decision === "need_input" && Boolean(pendingConfirm);
+          const failed = !awaitingConfirm && (
+            decision === "block" || decision === "failed" || tools.some((tool) => tool.status === "failed")
+          );
+          const needMore = !awaitingConfirm && (decision === "need_input" || decision === "handoff");
+          const artifacts = extractTrialArtifacts(response);
+          const trialMeta = response.trialMeta || {};
+          setMessages((current) => current.map((item) => {
+            if (item.id !== assistantId) return item;
+            // Keep streamed timestamps; rewriting with fake 400ms gaps made it look like
+            // the run froze on "开始执行流程" then dumped every step at once.
+            const liveLogs = (item.trial?.logs || []).filter(
+              (log) => log.status !== "running" && !log.text.startsWith("正在生成结果"),
+            );
+            const finishLog: TrialLog = awaitingConfirm
+              ? {
+                  time: formatTrialClock(),
+                  text: `等待确认：${pendingConfirm?.title || "人工确认"}`,
+                  status: "waiting",
+                }
+              : {
+                  time: formatTrialClock(),
+                  text: failed ? "流程执行中断" : needMore ? "等待补充信息" : "流程执行完成",
+                  status: failed ? "failed" : needMore ? "waiting" : "ok",
+                };
+            const logs = liveLogs.length > 0
+              ? [...liveLogs, finishLog].slice(-28)
+              : [
+                  { time: startedAt, text: "开始执行流程", status: "ok" as const },
+                  ...tools.map((tool, index) => ({
+                    time: formatTrialClock(new Date(
+                      startedMs + Math.round(((index + 1) / Math.max(tools.length, 1)) * (Date.now() - startedMs)),
+                    )),
+                    text: `步骤 ${index + 1}/${Math.max(tools.length, 1)} ${tool.summary || tool.name}`,
+                    status: (tool.status === "failed" ? "failed" : tool.status === "waiting" ? "waiting" : "ok") as TrialLog["status"],
+                  })),
+                  finishLog,
+                ];
+            return {
+              ...item,
+              content: response.assistant || (awaitingConfirm
+                ? "流程已停在人工确认节点，请确认后继续。"
+                : failed
+                  ? "试跑未完成。"
+                  : "试跑已完成。"),
+              model: response.model || "trial-runtime",
+              tools,
+              toolsLive: false,
+              trial: {
+                status: awaitingConfirm ? "awaiting_confirm" : failed ? "failed" : "completed",
+                total: Math.max(
+                  Number(trialMeta.canvasNodeCount) || 0,
+                  item.trial?.total || 0,
+                  total,
+                  1,
+                ),
+                current: awaitingConfirm
+                  ? Math.max(
+                    1,
+                    Math.min(
+                      tools.findIndex((tool) => tool.status === "waiting") + 1 || tools.filter((tool) => tool.status === "ok" || tool.status === "waiting").length,
+                      Number(trialMeta.canvasNodeCount) || total || 1,
+                    ),
+                  )
+                  : Math.max(
+                    Number(trialMeta.canvasNodeCount) || 0,
+                    item.trial?.current || 0,
+                    total,
+                  ),
+                currentTitle: awaitingConfirm
+                  ? (pendingConfirm?.title || "等待人工确认")
+                  : failed
+                    ? "执行中断"
+                    : needMore
+                      ? "等待补充"
+                      : "全部完成",
+                durationSec: Math.max(1, Math.round((Date.now() - (item.trial?.startedAt || startedMs)) / 1000)),
+                startedAt: item.trial?.startedAt || startedMs,
+                outputLabel: awaitingConfirm
+                  ? "等待确认后继续"
+                  : failed
+                    ? undefined
+                    : needMore
+                      ? "需要补充信息"
+                      : (artifacts.length ? `已生成 ${artifacts.length} 个产物` : "试跑结果已生成"),
+                artifacts: failed ? undefined : artifacts,
+                involvesPush: Boolean(trialMeta.involvesPush),
+                pushedToUser: trialMeta.involvesPush ? false : undefined,
+                note: trialMeta.note
+                  ? String(trialMeta.note)
+                  : awaitingConfirm
+                    ? "流程含人工确认节点：试跑会在此处暂停，确认后继续执行。"
+                    : "试跑已按当前画布节点执行（缺失信息用演示参数自动填入），不会改动外部系统。",
+                pendingConfirm,
+                logs,
+              },
+            };
+          }));
+        },
+        onError: (messageText) => {
+          if (controller.signal.aborted) return;
+          patchTrial((trial) => ({
+            ...trial,
+            status: "failed",
+            currentTitle: "执行中断",
+            logs: [
+              ...trial.logs.filter((log) => log.status !== "running"),
+              { time: formatTrialClock(), text: messageText, status: "failed" },
+            ],
+          }), messageText);
+        },
+      });
+      if (controller.signal.aborted) return;
+    } catch (error) {
+      if (controller.signal.aborted || (error as { name?: string })?.name === "AbortError") {
+        return;
+      }
+      try {
+        const response = await trialSopVersion(key, version, { text, graph, payload: trialPayload });
+        if (controller.signal.aborted) return;
+        const tools = (response.tools || []).map((tool) => ({
+          name: tool.name,
+          summary: tool.summary,
+          status: mapToolStatus(tool.status),
+        }));
+        const decision = String((response.result || {}).decision || "");
+        const awaitingRaw = response.trialMeta?.awaitingConfirm;
+        const pendingConfirm = awaitingRaw && typeof awaitingRaw === "object" && String(awaitingRaw.nodeKey || "").trim()
+          ? {
+              kind: String(awaitingRaw.kind || "checkpoint"),
+              nodeKey: String(awaitingRaw.nodeKey),
+              title: String(awaitingRaw.title || "人工确认"),
+              instruction: String(awaitingRaw.instruction || "请确认后继续执行后续步骤"),
+              missing: Array.isArray(awaitingRaw.missing) ? awaitingRaw.missing.map(String) : undefined,
+            }
+          : undefined;
+        const awaitingConfirm = decision === "need_input" && Boolean(pendingConfirm);
+        const failed = !awaitingConfirm && (
+          decision === "block" || decision === "failed" || tools.some((tool) => tool.status === "failed")
+        );
+        const needMore = !awaitingConfirm && (decision === "need_input" || decision === "handoff");
+        const artifacts = extractTrialArtifacts(response);
+        const trialMeta = response.trialMeta || {};
+        setMessages((current) => current.map((item) => (
+          item.id === assistantId
+            ? {
+                ...item,
+                content: response.assistant || (awaitingConfirm
+                  ? "流程已停在人工确认节点，请确认后继续。"
+                  : failed
+                    ? "试跑未完成。"
+                    : "试跑已完成。"),
+                model: response.model || "trial-runtime",
+                tools,
+                toolsLive: false,
+                trial: {
+                  status: awaitingConfirm ? "awaiting_confirm" : failed ? "failed" : "completed",
+                  total: Math.max(Number(trialMeta.canvasNodeCount) || 0, total, 1),
+                  current: awaitingConfirm
+                    ? Math.max(1, tools.filter((tool) => tool.status === "ok" || tool.status === "waiting").length)
+                    : Math.max(Number(trialMeta.canvasNodeCount) || 0, total),
+                  currentTitle: awaitingConfirm
+                    ? (pendingConfirm?.title || "等待人工确认")
+                    : failed
+                      ? "执行中断"
+                      : needMore
+                        ? "等待补充"
+                        : "全部完成",
+                  durationSec: Math.max(1, Math.round((Date.now() - startedMs) / 1000)),
+                  outputLabel: awaitingConfirm
+                    ? "等待确认后继续"
+                    : failed
+                      ? undefined
+                      : needMore
+                        ? "需要补充信息"
+                        : (artifacts.length ? `已生成 ${artifacts.length} 个产物` : "试跑结果已生成"),
+                  artifacts: failed ? undefined : artifacts,
+                  involvesPush: Boolean(trialMeta.involvesPush),
+                  pushedToUser: trialMeta.involvesPush ? false : undefined,
+                  note: trialMeta.note
+                    ? String(trialMeta.note)
+                    : awaitingConfirm
+                      ? "流程含人工确认节点：试跑会在此处暂停，确认后继续执行。"
+                      : "试跑已按当前画布节点执行（缺失信息用演示参数自动填入），不会改动外部系统。",
+                  pendingConfirm,
+                  logs: [
+                    { time: startedAt, text: "开始执行流程", status: "ok" as const },
+                    ...tools.map((tool, index) => ({
+                      time: formatTrialClock(new Date(
+                        startedMs + Math.round(((index + 1) / Math.max(tools.length, 1)) * (Date.now() - startedMs)),
+                      )),
+                      text: `步骤 ${index + 1}/${Math.max(tools.length, 1)} ${tool.summary || tool.name}`,
+                      status: (tool.status === "failed" ? "failed" : tool.status === "waiting" ? "waiting" : "ok") as TrialLog["status"],
+                    })),
+                    {
+                      time: formatTrialClock(),
+                      text: awaitingConfirm
+                        ? `等待确认：${pendingConfirm?.title || "人工确认"}`
+                        : failed
+                          ? "流程执行中断"
+                          : "流程执行完成",
+                      status: (awaitingConfirm ? "waiting" : failed ? "failed" : "ok") as TrialLog["status"],
+                    },
+                  ],
+                },
+              }
+            : item
+        )));
+      } catch {
+        throw error;
+      }
+    } finally {
+      if (trialAbortRef.current === controller) trialAbortRef.current = null;
+      if (activeTrialMessageIdRef.current === assistantId) activeTrialMessageIdRef.current = null;
+    }
+  };
+
+  const stopTrialRun = (messageId?: string) => {
+    const targetId = messageId || activeTrialMessageIdRef.current;
+    trialAbortRef.current?.abort();
+    trialAbortRef.current = null;
+    if (!targetId) return;
+    setMessages((current) => current.map((item) => {
+      if (item.id !== targetId || !item.trial || item.trial.status !== "running") return item;
+      return {
+        ...item,
+        content: "已停止本次试跑。",
+        toolsLive: false,
+        trial: {
+          ...item.trial,
+          status: "failed",
+          currentTitle: "已停止",
+          durationSec: item.trial.startedAt
+            ? Math.max(1, Math.round((Date.now() - item.trial.startedAt) / 1000))
+            : item.trial.durationSec,
+          logs: [
+            ...item.trial.logs.filter((log) => log.status !== "running"),
+            { time: formatTrialClock(), text: "用户停止了试跑", status: "failed" },
+          ],
+        },
+      };
+    }));
+    setSending(false);
+  };
+
   const send = async (preset?: string) => {
     const text = (preset || input).trim();
-    if ((!text && pendingImages.length === 0) || sending || readOnly) return;
-    const scopedKeys = [...selectedNodeKeys];
-    const scopeLabel = scopedKeys.length === 0
-      ? "整条流程"
-      : scopedKeys.length === 1
-        ? `步骤：${selectedNodes[0]?.title || scopedKeys[0]}`
-        : `${scopedKeys.length} 个步骤`;
+    if ((!text && pendingImages.length === 0) || sending) return;
+    const trial = isTrialIntent(text) && pendingImages.length === 0;
+    const consult = !trial && pendingImages.length === 0 && isConsultIntent(text);
+    if (!trial && readOnly) return;
+    const scopedKeys = trial || consult ? [] : [...selectedNodeKeys];
+    const scopeLabel = trial
+      ? ""
+      : consult
+        ? "咨询"
+        : scopedKeys.length === 0
+          ? "整条流程"
+          : scopedKeys.length === 1
+            ? `步骤：${selectedNodes[0]?.title || scopedKeys[0]}`
+            : `${scopedKeys.length} 个步骤`;
     const userMessage: ChatMessage = {
       id: `u-${Date.now()}`,
       role: "user",
-      content: `【编辑范围：${scopeLabel}】${text || "（见附图）"}`,
+      content: scopeLabel ? `【${scopeLabel === "咨询" ? "咨询" : `编辑范围：${scopeLabel}`}】${text || "（见附图）"}` : (text || "（见附图）"),
       images: pendingImages,
+      createdAt: Date.now(),
     };
     const assistantId = `a-${Date.now()}`;
-    const rewriteName = scopedKeys.length ? "rewrite_nodes" : "rewrite_flow";
-    const rewriteSummary = scopedKeys.length
-      ? "调用模型修改选中步骤"
-      : "调用模型生成/修改整条流程";
+    const rewriteName = consult ? "list_actions" : scopedKeys.length ? "rewrite_nodes" : "rewrite_flow";
+    const rewriteSummary = consult
+      ? "查阅可用业务能力"
+      : scopedKeys.length
+        ? "修改选中步骤"
+        : "改写整条流程";
     const placeholder: ChatMessage = {
       id: assistantId,
       role: "assistant",
-      content: "",
-      tools: [{ name: "read_graph", summary: "读取当前流程", status: "running" }],
+      content: trial
+        ? `好的，正在为您执行「${draft.name || "当前流程"}」整条流程，请稍候…`
+        : "",
+      tools: trial ? undefined : [{ name: "read_graph", summary: "读取当前流程", status: "running" }],
       toolsLive: true,
+      createdAt: Date.now(),
+      trial: trial
+        ? {
+            status: "running",
+            total: Math.max(draft.graph.nodes.length, 1),
+            current: 0,
+            currentTitle: "准备执行",
+            logs: [{ time: formatTrialClock(), text: "开始执行流程", status: "ok" }],
+          }
+        : undefined,
     };
-    const nextMessages = [...messages, userMessage, placeholder];
-    setMessages(nextMessages);
+    setMessages([...messages, userMessage, placeholder]);
     if (!preset) setInput("");
     const images = [...pendingImages];
     setPendingImages([]);
     setSending(true);
+
+    if (trial) {
+      try {
+        await runTrialInChat(text, assistantId);
+      } catch (error) {
+        setMessages((current) => current.map((item) => (
+          item.id === assistantId
+            ? {
+                ...item,
+                content: errorText(error, "试跑失败，请稍后重试。"),
+                toolsLive: false,
+                trial: {
+                  status: "failed",
+                  total: Math.max(draft.graph.nodes.length, 1),
+                  current: item.trial?.current || 0,
+                  currentTitle: "试跑失败",
+                  logs: [
+                    ...(item.trial?.logs || []).filter((log) => log.status !== "running"),
+                    { time: formatTrialClock(), text: errorText(error, "试跑失败"), status: "failed" },
+                  ],
+                },
+              }
+            : item
+        )));
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
 
     const timers: number[] = [];
     timers.push(window.setTimeout(() => {
@@ -1257,29 +2783,55 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
     }, 900));
 
     try {
+      const beforeDraft = draft;
       const response = await rewriteSopWithAi({
         instruction: text || "请根据附图修改",
         draft,
         history: messages.map(({ role, content }) => ({ role, content })),
         targetNodeKeys: scopedKeys,
         images,
+        mode: consult ? "consult" : "edit",
       });
       timers.forEach((timer) => window.clearTimeout(timer));
-      setDraft(response.draft);
-      if (scopedKeys.length) setSelectedNodeKeys(scopedKeys);
+      const unchanged = response.changed === false || response.scope === "consult";
       const tools = (response.tools || []).map((tool) => ({
         name: tool.name,
         summary: tool.summary,
         status: mapToolStatus(tool.status),
       }));
+      if (unchanged) {
+        setMessages((current) => current.map((item) => (
+          item.id === assistantId
+            ? {
+                ...item,
+                content: response.assistant || "已回答，未修改流程。",
+                model: response.model,
+                tools: tools.length ? tools : item.tools?.map((tool) => ({ ...tool, status: "ok" as const })),
+                toolsLive: false,
+              }
+            : item
+        )));
+        return;
+      }
+      const change = diffFlowChange(beforeDraft, response.draft);
+      setPendingDrafts((current) => ({ ...current, [assistantId]: response.draft }));
+      // Preview on canvas immediately; user can still undo via the change card.
+      setDraft(response.draft);
+      setDirty(true);
+      if (scopedKeys.length) setSelectedNodeKeys(scopedKeys);
+      const chainText = change.chain.length
+        ? `\n\n修改后的流程：\n${change.chain.join("\n ↓\n")}`
+        : "";
       setMessages((current) => current.map((item) => (
         item.id === assistantId
           ? {
               ...item,
-              content: response.assistant,
+              content: `${response.assistant}${chainText}`,
               model: response.model,
               tools: tools.length ? tools : item.tools?.map((tool) => ({ ...tool, status: "ok" as const })),
               toolsLive: false,
+              undoDraft: beforeDraft,
+              flowChange: { ...change, applied: true, undone: false },
             }
           : item
       )));
@@ -1296,7 +2848,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
         }
         return {
           ...item,
-          content: errorText(error, "AI 暂时无法修改这个流程，请稍后重试。"),
+          content: errorText(error, consult ? "暂时无法回答，请稍后重试。" : "AI 暂时无法修改这个流程，请稍后重试。"),
           tools,
           toolsLive: false,
         };
@@ -1319,10 +2871,14 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
       else {
         await updateSop(record.key, payload);
         saved = selectedVersion?.status === "draft"
-          ? await updateSopVersion(record.key, selectedVersion.version, payload).then(() => getSop(record.key))
+          ? await updateSopVersion(record.key, selectedVersion.version, {
+              ...payload,
+              editorChat: persistableChat(messagesRef.current),
+            }).then(() => getSop(record.key))
           : await getSop(record.key);
       }
       message.success("SOP 草稿已保存");
+      setDirty(false);
       setSelectedVersion(saved.version);
       await refreshVersions();
       onSaved(saved);
@@ -1349,144 +2905,369 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
   };
 
   const trialRun = async () => {
-    const saved = record ? ((await saveDraft()) || record) : await saveDraft();
-    if (!saved) return;
-    const runnable = saved.status === "published" || Boolean(saved.currentVersion);
-    if (!runnable) {
-      message.warning("请先「发布」后再试跑，系统只会执行已发布流程");
+    if (sending) return;
+    if (!record) {
+      const saved = await saveDraft();
+      if (!saved?.version) return;
+      const text = "跑一遍流程";
+      const assistantId = `a-${Date.now()}`;
+      setMessages((current) => [
+        ...current,
+        { id: `u-${Date.now()}`, role: "user", content: text },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          toolsLive: true,
+          trial: {
+            status: "running",
+            total: Math.max((saved.version.graph?.nodes || draft.graph.nodes).length, 1),
+            current: 0,
+            currentTitle: "准备执行",
+            logs: [{ time: formatTrialClock(), text: "开始执行流程", status: "ok" }],
+          },
+        },
+      ]);
+      setSending(true);
+      try {
+        await runTrialInChat(text, assistantId, {
+          key: saved.key,
+          version: saved.version.version,
+          graph: saved.version.graph || draft.graph,
+        });
+      } catch (error) {
+        setMessages((current) => current.map((item) => (
+          item.id === assistantId
+            ? {
+                ...item,
+                content: errorText(error, "试跑失败，请稍后重试。"),
+                toolsLive: false,
+                trial: {
+                  status: "failed",
+                  total: Math.max(draft.graph.nodes.length, 1),
+                  current: 0,
+                  currentTitle: "试跑失败",
+                  logs: [{ time: formatTrialClock(), text: errorText(error, "试跑失败"), status: "failed" }],
+                },
+              }
+            : item
+        )));
+      } finally {
+        setSending(false);
+      }
       return;
     }
-    navigate(`/work?view=create&sop=${encodeURIComponent(saved.key)}`);
+    await send("跑一遍流程");
   };
 
-  return <section className="sop-distill-page">
-    <header className="sop-distill-header">
-      <div><Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button><span><strong>设计流程</strong><small>{draft.name}</small></span></div>
-      <Space>
-        {record && <Button icon={<HistoryOutlined />} onClick={() => setVersionOpen(true)}>版本 {selectedVersion?.version || draft.version}</Button>}
-        {selectedVersion && <Tag color={selectedVersion.status === "draft" ? "gold" : selectedVersion.status === "published" ? "green" : "default"}>{selectedVersion.status === "draft" ? "草稿" : selectedVersion.status === "published" ? "已发布" : "历史版本"}</Tag>}
-        {record?.canEdit && readOnly && <Button onClick={() => void createEditorVersion()}>创建新版本</Button>}
-        <Button icon={<PlayCircleOutlined />} onClick={() => void trialRun()}>试跑</Button>
-        <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void saveDraft()}>保存</Button>
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, sending]);
+
+  const applyFlowChange = (messageId: string) => {
+    const next = pendingDrafts[messageId];
+    if (next) {
+      setDraft(next);
+      setDirty(true);
+    }
+    setMessages((current) => current.map((item) => (
+      item.id === messageId && item.flowChange
+        ? { ...item, flowChange: { ...item.flowChange, applied: true, undone: false } }
+        : item
+    )));
+  };
+
+  const undoFlowChange = (messageId: string) => {
+    setMessages((current) => {
+      const target = current.find((item) => item.id === messageId);
+      if (target?.undoDraft) {
+        setDraft(target.undoDraft);
+        setDirty(true);
+      }
+      return current.map((item) => (
+        item.id === messageId && item.flowChange
+          ? { ...item, flowChange: { ...item.flowChange, applied: false, undone: true } }
+          : item
+      ));
+    });
+  };
+
+  useEffect(() => {
+    if (!autoTrialOnMount || autoTrialDone.current || !record) return;
+    autoTrialDone.current = true;
+    const timer = window.setTimeout(() => { void trialRun(); }, 200);
+    return () => window.clearTimeout(timer);
+    // Only auto-trigger once when opening from list "试跑".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTrialOnMount, record?.key]);
+
+  return <section className="sop-distill-page is-agent-chat">
+    <header className="sop-agent-topbar">
+      <div className="sop-agent-topbar-left">
+        <Button icon={<ArrowLeftOutlined />} onClick={onBack}>返回</Button>
+        <span className="sop-agent-topbar-icon" aria-hidden><BranchesOutlined /></span>
+        <div>
+          <strong>整条流程编辑</strong>
+          <p>通过自然语言持续调整你的 AI 工作流程</p>
+        </div>
+      </div>
+      <div className="sop-agent-topbar-right">
+        <button type="button" className={editMode === "flow" ? "is-active" : ""} onClick={clearSelection}>整条流程</button>
+        <button type="button" onClick={() => record && setVersionOpen(true)}>
+          当前版本 v{selectedVersion?.version || draft.version}
+        </button>
+        {record && (
+          <Button icon={<HistoryOutlined />} onClick={() => void openRuns()}>运行记录</Button>
+        )}
+        <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void saveDraft()}>保存流程</Button>
         {record?.canEdit && selectedVersion?.status === "draft" && <Button type="primary" onClick={() => void publishCurrent()}>发布</Button>}
-      </Space>
+        {record?.canEdit && !record.system && (
+          <Button
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => {
+              modal.confirm({
+                title: `删除「${draft.name || record.name}」？`,
+                content: "将永久删除该 SOP 及其版本与试跑记录，此操作不可恢复。",
+                okText: "删除",
+                okButtonProps: { danger: true },
+                cancelText: "取消",
+                onOk: async () => {
+                  try {
+                    await deleteSop(record.key);
+                    message.success("已删除");
+                    onBack();
+                  } catch (error) {
+                    message.error(errorText(error, "删除失败"));
+                    throw error;
+                  }
+                },
+              });
+            }}
+          >
+            删除
+          </Button>
+        )}
+        <em className={`sop-agent-save-state${dirty ? " is-dirty" : ""}`}>
+          <i />
+          {dirty ? "未保存" : "已保存"}
+        </em>
+      </div>
     </header>
     <div className="sop-distill-workbench">
-      <section className="sop-chat-panel">
-        <div className="sop-panel-title">
-          <strong>{editMode === "flow" ? "整条流程编辑" : editMode === "node" ? "改当前步骤" : `统一改 ${selectedNodeKeys.length} 步`}</strong>
-          <Space size={4}>
-            <Button size="small" type={editMode === "flow" ? "primary" : "default"} onClick={clearSelection}>整条流程</Button>
-            <span className="sop-panel-hint">{editMode === "flow" ? "未选步骤" : "Ctrl/⌘+点多选"}</span>
-          </Space>
-        </div>
-        {editMode !== "flow" && (
-          <div className="sop-scope-banner">
+      <section className="sop-chat-panel is-agent">
+        <div className="sop-chat-panel-head">
+          <div className="sop-chat-panel-brand">
+            <span className="sop-chat-panel-icon" aria-hidden><BranchesOutlined /></span>
             <div>
-              <strong>
-                {editMode === "node"
-                  ? `已选中：${selectedNode?.title}`
-                  : `已选中 ${selectedNodeKeys.length} 步：${selectedNodes.map((node) => node.title).join("、")}`}
-              </strong>
-              <span>左边发送只会修改选中范围；点空白或「整条流程」切回整体编辑</span>
+              <strong>{draft.name || "未命名流程"}</strong>
+              <p>
+                {editMode === "flow"
+                  ? "对话式编辑您的整条流程"
+                  : editMode === "node"
+                    ? `正在聚焦「${selectedNode?.title || "当前步骤"}」`
+                    : `已选中 ${selectedNodeKeys.length} 个步骤，可统一修改`}
+              </p>
             </div>
-            <Button size="small" type="link" onClick={clearSelection}>整条流程</Button>
           </div>
-        )}
-        <div className="sop-chat-messages">
-          {messages.map((item) => <div key={item.id} className={`sop-chat-row is-${item.role}`}>
-            {item.role === "assistant" ? (
-              <SopAiAvatar />
-            ) : (
-              <Avatar size={28} className="sop-chat-avatar" src={authenticatedAvatarUrl(user?.avatar_url)} />
-            )}
-            <div className={`sop-chat-bubble${item.toolsLive && !item.content ? " is-thinking" : ""}`}>
-              {!!item.tools?.length && <SopToolProcess tools={item.tools} />}
-              {item.content ? <p>{item.content}</p> : null}
-              {!!item.images?.length && (
-                <div className="sop-chat-images">
-                  {item.images.map((url) => <img key={url.slice(0, 48)} src={url} alt="附件" />)}
-                </div>
-              )}
-              {item.model && <small>{item.model}</small>}
-            </div>
-          </div>)}
+          <div className="sop-chat-mode-switch">
+            <button type="button" className={editMode === "flow" ? "is-active" : ""} onClick={clearSelection}>整条流程</button>
+            <span className={editMode === "flow" ? "" : "is-active"}>
+              {editMode === "flow" ? "未选步骤" : editMode === "node" ? "已选 1 步" : `已选 ${selectedNodeKeys.length} 步`}
+            </span>
+          </div>
         </div>
-        <div className="sop-chat-composer">
-          {!readOnly && (
-            <div className="sop-prompt-chips">
-              {activeChips.map((chip) => (
-                <button type="button" key={chip} disabled={sending} onClick={() => void send(chip)}>{chip}</button>
-              ))}
+
+        <div className="sop-chat-messages is-agent">
+          {messages.map((item) => (
+            <div key={item.id} className={`sop-chat-row is-${item.role}`}>
+              {item.role === "assistant" ? <SopAiAvatar /> : (
+                <SopPreviewableAvatar src={authenticatedAvatarUrl(user?.avatar_url)} />
+              )}
+              <div className="sop-chat-col">
+                <div className="sop-chat-meta">
+                  <span>{item.role === "assistant" ? "小助手" : "我"}</span>
+                  <time>{formatChatClock(item.createdAt)}</time>
+                </div>
+                {item.content ? (
+                  <div className={`sop-chat-bubble${item.toolsLive && !item.trial && !item.flowChange ? " is-thinking" : ""}`}>
+                    <p>{item.content}</p>
+                    {!!item.images?.length && (
+                      <div className="sop-chat-images">
+                        <Image.PreviewGroup>
+                          {item.images.map((url) => (
+                            <Image key={url.slice(0, 48)} src={url} alt="附件" width={72} height={72} />
+                          ))}
+                        </Image.PreviewGroup>
+                      </div>
+                    )}
+                    {item.model && !item.trial && <small>{item.model}</small>}
+                  </div>
+                ) : null}
+                {item.trial ? (
+                  <SopTrialRunCard
+                    trial={item.trial}
+                    onRerun={() => void send("跑一遍流程")}
+                    onStop={() => stopTrialRun(item.id)}
+                    onConfirm={() => {
+                      const confirm = item.trial?.pendingConfirm;
+                      if (!confirm?.nodeKey) return;
+                      void runTrialInChat("确认后继续试跑", item.id, {
+                        payload: {
+                          _confirmed_nodes: [confirm.nodeKey],
+                          [`_confirm_${confirm.nodeKey}`]: true,
+                        },
+                      });
+                    }}
+                    onReject={() => {
+                      setMessages((current) => current.map((row) => {
+                        if (row.id !== item.id || !row.trial) return row;
+                        return {
+                          ...row,
+                          content: "已驳回人工确认，试跑结束。",
+                          trial: {
+                            ...row.trial,
+                            status: "failed",
+                            currentTitle: "已驳回确认",
+                            pendingConfirm: undefined,
+                            logs: [
+                              ...row.trial.logs.filter((log) => log.status !== "running" && log.status !== "waiting"),
+                              { time: formatTrialClock(), text: "用户驳回了人工确认", status: "failed" },
+                            ],
+                          },
+                        };
+                      }));
+                    }}
+                  />
+                ) : null}
+                {item.flowChange ? (
+                  <SopFlowChangeCard
+                    change={item.flowChange}
+                    onApply={() => applyFlowChange(item.id)}
+                    onUndo={() => undoFlowChange(item.id)}
+                  />
+                ) : null}
+                {!item.trial && !item.flowChange && !!item.tools?.length && (
+                  <div className="sop-chat-bubble">
+                    <SopToolProcess tools={item.tools} />
+                  </div>
+                )}
+                {!item.content && item.toolsLive && !item.trial && (
+                  <div className="sop-chat-bubble is-thinking"><p>正在思考…</p></div>
+                )}
+              </div>
             </div>
-          )}
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="sop-chat-composer is-agent">
+          <div className="sop-quick-label">快速操作</div>
+          <div className="sop-prompt-chips is-agent">
+            {(readOnly ? QUICK_ACTIONS.filter((chip) => chip.accent) : activeChips).map((chip) => (
+              <button
+                type="button"
+                key={chip.text}
+                className={chip.accent ? "is-accent" : ""}
+                disabled={sending}
+                onClick={() => setInput(chip.text)}
+              >
+                {chipIcon(chip.icon)}
+                <span>{chip.text}</span>
+              </button>
+            ))}
+          </div>
           {pendingImages.length > 0 && (
             <div className="sop-pending-images">
-              {pendingImages.map((url, index) => (
-                <div className="sop-pending-image" key={`${index}-${url.slice(0, 24)}`}>
-                  <img src={url} alt={`待发送图片 ${index + 1}`} />
-                  <button type="button" onClick={() => setPendingImages((current) => current.filter((_, itemIndex) => itemIndex !== index))}>×</button>
-                </div>
-              ))}
+              <Image.PreviewGroup>
+                {pendingImages.map((url, index) => (
+                  <div className="sop-pending-image" key={`${index}-${url.slice(0, 24)}`}>
+                    <Image src={url} alt={`待发送图片 ${index + 1}`} width={72} height={72} />
+                    <button
+                      type="button"
+                      className="sop-pending-image-remove"
+                      aria-label="移除图片"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setPendingImages((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </Image.PreviewGroup>
             </div>
           )}
-          <Input.TextArea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onPaste={(event) => {
-              const items = event.clipboardData?.items;
-              if (!items) return;
-              const files: File[] = [];
-              for (let index = 0; index < items.length; index += 1) {
-                const item = items[index];
-                if (item.type.startsWith("image/")) {
-                  const file = item.getAsFile();
-                  if (file) files.push(file);
+          <div className="sop-agent-input">
+            <Input.TextArea
+              value={input}
+              maxLength={2000}
+              onChange={(event) => setInput(event.target.value)}
+              onPaste={(event) => {
+                if (readOnly) return;
+                const items = event.clipboardData?.items;
+                if (!items) return;
+                const files: File[] = [];
+                for (let index = 0; index < items.length; index += 1) {
+                  const clip = items[index];
+                  if (clip.type.startsWith("image/")) {
+                    const file = clip.getAsFile();
+                    if (file) files.push(file);
+                  }
                 }
-              }
-              if (!files.length) return;
-              event.preventDefault();
-              void addImageFiles(files);
-            }}
-            onPressEnter={(event) => { if (!event.shiftKey) { event.preventDefault(); void send(); } }}
-            placeholder={
-              readOnly
-                ? "已发布版本不可修改，请先创建新版本"
-                : editMode === "flow"
-                  ? "编辑整条流程，可 Ctrl+V 粘贴流程图截图"
-                  : editMode === "node"
-                    ? `针对「${selectedNode?.title}」说明怎么改，也可粘贴图片`
-                    : `统一修改这 ${selectedNodeKeys.length} 步，也可粘贴图片`
-            }
-            autoSize={{ minRows: 3, maxRows: 6 }}
-            disabled={readOnly}
-          />
-          <div>
-            <span>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={(event) => {
-                  const files = Array.from(event.target.files || []);
-                  event.target.value = "";
-                  void addImageFiles(files);
-                }}
-              />
-              <Button size="small" icon={<PaperClipOutlined />} disabled={readOnly || sending} onClick={() => fileInputRef.current?.click()}>上传图片</Button>
-              <em style={{ marginLeft: 8 }}>Ctrl+V 贴图</em>
-            </span>
-            <Button
-              type="primary"
-              icon={sending ? <StopOutlined /> : <SendOutlined />}
-              disabled={(!input.trim() && pendingImages.length === 0) || readOnly}
-              onClick={() => void send()}
-            >
-              {sending ? "生成中" : editMode === "flow" ? "改整条" : editMode === "node" ? "只改这步" : "改选中步骤"}
-            </Button>
+                if (!files.length) return;
+                event.preventDefault();
+                void addImageFiles(files);
+              }}
+              onPressEnter={(event) => { if (!event.shiftKey) { event.preventDefault(); void send(); } }}
+              placeholder="输入你的需求… 支持 Ctrl+V 粘贴截图、上传图片、描述修改要求"
+              autoSize={{ minRows: 2, maxRows: 5 }}
+            />
+            <div className="sop-agent-input-footer">
+              <div className="sop-agent-input-left">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    const files = Array.from(event.target.files || []);
+                    event.target.value = "";
+                    void addImageFiles(files);
+                  }}
+                />
+                <button type="button" disabled={readOnly || sending} onClick={() => fileInputRef.current?.click()}>
+                  <PaperClipOutlined /> 上传
+                </button>
+                <button
+                  type="button"
+                  disabled={sending || readOnly}
+                  onClick={() => setInput("优化整条流程，让步骤更清晰可执行")}
+                >
+                  <ThunderboltOutlined /> AI 优化
+                </button>
+              </div>
+              <div className="sop-agent-input-right">
+                <span>{input.length} / 2000</span>
+                <Button
+                  type="primary"
+                  className="sop-chat-send-btn"
+                  icon={sending ? <LoadingOutlined /> : <SendOutlined />}
+                  disabled={
+                    sending
+                    || (!input.trim() && pendingImages.length === 0)
+                    || (readOnly && !isTrialIntent(input.trim()))
+                  }
+                  onClick={() => void send()}
+                >
+                  {sending ? "处理中" : "发送"}
+                </Button>
+              </div>
+            </div>
           </div>
+          <p className="sop-chat-tip">小贴士：支持拖拽/粘贴截图；按住 Ctrl/⌘ 多选步骤；验证无误后再试跑。</p>
         </div>
       </section>
 
@@ -1555,19 +3336,156 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
         </div>
       </div>
     </Modal>
+    <Modal
+      open={runsOpen}
+      title="运行记录与自动进化"
+      footer={null}
+      width={900}
+      onCancel={() => { setRunsOpen(false); setRunDetail(null); }}
+    >
+      <div className="sop-version-manager">
+        <div className="sop-version-manager-head">
+          <div>
+            <strong>{record?.name}</strong>
+            <span>正式执行计入成功率与进化信号；试跑单独统计。提案最多落到草稿，需人工发布。</span>
+          </div>
+          <Space wrap>
+            <Select
+              size="small"
+              value={runFilter}
+              style={{ width: 120 }}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "live", label: "正式" },
+                { value: "trial", label: "试跑" },
+              ]}
+              onChange={(value: "all" | "live" | "trial") => {
+                setRunFilter(value);
+                void refreshRuns(value);
+              }}
+            />
+            <Button size="small" icon={<ReloadOutlined />} loading={runsLoading} onClick={() => void refreshRuns()}>刷新</Button>
+            {record?.canEdit && !record.system && (
+              <Button
+                size="small"
+                type="primary"
+                icon={<ThunderboltOutlined />}
+                loading={analyzingEvolution}
+                onClick={() => void runAnalyzeEvolution()}
+              >
+                生成进化提案
+              </Button>
+            )}
+          </Space>
+        </div>
+        {!!signalRows.length && (
+          <div className="sop-run-signals">
+            <strong>进化信号</strong>
+            <div className="sop-run-signal-chips">
+              {signalRows.slice(0, 8).map((signal) => (
+                <Tag key={signal.id}>
+                  {SOP_SIGNAL_LABEL[signal.signalType] || signal.signalType}
+                  {signal.nodeKey ? ` · ${signal.nodeKey}` : ""} ×{signal.count}
+                </Tag>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="sop-run-signals">
+          <strong>进化提案</strong>
+          {!proposalRows.length ? (
+            <span style={{ color: "#7f8793", fontSize: 12 }}>暂无提案。正式运行产生信号后，点击「生成进化提案」。</span>
+          ) : (
+            <div className="sop-proposal-list">
+              {proposalRows.map((proposal) => (
+                <div key={proposal.id} className="sop-proposal-card">
+                  <div className="sop-proposal-card-head">
+                    <strong>{proposal.title}</strong>
+                    <Space size={4}>
+                      <Tag>{SOP_PROPOSAL_STATUS[proposal.status] || proposal.status}</Tag>
+                      <Tag color={proposal.riskLevel === "high" ? "red" : proposal.riskLevel === "medium" ? "orange" : "green"}>
+                        {proposal.riskLevel === "high" ? "高风险" : proposal.riskLevel === "medium" ? "中风险" : "低风险"}
+                      </Tag>
+                      <Tag>{proposal.category}</Tag>
+                    </Space>
+                  </div>
+                  <p>{proposal.rationale || "—"}</p>
+                  {proposal.draftVersion && <small>草稿版本 v{proposal.draftVersion}</small>}
+                  {record?.canEdit && !record.system && !["accepted", "rejected", "expired"].includes(proposal.status) && (
+                    <Space wrap size={6} style={{ marginTop: 8 }}>
+                      <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("trial", proposal.id)}>试跑</Button>
+                      <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("draft", proposal.id)}>生成草稿</Button>
+                      <Button size="small" type="primary" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("accept", proposal.id)}>采纳</Button>
+                      <Button size="small" danger loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("reject", proposal.id)}>拒绝</Button>
+                    </Space>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <Spin spinning={runsLoading}>
+          {!runRows.length ? (
+            <Empty description="暂无运行记录" />
+          ) : (
+            <div className="sop-version-list sop-run-list">
+              {runRows.map((run) => (
+                <button
+                  type="button"
+                  key={run.runKey}
+                  className={runDetail?.runKey === run.runKey ? "is-active" : ""}
+                  onClick={() => void openRunDetail(run.runKey)}
+                >
+                  <span>
+                    <strong>{SOP_RUN_STATUS_LABEL[run.status] || run.status}</strong>
+                    <Tag color={run.isTrial ? "blue" : "default"}>{run.isTrial ? "试跑" : run.source === "resume" ? "续跑" : "正式"}</Tag>
+                    <Tag>v{run.version}</Tag>
+                  </span>
+                  <span>
+                    {run.currentNode ? `节点 ${run.currentNode}` : "—"}
+                    {run.error ? ` · ${run.error}` : ""}
+                    {run.missingFields?.length ? ` · 缺少 ${run.missingFields.slice(0, 3).join("、")}` : ""}
+                  </span>
+                  <small>{run.startedAt ? new Date(run.startedAt).toLocaleString() : ""}</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </Spin>
+        {runDetail && (
+          <div className="sop-run-detail">
+            <strong>步骤明细 · {runDetail.traceId}</strong>
+            <div className="sop-run-detail-nodes">
+              {(runDetail.nodes || []).map((node) => (
+                <div key={`${node.sequence}-${node.nodeKey}`}>
+                  <span>#{node.sequence} {node.title || node.nodeKey}</span>
+                  <Tag>{SOP_RUN_STATUS_LABEL[node.status] || node.status}</Tag>
+                  <em>{node.error || node.nodeType}</em>
+                </div>
+              ))}
+              {!runDetail.nodes?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无节点明细" />}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   </section>;
 }
 
 export default function SopCenter() {
   const { message, modal } = App.useApp();
-  const navigate = useNavigate();
   const [items, setItems] = useState<SopDefinitionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "published" | "draft">("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [editor, setEditor] = useState<{ draft: SopDraftPayload; record?: SopDefinitionItem; openVersions?: boolean }>();
+  const [editor, setEditor] = useState<{
+    draft: SopDraftPayload;
+    record?: SopDefinitionItem;
+    openVersions?: boolean;
+    autoTrial?: boolean;
+  }>();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -1630,12 +3548,38 @@ export default function SopCenter() {
     } catch (error) { message.error(errorText(error, "SOP 发布失败")); }
   };
 
-  const runSopTemplate = (row: SopDefinitionItem) => {
-    if (sopStatusLabel(row) === "draft") {
-      message.info("草稿 SOP 需先发布后再运行");
+  const removeSop = (item: SopDefinitionItem) => {
+    if (item.system) {
+      message.warning("系统画廊模板不能删除，可复制到工作区后再管理");
       return;
     }
-    navigate(`/work?view=create&sop=${encodeURIComponent(row.key)}`);
+    modal.confirm({
+      title: `删除「${item.name}」？`,
+      content: "将永久删除该 SOP 及其版本与试跑记录，此操作不可恢复。",
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          await deleteSop(item.key);
+          message.success("已删除");
+          if (editor?.record?.key === item.key) setEditor(undefined);
+          await refresh();
+        } catch (error) {
+          message.error(errorText(error, "删除失败"));
+          throw error;
+        }
+      },
+    });
+  };
+
+  const runSopTemplate = async (row: SopDefinitionItem) => {
+    try {
+      const detail = await getSop(row.key);
+      setEditor({ draft: toDraft(detail), record: detail, autoTrial: true });
+    } catch (error) {
+      message.error(errorText(error, "SOP 详情加载失败"));
+    }
   };
 
   const visibleItems = useMemo(() => items.filter((row) => {
@@ -1692,7 +3636,14 @@ export default function SopCenter() {
       ),
     },
     { title: "执行次数", dataIndex: "callCount", width: 100, render: (value: number) => `${value || 0} 次` },
+    { title: "试跑", dataIndex: "trialCount", width: 80, render: (value: number) => `${value || 0}` },
     { title: "成功率", dataIndex: "successRate", width: 90, render: (value: number) => `${value || 0}%` },
+    {
+      title: "进化",
+      dataIndex: "pendingEvolutionCount",
+      width: 80,
+      render: (value: number) => (value ? <Tag color="purple">{value}</Tag> : "—"),
+    },
     {
       title: "操作",
       key: "actions",
@@ -1721,11 +3672,12 @@ export default function SopCenter() {
                 },
               }]),
             { key: "duplicate", label: "复制模板", onClick: () => void copySystem(row) },
+            { key: "delete", label: "删除", danger: true, onClick: () => removeSop(row) },
           ];
         return (
           <div className="sop-template-actions">
-            <Button className="sop-template-run-btn" size="small" icon={<PlayCircleOutlined />} onClick={() => runSopTemplate(row)}>
-              运行
+            <Button className="sop-template-run-btn" size="small" icon={<PlayCircleOutlined />} onClick={() => void runSopTemplate(row)}>
+              试跑
             </Button>
             <Tooltip title="复制">
               <Button
@@ -1750,6 +3702,7 @@ export default function SopCenter() {
                 items: moreItems.map((item) => ({
                   key: item.key,
                   label: item.label,
+                  danger: Boolean((item as { danger?: boolean }).danger),
                   onClick: () => item.onClick(),
                 })),
               }}
@@ -1771,7 +3724,8 @@ export default function SopCenter() {
         initial={editor.draft}
         record={editor.record}
         openVersionsOnMount={editor.openVersions}
-        onBack={() => setEditor(undefined)}
+        autoTrialOnMount={editor.autoTrial}
+        onBack={() => { setEditor(undefined); void refresh(); }}
         onSaved={(item) => { setEditor({ draft: toDraft(item), record: item }); void refresh(); }}
       />
     );

@@ -25,6 +25,7 @@ class SopDefinition(models.Model):
     call_count = models.PositiveIntegerField(default=0)
     success_count = models.PositiveIntegerField(default=0)
     failure_count = models.PositiveIntegerField(default=0)
+    trial_count = models.PositiveIntegerField(default=0)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_sops"
     )
@@ -88,6 +89,11 @@ class SopRun(models.Model):
         FAILED = "failed", "失败"
         HANDOFF = "handoff", "转人工"
 
+    class Source(models.TextChoices):
+        LIVE = "live", "正式"
+        TRIAL = "trial", "试跑"
+        RESUME = "resume", "续跑"
+
     run_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     trace_id = models.CharField(max_length=64, unique=True)
     version = models.ForeignKey(SopVersion, on_delete=models.PROTECT, related_name="runs")
@@ -97,14 +103,23 @@ class SopRun(models.Model):
         "core.WorkTask", null=True, blank=True, on_delete=models.SET_NULL, related_name="sop_runs"
     )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING, db_index=True)
+    source = models.CharField(max_length=16, choices=Source.choices, default=Source.LIVE, db_index=True)
+    is_trial = models.BooleanField(default=False, db_index=True)
     current_node = models.CharField(max_length=96, blank=True, default="")
     input_data = models.JSONField(default=dict, blank=True)
     state_data = models.JSONField(default=dict, blank=True)
     output_data = models.JSONField(default=dict, blank=True)
     missing_fields = models.JSONField(default=list, blank=True)
     error = models.TextField(blank=True, default="")
+    outcome_tags = models.JSONField(default=list, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["organization", "-started_at"], name="orch_soprun_org_started_idx"),
+        ]
 
 
 class SopNodeRun(models.Model):
@@ -130,3 +145,103 @@ class SopNodeRun(models.Model):
     class Meta:
         ordering = ["sequence", "id"]
         constraints = [models.UniqueConstraint(fields=["run", "sequence"], name="orchestration_sop_node_seq_uniq")]
+
+
+class SopEvolutionSignal(models.Model):
+    """Aggregated learning signals from production (non-trial) SOP runs."""
+
+    class SignalType(models.TextChoices):
+        NEED_INPUT_LOOP = "need_input_loop", "反复等待输入"
+        CHECKPOINT_REJECT = "checkpoint_reject", "确认驳回"
+        ACTION_FAIL = "action_fail", "动作失败"
+        HANDOFF = "handoff", "转人工"
+        SLOW_NODE = "slow_node", "节点耗时过长"
+        UNUSED_BRANCH = "unused_branch", "分支很少走到"
+        MISSING_FIELD_REPEAT = "missing_field_repeat", "字段反复缺失"
+
+    definition = models.ForeignKey(SopDefinition, on_delete=models.CASCADE, related_name="evolution_signals")
+    version = models.ForeignKey(
+        SopVersion, null=True, blank=True, on_delete=models.SET_NULL, related_name="evolution_signals"
+    )
+    organization = models.ForeignKey(
+        "core.Organization", null=True, blank=True, on_delete=models.CASCADE, related_name="sop_evolution_signals"
+    )
+    node_key = models.CharField(max_length=96, blank=True, default="", db_index=True)
+    signal_type = models.CharField(max_length=32, choices=SignalType.choices, db_index=True)
+    count = models.PositiveIntegerField(default=0)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    sample_run_ids = models.JSONField(default=list, blank=True)
+    payload_summary = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-last_seen_at", "-count"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["definition", "node_key", "signal_type"],
+                name="orchestration_sop_evolution_signal_uniq",
+            ),
+        ]
+
+
+class SopEvolutionProposal(models.Model):
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "已提出"
+        VALIDATED = "validated", "已校验"
+        TRIAL_PASSED = "trial_passed", "试跑通过"
+        TRIAL_FAILED = "trial_failed", "试跑失败"
+        DRAFTED = "drafted", "已生成草稿"
+        ACCEPTED = "accepted", "已采纳"
+        REJECTED = "rejected", "已拒绝"
+        EXPIRED = "expired", "已过期"
+
+    class Category(models.TextChoices):
+        GRAPH = "graph", "流程"
+        SKILL = "skill", "技能"
+        POLICY = "policy", "策略"
+
+    class RiskLevel(models.TextChoices):
+        LOW = "low", "低"
+        MEDIUM = "medium", "中"
+        HIGH = "high", "高"
+
+    definition = models.ForeignKey(SopDefinition, on_delete=models.CASCADE, related_name="evolution_proposals")
+    base_version = models.ForeignKey(
+        SopVersion, null=True, blank=True, on_delete=models.SET_NULL, related_name="evolution_proposals_base"
+    )
+    draft_version = models.ForeignKey(
+        SopVersion, null=True, blank=True, on_delete=models.SET_NULL, related_name="evolution_proposals_draft"
+    )
+    organization = models.ForeignKey(
+        "core.Organization", null=True, blank=True, on_delete=models.CASCADE, related_name="sop_evolution_proposals"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PROPOSED, db_index=True)
+    category = models.CharField(max_length=16, choices=Category.choices, default=Category.GRAPH, db_index=True)
+    risk_level = models.CharField(max_length=16, choices=RiskLevel.choices, default=RiskLevel.LOW, db_index=True)
+    title = models.CharField(max_length=160)
+    rationale = models.TextField(blank=True, default="")
+    evidence = models.JSONField(default=dict, blank=True)
+    patch = models.JSONField(default=dict, blank=True)
+    proposed_graph = models.JSONField(default=dict, blank=True)
+    trial_result = models.JSONField(default=dict, blank=True)
+    created_by_system = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sop_evolution_proposals",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_sop_evolution_proposals",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]

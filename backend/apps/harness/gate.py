@@ -104,6 +104,22 @@ def _check_consistency(action: ActionContract, payload: dict) -> CheckResult:
 
 def evaluate(action_name: str, payload: dict, role: str = "operator") -> GateOutcome:
     """运行完整闸机流程,返回结论。"""
+    from apps.orchestration.skill_actions import is_skill_action
+
+    if is_skill_action(action_name):
+        # Skill actions are governed in Skill Center; gate only blocks unknown/unavailable keys.
+        high_risk = bool(payload.get("_skill_high_risk"))
+        checks = [CheckResult("动作识别", True, f"技能动作 {action_name}")]
+        if high_risk:
+            checks.append(CheckResult("高风险审批", False, "高风险技能,需人工确认后放行"))
+            return GateOutcome(decision="need_approval", checks=checks)
+        checks.append(CheckResult("高风险审批", True, "技能动作自动放行"))
+        return GateOutcome(
+            decision="allow",
+            checks=checks,
+            dry_run={"action": action_name, "connector": "skill_runner", "payload": payload},
+        )
+
     action = get_action(action_name)
     if action is None:
         return GateOutcome(
