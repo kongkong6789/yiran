@@ -1,10 +1,13 @@
-import uuid
+import io
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from openpyxl import Workbook
 from rest_framework.test import APITestCase
 
 from apps.collab import views
@@ -13,6 +16,22 @@ from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom, Xia
 from apps.collab.xiaoce_runs import complete_xiaoce_run
 from apps.collab.tests.test_xiaoce_runs import prepared_skill
 from apps.skills.models import SkillAsset, UserSkill
+
+
+def xlsx_upload(name="补货计划.xlsx"):
+    stream = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "补货计划"
+    sheet.append(["SKU", "建议补货量"])
+    sheet.append(["SKU-001", 120])
+    workbook.save(stream)
+    workbook.close()
+    return SimpleUploadedFile(
+        name,
+        stream.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 class XiaoceApiTests(APITestCase):
@@ -272,6 +291,126 @@ class XiaoceApiTests(APITestCase):
             response.data["message"]["meta"]["context_rooms"][0]["id"],
             str(context_room.id),
         )
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_file_only_message_starts_a_xiaoce_run(self, thread_cls):
+        run_id = uuid.uuid4()
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                response = self.client.post(
+                    self.messages_url,
+                    {"content": "", "run_id": str(run_id), "files": [xlsx_upload()]},
+                    format="multipart",
+                )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["xiaoce_run"]["id"], str(run_id))
+        self.assertEqual(len(response.data["message"]["attachments"]), 1)
+        self.assertTrue(response.data["message"]["attachments"][0]["has_text"])
+        thread_cls.return_value.start.assert_called_once()
+
+    @patch("apps.collab.views.threading.Thread")
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_reads_excel_and_can_return_the_downloadable_file(
+        self,
+        run_chat,
+        _thread_cls,
+    ):
+        run_id = uuid.uuid4()
+
+        def answer(**kwargs):
+            return {
+                "ok": True,
+                "reply": "已读取补货计划。",
+                "attachments": kwargs["attachments"],
+            }
+
+        run_chat.side_effect = answer
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                upload = xlsx_upload()
+                expected_bytes = upload.read()
+                upload.seek(0)
+                response = self.client.post(
+                    self.messages_url,
+                    {
+                        "content": "请读取补货计划，并把文件返回给我",
+                        "run_id": str(run_id),
+                        "files": [upload],
+                    },
+                    format="multipart",
+                )
+                self.assertEqual(response.status_code, 201)
+
+                views._run_xiaoce_reply_async(run_id)
+
+                model_attachment = run_chat.call_args.kwargs["attachments"][0]
+                self.assertIn("SKU-001", model_attachment["text"])
+                self.assertIn("建议补货量", model_attachment["text"])
+
+                run = XiaoceRun.objects.select_related("result_message").get(id=run_id)
+                returned = run.result_message.attachments[0]
+                self.assertEqual(returned["name"], "补货计划.xlsx")
+                self.assertTrue(returned["url"].startswith("/api/collab/attachments/"))
+
+                download = self.client.get(f'{returned["url"]}?download=1')
+                self.assertEqual(download.status_code, 200)
+                self.assertEqual(
+                    b"".join(download.streaming_content),
+                    expected_bytes,
+                )
+
+    @patch("apps.collab.views.threading.Thread")
+    @patch("apps.core.agent_chat.run_chat")
+    def test_regular_file_analysis_does_not_duplicate_the_input_attachment(
+        self,
+        run_chat,
+        _thread_cls,
+    ):
+        run_id = uuid.uuid4()
+
+        def answer(**kwargs):
+            return {"ok": True, "reply": "已分析。", "attachments": kwargs["attachments"]}
+
+        run_chat.side_effect = answer
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                response = self.client.post(
+                    self.messages_url,
+                    {
+                        "content": "这里面什么内容",
+                        "run_id": str(run_id),
+                        "files": [xlsx_upload()],
+                    },
+                    format="multipart",
+                )
+                self.assertEqual(response.status_code, 201)
+                views._run_xiaoce_reply_async(run_id)
+
+        run = XiaoceRun.objects.select_related("result_message").get(id=run_id)
+        self.assertEqual(run.result_message.attachments, [])
+
+    def test_generated_file_is_exposed_without_requiring_a_return_phrase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                root = Path(tmp) / str(self.user.id)
+                root.mkdir(parents=True)
+                (root / "generated_report.csv").write_bytes(b"sku,qty\nSKU-001,120\n")
+
+                output = views._xiaoce_output_attachments(
+                    {
+                        "generated_files": [{
+                            "id": "generated_report.csv",
+                            "name": "补货分析.csv",
+                            "mime": "text/csv",
+                        }],
+                    },
+                    "生成补货分析报告",
+                    self.user.id,
+                )
+
+        self.assertEqual(output[0]["name"], "补货分析.csv")
+        self.assertEqual(output[0]["url"], "/api/collab/attachments/generated_report.csv/")
 
     @patch("apps.collab.views.threading.Thread")
     def test_reference_rejects_unowned_or_current_task(self, _thread_cls):

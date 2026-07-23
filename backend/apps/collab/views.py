@@ -21,7 +21,9 @@ from rest_framework.response import Response
 logger = logging.getLogger(__name__)
 
 from apps.core.attachments import (
+    MAX_ATTACH_FILES,
     attachment_public_meta,
+    load_stored_attachments,
     process_uploaded_files,
     resolve_attachment_path,
     resolve_attachment_path_any,
@@ -88,6 +90,12 @@ XIAOCE_CONTEXT_MAX_ROOMS = 1
 XIAOCE_CONTEXT_HEAD_MESSAGES = 20
 XIAOCE_CONTEXT_TAIL_MESSAGES = 80
 XIAOCE_CONTEXT_MAX_CHARS = 24_000
+XIAOCE_RETURN_FILE_RE = re.compile(
+    r"(?:返回|返还|发回|回传|发给我|给我|发送|提供|下载).{0,10}(?:文件|附件)"
+    r"|(?:文件|附件).{0,10}(?:返回|返还|发回|回传|发给我|给我|发送|提供|下载)"
+    r"|\b(?:return|send|download)\b.{0,24}\b(?:file|attachment)s?\b",
+    re.IGNORECASE,
+)
 
 
 def _is_admin(user) -> bool:
@@ -1109,6 +1117,56 @@ def _worker_error_code(current_stage: str, error) -> str:
     return "stage_failed"
 
 
+def _xiaoce_local_attachment(item: dict, user_id: int) -> dict | None:
+    """只允许将已保存在当前用户附件目录的文件写入 bot 消息。"""
+    if not isinstance(item, dict):
+        return None
+    stored_id = str(item.get("id") or item.get("stored_id") or "").strip()
+    path = resolve_attachment_path(user_id, stored_id)
+    if path is None:
+        return None
+    name = str(item.get("name") or "").replace("\\", "/").split("/")[-1]
+    if not name:
+        name = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+    mime = str(item.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream")
+    is_image = bool(item.get("is_image") or mime.startswith("image/"))
+    return {
+        "id": stored_id,
+        "name": name,
+        "size": path.stat().st_size,
+        "mime": mime,
+        "has_text": bool(item.get("has_text")),
+        "is_image": is_image,
+        "is_file": not is_image,
+        "url": f"/api/collab/attachments/{stored_id}/",
+    }
+
+
+def _xiaoce_output_attachments(result: dict, trigger_content: str, user_id: int) -> list[dict]:
+    """收集小策真正产生的文件，或用户明确要求返回的原附件。"""
+    candidates: list[dict] = []
+    for key in ("generated_images", "output_attachments", "generated_files"):
+        value = result.get(key) or []
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+    if XIAOCE_RETURN_FILE_RE.search(trigger_content or ""):
+        value = result.get("attachments") or []
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+
+    output: list[dict] = []
+    seen: set[str] = set()
+    for item in candidates:
+        public = _xiaoce_local_attachment(item, user_id)
+        if public is None or public["id"] in seen:
+            continue
+        seen.add(public["id"])
+        output.append(public)
+        if len(output) >= MAX_ATTACH_FILES:
+            break
+    return output
+
+
 def _run_xiaoce_reply_async(run_id) -> None:
     """小策bot 单聊：执行普通问答或安全的会话 Skill 打包。"""
     try:
@@ -1155,9 +1213,14 @@ def _run_xiaoce_reply_async(run_id) -> None:
         else:
             history = _xiaoce_history_before(run.room, run.trigger_message_id)
             context_blocks = _xiaoce_context_reference_blocks(run)
+            attachments = load_stored_attachments(
+                run.trigger_message.attachments or [],
+                run.user_id,
+            )
             result = run_chat(
                 message=trigger_content,
                 history=history[-16:],
+                attachments=attachments,
                 user=run.user,
                 cancel_check=cancel_check,
                 progress_callback=progress_callback,
@@ -1169,7 +1232,16 @@ def _run_xiaoce_reply_async(run_id) -> None:
                 reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
             else:
                 reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
-            ai_msg = complete_xiaoce_run(run.id, reply)
+            output_attachments = _xiaoce_output_attachments(
+                result,
+                trigger_content,
+                run.user_id,
+            )
+            ai_msg = complete_xiaoce_run(
+                run.id,
+                reply,
+                attachments=output_attachments,
+            )
         _publish_xiaoce_message(run, ai_msg)
     except AgentRunCancelled:
         return
@@ -1958,8 +2030,9 @@ def room_messages(request, room_id):
             return Response({"ok": False, "error": "你不是该会话成员"}, status=403)
         content = str(request.data.get("content") or "").strip()
         is_bot_dm = _is_xiaoce_dm(room)
+        files = request.FILES.getlist("files") or request.FILES.getlist("file")
         xiaoce_run_id = None
-        if is_bot_dm and content:
+        if is_bot_dm and (content or files):
             active_run = XiaoceRun.objects.filter(
                 room=room,
                 user=request.user,
@@ -1989,7 +2062,6 @@ def room_messages(request, room_id):
                 )
             except ValueError as exc:
                 return Response({"ok": False, "error": str(exc)}, status=400)
-        files = request.FILES.getlist("files") or request.FILES.getlist("file")
         attachments_meta: list[dict] = []
         if files:
             try:
@@ -2082,7 +2154,7 @@ def room_messages(request, room_id):
         )
         analyze = str(request.data.get("analyze") or "1") not in ("0", "false", "False")
         # 小策bot 单聊：每条用户消息自动走知识问答；群聊仍需 @AI / Skill
-        if is_bot_dm and content:
+        if is_bot_dm and (content or attachments_meta):
             need_ai_reply = True
             analyze = False
         if need_ai_reply:

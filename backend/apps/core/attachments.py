@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import mimetypes
 import uuid
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from django.conf import settings
@@ -16,9 +19,9 @@ TEXT_EXTENSIONS = {
     ".yaml", ".yml", ".xml", ".html", ".htm", ".tsv",
 }
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-# 协作/对话可下载的二进制附件（不做文本解析）
+# 协作/对话可下载的二进制附件；其中 Excel 会进一步抽取文本。
 DOC_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx",
     ".zip", ".rar", ".7z", ".tar", ".gz",
     ".mp3", ".wav", ".mp4", ".mov", ".avi",
     ".apk", ".ipa",
@@ -32,6 +35,11 @@ IMAGE_MIME = {
     ".bmp": "image/bmp",
 }
 MAX_TEXT_INJECT = 12_000
+SPREADSHEET_EXTENSIONS = {".xls", ".xlsx", ".xlsm"}
+MAX_SPREADSHEET_SHEETS = 6
+MAX_SPREADSHEET_ROWS = 200
+MAX_SPREADSHEET_COLUMNS = 40
+MAX_CELL_CHARS = 500
 
 
 def attachments_root(user_id: int) -> Path:
@@ -48,9 +56,112 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _cell_to_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        text = format(value, "f")
+        return text.rstrip("0").rstrip(".") if "." in text else text
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).replace("\t", " ").strip()[:MAX_CELL_CHARS]
+
+
+def _sheet_text(title: str, rows, *, total_rows: int | None = None) -> str:
+    lines = [f"## 工作表: {title}"]
+    emitted = 0
+    for raw_row in rows:
+        if emitted >= MAX_SPREADSHEET_ROWS:
+            break
+        row = list(raw_row or ())
+        truncated_columns = len(row) > MAX_SPREADSHEET_COLUMNS
+        values = [_cell_to_text(value) for value in row[:MAX_SPREADSHEET_COLUMNS]]
+        while values and not values[-1]:
+            values.pop()
+        if not any(values):
+            continue
+        line = "\t".join(values)
+        if truncated_columns:
+            line += "\t……（其余列已省略）"
+        lines.append(line)
+        emitted += 1
+    if total_rows is not None and total_rows > MAX_SPREADSHEET_ROWS:
+        lines.append(f"……（工作表共 {total_rows} 行，仅展示前 {MAX_SPREADSHEET_ROWS} 行非空内容）")
+    elif emitted >= MAX_SPREADSHEET_ROWS:
+        lines.append(f"……（仅展示前 {MAX_SPREADSHEET_ROWS} 行非空内容）")
+    if emitted == 0:
+        lines.append("（工作表为空）")
+    return "\n".join(lines)
+
+
+def _extract_xlsx_text(data: bytes) -> str:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        blocks = [
+            _sheet_text(
+                sheet.title,
+                sheet.iter_rows(values_only=True),
+                total_rows=sheet.max_row,
+            )
+            for sheet in workbook.worksheets[:MAX_SPREADSHEET_SHEETS]
+        ]
+        if len(workbook.worksheets) > MAX_SPREADSHEET_SHEETS:
+            blocks.append(
+                f"……（文件共 {len(workbook.worksheets)} 个工作表，仅展示前 {MAX_SPREADSHEET_SHEETS} 个）"
+            )
+        return "\n\n".join(blocks)[:MAX_TEXT_INJECT]
+    finally:
+        workbook.close()
+
+
+def _extract_xls_text(data: bytes) -> str:
+    import xlrd
+
+    workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
+    try:
+        blocks: list[str] = []
+        for sheet in workbook.sheets()[:MAX_SPREADSHEET_SHEETS]:
+            rows = []
+            for row_index in range(min(sheet.nrows, MAX_SPREADSHEET_ROWS)):
+                values = []
+                for column_index in range(min(sheet.ncols, MAX_SPREADSHEET_COLUMNS)):
+                    cell = sheet.cell(row_index, column_index)
+                    value = cell.value
+                    if cell.ctype == xlrd.XL_CELL_DATE:
+                        try:
+                            value = xlrd.xldate_as_datetime(value, workbook.datemode)
+                        except (TypeError, ValueError):
+                            pass
+                    elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                        value = bool(value)
+                    values.append(value)
+                rows.append(values)
+            blocks.append(_sheet_text(sheet.name, rows, total_rows=sheet.nrows))
+        if workbook.nsheets > MAX_SPREADSHEET_SHEETS:
+            blocks.append(
+                f"……（文件共 {workbook.nsheets} 个工作表，仅展示前 {MAX_SPREADSHEET_SHEETS} 个）"
+            )
+        return "\n\n".join(blocks)[:MAX_TEXT_INJECT]
+    finally:
+        workbook.release_resources()
+
+
 def _extract_text(name: str, data: bytes) -> str:
     lower = name.lower()
     ext = Path(lower).suffix
+    if ext in SPREADSHEET_EXTENSIONS:
+        try:
+            return _extract_xls_text(data) if ext == ".xls" else _extract_xlsx_text(data)
+        except Exception:
+            return "（Excel 文件解析失败，请确认文件未损坏、未加密，并重新上传。）"
     if ext not in TEXT_EXTENSIONS:
         return ""
     text = _decode_text(data)
@@ -126,13 +237,71 @@ def process_uploaded_files(files, user_id: int) -> list[dict]:
             item["mime"] = img_mime
             item["image_base64"] = base64.b64encode(data).decode("ascii")
             item["data_url"] = f"data:{img_mime};base64,{item['image_base64']}"
-        elif is_text:
+        elif is_text or ext in SPREADSHEET_EXTENSIONS:
             text = _extract_text(name, data)
             item["text"] = text
             item["has_text"] = bool(text)
 
         results.append(item)
     return results
+
+
+def load_stored_attachments(items: list[dict], user_id: int) -> list[dict]:
+    """从可信的用户附件目录恢复模型所需文本或图片数据。"""
+    loaded: list[dict] = []
+    for raw in (items or [])[:MAX_ATTACH_FILES]:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        stored_id = str(item.get("id") or "")
+        path = resolve_attachment_path(user_id, stored_id)
+        if path is None:
+            item.update({
+                "text": "（附件文件不可用或已删除，无法读取内容。）",
+                "has_text": True,
+                "image_base64": "",
+                "data_url": "",
+            })
+            loaded.append(item)
+            continue
+
+        if path.stat().st_size > MAX_ATTACH_BYTES:
+            item.update({
+                "text": "（附件超过读取上限，无法解析内容。）",
+                "has_text": True,
+                "image_base64": "",
+                "data_url": "",
+            })
+            loaded.append(item)
+            continue
+
+        data = path.read_bytes()
+        name = str(item.get("name") or path.name)
+        mime = str(item.get("mime") or mimetypes.guess_type(name)[0] or "application/octet-stream")
+        is_image = _is_image(name, mime)
+        item.update({
+            "name": name,
+            "size": len(data),
+            "mime": mime,
+            "is_image": is_image,
+            "is_file": not is_image,
+            "stored_path": str(path),
+            "text": "",
+            "has_text": False,
+        })
+        if is_image:
+            image_mime = _image_mime(name, mime)
+            encoded = base64.b64encode(data).decode("ascii")
+            item.update({
+                "mime": image_mime,
+                "image_base64": encoded,
+                "data_url": f"data:{image_mime};base64,{encoded}",
+            })
+        else:
+            text = _extract_text(name, data)
+            item.update({"text": text, "has_text": bool(text)})
+        loaded.append(item)
+    return loaded
 
 
 def format_attachment_context(attachments: list[dict]) -> str:
