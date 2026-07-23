@@ -1876,7 +1876,7 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
   );
 }
 
-function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onSopCallableChange, onPublishSop, onDelete }: {
+function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onOpenWorkspace, onVisibilityChange, onSopCallableChange, onPublishSop, onDelete }: {
   entry: SkillEntry | null;
   panelView: "overview" | "manage";
   onPanelViewChange: (view: "overview" | "manage") => void;

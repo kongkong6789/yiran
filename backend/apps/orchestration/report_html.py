@@ -287,7 +287,8 @@ def _markdown_to_html_body(markdown: str) -> str:
         if re.match(r"^\s*[-*+]\s+", line):
             items: list[str] = []
             while i < len(lines) and re.match(r"^\s*[-*+]\s+", lines[i]):
-                items.append(f"<li>{_inline(re.sub(r'^\\s*[-*+]\\s+', '', lines[i]))}</li>")
+                item_text = re.sub(r"^\s*[-*+]\s+", "", lines[i])
+                items.append(f"<li>{_inline(item_text)}</li>")
                 i += 1
             blocks.append(f"<ul>{''.join(items)}</ul>")
             continue
@@ -295,7 +296,8 @@ def _markdown_to_html_body(markdown: str) -> str:
         if re.match(r"^\s*\d+\.\s+", line):
             items = []
             while i < len(lines) and re.match(r"^\s*\d+\.\s+", lines[i]):
-                items.append(f"<li>{_inline(re.sub(r'^\\s*\\d+\\.\\s+', '', lines[i]))}</li>")
+                item_text = re.sub(r"^\s*\d+\.\s+", "", lines[i])
+                items.append(f"<li>{_inline(item_text)}</li>")
                 i += 1
             blocks.append(f"<ol>{''.join(items)}</ol>")
             continue

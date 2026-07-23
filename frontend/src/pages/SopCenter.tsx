@@ -390,7 +390,7 @@ function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes:
   if (!Array.isArray(rows) || !rows.length) return [defaultWelcome(fallbackName, nodes)];
   const restored = rows
     .filter((item) => item && (item.role === "user" || item.role === "assistant") && String(item.content || "").trim())
-    .map((item, index) => {
+    .map((item, index): ChatMessage => {
       const rawTrial = (item as { trial?: TrialRunState }).trial;
       const rawChange = (item as { flowChange?: FlowChangeInfo }).flowChange;
       return {
@@ -1851,7 +1851,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
   const selectedNodes = draft.graph.nodes.filter((node) => selectedNodeKeys.includes(node.key));
   const selectedNode = selectedNodes.length === 1 ? selectedNodes[0] : null;
   const editMode = selectedNodeKeys.length === 0 ? "flow" : selectedNodeKeys.length === 1 ? "node" : "nodes";
-  const activeChips = editMode === "flow" ? QUICK_ACTIONS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
+  const activeChips: typeof QUICK_ACTIONS = editMode === "flow" ? QUICK_ACTIONS : editMode === "node" ? NODE_PROMPT_CHIPS : MULTI_PROMPT_CHIPS;
 
   const actionTitles = useMemo(
     () => Object.fromEntries(actions.map((action) => [action.name, action.title])),
@@ -2250,7 +2250,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       }));
     };
 
-    setMessages((current) => current.map((item) => {
+    setMessages((current) => current.map((item): ChatMessage => {
       if (item.id !== assistantId) return item;
       if (isConfirmResume && item.trial) {
         resumeFromStep = Math.max(1, Math.min(item.trial.current || 1, item.trial.total || total));
@@ -2271,8 +2271,8 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
             note: "确认后继续真实执行后续节点（如报告生成）；前序收集/确认步骤会快速复核。",
             logs: [
               ...prevLogs,
-              { time: startedAt, text: "已确认，继续执行后续步骤", status: "ok" },
-              { time: startedAt, text: "正在执行后续业务节点（报告生成可能需要数十秒）…", status: "running" },
+              { time: startedAt, text: "已确认，继续执行后续步骤", status: "ok" as const },
+              { time: startedAt, text: "正在执行后续业务节点（报告生成可能需要数十秒）…", status: "running" as const },
             ].slice(-28),
           },
         };
@@ -2908,6 +2908,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     if (!record) {
       const saved = await saveDraft();
       if (!saved?.version) return;
+      const savedVersion = saved.version;
       const text = "跑一遍流程";
       const assistantId = `a-${Date.now()}`;
       setMessages((current) => [
@@ -2920,7 +2921,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           toolsLive: true,
           trial: {
             status: "running",
-            total: Math.max((saved.version.graph?.nodes || draft.graph.nodes).length, 1),
+            total: Math.max((savedVersion.graph?.nodes || draft.graph.nodes).length, 1),
             current: 0,
             currentTitle: "准备执行",
             logs: [{ time: formatTrialClock(), text: "开始执行流程", status: "ok" }],
@@ -2931,8 +2932,8 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       try {
         await runTrialInChat(text, assistantId, {
           key: saved.key,
-          version: saved.version.version,
-          graph: saved.version.graph || draft.graph,
+          version: savedVersion.version,
+          graph: savedVersion.graph || draft.graph,
         });
       } catch (error) {
         setMessages((current) => current.map((item) => (
