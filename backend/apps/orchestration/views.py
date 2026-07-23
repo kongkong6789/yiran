@@ -66,9 +66,12 @@ def run(request):
     role = executor.execution_role if executor else _business_role(request.user)
     requested_trace_id = str(request.data.get("trace_id") or "").strip()
     capability = build_agent_capability_context(executor, request.user, text) if executor else None
+    run_payload = dict(payload) if isinstance(payload, dict) else {}
+    if capability:
+        run_payload["_agent_kb_ids"] = capability.get("configured_knowledge_base_ids") or []
     result = run_sop(
         text,
-        payload,
+        run_payload,
         role,
         trace_id=requested_trace_id or None,
         user=request.user,

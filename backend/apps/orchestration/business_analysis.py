@@ -321,11 +321,52 @@ def _write_audit(*, trace_id: str, user, organization, text: str, decision: str,
     )
 
 
+def _resolve_analysis_snapshots(*, organization, text: str, payload: dict) -> list[SourceSnapshot]:
+    """Prefer explicit SOP/payload bindings; otherwise fall back to trusted LIVE selection."""
+    explicit_ids: list[int] = []
+    for raw in payload.get("snapshot_ids") or []:
+        try:
+            explicit_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    single = payload.get("snapshot_id")
+    if single not in (None, "", []) and not explicit_ids:
+        try:
+            explicit_ids.append(int(single))
+        except (TypeError, ValueError):
+            pass
+    if explicit_ids:
+        rows = list(SourceSnapshot.objects.filter(organization=organization, id__in=explicit_ids))
+        by_id = {row.id: row for row in rows}
+        ordered = [by_id[item] for item in explicit_ids if item in by_id]
+        if ordered:
+            return ordered
+    asset_keys = [str(item).strip() for item in (payload.get("asset_keys") or []) if str(item).strip()]
+    if asset_keys:
+        selected: list[SourceSnapshot] = []
+        for asset_key in asset_keys:
+            row = (
+                SourceSnapshot.objects.filter(
+                    organization=organization,
+                    governance_status="governed",
+                    complete=True,
+                    scope__asset_key=asset_key,
+                )
+                .order_by("-as_of", "-id")
+                .first()
+            )
+            if row:
+                selected.append(row)
+        if selected:
+            return selected
+    return select_trusted_snapshots(organization=organization, text=text)
+
+
 def run_business_analysis(*, text: str, organization, user, trace_id: str,
                           initial_steps: list[dict] | None = None, payload: dict | None = None) -> dict:
     steps = list(initial_steps or [])
     payload = payload or {}
-    snapshots = select_trusted_snapshots(organization=organization, text=text)
+    snapshots = _resolve_analysis_snapshots(organization=organization, text=text, payload=payload)
     if not snapshots:
         message = "没有找到与任务相关的已发布可信数据版本。请先在“知识库 → 企业数据”发布对应业务数据。"
         _write_audit(

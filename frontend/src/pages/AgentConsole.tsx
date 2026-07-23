@@ -107,6 +107,8 @@ export default function AgentConsole({
   const [recognizedAction, setRecognizedAction] = useState<ActionContract>();
   const [reportBrands, setReportBrands] = useState<Array<{ label: string; value: string }>>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<TaskTemplateItem>();
+  const [selectedSopKey, setSelectedSopKey] = useState<string | null>(null);
+  const [sopPayloadDefaults, setSopPayloadDefaults] = useState<Record<string, unknown>>({});
   const [executionFields, setExecutionFields] = useState<ExecutionField[]>([]);
   const [result, setResult] = useState<SopResult | null>(null);
   const [executionFailure, setExecutionFailure] = useState<Record<string, unknown> | null>(null);
@@ -170,15 +172,61 @@ export default function AgentConsole({
   useEffect(() => {
     if (view !== "create") return;
     const sopKey = searchParams.get("sop");
-    if (!sopKey) return;
+    if (!sopKey) {
+      setSelectedSopKey(null);
+      setSopPayloadDefaults({});
+      return;
+    }
     let active = true;
     getSop(sopKey).then((detail) => {
       if (!active) return;
       const example = detail.version?.utteranceExamples?.[0] || detail.name;
       setText(example);
       setSelectedTemplate(undefined);
+      setSelectedSopKey(detail.key);
+      const defaults: Record<string, unknown> = { _sop_key: detail.key };
+      const nodes = detail.version?.graph?.nodes || [];
+      const snapshotIds: number[] = [];
+      const metricIds: string[] = [];
+      const assetKeys: string[] = [];
+      const brandIds: string[] = [];
+      let scope = "";
+      nodes.forEach((node) => {
+        const bindings = (node.config?.data_bindings || {}) as Record<string, unknown>;
+        const snaps = Array.isArray(bindings.snapshot_ids) ? bindings.snapshot_ids : [];
+        snaps.forEach((id) => {
+          const n = Number(id);
+          if (Number.isFinite(n)) snapshotIds.push(n);
+        });
+        const metrics = Array.isArray(bindings.metric_ids) ? bindings.metric_ids : [];
+        metrics.forEach((id) => {
+          if (String(id).trim()) metricIds.push(String(id));
+        });
+        const assets = Array.isArray(bindings.asset_keys) ? bindings.asset_keys : [];
+        assets.forEach((key) => {
+          if (String(key).trim()) assetKeys.push(String(key));
+        });
+        const brands = Array.isArray(bindings.brand_ids) ? bindings.brand_ids : [];
+        brands.forEach((id) => {
+          if (String(id).trim()) brandIds.push(String(id));
+        });
+        if (!scope && bindings.scope) scope = String(bindings.scope);
+      });
+      if (snapshotIds.length) {
+        defaults.snapshot_ids = Array.from(new Set(snapshotIds));
+        defaults.snapshot_id = snapshotIds[0];
+      }
+      if (metricIds.length) defaults.metric_ids = Array.from(new Set(metricIds));
+      if (assetKeys.length) defaults.asset_keys = Array.from(new Set(assetKeys));
+      if (brandIds.length) defaults.brand_ids = Array.from(new Set(brandIds));
+      if (scope) defaults.scope = scope;
+      setSopPayloadDefaults(defaults);
     }).catch(() => {
-      if (active) message.warning("SOP 模板加载失败");
+      if (active) {
+        message.warning("SOP 模板加载失败");
+        setSelectedSopKey(null);
+        setSopPayloadDefaults({});
+      }
     });
     return () => { active = false; };
   }, [searchParams, view, message]);
@@ -291,12 +339,13 @@ export default function AgentConsole({
     let partial = false;
     let notificationStatus: string | undefined;
     try {
-      const cleaned: Record<string, unknown> = {};
+      const cleaned: Record<string, unknown> = { ...sopPayloadDefaults };
       executionFields.forEach((field) => {
         if (field.value !== "") {
           cleaned[field.key] = field.backendType === "number" ? Number(field.value) : field.value;
         }
       });
+      if (selectedSopKey) cleaned._sop_key = selectedSopKey;
       if ((text.includes("改价") || text.includes("调价")) && !cleaned.current_state) {
         cleaned.current_state = "approved";
       }

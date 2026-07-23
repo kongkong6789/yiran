@@ -64,6 +64,7 @@ class SopVersion(models.Model):
     utterance_examples = models.JSONField(default=list, blank=True)
     content_hash = models.CharField(max_length=64, db_index=True)
     change_summary = models.CharField(max_length=300, blank=True, default="")
+    editor_chat = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="created_sop_versions"
     )
