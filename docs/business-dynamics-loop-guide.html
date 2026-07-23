@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>商务动态学 × Loop 应用建议</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a222c;
+      --surface-2: #232d3a;
+      --border: #2f3b4a;
+      --text: #e8eef4;
+      --muted: #9aabbc;
+      --accent: #3d9a78;
+      --accent-2: #c4a35a;
+      --danger: #d4736a;
+      --info: #5b8fbf;
+      --radius: 12px;
+      --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "Cascadia Code", "Consolas", "Sarasa Mono SC", monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, #1a3a32 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 90% 0%, #2a3040 0%, transparent 50%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      min-height: 100vh;
+    }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 80px; }
+    header.hero {
+      margin-bottom: 36px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    h1 {
+      font-size: clamp(1.6rem, 4vw, 2.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    .lead { color: var(--muted); font-size: 1.05rem; max-width: 46em; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 999px; font-size: 12px;
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+    }
+    .chip strong { color: var(--text); font-weight: 600; }
+    nav.toc {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px; margin-bottom: 32px;
+    }
+    nav.toc h2 { font-size: 13px; color: var(--muted); margin-bottom: 10px; font-weight: 600; }
+    nav.toc ol { margin-left: 1.2em; color: var(--muted); font-size: 14px; }
+    nav.toc a { color: var(--info); text-decoration: none; }
+    nav.toc a:hover { text-decoration: underline; }
+    section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px 26px; margin-bottom: 20px;
+    }
+    section h2 {
+      font-size: 1.2rem; margin-bottom: 12px;
+      padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    }
+    section h3 { font-size: 1rem; margin: 18px 0 8px; color: var(--accent-2); }
+    p { margin-bottom: 10px; color: var(--text); }
+    .muted { color: var(--muted); }
+    ul, ol { margin: 8px 0 12px 1.25em; color: var(--text); }
+    li { margin-bottom: 6px; }
+    .verdict {
+      background: linear-gradient(135deg, #1a322c, var(--surface));
+      border-color: #2d5a4a;
+    }
+    .verdict p:first-of-type { font-size: 1.05rem; }
+    table {
+      width: 100%; border-collapse: collapse; font-size: 13.5px;
+      margin: 12px 0 8px;
+    }
+    th, td {
+      border: 1px solid var(--border); padding: 10px 12px;
+      text-align: left; vertical-align: top;
+    }
+    th { background: var(--surface-2); color: var(--muted); font-weight: 600; }
+    code, .mono {
+      font-family: var(--mono); font-size: 0.9em;
+      background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
+    }
+    pre {
+      background: #12181f; border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+      color: #d0dbe6; margin: 10px 0 14px; white-space: pre-wrap;
+    }
+    .tag {
+      display: inline-block; font-size: 11px; padding: 2px 8px;
+      border-radius: 6px; margin-right: 6px; font-weight: 600;
+    }
+    .tag-p0 { background: #2a4a3a; color: #7dcea0; }
+    .tag-p1 { background: #3a3a28; color: #d4c06a; }
+    .tag-p2 { background: #2a3548; color: #8bb4d9; }
+    .dont {
+      border-left: 3px solid var(--danger);
+      padding: 10px 14px; background: #241a1a; border-radius: 0 8px 8px 0;
+      margin: 12px 0; color: var(--muted); font-size: 14px;
+    }
+    footer {
+      margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
+      color: var(--muted); font-size: 12px;
+    }
+    @media print {
+      body { background: #fff; color: #111; }
+      .wrap { max-width: none; padding: 0; }
+      section, nav.toc { background: #fff; border-color: #ccc; break-inside: avoid; }
+      .lead, .muted, th, nav.toc, nav.toc ol, footer { color: #444; }
+      a { color: #06c; }
+      pre { background: #f5f5f5; color: #222; border-color: #ddd; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="brand">良策 / Loop · 知识应用备忘</div>
+      <h1>商务动态学 × Loop：能否应用与落地建议</h1>
+      <p class="lead">
+        基于 Sterman《商务动态分析方法》OCR 材料（1–691），对照标品现有反馈回路模块，
+        给出可分享的应用结论、抽取清单与分阶段方案。
+      </p>
+      <div class="meta">
+        <span class="chip"><strong>来源</strong> Business Dynamics · John D. Sterman</span>
+        <span class="chip"><strong>对象</strong> FeedbackLoop / Stock·Flow / 仿真</span>
+        <span class="chip"><strong>结论</strong> 高度同构，宜精炼方法卡而非全文入库</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <h2>目录</h2>
+      <ol>
+        <li><a href="#verdict">结论</a></li>
+        <li><a href="#map">书中概念 ↔ 现有能力</a></li>
+        <li><a href="#extract">对 Loop 最有用的抽取</a></li>
+        <li><a href="#plan">三层落地方案</a></li>
+        <li><a href="#templates">可复用话术模板</a></li>
+        <li><a href="#next">建议下一步</a></li>
+      </ol>
+    </nav>
+
+    <section class="verdict" id="verdict">
+      <h2>1. 结论</h2>
+      <p><strong>能应用，而且和现有 Loop 模块高度同构。</strong></p>
+      <p class="muted">
+        四份 Markdown 是 Sterman《商务动态学》的 OCR 全文。产品中的
+        <code>FeedbackLoop</code>（R/B/comp）、<code>Stock</code>/<code>Flow</code>/<code>Delay</code>、
+        库存补货仿真，以及品牌代理 8 Stock（<code>loops_method.py</code>），本质上就是这本书的产品化。
+      </p>
+      <div class="dont">
+        <strong>不建议</strong>把整本约 691 页塞进知识库：噪声大、公式/图 OCR 质量差、且整书分发有版权风险。
+        更适合做成 <strong>8～12 张精炼方法卡</strong>，服务 Loop 发现、解释与仿真。
+      </div>
+    </section>
+
+    <section id="map">
+      <h2>2. 书中概念 ↔ 现有能力</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>书中概念</th>
+            <th>你们已有</th>
+            <th>可加强点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>因果回路图 CLD（R/B）</td>
+            <td><code>loop_type</code> R/B/comp、图谱检测</td>
+            <td>CLD 画图规范、极性标注规则</td>
+          </tr>
+          <tr>
+            <td>存量–流量</td>
+            <td><code>Stock</code>/<code>Flow</code>、库存试点</td>
+            <td>更多电商模板（广告、服务产能）</td>
+          </tr>
+          <tr>
+            <td>延迟（物料/信息）</td>
+            <td><code>Delay</code>、lead_time</td>
+            <td>区分察觉延迟 vs 物流延迟</td>
+          </tr>
+          <tr>
+            <td>主导回路切换</td>
+            <td><code>comp</code>、增长极限文案</td>
+            <td>用主导回路解释「为什么突然失灵」</td>
+          </tr>
+          <tr>
+            <td>政策 / 干预</td>
+            <td><code>Intervention</code>、OODA ops loop</td>
+            <td>杠杆点清单（控增速 vs 补产能）</td>
+          </tr>
+          <tr>
+            <td>模型成熟度</td>
+            <td>L0–L4、<code>causal_maturity</code></td>
+            <td>对齐「先定性再定量」流程</td>
+          </tr>
+          <tr>
+            <td>供应链振荡</td>
+            <td>库存补货 B 回路</td>
+            <td>「订单放大」预警与解释</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="extract">
+      <h2>3. 对 Loop 最有用的抽取（方法卡清单）</h2>
+      <p class="muted">每张建议 ≤800 字，挂到 Loop / 协作建议的 system prompt，而非整本入库。</p>
+      <ol>
+        <li><strong>CLD 画图 10 条</strong>（约第 5 章）— 名词变量、+/-、R/B、闭环可讲故事</li>
+        <li><strong>存量 vs 流量判别</strong>（约第 6–7 章）— 对应 <code>Stock</code>/<code>Flow</code> 建模检查</li>
+        <li><strong>三类行为 → 结构</strong>（约第 4/8 章）— 指数增长→R；寻的→B；振荡→B+延迟</li>
+        <li><strong>延迟两分法</strong>（约第 11 章）— 物料延迟 vs 信息延迟</li>
+        <li><strong>主导回路 / 增长极限</strong>（约第 8–9 章）— 对齐现有代理 8 Stock 的 C1</li>
+        <li><strong>供应链振荡成因</strong>（约第 17/19–20 章精华）— 补货情景解释模板</li>
+        <li><strong>决策规则禁忌</strong>（约第 13 章）— 出流非负、少硬 IF、入/出流分开</li>
+        <li><strong>灵敏度与「先猜再测」</strong>（约第 20–21 章）— 服务 L1→L2 成熟度</li>
+      </ol>
+      <p class="muted">可后置：长案例（毒品传播、纸浆行业全仿真）、大量微分方程推导、公共管理案例。</p>
+    </section>
+
+    <section id="plan">
+      <h2>4. 三层落地方案</h2>
+
+      <h3>层 A：知识形态</h3>
+      <ul>
+        <li>不当全文 RAG；做「Loop 方法包」</li>
+        <li>Wiki 可选放方法摘要页，链到原书章节号</li>
+        <li>Council / 小策：只注入方法卡 + 本企业已确认 Loop</li>
+      </ul>
+
+      <h3>层 B：产品优先级</h3>
+      <p>
+        <span class="tag tag-p0">P0</span>
+        方法卡并入类似 <code>loops_method.py</code> 的 brief；AI 解释强制输出：回路类型、存量、关键延迟、主导回路、1 条杠杆动作；库存仿真旁加书式解释。
+      </p>
+      <p>
+        <span class="tag tag-p1">P1</span>
+        <code>loop_detect</code> 后处理：缺延迟的 B 降置信；只有 R 无 B 标「增长极限风险」；预置电商模板（种草飞轮、缺货调节、投流振荡、代理产能陷阱）。
+      </p>
+      <p>
+        <span class="tag tag-p2">P2</span>
+        第二仿真引擎（广告延迟 / 服务产能）；参数灵敏度 API（改 lead_time、cover_days → 周期与振幅摘要）。
+      </p>
+
+      <h3>层 C：知识库怎么用这四份文件</h3>
+      <table>
+        <thead>
+          <tr><th>做法</th><th>建议</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>全文进 RAG</td><td>不建议</td></tr>
+          <tr><td>切章进 Wiki</td><td>可选：只放方法摘要</td></tr>
+          <tr><td>给 AI 助手</td><td>方法卡 + 已确认 Loop</td></tr>
+          <tr><td>版权</td><td>内部方法提炼可；整书公开分发有风险</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="templates">
+      <h2>5. 可复用话术模板</h2>
+
+      <h3>通用解释模板（给 AI）</h3>
+      <pre>结构决定行为。先找：①增强(R)还是调节(B)；②关键存量；③延迟在哪。
+若结果意外：多半是延迟 + 副作用回路，而非单点因果。
+杠杆优先改结构（延迟、目标、约束），少在症状上加剂量。</pre>
+
+      <h3>电商库存 B（对齐 inventory.reorder.balance）</h3>
+      <pre>存量：可用库存、在途库存
+流量：销售出、下单、到货
+延迟：采购铅期（物料）+ 缺货察觉（信息）
+行为：目标覆盖天数 → 寻的；铅期长且反应猛 → 振荡
+干预：改 cover_days / 提前算在途，比「看见缺了再猛补」更稳</pre>
+
+      <h3>代理增长极限（对齐 8 Stock）</h3>
+      <pre>R：品牌数↑→覆盖↑→认知↑→销售↑→信任↑→更多品牌
+B：品牌数↑→摊薄人才/产能↓→服务↓→信任↓→难续约
+主导切换：早期 R；S6/S8 不足后 B 主导 →「越拓越垮」
+杠杆：控 S1 增速，或先补 S6/S8，再加速</pre>
+    </section>
+
+    <section id="next">
+      <h2>6. 建议下一步</h2>
+      <ol>
+        <li>从第 5、6、11、17 章抽 <strong>5～8 张方法卡</strong></li>
+        <li>挂到 Loop / 协作 prompt（如 <code>STERMAN_LOOP_BRIEF</code>）</li>
+        <li>先跑通两条模板：<strong>库存补货</strong> + <strong>代理增长极限</strong></li>
+      </ol>
+      <p class="muted" style="margin-top:14px;">
+        最大价值：统一词汇（R/B、存量流量、延迟、主导回路）、提高 AI 解释与候选回路质量、给仿真讲清「为什么」。
+      </p>
+    </section>
+
+    <footer>
+      内部备忘 · 供分享讨论 · 方法提炼自 Sterman《商务动态学》，请勿将 OCR 全书对外公开发布。
+      · 打印可用浏览器「打印 / 另存为 PDF」。
+    </footer>
+  </div>
+</body>
+</html>

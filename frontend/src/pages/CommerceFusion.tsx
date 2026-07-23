@@ -63,7 +63,7 @@ export default function CommerceFusion() {
               分类「经营」下的能力合集。也可返回{" "}
               <a onClick={() => nav("/commerce")}>经营首页</a>
               {" "}查看全部入口；回路动力学图在{" "}
-              <a onClick={() => nav("/commerce/loops")}>回路图谱</a>。
+              <a onClick={() => nav("/loops/graph")}>回路图谱</a>。
             </Typography.Paragraph>
           </div>
           <Space wrap>
@@ -156,7 +156,7 @@ function OverviewPane({
             </div>
             <Space wrap style={{ marginTop: 12 }}>
               <Button icon={<ShareAltOutlined />} onClick={() => nav("/ontology")}>图谱</Button>
-              <Button onClick={() => nav("/commerce/loops")}>回路图谱</Button>
+              <Button onClick={() => nav("/loops/graph")}>回路图谱</Button>
               <Button onClick={() => nav("/datalake")}>数据</Button>
               <Button onClick={() => nav("/connectors")}>连接</Button>
             </Space>

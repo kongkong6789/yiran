@@ -43,9 +43,19 @@ export const LOOP_LEVEL_ONTOLOGY: Record<
   },
 };
 
-export const CONTAINMENT_LABELS: { from: LoopLevel; to: LoopLevel; label: string }[] = [
+export const CONTAINMENT_LABELS: {
+  from: LoopLevel;
+  to: LoopLevel;
+  label: string;
+  cardinality?: "one_to_many" | "many_to_many";
+}[] = [
   { from: "company", to: "brand", label: "包含品牌" },
-  { from: "brand", to: "platform", label: "包含平台" },
+  {
+    from: "brand",
+    to: "platform",
+    label: "经营于（交叉维度）",
+    cardinality: "many_to_many",
+  },
   { from: "platform", to: "channel", label: "包含店铺" },
   { from: "channel", to: "link", label: "包含链接" },
   { from: "link", to: "sku", label: "包含SKU" },

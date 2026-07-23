@@ -74,6 +74,8 @@ export type LoopGraphCustomState = {
   links: CustomCausalLink[];
   /** 节点位置覆盖 id → {x,y} */
   positions: Record<string, { x: number; y: number }>;
+  /** CPD 草稿同步的节点改名 */
+  labels?: Record<string, { code?: string; name?: string }>;
 };
 
 export const LOOP_CUSTOM_STORAGE_KEY = "lc-loop-graph-custom-v4";
@@ -90,7 +92,7 @@ export const LEVEL_COLOR: Record<LoopLevel, string> = {
 
 /** 基础数据（浅）— 直接来自事实表或主数据 */
 const FACT_IDS: Record<LoopLevel, Set<string>> = {
-  company: new Set(["s1", "s4"]),
+  company: new Set(["s1", "s2", "s4", "s6", "s8", "s10", "s13"]),
   brand: new Set(["b1", "b3", "b7"]),
   platform: new Set(["p1", "p2", "p3", "p4", "p6", "p7"]),
   channel: new Set(["c1", "c2", "c4", "c5", "c6", "c7", "c8", "c9", "c10"]),
@@ -100,12 +102,12 @@ const FACT_IDS: Record<LoopLevel, Set<string>> = {
 };
 
 const FOCUS_IDS: Record<LoopLevel, string[]> = {
-  company: ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
+  company: ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12", "s13", "s14"],
   brand: ["b1", "b2", "b3", "b4", "b5", "b6", "b7"],
   platform: ["p1", "p2", "p3", "p4", "p5", "p6", "p7"],
-  channel: ["c1", "c2", "c3", "c5", "c7", "c8", "c9"],
-  link: ["l1", "l2", "l3", "l4", "l6", "l7", "l8"],
-  sku: ["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k11", "k12", "k13"],
+  channel: ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10"],
+  link: ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"],
+  sku: ["k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10", "k11", "k12", "k13", "k14"],
   fact: ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"],
 };
 
@@ -123,21 +125,22 @@ export const ROW_Y: Record<LoopLevel, number> = {
 /** @deprecated 兼容旧引用 */
 export const COL_X = ROW_Y;
 
-/** 语义泳道：上卷链纵向对齐，减少交叉 */
+/** 语义泳道：上卷链纵向对齐，减少交叉（整体横向约 1.5 倍） */
 const LANE_X = {
-  scale: 40, // 规模/矩阵
-  traffic: 220, // 流量/认知
-  sales: 420, // 销售主链
-  profit: 640, // 利润主链
-  cost: 860, // 费用/成本
-  inventory: 1080, // 库存/资源
-  extra: 1280, // 其余
+  scale: 60, // 规模/矩阵
+  traffic: 330, // 流量/认知
+  sales: 630, // 销售主链
+  profit: 960, // 利润主链
+  cost: 1290, // 费用/成本
+  inventory: 1620, // 库存/资源
+  extra: 1920, // 其余
 } as const;
 
 type LaneKey = keyof typeof LANE_X;
 
 const STOCK_LANE: Record<string, LaneKey> = {
   s1: "scale", s2: "traffic", s3: "traffic", s4: "sales", s5: "scale", s6: "cost", s7: "cost", s8: "inventory",
+  s9: "traffic", s10: "traffic", s11: "cost", s12: "scale", s13: "extra", s14: "extra",
   b1: "scale", b2: "traffic", b3: "sales", b4: "profit", b5: "scale", b6: "cost", b7: "inventory",
   p1: "scale", p2: "traffic", p3: "sales", p4: "cost", p5: "profit", p6: "inventory", p7: "traffic",
   c1: "scale", c2: "sales", c3: "profit", c5: "inventory", c7: "cost", c8: "cost", c9: "traffic",
@@ -150,12 +153,12 @@ const STOCK_LANE: Record<string, LaneKey> = {
 /** 各层横向微错开，直线上卷不会叠成一条竖线 */
 const LEVEL_X_NUDGE: Record<LoopLevel, number> = {
   company: 0,
-  brand: 28,
-  platform: -18,
-  channel: 34,
-  link: -14,
-  sku: 22,
-  fact: -8,
+  brand: 42,
+  platform: -27,
+  channel: 51,
+  link: -21,
+  sku: 33,
+  fact: -12,
 };
 
 const LANE_SLOT: Record<string, number> = {};
@@ -166,9 +169,58 @@ function layoutStockXY(level: LoopLevel, stockId: string, fallbackIdx: number): 
   const used = LANE_SLOT[slotKey] ?? 0;
   LANE_SLOT[slotKey] = used + 1;
   // 同泳道内再错开一点，避免标签重叠
-  const x = LANE_X[lane] + LEVEL_X_NUDGE[level] + used * 78;
+  const x = LANE_X[lane] + LEVEL_X_NUDGE[level] + used * 117;
   const y = ROW_Y[level] + (fallbackIdx % 2 === 0 ? -14 : 14);
   return { x, y };
+}
+
+/** 单层聚焦：椭圆排布 + 邻接重排减交叉，避免环形乱麻 */
+function applyLevelFocusLayout(nodes: LoopGNode[], links: LoopGLink[]) {
+  const stocks = nodes.filter((n) => n.kind === "stock");
+  const n = Math.max(stocks.length, 1);
+  const idToIdx = new Map(stocks.map((node, i) => [node.id, i]));
+  let order = stocks.map((_, i) => i);
+
+  // 几次重心法重排，让相连节点在圆周上更靠近
+  for (let iter = 0; iter < 10; iter += 1) {
+    const score = stocks.map(() => ({ sum: 0, cnt: 0 }));
+    const posOf = (idx: number) => order.indexOf(idx);
+    links.forEach((l) => {
+      if (l.kind !== "causal") return;
+      const s = typeof l.source === "object" ? l.source.id : String(l.source);
+      const t = typeof l.target === "object" ? l.target.id : String(l.target);
+      const si = idToIdx.get(s);
+      const ti = idToIdx.get(t);
+      if (si == null || ti == null) return;
+      score[si].sum += posOf(ti);
+      score[si].cnt += 1;
+      score[ti].sum += posOf(si);
+      score[ti].cnt += 1;
+    });
+    order = [...order].sort((a, b) => {
+      const sa = score[a].cnt ? score[a].sum / score[a].cnt : posOf(a);
+      const sb = score[b].cnt ? score[b].sum / score[b].cnt : posOf(b);
+      return sa - sb || a - b;
+    });
+  }
+
+  const cx = 780;
+  const cy = 340;
+  const rx = Math.max(450, 150 + n * 36);
+  const ry = Math.max(220, 80 + n * 18);
+
+  order.forEach((stockIdx, i) => {
+    const node = stocks[stockIdx];
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    // 基础略靠内、衍生略靠外，幅度克制，避免内外圈交叉更乱
+    const ring = node.dataKind === "fact" ? 0.82 : 1;
+    const x = cx + rx * ring * Math.cos(a);
+    const y = cy + ry * ring * Math.sin(a);
+    node.fx = x;
+    node.fy = y;
+    node.x = x;
+    node.y = y;
+  });
 }
 
 function clamp01(n: number) {
@@ -259,7 +311,7 @@ const BRIDGES: {
 ];
 
 export function emptyCustomState(): LoopGraphCustomState {
-  return { version: 1, stocks: [], links: [], positions: {} };
+  return { version: 1, stocks: [], links: [], positions: {}, labels: {} };
 }
 
 export function loadLoopCustomState(): LoopGraphCustomState {
@@ -280,6 +332,7 @@ export function loadLoopCustomState(): LoopGraphCustomState {
       positions: rawCur && parsed.positions && typeof parsed.positions === "object"
         ? parsed.positions
         : {},
+      labels: parsed.labels && typeof parsed.labels === "object" ? parsed.labels : {},
     };
   } catch {
     return emptyCustomState();
@@ -302,7 +355,9 @@ export function buildLoopForceGraph(
   // 每次重建清空泳道占用
   for (const k of Object.keys(LANE_SLOT)) delete LANE_SLOT[k];
 
-  const levels = filterLevel === "all" ? LEVEL_ORDER : [filterLevel];
+  const levels = filterLevel === "all"
+    ? [...LEVEL_ORDER]
+    : [filterLevel];
 
   // 不再绘制左侧「层级壳 + 包含」脊柱，只保留各层指标节点
 
@@ -354,11 +409,12 @@ export function buildLoopForceGraph(
       });
     }
 
-    for (const lp of model.loops.slice(0, 4)) {
+    // 公司层保留 CPD 原始编码（R1/B1/C1…）；其它层加层级前缀避免冲突
+    for (const lp of model.loops) {
       loops.push({
         ...lp,
         level,
-        code: `${LEVEL_LABEL[level]}·${lp.code}`,
+        code: level === "company" ? lp.code : `${LEVEL_LABEL[level]}·${lp.code}`,
         edgeIds: (lp.edgeIds || [])
           .filter((eid) => {
             const fl = model.flows.find((x) => x.id === eid);
@@ -430,6 +486,8 @@ export function buildLoopForceGraph(
         chains: ["ROLLUP", b.chain],
       });
     });
+  } else {
+    applyLevelFocusLayout(nodes, links);
   }
 
   return { nodes, links, loops };

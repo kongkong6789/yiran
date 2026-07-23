@@ -18,6 +18,16 @@
 }
 
 .loops-ops-page * { box-sizing: border-box; }
+.loops-ops-page .react-flow__edges,
+.loops-ops-page .react-flow__edge-path,
+.loops-ops-page .react-flow__connection-path {
+  box-sizing: content-box;
+}
+
+.design-page {
+  flex: 1;
+  min-height: 0;
+}
 
 .ops-topbar {
   display: flex;
@@ -372,13 +382,15 @@
 }
 
 .ops-flow-canvas-wrap {
-  flex: 1;
-  min-height: 420px;
+  flex: 1 1 auto;
+  min-height: 480px;
+  height: min(62vh, 640px);
   border: 1px solid var(--ops-line);
   border-radius: 16px;
   overflow: hidden;
   background: #f8fafc;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  position: relative;
 }
 
 .ops-flow-canvas-wrap .react-flow {

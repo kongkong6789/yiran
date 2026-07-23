@@ -11,7 +11,9 @@ import Agents from "./pages/Agents";
 import { TeamCollaboration } from "./pages/TeamCollaboration";
 import OntologyGraph from "./pages/OntologyGraph";
 import Loops from "./pages/Loops";
+import CpdLoopEditor from "./pages/CpdLoopEditor";
 import LoopsDiy from "./pages/LoopsDiy";
+import LoopsLibrary from "./pages/LoopsLibrary";
 import LoopsHome from "./pages/loopsOps/LoopsHome";
 import LoopsMonitor from "./pages/loopsOps/LoopsMonitor";
 import LoopDiscover from "./pages/loopsOps/LoopDiscover";
@@ -52,9 +54,12 @@ export default function App() {
           <Route path="council" element={<LegacyCouncilRedirect />} />
           <Route path="commerce" element={<CommerceHub />} />
           <Route path="commerce/bench" element={<CommerceFusion />} />
-          <Route path="commerce/loops" element={<Loops />} />
+          <Route path="commerce/loops" element={<Navigate to="/loops/graph" replace />} />
+          <Route path="commerce/loops/library" element={<LoopsLibrary />} />
           <Route path="commerce/loops/diy" element={<LoopsDiy />} />
           <Route path="loops" element={<LoopsHome />} />
+          <Route path="loops/graph" element={<Loops />} />
+          <Route path="loops/graph/edit/:code" element={<CpdLoopEditor />} />
           <Route path="loops/monitor" element={<LoopsMonitor />} />
           <Route path="loops/discover" element={<LoopDiscover />} />
           <Route path="loops/:id/design" element={<LoopDesignWorkspace />} />

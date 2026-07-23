@@ -5,10 +5,13 @@ export default defineConfig(function (_a) {
     var mode = _a.mode;
     var env = loadEnv(mode, ".", "");
     var proxyTarget = env.VITE_DEV_API_PROXY_TARGET || "http://127.0.0.1:8000";
-    var allowedHosts = (env.VITE_ALLOWED_HOSTS || ".stillgroup.net")
-        .split(",")
-        .map(function (host) { return host.trim(); })
-        .filter(Boolean);
+    var allowedHostsEnv = (env.VITE_ALLOWED_HOSTS || "true").trim();
+    var allowedHosts = allowedHostsEnv === "true" || allowedHostsEnv === "*"
+        ? true
+        : allowedHostsEnv
+            .split(",")
+            .map(function (host) { return host.trim(); })
+            .filter(Boolean);
     return {
         plugins: [react()],
         server: {

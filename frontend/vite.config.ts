@@ -5,10 +5,14 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
   const proxyTarget = env.VITE_DEV_API_PROXY_TARGET || "http://127.0.0.1:8000";
-  const allowedHosts = (env.VITE_ALLOWED_HOSTS || ".stillgroup.net")
-    .split(",")
-    .map((host) => host.trim())
-    .filter(Boolean);
+  const allowedHostsEnv = (env.VITE_ALLOWED_HOSTS || "true").trim();
+  const allowedHosts =
+    allowedHostsEnv === "true" || allowedHostsEnv === "*"
+      ? true
+      : allowedHostsEnv
+          .split(",")
+          .map((host) => host.trim())
+          .filter(Boolean);
 
   return {
     plugins: [react()],

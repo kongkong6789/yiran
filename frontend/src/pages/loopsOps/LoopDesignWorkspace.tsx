@@ -1,5 +1,5 @@
 import { Button, Checkbox, Input, Select, Space, Spin, Switch, message } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useState, type ErrorInfo, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getOpsLoop,
@@ -12,6 +12,44 @@ import {
 import { PHASE_META, STATUS_LABEL, statusClass } from "./shared";
 import OpsLoopDesignCanvas, { type OpsCanvasPhaseCard, type OpsPhaseKey } from "./OpsLoopDesignCanvas";
 import "./loopsOps.css";
+
+class DesignCanvasErrorBoundary extends Component<
+  { children: ReactNode; onReset?: () => void },
+  { error: string | null }
+> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error: error?.message || "画布渲染失败" };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Loops design canvas crashed", error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="ops-flow-canvas-wrap" style={{ display: "grid", placeItems: "center", padding: 24 }}>
+          <div style={{ textAlign: "center", maxWidth: 420 }}>
+            <strong>设计画布加载失败</strong>
+            <p style={{ color: "var(--ops-muted)", fontSize: 13 }}>{this.state.error}</p>
+            <Button
+              type="primary"
+              onClick={() => {
+                this.setState({ error: null });
+                this.props.onReset?.();
+              }}
+            >
+              重试
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const PHASES = ["observe", "orient", "decide", "act", "learn"] as const;
 type PhaseKey = OpsPhaseKey;
@@ -142,7 +180,10 @@ export default function LoopDesignWorkspace() {
 
   function selectCanvasNode(id: string) {
     if ((PHASES as readonly string[]).includes(id)) {
-      selectPhase(id as PhaseKey);
+      if (selectedPhase !== id) {
+        setSelectedPhase(id as PhaseKey);
+      }
+      setInspectorTab("basic");
       return;
     }
     if (id === "goal" || id === "monitor") {
@@ -313,10 +354,9 @@ export default function LoopDesignWorkspace() {
         tone: meta.tone,
         subtitle: String(cfg.description || blurb.subtitle),
         bullets: blurb.bullets(cfg),
-        selected: selectedPhase === phase,
       };
     }),
-    [definition, selectedPhase],
+    [definition],
   );
 
   return (
@@ -391,14 +431,16 @@ export default function LoopDesignWorkspace() {
       ) : (
         <div className="design-body">
           <main className="design-canvas">
-            <OpsLoopDesignCanvas
-              phases={canvasPhases}
-              loopCondition={definition.loop_condition || ""}
-              layout={definition.layout}
-              selectedId={inspectorTab === "other" && selectedPhase === "learn" ? "goal" : selectedPhase}
-              onSelect={selectCanvasNode}
-              onLayoutChange={patchLayout}
-            />
+            <DesignCanvasErrorBoundary>
+              <OpsLoopDesignCanvas
+                phases={canvasPhases}
+                loopCondition={definition.loop_condition || ""}
+                layout={definition.layout}
+                selectedId={inspectorTab === "other" && selectedPhase === "learn" ? "goal" : selectedPhase}
+                onSelect={selectCanvasNode}
+                onLayoutChange={patchLayout}
+              />
+            </DesignCanvasErrorBoundary>
 
             <div className="design-palette">
               <div className="palette-card">

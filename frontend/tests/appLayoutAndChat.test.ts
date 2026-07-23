@@ -43,10 +43,12 @@ test("navigation hides requested entries while routes remain available", () => {
   assert.match(work, /label:\s*"任务与待办"[\s\S]*label:\s*"任务中心"[\s\S]*label:\s*"自动化"/);
   assert.match(knowledge, /path:\s*"\/knowledge"[\s\S]*label:\s*"知识库"/);
   assert.doesNotMatch(knowledge, /\/tables|智能表格|\/ontology|\/agent-memory|\/my\/recent/);
-  assert.match(commerce, /\/commerce\/loops/);
+  assert.match(commerce, /\/commerce\/loops\/library|因果回路库/);
   assert.match(commerce, /\/commerce\/loops\/diy|回路 DIY/);
   assert.doesNotMatch(commerce, /\/commerce\/bench|label:\s*"经营首页"/);
+  assert.doesNotMatch(commerce, /label:\s*"回路图谱"/);
   assert.match(loops, /path:\s*"\/loops"/);
+  assert.match(loops, /path:\s*"\/loops\/graph"|回路图谱/);
   assert.match(loops, /path:\s*"\/loops\/discover"/);
   assert.match(layoutSource, /key:\s*"loops"[\s\S]*label:\s*"Loops"/);
   assert.doesNotMatch(admin, /\/audit/);
@@ -57,11 +59,13 @@ test("navigation hides requested entries while routes remain available", () => {
     "agent-memory",
     "commerce",
     "commerce/bench",
+    "commerce/loops/library",
     "commerce/loops/diy",
     "tables",
     "datalake",
     "audit",
     "loops",
+    "loops/graph",
     "loops/discover",
   ]) {
     assert.match(appSource, new RegExp(`path="${route.replace("/", "\\/")}"`));
