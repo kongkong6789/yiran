@@ -701,6 +701,18 @@ export const getSkillAssets = () =>
   api.get<{ count: number; results: SkillAssetItem[]; cos_enabled: boolean }>("/skills/assets/")
     .then((r) => r.data);
 
+const skillFileUrl = (assetId: number, path: string) =>
+  `/skills/assets/id/${assetId}/files/${path.split("/").map(encodeURIComponent).join("/")}/`;
+
+export const getSkillAssetFiles = (assetId: number) =>
+  api.get<SkillAssetFilesResponse>(`/skills/assets/id/${assetId}/files/`).then((r) => r.data);
+
+export const getSkillAssetFile = (assetId: number, path: string) =>
+  api.get<SkillAssetFileResponse>(skillFileUrl(assetId, path)).then((r) => r.data);
+
+export const saveSkillAssetFile = (assetId: number, path: string, body: { content: string; expected_version: string }) =>
+  api.put<SkillAssetFileSaveResponse>(skillFileUrl(assetId, path), body).then((r) => r.data);
+
 export const getSkillAnalytics = (params?: { trend_start?: string; trend_end?: string }) =>
   api.get<SkillAnalyticsResponse>("/skills/analytics/", { params }).then((r) => r.data);
 
@@ -974,10 +986,39 @@ export interface SkillAssetItem {
   storage: "cos" | "local";
   uploader?: string;
   is_uploader?: boolean;
+  is_owner?: boolean;
+  can_edit?: boolean;
   owner_id?: number | null;
   owner?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface SkillAssetFileItem {
+  path: string;
+  size: number;
+  editable: boolean;
+}
+
+export interface SkillAssetFilesResponse {
+  ok: boolean;
+  asset: SkillAssetItem;
+  files: SkillAssetFileItem[];
+  version: string;
+  can_edit: boolean;
+}
+
+export interface SkillAssetFileResponse {
+  ok: boolean;
+  path: string;
+  content: string;
+  version: string;
+  can_edit: boolean;
+}
+
+export interface SkillAssetFileSaveResponse extends SkillAssetFileResponse {
+  asset: SkillAssetItem;
+  files: SkillAssetFileItem[];
 }
 
 export interface SkillAnalyticsSummary {

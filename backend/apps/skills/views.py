@@ -26,11 +26,15 @@ from .parser import (
     parse_skill_markdown,
 )
 from .repository import (
+    SkillFileConflictError,
+    asset_file_manifest,
     delete_skill_asset,
     find_shared_asset,
     list_skill_assets,
     materialize_user_skill,
+    read_asset_text_file,
     save_skill_asset_from_bytes,
+    save_asset_text_file,
 )
 from .skillhub import SkillHubError, download_verified_skill, get_skill_detail, search_skills
 from .service import list_user_skills, resolve_skills, skills_payload
@@ -68,6 +72,11 @@ def _skill_row_payload(row: UserSkill) -> dict:
 
 
 def _asset_row_payload(row: SkillAsset, user=None) -> dict:
+    can_edit = bool(user and (
+        row.owner_id == user.id
+        or getattr(user, "is_staff", False)
+        or getattr(user, "is_superuser", False)
+    ))
     return {
         "id": row.id,
         "skill_id": row.skill_id,
@@ -96,6 +105,8 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
         "storage": "cos" if row.cos_bucket else "local",
         "uploader": getattr(row.uploader, "username", "") or "",
         "is_uploader": bool(user and row.uploader_id == user.id),
+        "is_owner": bool(user and row.owner_id == user.id),
+        "can_edit": can_edit,
         "owner_id": row.owner_id,
         "owner": (
             (row.owner.get_full_name().strip() or row.owner.username)
@@ -105,6 +116,18 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+def _asset_queryset_for_user(user):
+    if user.is_staff or user.is_superuser:
+        return SkillAsset.objects.all()
+    return SkillAsset.objects.filter(
+        Q(visibility=SkillAsset.Visibility.SHARED) | Q(uploader=user) | Q(owner=user)
+    )
+
+
+def _can_edit_asset(user, asset: SkillAsset) -> bool:
+    return bool(asset.owner_id == user.id or user.is_staff or user.is_superuser)
 
 
 def _usage_event_payload(row: SkillUsageEvent) -> dict:
@@ -436,6 +459,71 @@ def asset_usage_history(request, asset_id: int):
         "page_size": page_size,
         "count": total,
         "results": [_usage_event_payload(row) for row in rows],
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def asset_files(request, asset_id: int):
+    asset = get_object_or_404(
+        _asset_queryset_for_user(request.user).select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(asset, request.user),
+        "files": asset_file_manifest(asset),
+        "version": asset.updated_at.isoformat(),
+        "can_edit": _can_edit_asset(request.user, asset),
+    })
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def asset_file_detail(request, asset_id: int, file_path: str):
+    asset = get_object_or_404(
+        _asset_queryset_for_user(request.user).select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    if request.method == "GET":
+        try:
+            content = read_asset_text_file(asset, file_path)
+        except FileNotFoundError:
+            return Response({"ok": False, "error": "技能文件不存在"}, status=404)
+        except ValueError as exc:
+            return Response({"ok": False, "error": str(exc)}, status=400)
+        return Response({
+            "ok": True,
+            "path": file_path,
+            "content": content,
+            "version": asset.updated_at.isoformat(),
+            "can_edit": _can_edit_asset(request.user, asset),
+        })
+
+    if not _can_edit_asset(request.user, asset):
+        return Response({"ok": False, "error": "仅技能责任人可编辑文件内容"}, status=403)
+    content = request.data.get("content")
+    if not isinstance(content, str):
+        return Response({"ok": False, "error": "content 必须是文本"}, status=400)
+    try:
+        updated = save_asset_text_file(
+            asset,
+            file_path,
+            content,
+            expected_updated_at=str(request.data.get("expected_version") or ""),
+        )
+    except SkillFileConflictError as exc:
+        return Response({"ok": False, "error": str(exc), "conflict": True}, status=409)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(updated, request.user),
+        "path": file_path,
+        "content": content,
+        "files": asset_file_manifest(updated),
+        "version": updated.updated_at.isoformat(),
+        "can_edit": True,
     })
 
 
