@@ -6,7 +6,7 @@ import type { TooltipPlacement } from "antd/es/tooltip";
 import {
   AlertOutlined, ApartmentOutlined, CheckOutlined, CheckSquareOutlined, ClearOutlined,
   CloseOutlined, CommentOutlined, CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined,
-  FileOutlined, FileTextOutlined, ForwardOutlined, HistoryOutlined, LoadingOutlined,
+  DownloadOutlined, FileOutlined, FolderOpenOutlined, ForwardOutlined, HistoryOutlined, InsertRowRightOutlined, LoadingOutlined,
   MessageOutlined, MoonOutlined, PaperClipOutlined, PlusOutlined, RobotOutlined,
   RollbackOutlined, SearchOutlined, SendOutlined, SettingOutlined, StopOutlined, SunOutlined,
   TeamOutlined, TranslationOutlined, UserAddOutlined, UserDeleteOutlined, UserOutlined,
@@ -66,6 +66,8 @@ import XiaoceProcess from "../components/XiaoceProcess";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabMessageSearch from "../components/CollabMessageSearch";
+import { CollabArtifactsPanel } from "../components/CollabArtifactsPanel";
+import { CollabGroupMembersPopover } from "../components/CollabGroupMembersPopover";
 import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -99,7 +101,6 @@ import { authenticatedAvatarUrl } from "../utils/avatar";
 import "../styles/xiaoceChatTheme.css";
 
 const MSG_WINDOW = 30;
-const TRANSLATION_BATCH_SIZE = 8;
 const VIRT_BASE_INDEX = 100_000;
 /** 有缓存时切房先秒开，超过此时长才后台整窗刷新 */
 const ROOM_CACHE_FRESH_MS = 5 * 60_000;
@@ -121,7 +122,7 @@ const FILE_ACCEPT = [
   ".mp3,.wav,.mp4,.mov,.avi",
 ].join(",");
 const MAX_FILES = 5;
-const DRAG_ATTACHMENT_TYPE = "application/x-liangce-chat-image";
+const DRAG_ATTACHMENT_TYPE = "application/x-liangce-chat-attachment";
 type PendingUpload = { file: File; preview?: string };
 
 function mergePendingUploads(current: PendingUpload[], files: File[]): PendingUpload[] {
@@ -151,6 +152,9 @@ function fmtSize(n: number) {
 
 function collabAttachUrl(url?: string, download = false) {
   if (!url) return "";
+  if (url.startsWith("blob:") || url.startsWith("data:")) return url;
+  // Never leak the platform token to AI-generated files hosted on another origin.
+  if (!url.startsWith("/")) return url;
   const token = getAuthToken();
   const parts: string[] = [];
   if (token) parts.push(`token=${encodeURIComponent(token)}`);
@@ -193,6 +197,20 @@ function detectMentionAt(text: string, caret: number): MentionState {
 function memberLabel(u?: Pick<CollabUserBrief, "username" | "display_name" | "nickname"> | null) {
   if (!u) return "";
   return (u.display_name || u.nickname || u.username || "").trim();
+}
+
+function isAutomatedParticipant(
+  participant?: Pick<CollabUserBrief, "kind" | "bot_id" | "username"> | null,
+) {
+  return Boolean(
+    participant
+    && (
+      participant.kind === "bot"
+      || participant.bot_id
+      || participant.username === "小策bot"
+      || participant.username === "良策AI"
+    )
+  );
 }
 
 function buildMentionOptions(
@@ -794,6 +812,7 @@ export default function CollabRisk({
   const [groupTeamIds, setGroupTeamIds] = useState<number[]>([]);
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupTitle, setGroupTitle] = useState("");
+  const [groupMembersOpen, setGroupMembersOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteMembers, setInviteMembers] = useState<string[]>([]);
   const [inviting, setInviting] = useState(false);
@@ -815,13 +834,8 @@ export default function CollabRisk({
   const [todoOpen, setTodoOpen] = useState(false);
   const [referencedRoom, setReferencedRoom] = useState<CollabRoom | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
-  const [autoTranslate, setAutoTranslate] = useState(() => {
-    try { return window.localStorage.getItem("collab-auto-translate") === "1"; }
-    catch { return false; }
-  });
   const [translations, setTranslations] = useState<Record<number, CollabTranslation>>({});
   const [translationPendingIds, setTranslationPendingIds] = useState<Set<number>>(() => new Set());
-  const [translationError, setTranslationError] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingUpload[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [roomDropTargetId, setRoomDropTargetId] = useState<string | null>(null);
@@ -843,10 +857,13 @@ export default function CollabRisk({
     try { return window.localStorage.getItem("collab-summary-visible") !== "0"; }
     catch { return true; }
   });
+  const [artifactsVisible, setArtifactsVisible] = useState(false);
+  const [messagesAtBottom, setMessagesAtBottom] = useState(true);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
   const forceStickUntilRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+  const messageScrollerRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<any>(null);
   const botRoomRequestRef = useRef<ReturnType<typeof createCollabRoom> | null>(null);
@@ -978,9 +995,19 @@ export default function CollabRisk({
   }, [getRoomDataRevision]);
 
   const setSummaryPanelVisible = useCallback((visible: boolean) => {
+    if (visible) setArtifactsVisible(false);
     setSummaryVisible(visible);
     try { window.localStorage.setItem("collab-summary-visible", visible ? "1" : "0"); }
     catch { /* 浏览器禁用本地存储时仍保持当前会话状态 */ }
+  }, []);
+
+  const setArtifactPanelVisible = useCallback((visible: boolean) => {
+    setArtifactsVisible(visible);
+    if (visible) {
+      setSummaryVisible(false);
+      try { window.localStorage.setItem("collab-summary-visible", "0"); }
+      catch { /* ignore */ }
+    }
   }, []);
 
   const isParticipant = useMemo(() => {
@@ -1032,62 +1059,46 @@ export default function CollabRisk({
     [messages],
   );
 
-  const toggleAutoTranslation = useCallback(() => {
-    setTranslationError("");
-    setAutoTranslate((current) => {
-      const next = !current;
-      try { window.localStorage.setItem("collab-auto-translate", next ? "1" : "0"); }
-      catch { /* storage can be unavailable in hardened browsers */ }
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const roomId = activeId;
-    if (!autoTranslate || !roomId) return;
-    const candidates = visibleMessages
-      .filter((item) => (
-        item.id > 0
-        && item.status !== "recalled"
-        && item.msg_type !== "system"
-        && isBilingualText(item.content || "")
-        && !Array.isArray(item.meta?.forward_bundle)
-        && !translations[item.id]
-        && !translationInFlightRef.current.has(item.id)
-      ))
-      // Keep each LLM request small enough to return promptly. Completing a batch
-      // updates `translations`, which lets this effect pick up the next batch.
-      .slice(-TRANSLATION_BATCH_SIZE);
-    if (!candidates.length) return;
-    const ids = candidates.map((item) => item.id);
-    ids.forEach((id) => translationInFlightRef.current.add(id));
-    setTranslationPendingIds((current) => new Set([...current, ...ids]));
-    void translateCollabMessages(roomId, ids)
+  const toggleMessageTranslation = useCallback((target: CollabMessage) => {
+    if (translations[target.id]) {
+      setTranslations((current) => {
+        const next = { ...current };
+        delete next[target.id];
+        return next;
+      });
+      return;
+    }
+    const roomId = activeIdRef.current;
+    if (
+      !roomId
+      || target.id <= 0
+      || target.status === "recalled"
+      || target.msg_type === "system"
+      || !isBilingualText(target.content || "")
+      || Array.isArray(target.meta?.forward_bundle)
+      || translationInFlightRef.current.has(target.id)
+    ) return;
+    const messageId = target.id;
+    translationInFlightRef.current.add(messageId);
+    setTranslationPendingIds((current) => new Set([...current, messageId]));
+    void translateCollabMessages(roomId, [messageId])
       .then((result) => {
-        setTranslations((current) => {
-          const next = { ...current };
-          for (const item of result.translations || []) next[item.message_id] = item;
-          return next;
-        });
-        setTranslationError("");
+        const translated = result.translations?.[0];
+        if (!translated) throw new Error("翻译服务未返回结果");
+        setTranslations((current) => ({ ...current, [translated.message_id]: translated }));
       })
       .catch((error: any) => {
-        const detail = error?.response?.data?.error || "消息翻译失败，请稍后重试";
-        setTranslationError(detail);
-        setAutoTranslate(false);
-        try { window.localStorage.setItem("collab-auto-translate", "0"); }
-        catch { /* ignore */ }
-        message.error(detail);
+        message.error(error?.response?.data?.error || error?.message || "消息翻译失败，请稍后重试");
       })
       .finally(() => {
-        ids.forEach((id) => translationInFlightRef.current.delete(id));
+        translationInFlightRef.current.delete(messageId);
         setTranslationPendingIds((current) => {
           const next = new Set(current);
-          ids.forEach((id) => next.delete(id));
+          next.delete(messageId);
           return next;
         });
       });
-  }, [activeId, autoTranslate, message, translations, visibleMessages]);
+  }, [message, translations]);
 
   const timeSepBeforeId = useMemo(() => {
     const show = new Set<number>();
@@ -1106,14 +1117,43 @@ export default function CollabRisk({
   const scrollMessagesToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
     stickBottomRef.current = true;
     forceStickUntilRef.current = Date.now() + 420;
-    requestAnimationFrame(() => {
+    setMessagesAtBottom(true);
+    const settle = () => {
       virtuosoRef.current?.scrollToIndex({
         index: "LAST",
         align: "end",
         behavior,
       });
-    });
+      const scroller = messageScrollerRef.current;
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
+    requestAnimationFrame(settle);
+    // Images and rich report blocks may measure after the first frame. A short
+    // second settle keeps the real bottom reachable without fighting manual scroll.
+    window.setTimeout(settle, 90);
+    window.setTimeout(settle, 240);
   }, []);
+
+  useEffect(() => {
+    const scroller = messageScrollerRef.current;
+    if (!scroller || typeof ResizeObserver === "undefined") return undefined;
+    let frame = 0;
+    const settleIfPinned = () => {
+      if (!stickBottomRef.current) return;
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        scroller.scrollTop = scroller.scrollHeight;
+      });
+    };
+    const observer = new ResizeObserver(settleIfPinned);
+    observer.observe(scroller);
+    const content = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
+    if (content) observer.observe(content);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [activeId, visibleMessages.length]);
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
@@ -1435,6 +1475,7 @@ export default function CollabRisk({
 
   const selectRoom = useCallback((roomId: string) => {
     if (roomId === activeIdRef.current) return;
+    setGroupMembersOpen(false);
     setSelectionMode(false);
     setSelectedMessageIds(new Set());
     // 先把当前会话的输入框状态存起来
@@ -1560,6 +1601,55 @@ export default function CollabRisk({
       .catch(() => setContacts([]));
     void loadTeams();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onUserUpdated = (event: Event) => {
+      const nextUser = (event as CustomEvent<AuthUser>).detail;
+      if (!nextUser?.id) return;
+      setMe(nextUser);
+      const patchBrief = (person: CollabUserBrief): CollabUserBrief => (
+        person.id === nextUser.id
+          ? {
+              ...person,
+              username: nextUser.username || person.username,
+              display_name: nextUser.display_name || nextUser.username || person.display_name,
+              avatar_url: nextUser.avatar_url || "",
+            }
+          : person
+      );
+      const patchMessage = (row: CollabMessage): CollabMessage => (
+        row.sender.id === nextUser.id ? { ...row, sender: patchBrief(row.sender) } : row
+      );
+      setContacts((current) => current.map(patchBrief));
+      setRooms((current) => current.map((room) => ({
+        ...room,
+        participants: room.participants.map(patchBrief),
+      })));
+      setActiveRoom((current) => {
+        if (!current) return current;
+        const next = { ...current, participants: current.participants.map(patchBrief) };
+        activeRoomRef.current = next;
+        return next;
+      });
+      setMessages((current) => {
+        const next = current.map(patchMessage);
+        messagesRef.current = next;
+        return next;
+      });
+      for (const [roomId, cached] of roomViewCacheRef.current) {
+        roomViewCacheRef.current.set(roomId, {
+          ...cached,
+          room: {
+            ...cached.room,
+            participants: cached.room.participants.map(patchBrief),
+          },
+          messages: cached.messages.map(patchMessage),
+        });
+      }
+    };
+    window.addEventListener("liangce:user-updated", onUserUpdated);
+    return () => window.removeEventListener("liangce:user-updated", onUserUpdated);
+  }, []);
 
   // 从铃铛/外链带 ?room= 进入时打开对应会话
   useEffect(() => {
@@ -1921,9 +2011,19 @@ export default function CollabRisk({
               && Math.abs(Date.parse(candidate.created_at) - Date.parse(m.created_at)) < 15_000
             ));
             if (optimisticIndex >= 0) {
-              const optimisticKey = next[optimisticIndex].meta?.client_message_key;
+              const optimisticMessage = next[optimisticIndex];
+              const optimisticKey = optimisticMessage.meta?.client_message_key;
               next[optimisticIndex] = {
                 ...m,
+                attachments: (m.attachments || []).map((attachment, index) => ({
+                  ...attachment,
+                  preview_url: attachment.is_image
+                    ? optimisticMessage.attachments?.[index]?.preview_url
+                    : undefined,
+                  uploading: attachment.is_image
+                    ? optimisticMessage.attachments?.[index]?.uploading
+                    : undefined,
+                })),
                 meta: { ...m.meta, ...(optimisticKey ? { client_message_key: optimisticKey } : {}) },
               };
             } else {
@@ -2420,7 +2520,7 @@ export default function CollabRisk({
               ...m.sender,
               nickname: p.nickname,
               display_name: p.display_name || p.nickname || p.username,
-              avatar_url: p.avatar_url || m.sender.avatar_url,
+                avatar_url: p.avatar_url ?? m.sender.avatar_url,
               bio: p.bio || m.sender.bio,
             },
           };
@@ -2476,6 +2576,7 @@ export default function CollabRisk({
     targetRoomId: string,
     content: string,
     files: File[] = [],
+    localPreviews: Array<string | undefined> = [],
     replyTarget: CollabMessage | null = null,
     contextRoom: CollabRoom | null = null,
   ) => {
@@ -2507,7 +2608,7 @@ export default function CollabRisk({
     stickBottomRef.current = true;
     forceStickUntilRef.current = Date.now() + 1600;
     const tempId = -Date.now();
-    const clientMessageKey = `local-${activeId}-${Math.abs(tempId)}`;
+    const clientMessageKey = `local-${targetRoomId}-${Math.abs(tempId)}`;
     const optimistic: CollabMessage = {
       id: tempId,
       room_id: targetRoomId,
@@ -2518,7 +2619,16 @@ export default function CollabRisk({
         avatar_url: me?.avatar_url || "",
       },
       content: content.trim(),
-      attachments: [],
+      attachments: files.map((file, index) => ({
+        id: `upload-${Math.abs(tempId)}-${index}`,
+        name: file.name,
+        size: file.size,
+        mime: file.type || "application/octet-stream",
+        is_image: isImageFile(file),
+        is_file: !isImageFile(file),
+        preview_url: localPreviews[index],
+        uploading: true,
+      })),
       mentions: [],
       msg_type: "user",
       status: "normal",
@@ -2565,12 +2675,16 @@ export default function CollabRisk({
         runId,
         contextRoom ? [contextRoom.id] : undefined,
       );
+      const confirmedMessage: CollabMessage = {
+        ...res.message,
+        attachments: (res.message.attachments || []).map((attachment, index) => ({
+          ...attachment,
+          preview_url: attachment.is_image ? localPreviews[index] : undefined,
+        })),
+        meta: { ...res.message.meta, client_message_key: clientMessageKey },
+      };
       const mergeResponseMessages = (current: CollabMessage[]) => {
         const next = [...current];
-        const confirmedMessage: CollabMessage = {
-          ...res.message,
-          meta: { ...res.message.meta, client_message_key: clientMessageKey },
-        };
         const tempIndex = next.findIndex((m) => m.id === tempId);
         const serverIndex = next.findIndex((m) => m.id === res.message.id);
         if (tempIndex >= 0 && serverIndex < 0) {
@@ -2618,6 +2732,29 @@ export default function CollabRisk({
         }),
         xiaoceRun: () => mergedRun,
       });
+      for (const attachment of confirmedMessage.attachments || []) {
+        if (!attachment.preview_url || !attachment.url || !attachment.is_image) continue;
+        const localUrl = attachment.preview_url;
+        const image = new window.Image();
+        image.onload = () => {
+          mutateRoomData(targetRoomId, {
+            messages: (current) => current.map((row) => (
+              row.id !== confirmedMessage.id
+                ? row
+                : {
+                    ...row,
+                    attachments: (row.attachments || []).map((item) => (
+                      item.id === attachment.id
+                        ? { ...item, preview_url: undefined, uploading: false }
+                        : item
+                    )),
+                  }
+            )),
+          });
+          URL.revokeObjectURL(localUrl);
+        };
+        image.src = collabAttachUrl(attachment.url);
+      }
       if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
         scrollMessagesToBottom("auto");
         setMention(null);
@@ -2688,7 +2825,14 @@ export default function CollabRisk({
       replyingTo: null,
       referencedRoom: null,
     });
-    const ok = await sendPlainMessage(targetRoomId, content, files, replyTarget, contextRoom);
+    const ok = await sendPlainMessage(
+      targetRoomId,
+      content,
+      files,
+      previews,
+      replyTarget,
+      contextRoom,
+    );
     if (!ok) {
       if (!roomsRef.current.some((room) => room.id === targetRoomId)) {
         previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
@@ -2710,8 +2854,6 @@ export default function CollabRisk({
         setPendingFiles(restoredFiles);
         setReferencedRoom(contextRoom);
       }
-    } else {
-      previews.forEach((url) => { if (url) URL.revokeObjectURL(url); });
     }
   };
 
@@ -2929,11 +3071,11 @@ export default function CollabRisk({
       const response = await fetch(collabAttachUrl(attachment.url));
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const blob = await response.blob();
-      return [new File([blob], attachment.name || "聊天图片", {
+      return [new File([blob], attachment.name || "聊天附件", {
         type: attachment.mime || blob.type || "application/octet-stream",
       })];
     } catch {
-      message.error("读取拖拽图片失败，请重试");
+      message.error("读取拖拽附件失败，请重试");
       return [];
     }
   };
@@ -2956,7 +3098,7 @@ export default function CollabRisk({
     setRoomDropTargetId(null);
     selectRoom(roomId);
     const target = roomsRef.current.find((room) => room.id === roomId);
-    message.success(`图片已放入「${target ? roomTitle(target) : "目标会话"}」输入框`);
+    message.success(`附件已放入「${target ? roomTitle(target) : "目标会话"}」输入框`);
   };
 
   const removePendingFile = (idx: number) => {
@@ -3267,6 +3409,13 @@ export default function CollabRisk({
           message[ok ? "success" : "error"](ok ? "已复制" : "复制失败");
         },
       });
+      items.push({
+        key: "translate",
+        icon: translationPendingIds.has(m.id) ? <LoadingOutlined /> : <TranslationOutlined />,
+        label: translations[m.id] ? "隐藏译文" : "翻译消息",
+        disabled: translationPendingIds.has(m.id) || !isBilingualText(m.content || ""),
+        onClick: () => toggleMessageTranslation(m),
+      });
       items.push(
         {
           key: "quote",
@@ -3540,7 +3689,7 @@ export default function CollabRisk({
   };
 
   return (
-    <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible ? "" : " collab-page--summary-hidden"}${selectionMode ? " collab-page--selecting" : ""}`}>
+    <div className={`collab-page${embedded ? " collab-page--embedded" : ""}${summaryVisible || artifactsVisible ? "" : " collab-page--summary-hidden"}${selectionMode ? " collab-page--selecting" : ""}`}>
       <style>{css}</style>
 
       <aside className="collab-sider">
@@ -3945,13 +4094,32 @@ export default function CollabRisk({
           <>
             <header className="collab-main-head">
               <div>
-                <Typography.Title level={4} style={{ margin: 0 }}>
-                  {roomTitle(activeRoom)}
+                <div className="collab-room-heading">
                   {activeRoom.room_kind === "group" ? (
-                    <Typography.Text type="secondary" style={{ fontSize: 13, fontWeight: 400, marginLeft: 8 }}>
-                      ({activeRoom.participants.length}人)
-                    </Typography.Text>
-                  ) : null}
+                    <Popover
+                      trigger="click"
+                      placement="bottomLeft"
+                      open={groupMembersOpen}
+                      onOpenChange={setGroupMembersOpen}
+                      overlayClassName="collab-members-popover"
+                      content={<CollabGroupMembersPopover room={activeRoom} me={me} />}
+                    >
+                      <button
+                        type="button"
+                        className="collab-group-title-trigger"
+                        aria-label={`查看 ${roomTitle(activeRoom)} 的全部群成员`}
+                        aria-expanded={groupMembersOpen}
+                      >
+                        <strong>{roomTitle(activeRoom)}</strong>
+                        <span>{activeRoom.participants.length} 人</span>
+                        <DownOutlined aria-hidden />
+                      </button>
+                    </Popover>
+                  ) : (
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      {roomTitle(activeRoom)}
+                    </Typography.Title>
+                  )}
                   {isParticipant && (
                     (activeRoom.room_kind === "group" && activeRoom.status === "open") || isXiaoce
                   ) ? (
@@ -3964,7 +4132,7 @@ export default function CollabRisk({
                       aria-label={isXiaoce ? "修改任务名称" : "修改群名"}
                     />
                   ) : null}
-                </Typography.Title>
+                </div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   <span className={roomPeerOnline(activeRoom) ? "collab-status-on" : "collab-status-off"}>
                     {presenceLabel(activeRoom)}
@@ -3975,30 +4143,7 @@ export default function CollabRisk({
                   {activeRoom.participants.map((p) => memberLabel(p)).join("、")}
                 </Typography.Text>
               </div>
-              <Space>
-                {!summaryVisible ? (
-                  <Tooltip title="显示智能纪要">
-                    <Button
-                      type="text"
-                      className="collab-summary-toggle"
-                      icon={<FileTextOutlined />}
-                      onClick={() => setSummaryPanelVisible(true)}
-                      aria-label="显示智能纪要"
-                    />
-                  </Tooltip>
-                ) : null}
-                <Tooltip title={translationError || (autoTranslate ? "已开启：中文自动译为英文，英文自动译为中文" : "开启消息中英自动互译")}>
-                  <Button
-                    className={`collab-translate-toggle${autoTranslate ? " is-active" : ""}`}
-                    icon={translationPendingIds.size > 0 && autoTranslate ? <LoadingOutlined /> : <TranslationOutlined />}
-                    onClick={toggleAutoTranslation}
-                    aria-pressed={autoTranslate}
-                    aria-label={autoTranslate ? "关闭消息中英自动互译" : "开启消息中英自动互译"}
-                  >
-                    中英互译
-                    <i aria-hidden />
-                  </Button>
-                </Tooltip>
+              <Space className="collab-main-actions">
                 {isXiaoce ? (
                   <div className="xiaoce-theme-switch" role="group" aria-label="对话主题">
                     <Button
@@ -4137,6 +4282,26 @@ export default function CollabRisk({
                   </Dropdown>
                 ) : null}
                 {activeRoom.status === "closed" && <Tag>已结束</Tag>}
+                <Tooltip title={artifactsVisible ? "收起 AI 产物" : "查看 AI 产物"}>
+                  <Button
+                    type="text"
+                    className={`collab-panel-toggle${artifactsVisible ? " is-active" : ""}`}
+                    icon={<FolderOpenOutlined />}
+                    onClick={() => setArtifactPanelVisible(!artifactsVisible)}
+                    aria-label={artifactsVisible ? "收起 AI 产物" : "查看 AI 产物"}
+                    aria-pressed={artifactsVisible}
+                  />
+                </Tooltip>
+                <Tooltip title={summaryVisible ? "收起智能纪要" : "显示智能纪要"}>
+                  <Button
+                    type="text"
+                    className={`collab-panel-toggle collab-summary-toggle${summaryVisible ? " is-active" : ""}`}
+                    icon={<InsertRowRightOutlined />}
+                    onClick={() => setSummaryPanelVisible(!summaryVisible)}
+                    aria-label={summaryVisible ? "收起智能纪要" : "显示智能纪要"}
+                    aria-pressed={summaryVisible}
+                  />
+                </Tooltip>
               </Space>
             </header>
 
@@ -4161,9 +4326,13 @@ export default function CollabRisk({
                     : "开始对话吧。需要 AI 时请 @AI（或调用 Skill）；日常讨论不会自动插嘴。右侧为旁路监控。"}
                 </div>
               ) : (
+              <>
               <Virtuoso
                 key={activeId || "none"}
                 ref={virtuosoRef}
+                scrollerRef={(element) => {
+                  messageScrollerRef.current = element as HTMLElement | null;
+                }}
                 className="collab-virtuoso"
                 data={visibleMessages}
                 computeItemKey={(_index, item) => String(item.meta?.client_message_key || item.id)}
@@ -4176,8 +4345,9 @@ export default function CollabRisk({
                   if (Date.now() < forceStickUntilRef.current) return "auto";
                   return stickBottomRef.current ? "auto" : false;
                 }}
-                atBottomThreshold={56}
+                atBottomThreshold={8}
                 atBottomStateChange={(bottom) => {
+                  setMessagesAtBottom(bottom);
                   if (bottom) stickBottomRef.current = true;
                   else if (Date.now() >= forceStickUntilRef.current) stickBottomRef.current = false;
                 }}
@@ -4192,6 +4362,7 @@ export default function CollabRisk({
                       {loadingOlder ? "加载更早消息…" : hasMoreBefore ? "上滑加载更早消息" : "已到会话开头"}
                     </div>
                   ),
+                  Footer: () => <div className="collab-msg-bottom-space" aria-hidden />,
                 }}
                 itemContent={(_index, m) => {
                 const isAi = m.msg_type === "ai" && m.status !== "recalled";
@@ -4215,7 +4386,7 @@ export default function CollabRisk({
                 const isSystem = m.msg_type === "system" || m.status === "recalled";
                 const mine = !isAi && !isSystem && me && m.sender.id === me.id;
                 const receiptMembers = activeRoom.participants.filter(
-                  (participant) => participant.id !== m.sender.id,
+                  (participant) => participant.id !== m.sender.id && !isAutomatedParticipant(participant),
                 );
                 const receiptRead = receiptMembers.filter(
                   (participant) => (participant.last_read_message_id || 0) >= m.id,
@@ -4322,7 +4493,7 @@ export default function CollabRisk({
                               ...p,
                               display_name: p.display_name || m.sender.display_name,
                               bio: p.bio || m.sender.bio,
-                              avatar_url: p.avatar_url || m.sender.avatar_url,
+                              avatar_url: p.avatar_url ?? m.sender.avatar_url,
                             };
                           })()}
                         />
@@ -4405,50 +4576,99 @@ export default function CollabRisk({
                         ) : null}
                         {!forwardBundle.length && !!m.attachments?.length && (
                           <div className="collab-msg-attach">
-                            {m.attachments.filter((a) => a.is_image && a.url).length > 0 && (
+                            {m.attachments.filter((a) => a.is_image && (a.url || a.preview_url)).length > 0 && (
                               <div className="collab-msg-images">
                                 <Image.PreviewGroup>
-                                  {m.attachments.filter((a) => a.is_image && a.url).map((a) => (
-                                    <Image
-                                      key={a.id}
-                                      src={collabAttachUrl(a.url)}
-                                      alt={a.name || "图片"}
-                                      className="collab-msg-image"
-                                      rootClassName="collab-msg-image-root"
-                                      draggable
-                                      onDragStart={(event) => {
-                                        event.dataTransfer.effectAllowed = "copy";
-                                        event.dataTransfer.setData(DRAG_ATTACHMENT_TYPE, JSON.stringify({
-                                          url: a.url,
-                                          name: a.name,
-                                          mime: a.mime,
-                                        }));
-                                      }}
-                                    />
+                                  {m.attachments.filter((a) => a.is_image && (a.url || a.preview_url)).map((a) => (
+                                    <div key={a.id} className={`collab-msg-image-shell${a.uploading ? " is-uploading" : ""}`}>
+                                      <Image
+                                        src={a.preview_url || collabAttachUrl(a.url)}
+                                        preview={{ src: collabAttachUrl(a.url) || a.preview_url }}
+                                        alt={a.name || "图片"}
+                                        className="collab-msg-image"
+                                        rootClassName="collab-msg-image-root"
+                                        draggable={Boolean(a.url)}
+                                        onLoad={() => {
+                                          if (stickBottomRef.current) scrollMessagesToBottom("auto");
+                                        }}
+                                        onDragStart={(event) => {
+                                          if (!a.url) {
+                                            event.preventDefault();
+                                            return;
+                                          }
+                                          event.dataTransfer.effectAllowed = "copy";
+                                          event.dataTransfer.setData(DRAG_ATTACHMENT_TYPE, JSON.stringify({
+                                            url: a.url,
+                                            name: a.name,
+                                            mime: a.mime,
+                                          }));
+                                        }}
+                                      />
+                                      {a.uploading ? (
+                                        <span className="collab-msg-uploading">
+                                          <LoadingOutlined spin />
+                                          发送中
+                                        </span>
+                                      ) : null}
+                                      {a.url && !a.uploading ? (
+                                        <Tooltip title="保存图片">
+                                          <a
+                                            className="collab-msg-image-save"
+                                            href={collabAttachUrl(a.url, true)}
+                                            download={a.name || "聊天图片"}
+                                            onClick={(event) => event.stopPropagation()}
+                                            aria-label={`保存${a.name || "图片"}`}
+                                          >
+                                            <DownloadOutlined />
+                                          </a>
+                                        </Tooltip>
+                                      ) : null}
+                                    </div>
                                   ))}
                                 </Image.PreviewGroup>
                               </div>
                             )}
-                            {m.attachments.filter((a) => !a.is_image).map((a) => (
-                              <a
-                                key={a.id}
-                                className="collab-msg-file"
-                                href={collabAttachUrl(a.url, true)}
-                                target="_blank"
-                                rel="noreferrer"
-                                download={a.name}
-                              >
+                            {m.attachments.filter((a) => !a.is_image).map((a) => {
+                              const body = (
+                                <>
                                 <FileOutlined />
                                 <span className="collab-msg-file-meta">
                                   <strong>{a.name || "附件"}</strong>
-                                  <em>{fmtSize(a.size || 0)}</em>
+                                  <em>{a.uploading ? "正在发送…" : fmtSize(a.size || 0)}</em>
                                 </span>
-                              </a>
-                            ))}
+                                {a.uploading ? <LoadingOutlined spin /> : <DownloadOutlined />}
+                                </>
+                              );
+                              return a.url ? (
+                                <a
+                                  key={a.id}
+                                  className="collab-msg-file"
+                                  href={collabAttachUrl(a.url, true)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  download={a.name}
+                                  draggable
+                                  onDragStart={(event) => {
+                                    event.dataTransfer.effectAllowed = "copy";
+                                    event.dataTransfer.setData(DRAG_ATTACHMENT_TYPE, JSON.stringify({
+                                      url: a.url,
+                                      name: a.name,
+                                      mime: a.mime,
+                                    }));
+                                  }}
+                                >
+                                  {body}
+                                </a>
+                              ) : (
+                                <div key={a.id} className="collab-msg-file is-uploading">
+                                  {body}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                         {!forwardBundle.length && m.content ? renderMessageBody(m.content, activeRoom, isAi) : null}
-                        {autoTranslate && !forwardBundle.length && m.content && (translated || translating) ? (
+                        {!forwardBundle.length && m.content && (translated || translating) ? (
                           <div className={`collab-translation${translating && !translated ? " is-loading" : ""}`}>
                             <span className="collab-translation-label">
                               {translating && !translated ? <LoadingOutlined /> : <TranslationOutlined />}
@@ -4509,6 +4729,19 @@ export default function CollabRisk({
                 );
               }}
               />
+              {!messagesAtBottom ? (
+                <Tooltip title="回到最新消息" placement="left">
+                  <button
+                    type="button"
+                    className="collab-scroll-bottom"
+                    onClick={() => scrollMessagesToBottom("smooth")}
+                    aria-label="回到最新消息"
+                  >
+                    <DownOutlined />
+                  </button>
+                </Tooltip>
+              ) : null}
+              </>
               )}
             </div>
 
@@ -4957,7 +5190,16 @@ export default function CollabRisk({
         />
       ) : null}
 
-      {!summaryVisible && !activeRoom ? (
+      {artifactsVisible ? (
+        <CollabArtifactsPanel
+          messages={visibleMessages}
+          attachmentUrl={collabAttachUrl}
+          onClose={() => setArtifactPanelVisible(false)}
+          onJumpToMessage={jumpEvidence}
+        />
+      ) : null}
+
+      {!summaryVisible && !artifactsVisible && !activeRoom ? (
         <Tooltip title="显示智能纪要" placement="left">
           <button
             type="button"
@@ -4965,7 +5207,7 @@ export default function CollabRisk({
             onClick={() => setSummaryPanelVisible(true)}
             aria-label="显示智能纪要"
           >
-            <FileTextOutlined />
+            <InsertRowRightOutlined />
           </button>
         </Tooltip>
       ) : null}
@@ -5239,7 +5481,7 @@ const css = `
 .collab-page {
   position: relative;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 300px;
+  grid-template-columns: 220px minmax(0, 1fr) minmax(320px, 360px);
   height: calc(100vh - 68px);
   min-height: 520px;
   border: 1px solid #e8edf5;
@@ -5264,6 +5506,10 @@ const css = `
   grid-row: 1;
 }
 .collab-page > .collab-ai {
+  grid-column: 3;
+  grid-row: 1;
+}
+.collab-page > .collab-artifacts {
   grid-column: 3;
   grid-row: 1;
 }
@@ -5333,7 +5579,30 @@ const css = `
   transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
 }
 .collab-summary-reopen:hover { transform: translateY(-1px); border-color: #cec4f5; box-shadow: 0 11px 28px rgba(73, 53, 155, 0.14); }
-.collab-summary-toggle { color: #6652cf !important; background: #f5f2ff !important; }
+.collab-main-actions {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.collab-panel-toggle {
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent !important;
+  border-radius: 10px !important;
+  color: #657189 !important;
+  background: transparent !important;
+  transition: transform 100ms ease-out, color 160ms ease, border-color 160ms ease, background 160ms ease !important;
+}
+.collab-panel-toggle:hover,
+.collab-panel-toggle.is-active {
+  border-color: #dce4f0 !important;
+  color: #315efb !important;
+  background: #f1f5ff !important;
+}
+.collab-panel-toggle:active { transform: scale(0.96); }
+.collab-summary-toggle.is-active {
+  color: #6652cf !important;
+  background: #f5f2ff !important;
+}
 .collab-intelligence-head-actions { display: inline-flex; align-items: center; gap: 2px; }
 .collab-sider { border-right: 1px solid #e8edf5; }
 .collab-ai {
@@ -5356,6 +5625,68 @@ const css = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.collab-main-head > div:first-child {
+  min-width: 0;
+}
+.collab-room-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+}
+.collab-group-title-trigger {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(520px, 46vw);
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px 4px 3px;
+  border: 0;
+  border-radius: 9px;
+  color: #172033;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, transform 100ms ease-out;
+}
+.collab-group-title-trigger:hover,
+.collab-group-title-trigger[aria-expanded="true"] {
+  color: #315efb;
+  background: rgba(49, 94, 251, 0.07);
+}
+.collab-group-title-trigger:active {
+  transform: scale(0.985);
+}
+.collab-group-title-trigger strong {
+  overflow: hidden;
+  font-size: 18px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-group-title-trigger span {
+  flex: 0 0 auto;
+  color: #7e8aa3;
+  font-size: 11px;
+  font-weight: 500;
+}
+.collab-group-title-trigger > .anticon {
+  flex: 0 0 auto;
+  color: #8b96a8;
+  font-size: 9px;
+  transition: transform 160ms ease;
+}
+.collab-group-title-trigger[aria-expanded="true"] > .anticon {
+  transform: rotate(180deg);
+}
+.collab-members-popover .ant-popover-inner {
+  padding: 10px;
+  border: 1px solid var(--lc-border-light);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--lc-surface) 94%, transparent);
+  box-shadow: 0 18px 48px rgba(22, 34, 58, 0.16);
+  backdrop-filter: blur(20px) saturate(145%);
+}
 .collab-create-group-btn {
   height: 30px;
   padding-inline: 10px;
@@ -5373,37 +5704,6 @@ const css = `
   box-shadow: 0 10px 24px rgba(18, 55, 101, 0.28) !important;
 }
 .collab-create-group-btn:active { transform: scale(0.97); }
-.collab-translate-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 32px;
-  padding-inline: 10px !important;
-  border-color: #dce2ec !important;
-  border-radius: 10px;
-  color: #647086 !important;
-  background: rgba(255, 255, 255, 0.78) !important;
-  box-shadow: 0 5px 14px rgba(35, 46, 72, 0.06);
-  transition: transform 100ms ease-out, color 180ms ease, border-color 180ms ease, background 180ms ease !important;
-}
-.collab-translate-toggle > i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #bcc4d1;
-  box-shadow: 0 0 0 3px rgba(188, 196, 209, 0.16);
-}
-.collab-translate-toggle.is-active {
-  border-color: rgba(15, 118, 110, 0.34) !important;
-  color: #0f766e !important;
-  background: rgba(236, 253, 248, 0.92) !important;
-  box-shadow: 0 7px 18px rgba(15, 118, 110, 0.12);
-}
-.collab-translate-toggle.is-active > i {
-  background: #10b981;
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
-}
-.collab-translate-toggle:active { transform: scale(0.97); }
 .collab-ai-sub { font-size: 11px; color: #8b96a8; margin-top: 2px; }
 .collab-tabs {
   display: grid;
@@ -5442,6 +5742,7 @@ const css = `
 .collab-messages {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow: hidden;
   padding: 0;
   position: relative;
@@ -5456,14 +5757,46 @@ const css = `
   padding: 24px 16px;
 }
 .collab-virtuoso {
-  flex: 1;
-  height: 100%;
+  flex: 1 1 0;
+  height: 100% !important;
+  min-height: 0;
+  overflow: auto;
   background: #fff;
   overscroll-behavior-y: none;
+  scrollbar-gutter: stable;
+}
+.collab-scroll-bottom {
+  position: absolute;
+  z-index: 8;
+  right: 18px;
+  bottom: 16px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(49, 94, 251, 0.18);
+  border-radius: 50%;
+  color: #315efb;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 28px rgba(38, 59, 105, 0.16);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: transform 100ms ease-out, box-shadow 160ms ease, background 160ms ease;
+}
+.collab-scroll-bottom:hover {
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(38, 59, 105, 0.22);
+  transform: translateY(-1px);
+}
+.collab-scroll-bottom:active { transform: scale(0.96); }
 }
 .collab-virt-item {
-  padding: 0 10px 8px;
+  padding: 0 18px 8px 22px;
   overflow: visible;
+}
+.collab-msg-bottom-space {
+  height: 18px;
+  pointer-events: none;
 }
 .collab-msg-history-tip {
   text-align: center;
@@ -5960,7 +6293,7 @@ const css = `
   min-width: 0;
   min-height: 0;
   background: #fff;
-  overflow: visible;
+  overflow: hidden;
   position: relative;
   z-index: 1;
 }
@@ -7550,24 +7883,80 @@ const css = `
   gap: 6px;
   margin: 6px 0 4px;
 }
+.collab-msg-image-shell {
+  position: relative;
+  width: min(220px, 42vw);
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border: 1px solid rgba(28, 43, 70, 0.08);
+  border-radius: 10px;
+  background: #f4f6fa;
+  box-shadow: 0 5px 16px rgba(29, 43, 69, 0.06);
+}
+.collab-msg-image-shell.is-uploading {
+  background: linear-gradient(110deg, #f1f3f7 8%, #fafbfc 18%, #f1f3f7 33%);
+  background-size: 220% 100%;
+  animation: collab-image-uploading 1.2s linear infinite;
+}
+@keyframes collab-image-uploading { to { background-position-x: -220%; } }
 .collab-msg-image-root {
   display: block;
-  max-width: 220px;
-  border-radius: 8px;
+  width: 100%;
+  height: 100%;
+  border-radius: 9px;
   overflow: hidden;
-  border: 1px solid rgba(0,0,0,.06);
   cursor: zoom-in;
 }
 .collab-msg-image-root .ant-image-img,
 .collab-msg-image {
   display: block;
-  max-width: 220px;
-  max-height: 280px;
-  width: auto !important;
-  height: auto !important;
+  width: 100% !important;
+  height: 100% !important;
   object-fit: contain;
   background: #f4f6fa;
   cursor: zoom-in;
+}
+.collab-msg-uploading {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(17, 28, 47, 0.72);
+  backdrop-filter: blur(10px);
+}
+.collab-msg-image-save {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  border-radius: 9px;
+  color: #fff;
+  background: rgba(17, 28, 47, 0.62);
+  box-shadow: 0 5px 16px rgba(17, 28, 47, 0.18);
+  opacity: 0;
+  backdrop-filter: blur(10px);
+  transition: opacity 140ms ease, transform 100ms ease-out, background 140ms ease;
+}
+.collab-msg-image-shell:hover .collab-msg-image-save,
+.collab-msg-image-save:focus-visible {
+  opacity: 1;
+}
+.collab-msg-image-save:hover { color: #fff; background: rgba(17, 28, 47, 0.82); }
+.collab-msg-image-save:active { transform: scale(0.94); }
+@media (hover: none) {
+  .collab-msg-image-save { opacity: 1; }
 }
 .collab-msg-attach {
   display: flex;
@@ -7586,6 +7975,11 @@ const css = `
   color: #315efb;
   text-decoration: none;
   max-width: 260px;
+  cursor: grab;
+}
+.collab-msg-file.is-uploading {
+  color: #718096;
+  cursor: default;
 }
 .collab-msg-file:hover {
   border-color: #b7c8ff;
@@ -7962,7 +8356,10 @@ const css = `
   .collab-team-card,
   .collab-team-card-chevron,
   .collab-create-group-btn,
-  .collab-translate-toggle,
+  .collab-panel-toggle,
+  .collab-scroll-bottom,
+  .collab-msg-image-save,
+  .collab-msg-image-shell,
   .collab-msg-avatar,
   .collab-avatar-hit,
   .collab-bubble,
@@ -7972,6 +8369,7 @@ const css = `
     animation: none !important;
     transition-duration: 0.01ms !important;
   }
+  .collab-msg-image-shell.is-uploading { background: #f4f6fa; }
 }
 
 /* 自己发送的消息使用更轻盈的蓝紫玻璃气泡，和他人消息形成稳定层级。 */
@@ -8031,6 +8429,21 @@ const css = `
 }
 .collab-agent-input {
   position: relative;
+  padding: 10px 14px 14px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.collab-agent-input-inner {
+  background: transparent;
+}
+.collab-agent-composer {
+  border-radius: 22px;
+}
+:root[data-theme="dark"] .collab-agent-input {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 .collab-agent-input.is-drag-active .collab-agent-composer {
   border-color: rgba(111, 85, 232, 0.58) !important;
@@ -8254,16 +8667,6 @@ const css = `
   color: var(--lc-muted);
   background: rgba(25, 29, 40, 0.72);
 }
-:root[data-theme="dark"] .collab-translate-toggle {
-  border-color: var(--lc-line) !important;
-  color: var(--lc-muted) !important;
-  background: rgba(25, 29, 40, 0.88) !important;
-}
-:root[data-theme="dark"] .collab-translate-toggle.is-active {
-  border-color: rgba(45, 197, 167, 0.34) !important;
-  color: #5eead4 !important;
-  background: rgba(17, 74, 67, 0.54) !important;
-}
 :root[data-theme="dark"] .collab-translation {
   border-top-color: rgba(180, 190, 210, 0.17);
   background: rgba(12, 16, 24, 0.28);
@@ -8285,9 +8688,6 @@ const css = `
   .collab-team-card-main { grid-template-columns: 36px minmax(0, 1fr) 14px; }
   .collab-team-card-main .ant-avatar-group,
   .collab-team-card-count { display: none; }
-  .collab-translate-toggle > span:not(.anticon) { display: none; }
-  .collab-translate-toggle { width: 36px; padding-inline: 0 !important; }
-  .collab-translate-toggle > i { position: absolute; right: 5px; bottom: 5px; width: 6px; height: 6px; }
   .collab-page {
     grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
     height: calc(100vh - 68px);
@@ -8296,8 +8696,11 @@ const css = `
   }
   .collab-page > .collab-sider { grid-column: 1; grid-row: 1; }
   .collab-page > .collab-main { grid-column: 2; grid-row: 1; }
-  .collab-page > .collab-ai {
+  .collab-page > .collab-ai,
+  .collab-page > .collab-artifacts {
     position: absolute;
+    grid-column: auto;
+    grid-row: auto;
     z-index: 60;
     top: 0;
     right: 0;
@@ -8321,6 +8724,15 @@ const css = `
   .collab-room-main .collab-avatar-wrap { display: none; }
   .collab-room-badges .ant-tag { display: none; }
   .collab-main-head { padding-inline: 10px; }
+  .collab-group-title-trigger {
+    max-width: 45vw;
+  }
+  .collab-group-title-trigger strong {
+    font-size: 16px;
+  }
+  .collab-virt-item {
+    padding-inline: 14px 10px;
+  }
   .collab-forward-mode { grid-template-columns: 1fr; }
   .collab-contact-open-hint { display: none; }
   .collab-contact-pane { padding-inline: 6px; }

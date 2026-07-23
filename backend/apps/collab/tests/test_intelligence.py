@@ -16,6 +16,7 @@ from apps.collab.models import (
     CollabSummary,
 )
 from apps.collab.analyze import analyze_room_messages
+from apps.collab.mentions import get_collab_ai_user, get_xiaoce_bot_user
 
 
 User = get_user_model()
@@ -84,6 +85,35 @@ class CollabConversationIntelligenceTests(TestCase):
         )
         self.assertEqual(session.active_duration_ms, 4200)
         self.assertEqual(session.up_to_message_id, last_id)
+
+    def test_group_read_receipts_exclude_bots_and_agents(self):
+        xiaoce = get_xiaoce_bot_user()
+        liangce_ai = get_collab_ai_user()
+        CollabParticipant.objects.create(room=self.room, user=xiaoce)
+        CollabParticipant.objects.create(room=self.room, user=liangce_ai)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(
+            f"/api/collab/rooms/{self.room.id}/messages/",
+            {"limit": 20, "include_participants": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        owner_message = next(
+            row for row in response.data["results"]
+            if row["sender"]["id"] == self.owner.id
+        )
+        self.assertEqual(owner_message["read_state"]["unread_count"], 2)
+        self.assertNotIn("小策bot", owner_message["read_state"]["unread_by"])
+        self.assertNotIn("良策AI", owner_message["read_state"]["unread_by"])
+        participants = response.data["room"]["participants"]
+        automated = {
+            row["username"]: row
+            for row in participants
+            if row["username"] in {"小策bot", "良策AI"}
+        }
+        self.assertEqual(automated["小策bot"]["kind"], "bot")
+        self.assertEqual(automated["良策AI"]["kind"], "bot")
 
     @patch("apps.collab.summary.llm.chat_messages_result")
     def test_summary_requires_a_configured_llm(self, mock_llm):

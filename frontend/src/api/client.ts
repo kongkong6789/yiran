@@ -2456,6 +2456,9 @@ export interface CollabMessage {
     is_image?: boolean;
     is_file?: boolean;
     url?: string;
+    /** Local object URL used until the authenticated server image has loaded. */
+    preview_url?: string;
+    uploading?: boolean;
   }[];
   mentions?: { type: "all" | "ai" | "user"; key: string; label: string }[];
   meta?: {

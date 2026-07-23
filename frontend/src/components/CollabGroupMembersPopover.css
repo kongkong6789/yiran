@@ -1,0 +1,133 @@
+.collab-group-members {
+  width: min(340px, calc(100vw - 32px));
+  color: var(--lc-text);
+}
+
+.collab-group-members > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 4px 11px;
+  border-bottom: 1px solid var(--lc-border-light);
+}
+
+.collab-group-members > header > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collab-group-members > header strong {
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.collab-group-members > header small {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
+
+.collab-group-members__glyph {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--lc-accent-blue);
+  background: color-mix(in srgb, var(--lc-accent-blue) 9%, var(--lc-surface));
+}
+
+.collab-group-members__list {
+  max-height: min(430px, calc(100vh - 180px));
+  padding: 7px 2px 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.collab-group-members__row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 12px;
+  transition: background 160ms ease;
+}
+
+.collab-group-members__row:hover {
+  background: color-mix(in srgb, var(--lc-accent-blue) 6%, transparent);
+}
+
+.collab-group-members__avatar {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.collab-group-members__avatar > i {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--lc-surface);
+  border-radius: 50%;
+  background: #a8b1c0;
+}
+
+.collab-group-members__avatar > i.is-online {
+  background: #22c55e;
+}
+
+.collab-group-members__avatar.is-agent .ant-avatar {
+  color: #315efb;
+  background: #edf3ff;
+}
+
+.collab-group-members__identity {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collab-group-members__identity strong,
+.collab-group-members__identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collab-group-members__identity strong {
+  font-size: 12px;
+}
+
+.collab-group-members__identity small {
+  color: var(--lc-text-muted);
+  font-size: 10px;
+}
+
+.collab-group-members__tags {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.collab-group-members__tags .ant-tag {
+  margin: 0;
+  padding-inline: 5px;
+  font-size: 9px;
+  line-height: 17px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collab-group-members__row {
+    transition: none;
+  }
+}

@@ -23,6 +23,10 @@ const avatarSource = readFileSync(
   new URL("../src/utils/avatar.ts", import.meta.url),
   "utf8",
 );
+const artifactSource = readFileSync(
+  new URL("../src/components/CollabArtifactsPanel.tsx", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(start: string, end: string) {
   const from = layoutSource.indexOf(start);
@@ -97,6 +101,9 @@ test("chat exposes message time and live read receipts", () => {
   assert.match(chatSource, /onReadReceipts:\s*mergeLiveReadReceipts/);
   assert.match(chatSource, /activeRoom\.room_kind === "group"[\s\S]*全部已读/);
   assert.match(chatSource, /:\s*\(unreadReceiptCount === 0 \? "已读" : "未读"\)/);
+  assert.match(chatSource, /participant\.id !== m\.sender\.id && !isAutomatedParticipant\(participant\)/);
+  assert.match(chatSource, /className="collab-group-title-trigger"/);
+  assert.match(chatSource, /CollabGroupMembersPopover room=\{activeRoom\} me=\{me\}/);
 });
 
 test("chat keeps sending stable and exposes the new panel controls", () => {
@@ -106,7 +113,8 @@ test("chat keeps sending stable and exposes the new panel controls", () => {
   assert.match(chatSource, /className=\{`agent-chat-send-circle\$\{canSendMessage \|\| sending/);
   assert.match(chatSource, /onClose=\{\(\) => setSummaryPanelVisible\(false\)\}/);
   assert.match(chatSource, /aria-label="显示智能纪要"/);
-  assert.match(chatSource, /icon=\{<FileTextOutlined \/>\}/);
+  assert.match(chatSource, /icon=\{<InsertRowRightOutlined \/>\}/);
+  assert.match(chatSource, /className=\{`collab-panel-toggle\$\{artifactsVisible/);
   assert.match(chatSource, /const existingRoom = findDirectRoom\(username\)/);
   assert.match(chatSource, /primeRoomSnapshot\(room\)/);
   assert.doesNotMatch(chatSource, /EyeOutlined|旁观模式|管理员旁观|旁观者/);
@@ -135,7 +143,7 @@ test("chat identity, feedback, and background activity stay polished", () => {
   assert.match(liveSource, /closeWebSocketQuietly\(ws\);[\s\S]*?ws = null;/);
 });
 
-test("chat supports stable bottom scrolling, team grouping, translation, and branded avatars", () => {
+test("chat supports stable bottom scrolling, team grouping, translation, and initial avatars", () => {
   const bottomStateStart = chatSource.indexOf("atBottomStateChange={(bottom)");
   const bottomStateEnd = chatSource.indexOf("startReached={()", bottomStateStart);
   assert.ok(bottomStateStart >= 0 && bottomStateEnd > bottomStateStart);
@@ -145,10 +153,30 @@ test("chat supports stable bottom scrolling, team grouping, translation, and bra
   assert.match(chatSource, /团队分组/);
   assert.match(chatSource, /直接选择团队/);
   assert.match(chatSource, /translateCollabMessages/);
-  assert.match(chatSource, /aria-pressed=\{autoTranslate\}/);
-  assert.match(chatSource, /中文自动译为英文，英文自动译为中文/);
+  assert.match(chatSource, /key:\s*"translate"/);
+  assert.match(chatSource, /translations\[m\.id\] \? "隐藏译文" : "翻译消息"/);
+  assert.doesNotMatch(chatSource, /autoTranslate|collab-auto-translate|中英互译/);
+  assert.match(chatSource, /atBottomThreshold=\{8\}/);
+  assert.match(chatSource, /ResizeObserver\(settleIfPinned\)/);
   assert.match(monitorStyles, /\.collab-message-menu \.ant-dropdown-menu-item-danger/);
-  assert.match(avatarSource, /liangce-default-avatar\.png/);
+  assert.match(avatarSource, /if \(!value\) return ""/);
+  assert.doesNotMatch(avatarSource, /liangce-default-avatar\.png/);
+});
+
+test("chat attachments preview instantly, download, drag-forward, and appear in the AI artifact drawer", () => {
+  assert.match(chatSource, /preview_url:\s*localPreviews\[index\]/);
+  assert.match(chatSource, /className="collab-msg-image-save"/);
+  assert.match(chatSource, /download=\{a\.name \|\| "聊天图片"\}/);
+  assert.match(chatSource, /application\/x-liangce-chat-attachment/);
+  assert.match(chatSource, /attachmentUrl=\{collabAttachUrl\}/);
+  assert.match(artifactSource, /"xls", "xlsx", "csv", "tsv"/);
+  assert.match(artifactSource, /"doc", "docx"/);
+  assert.match(artifactSource, /selected\.kind === "pdf"/);
+  assert.match(artifactSource, /preview=1/);
+  assert.doesNotMatch(artifactSource, /looksLikeReport|inlineText|AI报告/);
+  assert.match(artifactSource, /普通对话不会被收录/);
+  assert.match(monitorStyles, /\.collab-page > \.collab-artifacts\s*\{[\s\S]*?grid-column:\s*3;/);
+  assert.match(monitorStyles, /@media \(max-width: 860px\)[\s\S]*?\.collab-page > \.collab-artifacts\s*\{[\s\S]*?grid-column:\s*auto;/);
 });
 
 test("monitor owns a single complete scroll surface", () => {

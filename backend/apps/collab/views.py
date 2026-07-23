@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 from apps.core.attachments import (
     attachment_public_meta,
+    preview_attachment,
     process_uploaded_files,
     resolve_attachment_path,
     resolve_attachment_path_any,
@@ -127,6 +128,7 @@ def _user_brief(
     nick = (nickname or "").strip()
     profile = profile or {}
     profile_name = (profile.get("display_name") or "").strip()
+    automated = is_xiaoce_bot_user(user) or getattr(user, "username", "") == "良策AI"
     info = {
         "id": user.id,
         "username": user.username,
@@ -134,7 +136,7 @@ def _user_brief(
         "display_name": nick or profile_name or user.username,
         "avatar_url": profile.get("avatar_url") or "",
         "bio": profile.get("bio") or "",
-        "kind": "bot" if is_xiaoce_bot_user(user) else "human",
+        "kind": "bot" if automated else "human",
     }
     if last_read_message_id is not None:
         info["last_read_message_id"] = int(last_read_message_id or 0)
@@ -142,10 +144,14 @@ def _user_brief(
         info["bot_id"] = "xiaoce"
         info["display_name"] = nick or profile_name or XIAOCE_BOT_DISPLAY
         info["online"] = True
+    elif automated:
+        info["bot_id"] = "liangce-ai"
+        info["display_name"] = nick or profile_name or "良策AI"
+        info["online"] = True
     else:
         info["online"] = False
         info["last_seen"] = None
-    if presence and user.id in presence and not is_xiaoce_bot_user(user):
+    if presence and user.id in presence and not automated:
         info["online"] = bool(presence[user.id].get("online"))
         info["last_seen"] = presence[user.id].get("last_seen")
     elif "last_seen" not in info:
@@ -595,7 +601,12 @@ def _message_read_state_map(
     """用参与者已读游标批量计算群消息的已读/未读状态。"""
     if room.room_kind != "group" or not messages:
         return {}
-    parts = list(room.participants.select_related("user").all())
+    parts = [
+        part
+        for part in room.participants.select_related("user").all()
+        if not is_xiaoce_bot_user(part.user)
+        and getattr(part.user, "username", "") != "良策AI"
+    ]
     names = nickname_map or {p.user_id: (p.nickname or "").strip() for p in parts}
     out: dict[int, dict] = {}
     for msg in messages:
@@ -1109,6 +1120,29 @@ def _worker_error_code(current_stage: str, error) -> str:
     return "stage_failed"
 
 
+def _generated_image_attachments(run_id, images) -> list[dict]:
+    """Expose agent-generated images as first-class chat/artifact attachments."""
+    attachments: list[dict] = []
+    for index, item in enumerate(images or [], 1):
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("remote_url") or "").strip()
+        if not url:
+            continue
+        stored_id = str(item.get("stored_id") or "").strip()
+        attachments.append({
+            "id": stored_id or f"generated-{run_id}-{index}",
+            "name": f"AI生成图片-{index}.png",
+            "size": 0,
+            "mime": "image/png",
+            "has_text": False,
+            "is_image": True,
+            "is_file": False,
+            "url": url,
+        })
+    return attachments
+
+
 def _run_xiaoce_reply_async(run_id) -> None:
     """小策bot 单聊：执行普通问答或安全的会话 Skill 打包。"""
     try:
@@ -1169,7 +1203,18 @@ def _run_xiaoce_reply_async(run_id) -> None:
                 reply = str(result.get("reply") or "").strip() or "（未生成有效回答）"
             else:
                 reply = str(result.get("error") or "知识问答暂时不可用，请稍后再试。")
-            ai_msg = complete_xiaoce_run(run.id, reply)
+            generated_attachments = _generated_image_attachments(
+                run.id,
+                result.get("generated_images"),
+            )
+            ai_msg = complete_xiaoce_run(
+                run.id,
+                reply,
+                {"generated_images": len(generated_attachments)} if generated_attachments else None,
+            )
+            if ai_msg is not None and generated_attachments:
+                ai_msg.attachments = generated_attachments
+                ai_msg.save(update_fields=["attachments", "updated_at"])
         _publish_xiaoce_message(run, ai_msg)
     except AgentRunCancelled:
         return
@@ -2931,6 +2976,8 @@ def collab_attachment(request, stored_id: str):
         if path:
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+            if str(request.query_params.get("preview") or "") in ("1", "true", "True"):
+                return Response(preview_attachment(path, original, mime))
             force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
             as_attach = force_download or not (mime or "").startswith("image/")
             return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)
@@ -2944,6 +2991,8 @@ def collab_attachment(request, stored_id: str):
         return Response({"ok": False, "error": "附件文件丢失"}, status=404)
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     original = path.name.split("_", 1)[-1] if "_" in path.name else path.name
+    if str(request.query_params.get("preview") or "") in ("1", "true", "True"):
+        return Response(preview_attachment(path, original, mime))
     force_download = str(request.query_params.get("download") or "") in ("1", "true", "True")
     as_attach = force_download or not (mime or "").startswith("image/")
     return FileResponse(path.open("rb"), as_attachment=as_attach, filename=original, content_type=mime)

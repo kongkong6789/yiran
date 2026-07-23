@@ -6,6 +6,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.collab.models import CollabMessage, CollabParticipant, CollabRoom
+from apps.core.models import UserSettings
 
 
 User = get_user_model()
@@ -81,3 +82,35 @@ class CollabTranslationApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("未配置", response.data["error"])
+
+    @patch("apps.collab.translation.llm.chat_messages_result")
+    def test_translation_uses_personal_model_with_personal_credentials(self, mock_llm):
+        UserSettings.objects.create(
+            user=self.owner,
+            llm_api_key="personal-key",
+            llm_base_url="https://llm.example.test/v1",
+            llm_model="personal-translation-model",
+        )
+        mock_llm.return_value = {
+            "configured": True,
+            "model": "personal-translation-model",
+            "content": json.dumps([{
+                "message_id": self.zh.id,
+                "source_language": "zh",
+                "target_language": "en",
+                "translated_text": "The project starts tomorrow.",
+            }]),
+            "error": "",
+        }
+
+        response = self.client.post(
+            f"/api/collab/rooms/{self.room.id}/messages/translate/",
+            {"message_ids": [self.zh.id]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            mock_llm.call_args.kwargs["model"],
+            "personal-translation-model",
+        )

@@ -629,7 +629,9 @@ export default function AgentChat() {
                   icon={isUser
                     ? undefined
                     : <RobotOutlined />}
-                />
+                >
+                  {isUser ? (me?.display_name || me?.username || "我").slice(0, 1).toUpperCase() : null}
+                </Avatar>
                 <div className={`agent-chat-bubble${isBlocks ? " report" : ""}`}>
                   {isUser ? (
                     <>

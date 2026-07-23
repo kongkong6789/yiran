@@ -5,7 +5,10 @@ import base64
 import json
 import mimetypes
 import uuid
+import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
+from xml.etree import ElementTree
 
 from django.conf import settings
 
@@ -32,6 +35,36 @@ IMAGE_MIME = {
     ".bmp": "image/bmp",
 }
 MAX_TEXT_INJECT = 12_000
+MAX_PREVIEW_TEXT = 240_000
+
+
+class _VisibleHTMLText(HTMLParser):
+    """Extract readable text without executing or returning embedded HTML."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in {"script", "style", "noscript"}:
+            self.hidden_depth += 1
+        elif not self.hidden_depth and tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript"} and self.hidden_depth:
+            self.hidden_depth -= 1
+        elif not self.hidden_depth and tag in {"p", "div", "li", "tr"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        lines = ("".join(self.parts)).splitlines()
+        return "\n".join(line.strip() for line in lines if line.strip())[:MAX_PREVIEW_TEXT]
 
 
 def attachments_root(user_id: int) -> Path:
@@ -61,6 +94,102 @@ def _extract_text(name: str, data: bytes) -> str:
         except json.JSONDecodeError:
             pass
     return text[:MAX_TEXT_INJECT]
+
+
+def _preview_docx(path: Path) -> dict:
+    with zipfile.ZipFile(path) as archive:
+        xml = archive.read("word/document.xml")
+    root = ElementTree.fromstring(xml)
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    paragraphs: list[str] = []
+    for paragraph in root.iter(f"{namespace}p"):
+        text = "".join(
+            node.text or ""
+            for node in paragraph.iter(f"{namespace}t")
+        ).strip()
+        if text:
+            paragraphs.append(text)
+    return {
+        "kind": "document",
+        "text": "\n\n".join(paragraphs)[:MAX_PREVIEW_TEXT],
+    }
+
+
+def _preview_xlsx(path: Path) -> dict:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    sheets: list[dict] = []
+    try:
+        for sheet in workbook.worksheets[:4]:
+            rows: list[list[str]] = []
+            for row in sheet.iter_rows(max_row=60, max_col=20, values_only=True):
+                values = ["" if value is None else str(value)[:500] for value in row]
+                while values and values[-1] == "":
+                    values.pop()
+                if values:
+                    rows.append(values)
+            sheets.append({"name": sheet.title, "rows": rows})
+    finally:
+        workbook.close()
+    return {"kind": "spreadsheet", "sheets": sheets}
+
+
+def _preview_xls(path: Path) -> dict:
+    import xlrd
+
+    workbook = xlrd.open_workbook(path, on_demand=True)
+    sheets: list[dict] = []
+    try:
+        for sheet in workbook.sheets()[:4]:
+            rows = [
+                [str(sheet.cell_value(r, c))[:500] for c in range(min(sheet.ncols, 20))]
+                for r in range(min(sheet.nrows, 60))
+            ]
+            sheets.append({"name": sheet.name, "rows": rows})
+    finally:
+        workbook.release_resources()
+    return {"kind": "spreadsheet", "sheets": sheets}
+
+
+def preview_attachment(path: Path, filename: str, mime: str = "") -> dict:
+    """Return a bounded, JSON-safe preview for chat artifact drawers."""
+    ext = Path((filename or path.name).lower()).suffix
+    try:
+        if ext == ".xlsx":
+            payload = _preview_xlsx(path)
+        elif ext == ".xls":
+            payload = _preview_xls(path)
+        elif ext == ".docx":
+            payload = _preview_docx(path)
+        elif ext in TEXT_EXTENSIONS:
+            text = _decode_text(path.read_bytes()[:MAX_PREVIEW_TEXT * 3])
+            if ext in {".html", ".htm"}:
+                parser = _VisibleHTMLText()
+                parser.feed(text)
+                text = parser.text()
+                kind = "html"
+            elif ext in {".md", ".markdown"}:
+                kind = "markdown"
+            else:
+                kind = "text"
+            payload = {"kind": kind, "text": text[:MAX_PREVIEW_TEXT]}
+        else:
+            payload = {
+                "kind": "unsupported",
+                "message": "该格式暂不支持在线解析，可下载后查看。",
+            }
+    except Exception:
+        payload = {
+            "kind": "error",
+            "message": "文件预览生成失败，可下载后查看。",
+        }
+    return {
+        "ok": payload.get("kind") not in {"error"},
+        "name": filename,
+        "mime": mime or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        **payload,
+    }
 
 
 def _is_image(name: str, mime: str = "") -> bool:

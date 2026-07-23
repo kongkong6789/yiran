@@ -16822,12 +16822,6 @@ body {
   background: var(--lc-status-info-bg);
 }
 
-/* 未上传头像时统一展示用户指定的良策 AI 品牌机器人。 */
-img[src*="liangce-default-avatar"] {
-  transform: scale(1.7);
-  transform-origin: 72% 16%;
-}
-
 /* 技能库参考图对齐：扁平管理台层级、紧凑表格与自适应内容高度。 */
 .skills-page .skills-page-head {
   min-height: 0;
