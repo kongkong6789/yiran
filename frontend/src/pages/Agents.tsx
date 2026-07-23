@@ -1,33 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   AutoComplete,
-  Avatar,
   Button,
-  Card,
   Checkbox,
   Col,
-  Drawer,
+  Dropdown,
   Empty,
   Form,
   Input,
-  InputNumber,
-  Popconfirm,
+  Modal,
   Popover,
-  Progress,
   Row,
-  Segmented,
-  Select,
   Skeleton,
-  Space,
-  Statistic,
-  Switch,
   Tag,
   Typography,
   message,
 } from "antd";
 import {
-  ApartmentOutlined,
   BulbOutlined,
   CheckCircleOutlined,
   DatabaseOutlined,
@@ -35,14 +24,16 @@ import {
   DownOutlined,
   EditOutlined,
   PartitionOutlined,
+  EllipsisOutlined,
+  MessageOutlined,
   PlusOutlined,
-  ReloadOutlined,
   SearchOutlined,
   StopOutlined,
   ToolOutlined,
-  WarningOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
 import { Virtuoso } from "react-virtuoso";
+import { useNavigate } from "react-router-dom";
 import {
   createAgent,
   deleteAgent,
@@ -54,6 +45,12 @@ import {
   updateAgent,
   type Agent,
 } from "../api/client";
+import {
+  AGENT_AVATAR_OPTIONS,
+  getStoredAgentAvatar,
+  persistAgentAvatar,
+  resolveAgentAvatar,
+} from "../utils/agentAvatars";
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -64,6 +61,7 @@ const CAPABILITY_RULE_TEMPLATE = `【触发条件】
 - 涉及可执行操作时，调用最匹配的 Skill。
 - 用户明确要求跑流程/周报/SOP 时，优先走已绑定的已发布 SOP。
 
+const { Text } = Typography;
 【调用顺序】
 1. 先确认用户意图与必要参数。
 2. 先检索取证，再执行操作；能力冲突时优先使用更具体的 Skill 或已绑定 SOP。
@@ -80,7 +78,7 @@ const PERSONA_TEMPLATE = `【角色定位】你是……
 【表达风格】清晰、稳健、直接给出可执行建议。
 【输出格式】先给结论，再列依据、步骤与风险提示。`;
 
-type AgentFormValues = Pick<
+export type AgentFormValues = Pick<
   Agent,
   | "name"
   | "group"
@@ -96,7 +94,12 @@ type AgentFormValues = Pick<
   | "capability_instructions"
 >;
 
-interface CapabilityOption<T extends string | number> {
+export interface AgentAvatarSelection {
+  token: string;
+  customDataUrl?: string;
+}
+
+export interface CapabilityOption<T extends string | number> {
   value: T;
   label: string;
   description: string;
@@ -245,31 +248,105 @@ function CapabilityPicker<T extends string | number>({
   );
 }
 
-type AgentStatusFilter = "all" | Agent["status"];
-type AgentSort = "recent" | "name" | "quota";
+type DirectoryFilter = "all" | "online" | "offline" | "pending";
 
-const STATUS_META: Record<Agent["status"], { label: string; color: string; icon: React.ReactNode }> = {
-  available: { label: "任务可用", color: "success", icon: <CheckCircleOutlined /> },
-  disabled: { label: "已停用", color: "default", icon: <StopOutlined /> },
-  quota_exhausted: { label: "额度已用尽", color: "error", icon: <WarningOutlined /> },
-};
-
-const ROLE_LABEL: Record<Agent["execution_role"], string> = {
-  operator: "操作员",
-  manager: "主管",
-  director: "总监",
-};
-
-const formatQuota = (value: number) => {
-  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
-  if (safeValue >= 10_000 && safeValue % 10_000 === 0) return `${safeValue / 10_000} 万`;
-  return safeValue.toLocaleString("zh-CN");
-};
-
-const quotaPercent = (agent: Agent) => {
-  if (agent.quota_limit <= 0) return agent.quota_used > 0 ? 100 : 0;
-  return Math.min(100, Math.round((agent.quota_used / agent.quota_limit) * 100));
-};
+const DEMO_AGENTS: Agent[] = [
+  {
+    id: -1,
+    name: "行政",
+    emoji: "",
+    group: "行政",
+    role: "事务管家",
+    expertise: "统筹会议室预订、办公用品申领、用章申请等行政事务，把琐碎的事务性沟通标准化，让行政团队从重复问答中解放出来。",
+    persona: "",
+    execution_role: "operator",
+    is_active: true,
+    quota_limit: 10000,
+    quota_used: 0,
+    quota_remaining: 10000,
+    status: "available",
+    skill_ids: ["meeting"],
+    knowledge_base_ids: [1, 2],
+    capability_instructions: "行政 SOP",
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: -2,
+    name: "财务",
+    emoji: "",
+    group: "财务",
+    role: "报销管家",
+    expertise: "熟悉公司报销、差旅、预算与发票全流程，能解答报销政策、核对单据合规性、发起报销与额度查询。",
+    persona: "",
+    execution_role: "manager",
+    is_active: true,
+    quota_limit: 10000,
+    quota_used: 0,
+    quota_remaining: 10000,
+    status: "available",
+    skill_ids: ["audit", "budget"],
+    knowledge_base_ids: [1, 2, 3],
+    capability_instructions: "财务 SOP",
+    created_at: "2026-01-02T00:00:00Z",
+  },
+  {
+    id: -3,
+    name: "法务",
+    emoji: "",
+    group: "法务",
+    role: "合规审查官",
+    expertise: "覆盖合同审查、条款风险识别与合规咨询，依据企业合规制度和历史判例给出审查意见，遇到高风险或无先例的条款自动升级。",
+    persona: "",
+    execution_role: "director",
+    is_active: true,
+    quota_limit: 10000,
+    quota_used: 0,
+    quota_remaining: 10000,
+    status: "available",
+    skill_ids: ["review"],
+    knowledge_base_ids: [1, 2, 3, 4],
+    capability_instructions: "法务 SOP",
+    created_at: "2026-01-03T00:00:00Z",
+  },
+  {
+    id: -4,
+    name: "IT",
+    emoji: "",
+    group: "技术支持",
+    role: "内部支持工程师",
+    expertise: "处理账号权限、设备申领、常见故障排查等 IT 服务请求，能按 SOP 分流工单、调用内部系统接口开通权限。",
+    persona: "",
+    execution_role: "operator",
+    is_active: true,
+    quota_limit: 10000,
+    quota_used: 0,
+    quota_remaining: 10000,
+    status: "available",
+    skill_ids: ["ticket", "account", "device"],
+    knowledge_base_ids: [1, 2],
+    capability_instructions: "IT SOP",
+    created_at: "2026-01-04T00:00:00Z",
+  },
+  {
+    id: -5,
+    name: "人事",
+    emoji: "",
+    group: "人力资源",
+    role: "员工服务助手",
+    expertise: "面向全体在职员工的 HR 服务窗口，解答假期、社保公积金、薪酬福利、考勤等高频制度问题，可发起请假与开具证明等事务申请。",
+    persona: "",
+    execution_role: "manager",
+    is_active: true,
+    quota_limit: 10000,
+    quota_used: 0,
+    quota_remaining: 10000,
+    status: "available",
+    skill_ids: ["leave", "certificate"],
+    knowledge_base_ids: [1, 2, 3],
+    capability_instructions: "人事 SOP",
+    created_at: "2026-01-05T00:00:00Z",
+  },
+];
 
 const errorText = (error: unknown, fallback: string) => {
   if (typeof error === "object" && error) {
@@ -279,7 +356,7 @@ const errorText = (error: unknown, fallback: string) => {
   return fallback;
 };
 
-interface AgentFormDrawerProps {
+export interface AgentFormModalProps {
   open: boolean;
   editing: Agent | null;
   groupOptions: { value: string }[];
@@ -289,10 +366,10 @@ interface AgentFormDrawerProps {
   capabilityOptionsLoading: boolean;
   submitting: boolean;
   onClose: () => void;
-  onSubmit: (values: AgentFormValues, emoji: string) => Promise<void>;
+  onSubmit: (values: AgentFormValues, avatar: AgentAvatarSelection) => Promise<void>;
 }
 
-function AgentFormDrawer({
+export function AgentFormModal({
   open,
   editing,
   groupOptions,
@@ -303,13 +380,12 @@ function AgentFormDrawer({
   submitting,
   onClose,
   onSubmit,
-}: AgentFormDrawerProps) {
+}: AgentFormModalProps) {
   const [form] = Form.useForm<AgentFormValues>();
-  const [emoji, setEmoji] = useState("🤖");
-  const [activeInstructionSection, setActiveInstructionSection] = useState<"persona" | "capability">("persona");
-  const capabilityInstructions = Form.useWatch("capability_instructions", form) || "";
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [avatarToken, setAvatarToken] = useState<string>(AGENT_AVATAR_OPTIONS[0].token);
+  const [customAvatarPreview, setCustomAvatarPreview] = useState("");
   const personaInstructions = Form.useWatch("persona", form) || "";
-  const activeInstruction = activeInstructionSection === "persona" ? personaInstructions : capabilityInstructions;
 
   const syncForm = useCallback(() => {
     form.resetFields();
@@ -318,7 +394,7 @@ function AgentFormDrawer({
       group: editing?.group || "",
       role: editing?.role || "",
       expertise: editing?.expertise || "",
-      persona: editing?.persona || "",
+      persona: editing?.persona || editing?.capability_instructions || "",
       skill_ids: [...(editing?.skill_ids || [])],
       sop_keys: [...(editing?.sop_keys || [])],
       knowledge_base_ids: [...(editing?.knowledge_base_ids || [])],
@@ -327,13 +403,48 @@ function AgentFormDrawer({
       quota_limit: editing?.quota_limit ?? 10_000,
       is_active: editing?.is_active ?? true,
     });
-    setEmoji(editing?.emoji || "🤖");
-    setActiveInstructionSection("persona");
+    const preset = AGENT_AVATAR_OPTIONS.find((item) => item.token === editing?.emoji);
+    setAvatarToken(preset?.token || AGENT_AVATAR_OPTIONS[0].token);
+    setCustomAvatarPreview(editing ? getStoredAgentAvatar(editing.id) : "");
   }, [editing, form]);
 
   const submit = async () => {
     const values = await form.validateFields();
-    await onSubmit(values, emoji);
+    const unifiedPrompt = values.persona?.trim() || "";
+    await onSubmit({
+      ...values,
+      persona: unifiedPrompt,
+      capability_instructions: unifiedPrompt,
+      execution_role: values.execution_role || "operator",
+      quota_limit: values.quota_limit ?? 10_000,
+      is_active: values.is_active ?? true,
+    }, {
+      token: customAvatarPreview ? "staffdeck:custom" : avatarToken,
+      customDataUrl: customAvatarPreview || undefined,
+    });
+  };
+
+  const selectedAvatar = customAvatarPreview
+    || AGENT_AVATAR_OPTIONS.find((item) => item.token === avatarToken)?.src
+    || AGENT_AVATAR_OPTIONS[0].src;
+
+  const uploadAvatar = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      message.error("请选择图片文件");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      message.error("头像图片不能超过 2MB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+      setCustomAvatarPreview(reader.result);
+    };
+    reader.onerror = () => message.error("头像读取失败，请重新选择");
+    reader.readAsDataURL(file);
   };
 
   useEffect(() => {
@@ -341,16 +452,18 @@ function AgentFormDrawer({
   }, [open, syncForm]);
 
   return (
-    <Drawer
-      className="agents-form-drawer"
-      title={editing ? `编辑智能体 · ${editing.name}` : "新建智能体"}
+    <Modal
+      className="agent-edit-modal agents-create-modal"
+      rootClassName="agent-edit-modal-root"
+      title={editing ? `编辑数字员工档案：${editing.name}` : "创建数字员工档案"}
       open={open}
-      width="min(720px, 100vw)"
+      centered
+      width={860}
       zIndex={1200}
       forceRender
       maskClosable={!submitting}
       keyboard={!submitting}
-      onClose={onClose}
+      onCancel={onClose}
       footer={(
         <div className="agents-form-drawer__footer">
           <Button onClick={onClose} disabled={submitting}>取消</Button>
@@ -367,21 +480,51 @@ function AgentFormDrawer({
             <Text type="secondary">用于列表、会议和任务选择时识别智能体</Text>
           </div>
           <Form.Item label="头像">
-            <Space wrap size={[8, 8]}>
-              {EMOJI_CHOICES.map((choice) => (
-                <Button
-                  key={choice}
-                  className="agents-emoji-button"
-                  shape="circle"
-                  type={emoji === choice ? "primary" : "default"}
-                  aria-label={`选择头像 ${choice}`}
-                  aria-pressed={emoji === choice}
-                  onClick={() => setEmoji(choice)}
-                >
-                  {choice}
+            <div className="agents-avatar-editor">
+              <div className="agents-avatar-editor__preview">
+                <img src={selectedAvatar} alt="当前智能体头像" />
+                <div>
+                  <strong>{customAvatarPreview ? "自定义头像" : "员工插画头像"}</strong>
+                  <span>列表和详情页将同步使用该头像</span>
+                </div>
+              </div>
+              <div className="agents-avatar-editor__controls">
+                <div className="agents-avatar-presets" aria-label="预设头像">
+                  {AGENT_AVATAR_OPTIONS.map((option) => (
+                    <button
+                      type="button"
+                      key={option.token}
+                      className={!customAvatarPreview && avatarToken === option.token ? "is-active" : ""}
+                      aria-label={`选择${option.label}头像`}
+                      aria-pressed={!customAvatarPreview && avatarToken === option.token}
+                      onClick={() => {
+                        setAvatarToken(option.token);
+                        setCustomAvatarPreview("");
+                      }}
+                    >
+                      <img src={option.src} alt="" />
+                    </button>
+                  ))}
+                </div>
+                <input
+                  ref={uploadInputRef}
+                  className="agents-avatar-upload-input"
+                  hidden
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(event) => {
+                    uploadAvatar(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+                <Button icon={<UploadOutlined />} onClick={() => uploadInputRef.current?.click()}>
+                  {customAvatarPreview ? "重新上传" : "上传头像"}
                 </Button>
-              ))}
-            </Space>
+                {customAvatarPreview && (
+                  <Button onClick={() => setCustomAvatarPreview("")}>恢复预设</Button>
+                )}
+              </div>
+            </div>
           </Form.Item>
           <Row gutter={16}>
             <Col xs={24} md={12}>
@@ -420,6 +563,24 @@ function AgentFormDrawer({
               </Form.Item>
             </Col>
           </Row>
+          <section className="agents-capability-config" aria-labelledby="agents-capability-config-title">
+            <div className="agents-capability-config__head">
+              <div>
+                <Text strong id="agents-capability-config-title">连接能力</Text>
+                <Text type="secondary">按需添加技能与知识，保存后立即同步到当前智能体</Text>
+              </div>
+              <Tag color="green">实时同步</Tag>
+            </div>
+            <div className="agents-capability-config__list">
+              <div className="agents-capability-config__card">
+                <div className="agents-capability-config__meta">
+                  <span className="agents-capability-config__icon"><ToolOutlined /></span>
+                  <div>
+                    <Text strong>Skill 技能</Text>
+                    <Text type="secondary">提供操作流程与工具指令，适合执行任务和协作动作</Text>
+                  </div>
+                </div>
+                <Form.Item name="skill_ids" noStyle>
           <div className="agents-form-demo-note">
             <Tag color="green">实时同步</Tag>
             <Text type="secondary">选项来自 Skill 库、已发布 SOP 和知识库；保存后会同步到当前智能体。</Text>
@@ -435,6 +596,17 @@ function AgentFormDrawer({
                   searchPlaceholder="搜索 Skill 名称、说明或来源"
                   emptyText="暂无可用 Skill"
                 />
+                </Form.Item>
+              </div>
+              <div className="agents-capability-config__card">
+                <div className="agents-capability-config__meta">
+                  <span className="agents-capability-config__icon"><DatabaseOutlined /></span>
+                  <div>
+                    <Text strong>知识库</Text>
+                    <Text type="secondary">提供可靠事实依据，运行时仅检索已选择且有权限的内容</Text>
+                  </div>
+                </div>
+                <Form.Item name="knowledge_base_ids" noStyle>
               </Form.Item>
               <Text type="secondary" className="agents-field-help">
                 Skill 提供操作流程和工具指令；执行任务或会议发言时会加载当前账号有权限的绑定项。
@@ -467,231 +639,199 @@ function AgentFormDrawer({
                   searchPlaceholder="搜索知识库名称、说明或范围"
                   emptyText="暂无可用知识库"
                 />
-              </Form.Item>
-              <Text type="secondary" className="agents-field-help">
-                知识库提供事实依据；运行时只检索已选项，并继续校验当前账号的可见范围。
-              </Text>
-            </Col>
-          </Row>
-          <div className="agents-instruction-editor">
-            <div className="agents-instruction-editor__head">
+                </Form.Item>
+              </div>
+            </div>
+          </section>
+          <section className="agents-unified-prompt" aria-labelledby="agents-unified-prompt-title">
+            <div className="agents-unified-prompt__head">
               <div>
-                <Text strong>智能体指令</Text>
-                <Text type="secondary">定义人设与能力调用方式</Text>
+                <span className="agents-unified-prompt__icon"><BulbOutlined /></span>
+                <div>
+                  <Text strong id="agents-unified-prompt-title">核心提示词</Text>
+                  <Text type="secondary">一个提示词统一定义身份、表达方式、能力调用和工作边界</Text>
+                </div>
               </div>
               <Button
                 size="small"
                 icon={<BulbOutlined />}
-                disabled={Boolean(activeInstruction.trim())}
-                title={activeInstruction.trim() ? "当前内容已填写" : "填入当前部分的模板"}
-                onClick={() => {
-                  if (activeInstructionSection === "persona") form.setFieldValue("persona", PERSONA_TEMPLATE);
-                  else form.setFieldValue("capability_instructions", CAPABILITY_RULE_TEMPLATE);
-                }}
+                disabled={Boolean(personaInstructions.trim())}
+                title={personaInstructions.trim() ? "当前内容已填写" : "填入提示词模板"}
+                onClick={() => form.setFieldValue("persona", PERSONA_TEMPLATE)}
               >
                 使用模板
               </Button>
             </div>
-            <Segmented
-              block
-              value={activeInstructionSection}
-              onChange={(value) => setActiveInstructionSection(value as "persona" | "capability")}
-              options={[
-                { label: "人设与表达", value: "persona" },
-                { label: "能力调度", value: "capability" },
-              ]}
-            />
-            <div className="agents-instruction-editor__body">
-              {activeInstructionSection === "persona" ? (
-              <Form.Item name="persona" noStyle>
+            <Form.Item name="persona" noStyle>
                 <Input.TextArea
-                  rows={6}
+                  rows={7}
                   maxLength={2_000}
-                  showCount
-                  aria-label="角色与表达指令"
-                  placeholder={PERSONA_TEMPLATE}
+                  aria-label="核心提示词"
+                  placeholder="描述智能体是谁、要达成什么目标、如何使用已连接能力，以及遇到风险时如何处理"
                 />
-              </Form.Item>
-              ) : (
-              <Form.Item name="capability_instructions" noStyle>
-                <Input.TextArea
-                  rows={6}
-                  maxLength={1_000}
-                  showCount
-                  aria-label="能力调度指令"
-                  placeholder={CAPABILITY_RULE_TEMPLATE}
-                />
-              </Form.Item>
-              )}
+            </Form.Item>
+            <div className="agents-unified-prompt__foot">
+              <Text type="secondary">建议包含：角色定位、核心目标、工作边界、表达风格和输出格式</Text>
+              <Text type="secondary">保存后将作为智能体的统一执行指令</Text>
             </div>
-            <Text type="secondary" className="agents-instruction-editor__help">
-              {activeInstructionSection === "persona"
-                ? "用于控制智能体的身份、边界、语气和输出方式。"
-                : "用于控制何时调用已绑定能力，以及失败或越权时如何处理。"}
-            </Text>
-          </div>
+          </section>
         </div>
 
-        <div className="agents-form-section">
-          <div className="agents-form-section__head">
-            <Text strong>执行控制</Text>
-            <Text type="secondary">权限等级与额度分别配置，避免将风险边界和预算混为一体</Text>
-          </div>
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item name="execution_role" label="任务执行权限" rules={[{ required: true }]}>
-                <Select options={[
-                  { value: "operator", label: "操作员 · 低风险执行" },
-                  { value: "manager", label: "主管 · 中风险执行" },
-                  { value: "director", label: "总监 · 高风险审批" },
-                ]} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="quota_limit"
-                label="任务额度上限"
-                rules={[{ required: true, message: "请输入额度上限" }]}
-              >
-                <InputNumber min={0} precision={0} style={{ width: "100%" }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="is_active" label="允许用于任务执行" valuePropName="checked">
-            <Switch checkedChildren="已启用" unCheckedChildren="已停用" />
-          </Form.Item>
-        </div>
       </Form>
-    </Drawer>
+    </Modal>
   );
 }
 
-function AgentCard({
+function AgentDirectoryCard({
   agent,
-  deleting,
-  toggling,
+  onOpen,
+  onChat,
+  onToggleStatus,
   onEdit,
   onDelete,
-  onToggleAvailability,
 }: {
   agent: Agent;
-  deleting: boolean;
-  toggling: boolean;
+  onOpen: (agent: Agent) => void;
+  onChat: (agent: Agent) => void;
+  onToggleStatus: (agent: Agent) => void;
   onEdit: (agent: Agent) => void;
   onDelete: (agent: Agent) => void;
-  onToggleAvailability: (agent: Agent, active: boolean) => void;
 }) {
-  const status = STATUS_META[agent.status];
-  const percent = quotaPercent(agent);
-  const quotaWarning = agent.quota_limit > 0 && agent.quota_remaining / agent.quota_limit <= 0.2;
+  const online = agent.status === "available";
+  const stats = [
+    { value: agent.knowledge_base_ids.length, label: "资料" },
+    { value: agent.skill_ids.length, label: "技能" },
+    { value: agent.capability_instructions.trim() ? Math.max(1, Math.min(4, agent.skill_ids.length + 1)) : 0, label: "SOP" },
+  ];
+  const menuItems = [
+    {
+      key: "chat",
+      icon: <MessageOutlined />,
+      label: "发起对话",
+      disabled: !online,
+    },
+    {
+      key: "status",
+      icon: online ? <StopOutlined /> : <CheckCircleOutlined />,
+      label: online ? "下线" : "上线",
+    },
+    { type: "divider" as const },
+    {
+      key: "edit",
+      icon: <EditOutlined />,
+      label: "编辑资料",
+    },
+    { type: "divider" as const },
+    {
+      key: "delete",
+      icon: <DeleteOutlined />,
+      label: "删除",
+      danger: true,
+    },
+  ];
 
   return (
-    <Card className="agents-card" hoverable>
-      <div className="agents-card__top">
-        <Avatar size={48} className="agents-card__avatar">{agent.emoji}</Avatar>
-        <div className="agents-card__identity">
-          <Space size={8} wrap>
-            <Title level={5}>{agent.name}</Title>
-            <Tag color={status.color} icon={status.icon}>{status.label}</Tag>
-          </Space>
-          <Text type="secondary">{agent.role || "尚未填写角色"}</Text>
-        </div>
-        <Switch
-          className="agents-card__availability"
-          checked={agent.is_active}
-          checkedChildren="已启用"
-          unCheckedChildren="已停用"
-          loading={toggling}
-          disabled={deleting}
-          aria-label={`${agent.is_active ? "停用" : "启用"} ${agent.name}`}
-          onChange={(active) => onToggleAvailability(agent, active)}
-        />
-      </div>
-
-      <Paragraph className="agents-card__description" ellipsis={{ rows: 2 }}>
-        {agent.expertise || agent.persona || "尚未填写能力说明"}
-      </Paragraph>
-
-      <Space wrap size={[6, 6]} className="agents-card__tags">
-        <Tag>{agent.group || "未分类"}</Tag>
-        <Tag color="blue">{ROLE_LABEL[agent.execution_role] || agent.execution_role}</Tag>
-      </Space>
-
-      <div className="agents-card__quota">
-        <div className="agents-card__quota-head">
-          <Text type="secondary">任务额度</Text>
-          <Text className={quotaWarning ? "is-warning" : ""}>
-            {formatQuota(agent.quota_used)} / {formatQuota(agent.quota_limit)}
-          </Text>
-        </div>
-        <Progress
-          percent={percent}
-          showInfo={false}
-          size="small"
-          status={agent.status === "quota_exhausted" ? "exception" : "normal"}
-          strokeColor={quotaWarning ? "#d48806" : undefined}
-        />
-        <Text type="secondary" className="agents-card__remaining">
-          剩余 {formatQuota(agent.quota_remaining)}
-        </Text>
-      </div>
-
-      <div className="agents-card__actions">
-        <Button
-          type="text"
-          icon={<EditOutlined />}
-          aria-label={`编辑 ${agent.name}`}
-          onClick={() => onEdit(agent)}
+    <article
+      className="agent-directory-card"
+      role="link"
+      tabIndex={0}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button")) return;
+        onOpen(agent);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen(agent);
+        }
+      }}
+    >
+      <Dropdown
+        trigger={["click"]}
+        placement="bottomRight"
+        overlayClassName="agent-directory-card-menu"
+        menu={{
+          items: menuItems,
+          onClick: ({ key, domEvent }) => {
+            domEvent.stopPropagation();
+            if (key === "chat") onChat(agent);
+            if (key === "status") onToggleStatus(agent);
+            if (key === "edit") onEdit(agent);
+            if (key === "delete") onDelete(agent);
+          },
+        }}
+      >
+        <button
+          className="agent-directory-card__more"
+          type="button"
+          aria-label={`打开 ${agent.name} 操作菜单`}
+          onClick={(event) => event.stopPropagation()}
         >
-          编辑
-        </Button>
-        <Popconfirm
-          title={`删除“${agent.name}”？`}
-          description="删除后无法恢复，请确认该智能体不再用于任务或会议。"
-          okText="确认删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true, loading: deleting }}
-          onConfirm={() => onDelete(agent)}
+          <EllipsisOutlined />
+        </button>
+      </Dropdown>
+
+      <div className="agent-directory-card__hero">
+        <div className="agent-directory-card__avatar">
+          <img src={resolveAgentAvatar(agent)} alt="" />
+        </div>
+        <div className="agent-directory-card__identity">
+          <strong>{agent.name} <span>@admin</span></strong>
+          <p>{agent.role || agent.group || "待补充岗位"}</p>
+          <span className={`agent-directory-card__status${online ? " is-online" : ""}`}>
+            <i />
+            {online ? "在线" : "下线"}
+          </span>
+        </div>
+        <button
+          className="agent-directory-card__chat"
+          type="button"
+          disabled={!online}
+          aria-label={`与 ${agent.name} 对话`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onChat(agent);
+          }}
         >
-          <Button
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            loading={deleting}
-            aria-label={`删除 ${agent.name}`}
-          >
-            删除
-          </Button>
-        </Popconfirm>
+          <MessageOutlined />
+        </button>
       </div>
-    </Card>
+
+      <p className="agent-directory-card__description">
+        {agent.expertise || agent.persona || "暂无描述"}
+      </p>
+
+      <div className="agent-directory-card__stats">
+        {stats.map((stat) => (
+          <div key={stat.label}>
+            <strong>{stat.value}</strong>
+            <span>{stat.label}</span>
+          </div>
+        ))}
+      </div>
+    </article>
   );
 }
 
 export default function Agents() {
+  const navigate = useNavigate();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
   const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
   const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
-  const [llm, setLlm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [togglingId, setTogglingId] = useState<number | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Agent | null>(null);
   const [query, setQuery] = useState("");
-  const [groupFilter, setGroupFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<AgentStatusFilter>("all");
-  const [sort, setSort] = useState<AgentSort>("recent");
+  const [statusFilter, setStatusFilter] = useState<DirectoryFilter>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await listAgents();
       setAgents(data.results);
-      setLlm(data.llm);
     } catch (error) {
       message.error(errorText(error, "智能体列表加载失败，请稍后重试"));
     } finally {
@@ -757,16 +897,22 @@ export default function Agents() {
     void loadCapabilityOptions();
   }, [load, loadCapabilityOptions]);
 
-  const groups = useMemo(
-    () => Array.from(new Set(agents.map((agent) => agent.group || "未分类"))).sort((a, b) => a.localeCompare(b, "zh-CN")),
+  const visibleAgents = useMemo(
+    () => (agents.length ? agents : DEMO_AGENTS),
     [agents],
+  );
+
+  const groups = useMemo(
+    () => Array.from(new Set(visibleAgents.map((agent) => agent.group || "未分类"))).sort((a, b) => a.localeCompare(b, "zh-CN")),
+    [visibleAgents],
   );
 
   const groupOptions = useMemo(() => groups.map((group) => ({ value: group })), [groups]);
 
   const filteredAgents = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const result = agents.filter((agent) => {
+    return visibleAgents.filter((agent) => {
+      const pending = String(agent.status) === "pending";
       const matchesQuery = !normalizedQuery || [
         agent.name,
         agent.group,
@@ -774,62 +920,90 @@ export default function Agents() {
         agent.expertise,
         agent.persona,
       ].some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
-      const matchesGroup = groupFilter === "all" || (agent.group || "未分类") === groupFilter;
-      const matchesStatus = statusFilter === "all" || agent.status === statusFilter;
-      return matchesQuery && matchesGroup && matchesStatus;
+      const matchesStatus = statusFilter === "all"
+        || (statusFilter === "online" && agent.status === "available")
+        || (statusFilter === "offline" && agent.status !== "available" && !pending)
+        || (statusFilter === "pending" && pending);
+      return matchesQuery && matchesStatus;
     });
+  }, [query, statusFilter, visibleAgents]);
 
-    return [...result].sort((a, b) => {
-      if (sort === "name") return a.name.localeCompare(b.name, "zh-CN");
-      if (sort === "quota") return a.quota_remaining - b.quota_remaining;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-  }, [agents, groupFilter, query, sort, statusFilter]);
-
-  const groupedAgents = useMemo(() => {
-    const map = new Map<string, Agent[]>();
-    filteredAgents.forEach((agent) => {
-      const group = agent.group || "未分类";
-      map.set(group, [...(map.get(group) || []), agent]);
-    });
-    return Array.from(map.entries());
-  }, [filteredAgents]);
-
-  const availableCount = agents.filter((agent) => agent.status === "available").length;
-  const disabledCount = agents.filter((agent) => agent.status === "disabled").length;
-  const quotaAlertCount = agents.filter((agent) =>
-    agent.quota_limit > 0 && agent.quota_remaining / agent.quota_limit <= 0.2,
-  ).length;
+  const availableCount = visibleAgents.filter((agent) => agent.status === "available").length;
+  const pendingCount = visibleAgents.filter((agent) => String(agent.status) === "pending").length;
+  const disabledCount = visibleAgents.length - availableCount - pendingCount;
 
   const openCreate = () => {
     void loadCapabilityOptions();
     setEditing(null);
-    setDrawerOpen(true);
+    setModalOpen(true);
   };
 
   const openEdit = (agent: Agent) => {
     void loadCapabilityOptions();
     setEditing(agent);
-    setDrawerOpen(true);
+    setModalOpen(true);
   };
 
-  const closeDrawer = () => {
+  const toggleAgentStatus = async (agent: Agent) => {
+    const nextActive = !agent.is_active;
+    try {
+      if (agent.id < 0) {
+        setAgents(visibleAgents.map((item) => item.id === agent.id
+          ? { ...item, is_active: nextActive, status: nextActive ? "available" : "disabled" }
+          : item));
+      } else {
+        await updateAgent(agent.id, { is_active: nextActive });
+        await load();
+      }
+      message.success(`${agent.name}已${nextActive ? "上线" : "下线"}`);
+    } catch (error) {
+      message.error(errorText(error, `${nextActive ? "上线" : "下线"}失败，请稍后重试`));
+    }
+  };
+
+  const confirmDeleteAgent = (agent: Agent) => {
+    Modal.confirm({
+      title: `删除智能体“${agent.name}”？`,
+      content: "删除后无法恢复，相关配置也会一并移除。",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      async onOk() {
+        try {
+          if (agent.id < 0) {
+            setAgents(visibleAgents.filter((item) => item.id !== agent.id));
+          } else {
+            await deleteAgent(agent.id);
+            await load();
+          }
+          message.success("智能体已删除");
+        } catch (error) {
+          message.error(errorText(error, "删除失败，请稍后重试"));
+          throw error;
+        }
+      },
+    });
+  };
+
+  const closeModal = () => {
     if (submitting) return;
-    setDrawerOpen(false);
+    setModalOpen(false);
     setEditing(null);
   };
 
-  const saveAgent = async (values: AgentFormValues, emoji: string) => {
+  const saveAgent = async (values: AgentFormValues, avatar: AgentAvatarSelection) => {
     setSubmitting(true);
     try {
       if (editing) {
-        await updateAgent(editing.id, { ...values, emoji });
+        await updateAgent(editing.id, { ...values, emoji: avatar.token });
+        persistAgentAvatar(editing.id, avatar.customDataUrl);
         message.success("智能体已更新");
       } else {
-        await createAgent({ ...values, emoji });
+        const created = await createAgent({ ...values, emoji: avatar.token });
+        persistAgentAvatar(created.id, avatar.customDataUrl);
         message.success("智能体已创建");
       }
-      setDrawerOpen(false);
+      setModalOpen(false);
       setEditing(null);
       await load();
     } catch (error) {
@@ -839,176 +1013,116 @@ export default function Agents() {
     }
   };
 
-  const removeAgent = async (agent: Agent) => {
-    setDeletingId(agent.id);
-    try {
-      await deleteAgent(agent.id);
-      message.success(`已删除“${agent.name}”`);
-      await load();
-    } catch (error) {
-      message.error(errorText(error, "删除失败，该智能体可能仍被任务或会议引用"));
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const toggleAgentAvailability = async (agent: Agent, active: boolean) => {
-    setTogglingId(agent.id);
-    try {
-      await updateAgent(agent.id, { is_active: active });
-      setAgents((current) => current.map((row) => {
-        if (row.id !== agent.id) return row;
-        const status: Agent["status"] = !active
-          ? "disabled"
-          : row.quota_remaining <= 0
-            ? "quota_exhausted"
-            : "available";
-        return { ...row, is_active: active, status };
-      }));
-      message.success(`“${agent.name}”已${active ? "启用" : "停用"}`);
-    } catch (error) {
-      message.error(errorText(error, `${active ? "启用" : "停用"}失败，请稍后重试`));
-    } finally {
-      setTogglingId(null);
-    }
-  };
-
-  const hasFilters = Boolean(query.trim()) || groupFilter !== "all" || statusFilter !== "all";
+  const hasFilters = Boolean(query.trim()) || statusFilter !== "all";
 
   return (
-    <div className="agents-page">
-      <header className="agents-page__header page-hero-head">
-        <div>
-          <div className="page-hero-kicker"><ApartmentOutlined /> Agent Assets</div>
-          <Title level={3} className="page-hero-title">智能体</Title>
-          <Paragraph className="page-hero-desc" type="secondary">
-            管理用于对话、圆桌会议和业务流程的 AI 执行角色，统一查看可用状态与任务额度。
-          </Paragraph>
-        </div>
-        <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建智能体</Button>
-        </Space>
-      </header>
-
-      {!llm && !loading && (
-        <Alert
-          className="agents-page__alert"
-          type="warning"
-          showIcon
-          message="当前未配置 LLM，圆桌会议将使用智能模拟发言。"
-          description="配置后可启用真实对话；智能体资料与任务执行权限仍可正常管理。"
-        />
-      )}
-
-      <Row gutter={[12, 12]} className="agents-stats">
-        <Col xs={12} md={6}>
-          <Card><Statistic title="智能体总数" value={agents.length} /></Card>
-        </Col>
-        <Col xs={12} md={6}>
-          <Card><Statistic title="任务可用" value={availableCount} valueStyle={{ color: "#389e0d" }} /></Card>
-        </Col>
-        <Col xs={12} md={6}>
-          <Card><Statistic title="已停用" value={disabledCount} /></Card>
-        </Col>
-        <Col xs={12} md={6}>
-          <Card><Statistic title="额度需关注" value={quotaAlertCount} valueStyle={quotaAlertCount ? { color: "#d48806" } : undefined} /></Card>
-        </Col>
-      </Row>
-
-      <Card className="agents-catalog" title={`智能体目录 · ${filteredAgents.length} 个结果`}>
-        <div className="agents-toolbar">
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
-            placeholder="搜索名称、角色、专长或人设"
+    <div className="agents-directory-page" aria-busy={loading}>
+      <header className="agents-directory-header">
+        <label className="agents-directory-search">
+          <SearchOutlined />
+          <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索"
+            aria-label="搜索员工"
           />
-          <Select
-            value={groupFilter}
-            onChange={setGroupFilter}
-            options={[{ value: "all", label: "全部分类" }, ...groups.map((group) => ({ value: group, label: group }))]}
-            aria-label="按分类筛选"
-          />
-          <Select
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={[
-              { value: "all", label: "全部状态" },
-              { value: "available", label: "任务可用" },
-              { value: "disabled", label: "已停用" },
-              { value: "quota_exhausted", label: "额度已用尽" },
-            ]}
-            aria-label="按状态筛选"
-          />
-          <Select
-            value={sort}
-            onChange={setSort}
-            options={[
-              { value: "recent", label: "最近创建" },
-              { value: "name", label: "按名称" },
-              { value: "quota", label: "额度从低到高" },
-            ]}
-            aria-label="智能体排序"
-          />
-        </div>
+        </label>
+      </header>
 
-        {loading ? (
-          <Row gutter={[12, 12]}>
-            {Array.from({ length: 6 }).map((_, index) => (
-              <Col key={index} xs={24} md={12} xl={8}>
-                <Card className="agents-card"><Skeleton active avatar paragraph={{ rows: 3 }} /></Card>
-              </Col>
-            ))}
-          </Row>
-        ) : filteredAgents.length === 0 ? (
+      <section className="agents-directory-summary" aria-label="数字员工统计">
+        <button
+          type="button"
+          className="is-total"
+          aria-pressed={statusFilter === "all"}
+          onClick={() => setStatusFilter("all")}
+        >
+          <strong>{visibleAgents.length}</strong>
+          <span><b>智能体总数</b><small>全部智能体</small></span>
+        </button>
+        <button
+          type="button"
+          className="is-online"
+          aria-pressed={statusFilter === "online"}
+          onClick={() => setStatusFilter("online")}
+        >
+          <strong>{availableCount}</strong>
+          <span><b>在线智能体</b><small>运行中</small></span>
+        </button>
+        <button
+          type="button"
+          className="is-offline"
+          aria-pressed={statusFilter === "offline"}
+          onClick={() => setStatusFilter("offline")}
+        >
+          <strong>{disabledCount}</strong>
+          <span><b>下线智能体</b><small>已暂停</small></span>
+        </button>
+        <button
+          type="button"
+          className="is-pending"
+          aria-pressed={statusFilter === "pending"}
+          onClick={() => setStatusFilter("pending")}
+        >
+          <strong>{pendingCount}</strong>
+          <span><b>待审批智能体</b><small>等待处理</small></span>
+        </button>
+        <button type="button" onClick={openCreate} className="is-create">
+          <PlusOutlined />
+          <span><b>创建智能体</b><small>快速创建数字员工</small></span>
+        </button>
+      </section>
+
+      <nav className="agents-directory-tabs" aria-label="员工状态筛选">
+        {([
+          ["all", "全部智能体"],
+          ["online", "在线智能体"],
+          ["offline", "下线智能体"],
+        ] as Array<[DirectoryFilter, string]>).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={statusFilter === value ? "is-active" : ""}
+            onClick={() => setStatusFilter(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {filteredAgents.length ? (
+        <section className="agents-directory-grid" aria-label="数字员工列表">
+          {filteredAgents.map((agent) => (
+            <AgentDirectoryCard
+              key={agent.id}
+              agent={agent}
+              onOpen={(row) => navigate(`/agent-dashboard?agent=${row.id}`)}
+              onChat={(row) => navigate(`/agent?agent=${row.id}`)}
+              onToggleStatus={(row) => void toggleAgentStatus(row)}
+              onEdit={openEdit}
+              onDelete={confirmDeleteAgent}
+            />
+          ))}
+        </section>
+      ) : (
+        <div className="agents-directory-empty">
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={hasFilters ? "没有符合筛选条件的智能体" : "还没有智能体"}
+            description={hasFilters ? "没有符合筛选条件的数字员工" : "还没有数字员工"}
           >
-            {hasFilters ? (
+            {hasFilters && (
               <Button onClick={() => {
                 setQuery("");
-                setGroupFilter("all");
                 setStatusFilter("all");
               }}>
                 清除筛选
               </Button>
-            ) : (
-              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建智能体</Button>
             )}
           </Empty>
-        ) : (
-          <div className="agents-groups">
-            {groupedAgents.map(([group, rows]) => (
-              <section key={group} className="agents-group" aria-labelledby={`agent-group-${group}`}>
-                <div className="agents-group__head">
-                  <Title level={5} id={`agent-group-${group}`}>{group}</Title>
-                  <Tag>{rows.length}</Tag>
-                </div>
-                <Row gutter={[12, 12]}>
-                  {rows.map((agent) => (
-                    <Col key={agent.id} xs={24} md={12} xl={8}>
-                      <AgentCard
-                        agent={agent}
-                        deleting={deletingId === agent.id}
-                        toggling={togglingId === agent.id}
-                        onEdit={openEdit}
-                        onDelete={(row) => void removeAgent(row)}
-                        onToggleAvailability={(row, active) => void toggleAgentAvailability(row, active)}
-                      />
-                    </Col>
-                  ))}
-                </Row>
-              </section>
-            ))}
-          </div>
-        )}
-      </Card>
+        </div>
+      )}
 
-      <AgentFormDrawer
-        open={drawerOpen}
+      <AgentFormModal
+        open={modalOpen}
         editing={editing}
         groupOptions={groupOptions}
         skillOptions={skillOptions}
@@ -1016,7 +1130,7 @@ export default function Agents() {
         knowledgeBaseOptions={knowledgeBaseOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={submitting}
-        onClose={closeDrawer}
+        onClose={closeModal}
         onSubmit={saveAgent}
       />
     </div>

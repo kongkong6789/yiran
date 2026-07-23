@@ -154,7 +154,7 @@ const ADMIN_GROUPS: NavGroup[] = [
     label: "组织与配置",
     items: [
       { key: "admin-accounts", path: "/accounts", icon: <UserOutlined />, label: "账号管理", keywords: "成员 组织 权限" },
-      { key: "admin-agents", path: "/agents", icon: <ApartmentOutlined />, label: "对象管理", keywords: "Agent 对象" },
+      { key: "admin-agents", path: "/agents", icon: <ApartmentOutlined />, label: "智能体", keywords: "Agent 智能体 对象" },
     ],
   },
 ];
@@ -227,6 +227,8 @@ const FULL_BLEED = new Set([
   "/tables",
   "/commerce/loops",
   "/commerce/loops/diy",
+  "/agents",
+  "/agent-dashboard",
 ]);
 
 function routeMatches(pathname: string, route: string) {
@@ -309,6 +311,7 @@ export default function AppLayout() {
       ? "compact"
       : "full";
   const isFullBleed = FULL_BLEED.has(loc.pathname) || loc.pathname.startsWith("/loops/");
+  const isScrollableFullBleed = loc.pathname === "/agents" || loc.pathname === "/agent-dashboard";
 
   const selectedKeys = useMemo(() => {
     const key = navKeyForLocation(loc.pathname, loc.search);
@@ -800,7 +803,11 @@ export default function AppLayout() {
           ) : null}
         </Sider>
 
-        <Content className={isFullBleed ? "app-content-bleed" : "app-content-padded"}>
+        <Content
+          className={isFullBleed
+            ? `app-content-bleed${isScrollableFullBleed ? " app-content-scrollable" : ""}`
+            : "app-content-padded"}
+        >
           <Outlet />
         </Content>
       </Layout>
