@@ -492,6 +492,28 @@ export interface KnowledgeFileItem {
   archived_at?: string | null;
 }
 
+export interface KnowledgeFileGraphDetail {
+  configured: boolean;
+  file: KnowledgeFileItem;
+  route?: Record<string, unknown>;
+  source?: Record<string, unknown> | null;
+  document?: Record<string, unknown> | null;
+  graph?: {
+    entity_count?: number;
+    relation_count?: number;
+    entities?: Array<Record<string, unknown>>;
+    relations?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  } | null;
+  runs?: Array<Record<string, unknown>>;
+  selected_run?: Record<string, unknown> | null;
+  edges?: Array<Record<string, unknown>>;
+  extractions?: Array<Record<string, unknown>>;
+  errors?: Record<string, unknown>;
+  message?: string;
+}
+
+
 export interface KnowledgeIngestJobItem {
   id: number;
   file: number;
@@ -572,6 +594,10 @@ export const getKnowledgeJob = (jobId: number) =>
 export const getKnowledgeFileChunks = (fileId: number, params?: { page?: number; page_size?: number }) =>
   api.get<{ file: KnowledgeFileItem; count: number; page: number; page_size: number; results: KnowledgeChunkItem[] }>(`/knowledge/files/${fileId}/chunks/`, { params })
     .then((r) => r.data);
+
+export const getKnowledgeFileGraphDetail = (fileId: number) =>
+  api.get<KnowledgeFileGraphDetail>(`/knowledge/files/${fileId}/graph-detail/`).then((r) => r.data);
+
 
 export const downloadKnowledgeFile = (fileId: number) =>
   api.get<Blob>(`/knowledge/files/${fileId}/download/`, { responseType: "blob" }).then((r) => r.data);

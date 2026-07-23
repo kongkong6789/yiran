@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { UploadFile } from "antd";
 import {
   App as AntApp,
+  Alert,
   Button,
   Card,
   Col,
@@ -57,6 +58,7 @@ import {
   deleteSmartSheet,
   downloadKnowledgeFile,
   getKnowledgeFileChunks,
+  getKnowledgeFileGraphDetail,
   getKnowledgeJob,
   listKnowledgeBases,
   listKnowledgeFiles,
@@ -67,6 +69,7 @@ import {
   type KnowledgeBaseItem,
   type KnowledgeChunkItem,
   type KnowledgeFileItem,
+  type KnowledgeFileGraphDetail,
   type KnowledgeIngestJobItem,
   type SmartSheetListItem,
   type TeamSummary,
@@ -392,10 +395,22 @@ const visibilityColors: Record<Visibility, string> = {
 };
 
 const engineLabels: Record<Engine, string> = {
-  "naive-rag": "证据优先 RAG",
-  "graph-rag": "关系图谱 RAG",
+  "naive-rag": "自然检索",
+  "graph-rag": "图检索",
   "hybrid-rag": "混合检索",
 };
+
+const engineDescriptions: Record<Engine, string> = {
+  "naive-rag": "适合制度政策、FAQ、操作手册、合同条款、会议纪要等以原文证据和关键词召回为主的文件。",
+  "graph-rag": "适合包含实体关系的资料，例如客户关系、供应链、项目依赖、组织架构、产品 BOM、风险事件和领域知识文档。",
+  "hybrid-rag": "适合既要精确引用原文，又要做关系推理的综合资料包，例如客户 360、售后知识库、经营分析包和跨部门知识库。",
+};
+
+const engineOptions: Array<{ label: string; value: Engine }> = [
+  { label: "自然检索", value: "naive-rag" },
+  { label: "图检索", value: "graph-rag" },
+  { label: "混合检索", value: "hybrid-rag" },
+];
 
 const reviewLabels: Record<ReviewPolicy, string> = {
   none: "无需复核",
@@ -481,6 +496,178 @@ function mapKnowledgeFile(file: KnowledgeFileItem): KnowledgeTemplateFile {
   };
 }
 
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function isGraphIngestFile(file: KnowledgeTemplateFile) {
+  const metadata = metadataRecord(file.backend?.metadata);
+  const external = metadataRecord(metadata.external_ingest);
+  const routes = metadataRecord(external.routes);
+  return metadata.ingest_mode === "graph-rag"
+    || metadata.ingest_mode === "hybrid-rag"
+    || Boolean(routes.graph_rag);
+}
+
+function graphValue(value: unknown, fallback = "-"): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (Array.isArray(value)) return value.map((item) => graphValue(item, "")).filter(Boolean).join(" / ") || fallback;
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function graphPick(record: Record<string, unknown> | null | undefined, keys: string[], fallback = "-") {
+  if (!record) return fallback;
+  for (const key of keys) {
+    if (record[key] !== undefined && record[key] !== null && record[key] !== "") return graphValue(record[key], fallback);
+  }
+  return fallback;
+}
+
+type GraphPreviewNode = { id: string; label: string; type: string; x: number; y: number; size: number };
+type GraphPreviewLink = { source: string; target: string; label: string };
+
+function graphRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function graphTextField(record: Record<string, unknown> | null | undefined, keys: string[], fallback = ""): string {
+  if (!record) return fallback;
+  for (const key of keys) {
+    const value = record[key];
+    if (value === undefined || value === null || value === "") continue;
+    const nested = graphRecord(value);
+    if (nested) {
+      const nestedValue: string = graphTextField(nested, ["id", "name", "label", "title"], "");
+      if (nestedValue) return nestedValue;
+    } else {
+      return String(value);
+    }
+  }
+  return fallback;
+}
+
+function buildGraphPreview(detail: KnowledgeFileGraphDetail): { nodes: GraphPreviewNode[]; links: GraphPreviewLink[]; hiddenNodeCount: number; hiddenLinkCount: number } {
+  const graph = detail.graph || {};
+  const rawEntities = Array.isArray(graph.entities) ? graph.entities : [];
+  const rawRelations = Array.isArray(graph.relations) ? graph.relations : Array.isArray(detail.edges) ? detail.edges : [];
+  const nodeLimit = 36;
+  const linkLimit = 80;
+  const nodeMap = new Map<string, { id: string; label: string; type: string; degree: number }>();
+  const links: GraphPreviewLink[] = [];
+
+  function ensureNode(id: string, label?: string, type?: string) {
+    const normalized = id.trim();
+    if (!normalized) return;
+    const existing = nodeMap.get(normalized);
+    if (existing) {
+      existing.label = existing.label || label || normalized;
+      existing.type = existing.type || type || "Entity";
+      return;
+    }
+    nodeMap.set(normalized, { id: normalized, label: label || normalized, type: type || "Entity", degree: 0 });
+  }
+
+  rawEntities.forEach((item) => {
+    const record = graphRecord(item);
+    if (!record) return;
+    const id = graphTextField(record, ["id", "entity_id", "uid", "name", "label", "title"]);
+    const label = graphTextField(record, ["name", "label", "title", "text", "id", "entity_id"], id);
+    const type = graphTextField(record, ["type", "entity_type", "category", "kind"], "Entity");
+    ensureNode(id, label, type);
+  });
+
+  rawRelations.forEach((item) => {
+    const record = graphRecord(item);
+    if (!record) return;
+    const source = graphTextField(record, ["source", "source_id", "source_name", "from", "from_id", "subject", "head", "start", "src"]);
+    const target = graphTextField(record, ["target", "target_id", "target_name", "to", "to_id", "object", "tail", "end", "dst"]);
+    if (!source || !target || source === target) return;
+    const label = graphTextField(record, ["relation", "predicate", "label", "type", "name"], "关联");
+    ensureNode(source, source);
+    ensureNode(target, target);
+    const sourceNode = nodeMap.get(source);
+    const targetNode = nodeMap.get(target);
+    if (sourceNode) sourceNode.degree += 1;
+    if (targetNode) targetNode.degree += 1;
+    links.push({ source, target, label });
+  });
+
+  const ranked = Array.from(nodeMap.values())
+    .sort((a, b) => b.degree - a.degree || a.label.localeCompare(b.label))
+    .slice(0, nodeLimit);
+  const visibleIds = new Set(ranked.map((node) => node.id));
+  const visibleLinks = links.filter((link) => visibleIds.has(link.source) && visibleIds.has(link.target)).slice(0, linkLimit);
+  const width = 640;
+  const height = 340;
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = 126;
+  const nodes = ranked.map((node, index) => {
+    const angle = ranked.length <= 1 ? 0 : (Math.PI * 2 * index) / ranked.length - Math.PI / 2;
+    return {
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+      size: Math.max(8, Math.min(18, 8 + node.degree * 1.6)),
+    };
+  });
+
+  return {
+    nodes,
+    links: visibleLinks,
+    hiddenNodeCount: Math.max(0, nodeMap.size - nodes.length),
+    hiddenLinkCount: Math.max(0, links.length - visibleLinks.length),
+  };
+}
+
+function GraphPreview({ detail }: { detail: KnowledgeFileGraphDetail }) {
+  const preview = buildGraphPreview(detail);
+  if (!preview.nodes.length) {
+    return <Alert type="info" showIcon message="暂无可绘制的图谱节点" />;
+  }
+  const nodeById = new Map(preview.nodes.map((node) => [node.id, node]));
+  return (
+    <div className="graph-preview-panel">
+      <svg className="graph-preview-svg" viewBox="0 0 640 340" role="img" aria-label="文件图谱关系图">
+        <defs>
+          <marker id="graph-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+          </marker>
+        </defs>
+        {preview.links.map((link, index) => {
+          const source = nodeById.get(link.source);
+          const target = nodeById.get(link.target);
+          if (!source || !target) return null;
+          const midX = (source.x + target.x) / 2;
+          const midY = (source.y + target.y) / 2;
+          return (
+            <g key={`${link.source}-${link.target}-${index}`} className="graph-preview-edge">
+              <line x1={source.x} y1={source.y} x2={target.x} y2={target.y} markerEnd="url(#graph-arrow)" />
+              {index < 24 ? <text x={midX} y={midY}>{link.label.slice(0, 12)}</text> : null}
+            </g>
+          );
+        })}
+        {preview.nodes.map((node) => (
+          <g key={node.id} className="graph-preview-node">
+            <circle cx={node.x} cy={node.y} r={node.size} />
+            <text x={node.x} y={node.y + node.size + 13}>{node.label.slice(0, 14)}</text>
+            <title>{`${node.label} / ${node.type}`}</title>
+          </g>
+        ))}
+      </svg>
+      <div className="graph-preview-meta">
+        <span>{preview.nodes.length} 个可见节点</span>
+        <span>{preview.links.length} 条可见关系</span>
+        {preview.hiddenNodeCount ? <span>已折叠 {preview.hiddenNodeCount} 个节点</span> : null}
+        {preview.hiddenLinkCount ? <span>已折叠 {preview.hiddenLinkCount} 条关系</span> : null}
+      </div>
+    </div>
+  );
+}
 function getFileAssetRole(file: KnowledgeTemplateFile): "upload" | "smart_doc" | "mindmap" | "" {
   const raw = file.backend?.metadata?.asset_role;
   const role = typeof raw === "string" ? raw.trim().toLowerCase() : "";
@@ -593,6 +780,7 @@ export default function Knowledge() {
   const [detailCurrentPage, setDetailCurrentPage] = useState(1);
   const [processedFile, setProcessedFile] = useState<KnowledgeTemplateFile | null>(null);
   const [chunkPageFile, setChunkPageFile] = useState<KnowledgeTemplateFile | null>(null);
+  const [graphPageFile, setGraphPageFile] = useState<KnowledgeTemplateFile | null>(null);
   const [deletedTemplateFiles, setDeletedTemplateFiles] = useState<Record<string, string[]>>({});
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploadPurpose, setUploadPurpose] = useState("作为当前知识应用的补充资料，进入解析、切块、向量化和权限标注流程。");
@@ -609,6 +797,8 @@ export default function Knowledge() {
   const [chunkPageSize, setChunkPageSize] = useState(10);
   const [chunkTotalCount, setChunkTotalCount] = useState(0);
   const [chunkLoading, setChunkLoading] = useState(false);
+  const [graphDetail, setGraphDetail] = useState<KnowledgeFileGraphDetail | null>(null);
+  const [graphDetailLoading, setGraphDetailLoading] = useState(false);
   const [editingKnowledgeBase, setEditingKnowledgeBase] = useState<KnowledgeTemplate | null>(null);
   const [editSaving, setEditSaving] = useState(false);
   const editVisibility = Form.useWatch("visibility", editForm) as Visibility | undefined;
@@ -1136,6 +1326,10 @@ export default function Knowledge() {
     setUploading(true);
     setIngestProgressItems([]);
     try {
+      const currentEngine = normalizeEngine(detailTemplate?.strategy || selectedTemplate.strategy);
+      if (currentEngine !== engine) {
+        await updateKnowledgeBase(targetId, { retrieval_mode: engine });
+      }
       const jobRefs: IngestJobRef[] = [];
       for (const file of rawFiles) {
         const result = await uploadKnowledgeFile(targetId, file, { segment_mode: "general", chunk_size: chunkSize, chunk_overlap: chunkOverlap });
@@ -1316,12 +1510,50 @@ export default function Knowledge() {
     }
   }
 
-  async function openProcessedFile(file: KnowledgeTemplateFile) {
-    setProcessedFile(file);
-    await loadFileChunks(file);
+  async function loadFileGraphDetail(file: KnowledgeTemplateFile) {
+    setGraphDetail(null);
+    if (!file.id || !isGraphIngestFile(file)) return;
+    setGraphDetailLoading(true);
+    try {
+      const data = await getKnowledgeFileGraphDetail(file.id);
+      setGraphDetail(data);
+    } catch (error) {
+      console.error(error);
+      message.error(apiErrorMessage(error, "图谱详情加载失败"));
+    } finally {
+      setGraphDetailLoading(false);
+    }
   }
 
+
+  async function openProcessedFile(file: KnowledgeTemplateFile) {
+    setProcessedFile(file);
+    await Promise.all([loadFileChunks(file), loadFileGraphDetail(file)]);
+  }
+
+  async function openGraphPage(file: KnowledgeTemplateFile) {
+    setProcessedFile(null);
+    setChunkPageFile(null);
+    setOpenSheetId(null);
+    setOpenDocFileId(null);
+    setOpenMindFileId(null);
+    setGraphPageFile(file);
+    await Promise.all([loadFileGraphDetail(file), loadFileChunks(file)]);
+  }
+
+
+  async function openKnowledgeFile(file: KnowledgeTemplateFile) {
+    if (isGraphIngestFile(file)) {
+      await openGraphPage(file);
+      return;
+    }
+    await openChunkPage(file);
+  }
+
+
   async function openChunkPage(file: KnowledgeTemplateFile) {
+    setGraphPageFile(null);
+    setGraphDetail(null);
     if (file.assetKind === "smart_sheet" && file.smartSheetId) {
       setProcessedFile(null);
       setChunkPageFile(null);
@@ -1636,6 +1868,11 @@ export default function Knowledge() {
                         <p className="ant-upload-text">拖拽文件至此，或者 <span>选择文件</span></p>
                         <p className="ant-upload-hint">已支持 MDX、XML、EML、CSV、TXT、EPUB、XLSX、PPTX、VTT、PPT、HTML、PROPERTIES、MARKDOWN、DOC、MD、DOCX、PDF、MSG、XLS、HTM，每批最多 1 个文件，每个文件不超过 15 MB。</p>
                       </Dragger>
+                      <label className="engine-select-field">
+                        <span>入库方式</span>
+                        <Segmented block value={engine} onChange={(value) => setEngine(value as Engine)} options={engineOptions} />
+                        <small className="create-scope-hint">{engineDescriptions[engine]}</small>
+                      </label>
                       <div className="chunk-settings-grid">
                         <label>
                           <span>分段最大长度</span>
@@ -1731,6 +1968,90 @@ export default function Knowledge() {
             }}
           />
         </section>
+      ) : detailTemplate && graphPageFile ? (
+        <section className="knowledge-chunk-window knowledge-graph-window">
+          <div className="doc-window-topbar">
+            <Button icon={<ArrowLeftOutlined />} onClick={() => { setGraphPageFile(null); setGraphDetail(null); setProcessedChunks([]); }}>返回文档列表</Button>
+            <Space wrap>
+              <Tag color="blue">图检索</Tag>
+              <Tag color={graphPageFile.status === "ready" ? "green" : graphPageFile.status === "failed" ? "red" : "blue"}>{displayStatus(graphPageFile.status)}</Tag>
+              <Tag>{graphPageFile.kind || "file"}</Tag>
+            </Space>
+          </div>
+
+          <div className="chunk-window-header">
+            <div>
+              <Title level={3}>{graphPageFile.name}</Title>
+              <Paragraph>{graphPageFile.source}</Paragraph>
+            </div>
+            <Space>
+              <Button icon={<FileSearchOutlined />} onClick={() => void downloadOriginalFile(graphPageFile)}>下载原文件</Button>
+            </Space>
+          </div>
+
+          {graphDetailLoading ? (
+            <Card><Spin /> 正在加载图谱详情...</Card>
+          ) : graphDetail ? (
+            <div className="graph-page-layout">
+              <section className="graph-page-main">
+                <Card title="文件图谱">
+                  <GraphPreview detail={graphDetail} />
+                </Card>
+                <Card title="关系明细">
+                  <List
+                    size="small"
+                    dataSource={((graphDetail.graph?.relations as Array<Record<string, unknown>> | undefined) || graphDetail.edges || []).slice(0, 80)}
+                    locale={{ emptyText: "暂无关系明细" }}
+                    renderItem={(relation) => (
+                      <List.Item>
+                        {graphPick(relation, ["source", "source_name", "from", "subject", "head"])} - {graphPick(relation, ["relation", "predicate", "label", "type", "name"])} - {graphPick(relation, ["target", "target_name", "to", "object", "tail"])}
+                      </List.Item>
+                    )}
+                  />
+                </Card>
+              </section>
+              <aside className="graph-page-side">
+                <Card title="图谱信息">
+                  <List
+                    size="small"
+                    dataSource={[
+                      `Source：${graphPick(graphDetail.source, ["name", "id"])}`,
+                      `Document：${graphPick(graphDetail.document, ["title", "filename", "id"])}`,
+                      `文档状态：${graphPick(graphDetail.document, ["status"], graphPick(graphDetail.route, ["engine_status"]))}`,
+                      `实体数量：${graphValue(graphDetail.graph?.entity_count ?? graphDetail.graph?.entities?.length ?? 0)}`,
+                      `关系数量：${graphValue(graphDetail.graph?.relation_count ?? graphDetail.graph?.relations?.length ?? 0)}`,
+                      `抽取 Run：${graphPick(graphDetail.selected_run, ["id", "run_id"], "暂无")}`,
+                    ]}
+                    renderItem={(item) => <List.Item>{item}</List.Item>}
+                  />
+                  {graphDetail.errors && Object.keys(graphDetail.errors).length ? (
+                    <Alert type="warning" showIcon message="部分图谱详情读取失败" description={JSON.stringify(graphDetail.errors)} />
+                  ) : null}
+                </Card>
+                <Card title="证据切片">
+                  <List
+                    size="small"
+                    loading={chunkLoading}
+                    dataSource={processedChunks.slice(0, 8)}
+                    locale={{ emptyText: "暂无切片，可能仍在后台入库" }}
+                    renderItem={(chunk) => (
+                      <List.Item>
+                        <List.Item.Meta
+                          title={`chunk_${String(chunk.chunk_index + 1).padStart(3, "0")}`}
+                          description={<Paragraph className="chunk-preview-text">{chunk.text_preview || chunk.chunk_ref}</Paragraph>}
+                        />
+                      </List.Item>
+                    )}
+                  />
+                </Card>
+              </aside>
+            </div>
+          ) : (
+            <Card>
+              <Alert type="info" showIcon message="暂无图谱元数据" description="该文件可能仍在入库，或 GraphRAG 暂未返回图谱详情。" />
+            </Card>
+          )}
+        </section>
       ) : detailTemplate && chunkPageFile ? (
         <section className="knowledge-chunk-window">
           <div className="doc-window-topbar">
@@ -1748,7 +2069,7 @@ export default function Knowledge() {
               <Paragraph>{chunkPageFile.source}</Paragraph>
             </div>
             <Space>
-              <Button icon={<EyeOutlined />} onClick={() => void openProcessedFile(chunkPageFile)}>处理详情</Button>
+              <Button icon={<EyeOutlined />} onClick={() => void (isGraphIngestFile(chunkPageFile) ? openGraphPage(chunkPageFile) : openProcessedFile(chunkPageFile))}>处理详情</Button>
               <Button icon={<FileSearchOutlined />} onClick={() => void downloadOriginalFile(chunkPageFile)}>下载原文件</Button>
             </Space>
           </div>
@@ -1921,7 +2242,7 @@ export default function Knowledge() {
                     key: "upload",
                     icon: <UploadOutlined />,
                     label: "上传文件",
-                    onClick: () => setUploadOpen(true),
+                    onClick: () => { setEngine(detailTemplate.strategy); setUploadOpen(true); },
                   },
                 ],
               }}
@@ -1960,7 +2281,7 @@ export default function Knowledge() {
                       onDoubleClick={(event) => {
                         const target = event.target as HTMLElement;
                         if (target.closest("input, button, a, .ant-switch, .ant-btn, .ant-tag")) return;
-                        void openChunkPage(file);
+                        void openKnowledgeFile(file);
                       }}
                     >
                       <td className="check-col" onDoubleClick={(e) => e.stopPropagation()}>
@@ -1968,7 +2289,7 @@ export default function Knowledge() {
                       </td>
                       <td className="index-col">{detailPageStartIndex + index + 1}</td>
                       <td>
-                        <button className="doc-name" onClick={() => void openChunkPage(file)}>
+                        <button className="doc-name" onClick={() => void openKnowledgeFile(file)}>
                           <span className="file-type-icon">
                             {file.assetKind === "smart_sheet" || file.kind === "智能表格" ? <TableOutlined />
                               : isMindMapDoc(file) ? <ApartmentOutlined />
@@ -2002,7 +2323,7 @@ export default function Knowledge() {
                             <Switch size="small" checked={file.status !== "suggested"} />
                           )}
                           {file.assetKind === "smart_sheet" ? null : (
-                            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => void openProcessedFile(file)} />
+                            <Button size="small" type="text" icon={<EyeOutlined />} onClick={() => void (isGraphIngestFile(file) ? openGraphPage(file) : openProcessedFile(file))} />
                           )}
                           <Popconfirm title={file.assetKind === "smart_sheet" ? "删除这张智能表格？" : "从当前知识库配置中移除这个文件？"} okText="移除" cancelText="取消" onConfirm={() => removeKnowledgeFile(file)}>
                             <Button size="small" type="text" danger icon={<DeleteOutlined />} />
@@ -2216,7 +2537,7 @@ export default function Knowledge() {
                 renderItem={(file) => (
                   <List.Item
                     actions={[
-                      <Button key="view" size="small" icon={<EyeOutlined />} onClick={() => void openProcessedFile(file)}>处理详情</Button>,
+                      <Button key="view" size="small" icon={<EyeOutlined />} onClick={() => void (isGraphIngestFile(file) ? openGraphPage(file) : openProcessedFile(file))}>处理详情</Button>,
                       <Popconfirm key="delete" title="从当前知识库配置中移除这个文件？" okText="移除" cancelText="取消" onConfirm={() => removeKnowledgeFile(file)}>
                         <Button size="small" danger icon={<DeleteOutlined />}>移除</Button>
                       </Popconfirm>,
@@ -2257,7 +2578,12 @@ export default function Knowledge() {
       </Drawer>
 
 
-      <Drawer title={processedFile ? `处理后的文件详情 - ${processedFile.name}` : "处理后的文件详情"} width={680} open={Boolean(processedFile)} onClose={() => setProcessedFile(null)}>
+      <Drawer
+        title={processedFile ? `处理后的文件详情 - ${processedFile.name}` : "处理后的文件详情"}
+        width={720}
+        open={Boolean(processedFile)}
+        onClose={() => { setProcessedFile(null); setGraphDetail(null); }}
+      >
         {processedFile ? (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Card title="文件状态">
@@ -2266,9 +2592,8 @@ export default function Knowledge() {
                 dataSource={[
                   `文件类型：${processedFile.kind}`,
                   `来源：${processedFile.source}`,
-                  `状态：${processedFile.status === "ready" ? "已就绪" : processedFile.status === "review" ? "待复核" : "建议接入"}`,
+                  `状态：${processedFile.status === "ready" ? "已就绪" : processedFile.status === "review" ? "待复核" : processedFile.status === "failed" ? "失败" : "处理中"}`,
                   `切块数量：${processedFile.chunks ? `${processedFile.chunks} chunks` : "待解析"}`,
-                  `权限范围：${visibilityLabels[visibility]}`,
                   `当前检索策略：${engineLabels[engine]}`,
                 ]}
                 renderItem={(item) => <List.Item>{item}</List.Item>}
@@ -2279,15 +2604,69 @@ export default function Knowledge() {
                 items={[
                   { children: "原文件保存与格式识别" },
                   { children: processedFile.chunks ? `文本解析完成，生成 ${processedFile.chunks} 个 chunks` : "等待解析文本并生成 chunks" },
-                  { children: `按 ${chunkSize} 字符切块，重叠 ${chunkOverlap} 字符，并写入向量索引` },
-                  { children: extractGraph ? "实体与关系抽取已纳入图谱处理计划" : "当前未开启图谱抽取" },
-                  { children: requireCitation ? "回答时必须返回引用证据" : "回答可使用摘要模式" },
+                  { children: `按 ${chunkSize} 字符切块，重叠 ${chunkOverlap} 字符，并写入索引` },
+                  { children: isGraphIngestFile(processedFile) ? "图谱实体与关系已进入图检索处理链路" : "当前文件使用自然检索链路" },
                 ]}
               />
             </Card>
+            {isGraphIngestFile(processedFile) ? (
+              <Card title="图谱详情" loading={graphDetailLoading}>
+                {graphDetail ? (
+                  <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <GraphPreview detail={graphDetail} />
+                    <List
+                      size="small"
+                      dataSource={[
+                        `Source：${graphPick(graphDetail.source, ["name", "id"])}`,
+                        `Document：${graphPick(graphDetail.document, ["title", "filename", "id"])}`,
+                        `文档状态：${graphPick(graphDetail.document, ["status"], graphPick(graphDetail.route, ["engine_status"]))}`,
+                        `实体数量：${graphValue(graphDetail.graph?.entity_count ?? graphDetail.graph?.entities?.length ?? 0)}`,
+                        `关系数量：${graphValue(graphDetail.graph?.relation_count ?? graphDetail.graph?.relations?.length ?? 0)}`,
+                        `抽取 Run：${graphPick(graphDetail.selected_run, ["id", "run_id"], "暂无")}`,
+                      ]}
+                      renderItem={(item) => <List.Item>{item}</List.Item>}
+                    />
+                    {graphDetail.message ? <Alert type="info" showIcon message={graphDetail.message} /> : null}
+                    {graphDetail.errors && Object.keys(graphDetail.errors).length ? (
+                      <Alert type="warning" showIcon message="部分图谱详情读取失败" description={JSON.stringify(graphDetail.errors)} />
+                    ) : null}
+                    {graphDetail.edges?.length ? (
+                      <List
+                        size="small"
+                        header="关系边"
+                        dataSource={graphDetail.edges.slice(0, 8)}
+                        renderItem={(edge) => (
+                          <List.Item>
+                            {graphPick(edge, ["source", "source_name", "from"])} - {graphPick(edge, ["relation", "predicate", "label", "type"])} - {graphPick(edge, ["target", "target_name", "to"])}
+                          </List.Item>
+                        )}
+                      />
+                    ) : null}
+                    {graphDetail.extractions?.length ? (
+                      <List
+                        size="small"
+                        header="抽取片段"
+                        dataSource={graphDetail.extractions.slice(0, 6)}
+                        renderItem={(item) => (
+                          <List.Item>
+                            <Paragraph className="chunk-preview-text">{graphPick(item, ["text", "content", "summary", "evidence"])}</Paragraph>
+                          </List.Item>
+                        )}
+                      />
+                    ) : null}
+                    {!graphDetail.edges?.length && !graphDetail.extractions?.length ? (
+                      <Alert type="info" showIcon message="当前文件暂无资产级抽取结果" description="GraphRAG 文档可能仍在 processing，或当前入库只写入图索引；稍后刷新可查看新的图谱资产。" />
+                    ) : null}
+                  </Space>
+                ) : (
+                  <Alert type="info" showIcon message="正在加载或暂无图谱元数据" />
+                )}
+              </Card>
+            ) : null}
             <Card title={`处理后的切片预览${chunkLoading ? "..." : processedChunks.length ? ` (${processedChunks.length})` : ""}`}>
               <List
                 size="small"
+                loading={chunkLoading}
                 dataSource={processedChunks.length ? processedChunks.map((chunk) => {
                   const text = chunk.text_preview || chunk.chunk_ref;
                   return {
@@ -2320,7 +2699,7 @@ export default function Knowledge() {
             <Card title="可执行操作">
               <Space wrap>
                 <Button icon={<EyeOutlined />} onClick={() => message.info("当前为前端预览，后续可接真实 chunk 详情接口")}>打开 chunk 详情</Button>
-                <Popconfirm title="从当前知识库配置中移除这个文件？" okText="移除" cancelText="取消" onConfirm={() => { removeKnowledgeFile(processedFile); setProcessedFile(null); }}>
+                <Popconfirm title="从当前知识库配置中移除这个文件？" okText="移除" cancelText="取消" onConfirm={() => { removeKnowledgeFile(processedFile); setProcessedFile(null); setGraphDetail(null); }}>
                   <Button danger icon={<DeleteOutlined />}>从知识库移除</Button>
                 </Popconfirm>
               </Space>
@@ -2340,16 +2719,19 @@ export default function Knowledge() {
             <Form.Item label="资料用途">
               <Input.TextArea rows={3} value={uploadPurpose} onChange={(event) => setUploadPurpose(event.target.value)} />
             </Form.Item>
-                        <div className="chunk-settings-grid drawer-chunk-settings">
+            <Form.Item label="入库方式">
+              <Segmented block value={engine} onChange={(value) => setEngine(value as Engine)} options={engineOptions} />
+              <Text type="secondary">{engineDescriptions[engine]}</Text>
+            </Form.Item>
+            <div className="chunk-settings-grid drawer-chunk-settings">
               <Form.Item label="分段最大长度">
                 <InputNumber min={200} max={8192} step={64} value={chunkSize} onChange={(value) => setChunkSize(Number(value) || 1024)} addonAfter="字符" style={{ width: "100%" }} />
               </Form.Item>
               <Form.Item label="分段重叠长度">
                 <InputNumber min={0} max={Math.max(0, chunkSize - 1)} step={10} value={chunkOverlap} onChange={(value) => setChunkOverlap(Math.min(Number(value) || 0, Math.max(0, chunkSize - 1)))} addonAfter="字符" style={{ width: "100%" }} />
               </Form.Item>
-            </div><Form.Item label="继承权限">
-              <Segmented value={visibility} onChange={(value) => setVisibility(value as Visibility)} options={[{ label: "个人", value: "private" }, { label: "团队", value: "team" }, { label: "公司", value: "company" }]} />
-            </Form.Item>
+            </div>
+
           </Form>
           <Dragger
             multiple
@@ -3905,6 +4287,73 @@ const styles = `
 .knowledge-head { grid-template-columns: 1fr; }
   .knowledge-head-panel { gap: 12px; }
   .head-actions { justify-content: flex-start; }
+}
+.knowledge-graph-window {
+  min-height: calc(100vh - 120px);
+}
+.graph-page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+.graph-page-main,
+.graph-page-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.graph-page-main .graph-preview-svg {
+  height: 520px;
+}
+.graph-preview-panel {
+  border: 1px solid rgba(148,163,184,0.35);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  overflow: hidden;
+}
+.graph-preview-svg {
+  display: block;
+  width: 100%;
+  height: 340px;
+}
+.graph-preview-edge line {
+  stroke: #94a3b8;
+  stroke-width: 1.2;
+  opacity: 0.72;
+}
+.graph-preview-edge text {
+  fill: #64748b;
+  font-size: 10px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 3px;
+}
+.graph-preview-node circle {
+  fill: #eff6ff;
+  stroke: #2563eb;
+  stroke-width: 1.5;
+}
+.graph-preview-node text {
+  fill: #0f172a;
+  font-size: 11px;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+}
+.graph-preview-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(148,163,184,0.25);
+  padding: 8px 10px;
+  background: #ffffff;
+}
+.graph-preview-meta span {
+  color: #475569;
+  font-size: 12px;
 }
 .chunk-preview-text {
   margin-bottom: 0 !important;
