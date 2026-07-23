@@ -1224,9 +1224,22 @@ export const duplicateTaskTemplate = (key: string) =>
 
 export interface SopGraphNode {
   key: string;
-  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end";
+  type: "collect_info" | "checkpoint" | "execute_action" | "gate" | "handoff" | "end" | "knowledge_query" | "data_bind";
   title: string;
   config: Record<string, unknown>;
+}
+
+export interface SopNodeDataBindings {
+  snapshot_ids: number[];
+  metric_ids: string[];
+  asset_keys: string[];
+  scope: string;
+  brand_ids: string[];
+}
+
+export interface SopNodeKnowledgeScope {
+  knowledge_base_ids: number[];
+  retrieval_hint: string;
 }
 
 export interface SopGraphEdge {
@@ -1236,11 +1249,28 @@ export interface SopGraphEdge {
   priority: number;
 }
 
+export interface SopGraphLayout {
+  [nodeKey: string]: { x: number; y: number };
+}
+
+export interface SopGraphMeta {
+  goal?: string[];
+  required_info?: string[];
+  layout?: SopGraphLayout;
+  slot_filling_policy?: Record<string, unknown>;
+}
+
 export interface SopVersionItem {
   id: number;
   version: string;
   status: "draft" | "published" | "retired";
-  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  graph: {
+    start: string;
+    terminals: string[];
+    nodes: SopGraphNode[];
+    edges: SopGraphEdge[];
+    meta?: SopGraphMeta;
+  };
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
   triggerIntents: string[];
@@ -1310,14 +1340,31 @@ export interface SopDraftPayload {
   version: string;
   triggerIntents: string[];
   utteranceExamples: string[];
-  graph: { start: string; terminals: string[]; nodes: SopGraphNode[]; edges: SopGraphEdge[] };
+  graph: {
+    start: string;
+    terminals: string[];
+    nodes: SopGraphNode[];
+    edges: SopGraphEdge[];
+    meta?: SopGraphMeta;
+  };
 }
 
 export const rewriteSopWithAi = (body: {
   instruction: string;
   draft: SopDraftPayload;
   history: Array<{ role: "user" | "assistant"; content: string }>;
-}) => api.post<{ assistant: string; draft: SopDraftPayload; model: string }>(
+  targetNodeKey?: string | null;
+  targetNodeKeys?: string[];
+  images?: string[];
+}) => api.post<{
+  assistant: string;
+  draft: SopDraftPayload;
+  model: string;
+  scope?: "node" | "nodes" | "flow";
+  targetNodeKey?: string;
+  targetNodeKeys?: string[];
+  tools?: Array<{ name: string; summary: string; status?: string }>;
+}>(
   "/orchestration/sops/ai/rewrite/",
   body,
   { timeout: 90_000 },
