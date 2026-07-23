@@ -16,6 +16,7 @@ STAGES: dict[str, tuple[str, str]] = {
         "已检索知识库",
     ),
     "skill": ("正在调用 Skill…", "已调用 Skill"),
+    "sop": ("正在执行 SOP…", "已执行 SOP"),
     "tools": ("正在运行工具…", "已运行 {tool_count} 个工具"),
     "validation": ("正在校验指标口径…", "已校验指标口径"),
     "composing": ("正在组织回答…", "分析完成，正在组织回答"),

@@ -147,6 +147,13 @@ def _emit_node_progress(state: SopState, node: dict, *, status: str = "running",
         pass
 
 
+def _parse_retry_policy(config: dict) -> tuple[int, str]:
+    retry = config.get("retry") if isinstance(config.get("retry"), dict) else {}
+    max_attempts = max(1, min(int(retry.get("max_attempts") or 1), 5))
+    on_failure = str(retry.get("on_failure") or "fail").strip().lower()
+    return max_attempts, on_failure
+
+
 def _node_handler(node: dict):
     def handler(state: SopState) -> dict:
         config = normalize_node_config(node["type"], node.get("config") or {})
@@ -340,25 +347,60 @@ def _node_handler(node: dict):
             if output_format:
                 payload["output_format"] = output_format
 
-            if is_skill_action(action_name):
-                result = run_skill_sop_action(
-                    action_name=action_name,
-                    text=task_text or state["text"],
-                    payload=payload,
-                    user=state["user"],
-                    organization=state["organization"],
-                    trace_id=state["trace_id"],
-                    initial_steps=list(state.get("steps") or []),
-                )
-            else:
-                from .runtime_graph import run_fixed_pipeline
+            max_attempts, on_failure = _parse_retry_policy(config)
+            result: dict = {}
+            decision = "block"
+            retry_notes: list[str] = []
+            for attempt in range(1, max_attempts + 1):
+                if is_skill_action(action_name):
+                    result = run_skill_sop_action(
+                        action_name=action_name,
+                        text=task_text or state["text"],
+                        payload=payload,
+                        user=state["user"],
+                        organization=state["organization"],
+                        trace_id=state["trace_id"],
+                        initial_steps=list(state.get("steps") or []),
+                    )
+                else:
+                    from .runtime_graph import run_fixed_pipeline
 
-                result = run_fixed_pipeline(
-                    text=task_text or state["text"], payload=payload, role=state.get("role") or "operator",
-                    trace_id=state["trace_id"], user=state["user"], organization=state["organization"],
-                    forced_action=action_name,
+                    result = run_fixed_pipeline(
+                        text=task_text or state["text"], payload=payload, role=state.get("role") or "operator",
+                        trace_id=state["trace_id"], user=state["user"], organization=state["organization"],
+                        forced_action=action_name,
+                    )
+                decision = str(result.get("decision") or "block")
+                if decision == "allow":
+                    break
+                if attempt < max_attempts:
+                    retry_notes.append(
+                        f"第 {attempt} 次执行失败，准备重试（{result.get('error') or '未知原因'}）"[:240]
+                    )
+
+            if decision != "allow" and on_failure == "checkpoint" and max_attempts > 1:
+                update = {
+                    "payload": payload,
+                    "bound_contexts": contexts,
+                    "decision": "need_input",
+                    "missing": [f"_confirm_{node['key']}"],
+                    "error": str(result.get("error") or "动作多次失败后等待人工确认"),
+                }
+                detail = instruction or (
+                    f"动作已重试 {max_attempts} 次仍失败，请确认是否继续：{update['error']}"
                 )
-            decision = str(result.get("decision") or "block")
+                update.update(_record_node(
+                    state, node, SopNodeRun.Status.NEED_INPUT,
+                    detail,
+                    {
+                        "action": action_name,
+                        "decision": "need_input",
+                        "retries": max_attempts,
+                        "retry_notes": retry_notes,
+                    },
+                ))
+                return update
+
             update = {
                 "payload": payload,
                 "bound_contexts": contexts,
@@ -367,15 +409,24 @@ def _node_handler(node: dict):
                 "result": result.get("result") or {},
                 "error": result.get("error") or "",
             }
+            detail = instruction or (
+                "业务动作执行完成"
+                if decision == "allow"
+                else (result.get("error") or "业务动作执行失败")
+            )
+            if retry_notes and decision == "allow":
+                detail = f"{detail}（第 {len(retry_notes) + 1} 次尝试成功）"
             update.update(_record_node(
                 state, node, SopNodeRun.Status.COMPLETED if decision == "allow" else SopNodeRun.Status.FAILED,
-                instruction or ("业务动作执行完成" if decision == "allow" else (result.get("error") or "业务动作执行失败")),
+                detail,
                 {
                     "action": action_name,
                     "decision": decision,
                     "data_bindings": node_data.get("bindings"),
                     "user_message": (result.get("result") or {}).get("user_message"),
                     "has_report": bool((result.get("result") or {}).get("report_markdown")),
+                    "retries": len(retry_notes),
+                    "retry_notes": retry_notes,
                 },
             ))
             parent_index = _graph_node_index(state.get("graph"), node["key"]) or 1
@@ -664,6 +715,10 @@ def execute_sop_version(
             SopDefinition.objects.filter(id=version.definition_id).update(
                 trial_count=F("trial_count") + 1,
             )
+            tags = record_run_signals(run)
+            if tags:
+                run.outcome_tags = tags
+                run.save(update_fields=["outcome_tags"])
         else:
             SopDefinition.objects.filter(id=version.definition_id).update(
                 call_count=F("call_count") + 1,

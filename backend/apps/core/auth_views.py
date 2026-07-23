@@ -967,6 +967,22 @@ def _sync_user_organizations(actor, target, organizations, *, replace: bool = Tr
     return None
 
 
+def _organization_evolution_pending_count(organization: Organization) -> int:
+    from apps.orchestration.models import SopEvolutionProposal
+
+    return (
+        SopEvolutionProposal.objects.filter(organization=organization)
+        .exclude(
+            status__in=[
+                SopEvolutionProposal.Status.ACCEPTED,
+                SopEvolutionProposal.Status.REJECTED,
+                SopEvolutionProposal.Status.EXPIRED,
+            ]
+        )
+        .count()
+    )
+
+
 def _organization_payload(organization: Organization, actor=None) -> dict:
     membership = (
         OrganizationMembership.objects.filter(
@@ -980,6 +996,8 @@ def _organization_payload(organization: Organization, actor=None) -> dict:
         "code": str(organization.code),
         "name": organization.name,
         "isActive": organization.is_active,
+        "sopEvolutionEnabled": bool(getattr(organization, "sop_evolution_enabled", True)),
+        "pendingEvolutionCount": _organization_evolution_pending_count(organization),
         "memberCount": organization.memberships.filter(is_active=True, user__is_active=True).count(),
         "role": membership.role if membership and membership.organization_id == organization.id else "",
         "canManage": is_organization_admin(actor, organization) if actor else False,
@@ -1002,11 +1020,20 @@ def current_organization_view(request):
     if request.method == "PATCH":
         if not is_organization_admin(request.user, organization):
             return Response({"ok": False, "error": "仅企业管理员可修改企业信息"}, status=403)
-        name = str(request.data.get("name") or "").strip()
-        if not name:
-            return Response({"ok": False, "error": "企业名称不能为空"}, status=400)
-        organization.name = name[:128]
-        organization.save(update_fields=["name", "updated_at"])
+        update_fields = ["updated_at"]
+        if "name" in request.data:
+            name = str(request.data.get("name") or "").strip()
+            if not name:
+                return Response({"ok": False, "error": "企业名称不能为空"}, status=400)
+            organization.name = name[:128]
+            update_fields.append("name")
+        if "sopEvolutionEnabled" in request.data or "sop_evolution_enabled" in request.data:
+            raw = request.data.get("sopEvolutionEnabled", request.data.get("sop_evolution_enabled"))
+            organization.sop_evolution_enabled = bool(raw)
+            update_fields.append("sop_evolution_enabled")
+        if len(update_fields) == 1:
+            return Response({"ok": False, "error": "没有可更新的字段"}, status=400)
+        organization.save(update_fields=update_fields)
     members = OrganizationMembership.objects.select_related("user", "user__settings").filter(
         organization=organization,
         is_active=True,

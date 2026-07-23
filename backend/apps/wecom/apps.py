@@ -8,3 +8,6 @@ class WeComConfig(AppConfig):
 
     def ready(self):
         from . import signals  # noqa: F401
+        from .queue_scheduler import start_wecom_queue_scheduler
+
+        start_wecom_queue_scheduler()

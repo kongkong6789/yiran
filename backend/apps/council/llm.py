@@ -215,6 +215,7 @@ def chat_messages_result(
     api_key: str | None = None,
     base_url: str | None = None,
     cancel_check=None,
+    on_delta=None,
 ) -> dict:
     """多轮对话,返回 {content, error, configured, model, base_url, vision_unsupported}。
 
@@ -244,7 +245,7 @@ def chat_messages_result(
         }
 
     raise_if_cancelled(cancel_check)
-    completion = _chat_completions_stream_once if cancel_check else _chat_completions_once
+    completion = _chat_completions_stream_once if (cancel_check or callable(on_delta)) else _chat_completions_once
     completion_kwargs = {
         "api_key": used_key,
         "base_url": used_base,
@@ -256,6 +257,8 @@ def chat_messages_result(
     }
     if cancel_check:
         completion_kwargs["cancel_check"] = cancel_check
+    if callable(on_delta):
+        completion_kwargs["on_delta"] = on_delta
     result = completion(system, messages, **completion_kwargs)
     # 个人设置优先，但个人 Key 失效时不能让整个问答不可用。
     # 仅对明确的鉴权失败回退全局凭据；超时、限流等错误仍保留原结果，
@@ -426,6 +429,7 @@ def _chat_completions_stream_once(
     timeout: int,
     allow_images: bool,
     cancel_check,
+    on_delta=None,
 ) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     body = json.dumps({
@@ -459,6 +463,11 @@ def _chat_completions_stream_once(
                 content = delta.get("content") or ""
                 if isinstance(content, str):
                     parts.append(content)
+                    if content and callable(on_delta):
+                        try:
+                            on_delta(content)
+                        except Exception:
+                            pass
             raise_if_cancelled(cancel_check)
         content = "".join(parts).strip()
         return {

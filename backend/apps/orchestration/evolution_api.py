@@ -11,7 +11,7 @@ from rest_framework.response import Response
 
 from apps.core.organizations import ensure_current_organization, is_organization_admin
 
-from .evolution_analyzer import analyze_sop_evolution, next_evolution_version_number
+from .evolution_analyzer import analyze_sop_evolution, evolution_impact_metrics, next_evolution_version_number
 from .models import SopEvolutionProposal, SopEvolutionSignal, SopNodeRun, SopRun, SopVersion
 from .sop_api import _can_edit, _find_sop, _version_payload
 from .sop_runtime import build_trial_payload, execute_sop_version
@@ -249,6 +249,8 @@ def sop_evolution_proposals(request, sop_key: str):
 
     if sop.is_system:
         return Response({"error": "系统 SOP 不支持写入进化提案，请先复制到工作区。"}, status=403)
+    if sop.organization_id and not bool(getattr(sop.organization, "sop_evolution_enabled", True)):
+        return Response({"error": "当前企业已关闭 SOP 自我进化，请在企业设置中开启。"}, status=403)
     if not _can_edit(sop, request.user) and not is_organization_admin(request.user, organization):
         return Response({"error": "没有权限分析该 SOP。"}, status=403)
     created = analyze_sop_evolution(definition=sop, user=request.user, enrich_with_llm=True)
@@ -404,3 +406,13 @@ def sop_evolution_proposal_reject(request, sop_key: str, proposal_id: int):
     proposal.reviewed_at = timezone.now()
     proposal.save(update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"])
     return Response({"proposal": _proposal_item(proposal)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def sop_evolution_metrics(request, sop_key: str):
+    organization = ensure_current_organization(request.user)
+    sop = _find_sop(organization, sop_key)
+    if not sop:
+        return Response({"error": "SOP 不存在。"}, status=404)
+    return Response(evolution_impact_metrics(sop))

@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { App, Alert, Avatar, Button, Divider, Form, Input, Modal, Select, Table, Tag, Typography } from "antd";
-import { BankOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, SwapOutlined, TeamOutlined, UserAddOutlined } from "@ant-design/icons";
+import { App, Alert, Avatar, Button, Form, Input, Modal, Select, Switch, Table, Tag, Typography } from "antd";
+import {
+  BankOutlined,
+  DeleteOutlined,
+  ExclamationCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SettingOutlined,
+  SwapOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
+  UserAddOutlined,
+} from "@ant-design/icons";
 
 import {
   assignUsersToOrganization,
@@ -56,6 +67,7 @@ export default function OrganizationManager({
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingEvolution, setSavingEvolution] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -109,7 +121,7 @@ const formatDetailTime = (value?: string | null) => value
     }
     setSaving(true);
     try {
-      const response = await updateCurrentOrganization(nextName, organization?.id);
+      const response = await updateCurrentOrganization({ name: nextName, organizationId: organization?.id });
       setOrganization(response.organization);
       setName(response.organization.name);
       message.success("企业名称已保存");
@@ -120,19 +132,39 @@ const formatDetailTime = (value?: string | null) => value
     }
   };
 
+  const saveEvolutionToggle = async (enabled: boolean) => {
+    if (!organization?.canManage) return;
+    setSavingEvolution(true);
+    try {
+      const response = await updateCurrentOrganization({
+        sopEvolutionEnabled: enabled,
+        organizationId: organization.id,
+      });
+      setOrganization(response.organization);
+      message.success(enabled ? "已开启 SOP 自我进化" : "已关闭 SOP 自我进化");
+    } catch (error: any) {
+      message.error(error?.response?.data?.error || "设置保存失败");
+    } finally {
+      setSavingEvolution(false);
+    }
+  };
+
   const transferOwnership = () => {
     const candidates = members.filter((member) => member.isActive && member.role !== "owner");
     let targetUserId: number | undefined;
     modal.confirm({
-      title: "转移企业所有权",
-      width: 520,
+      className: "org-settings-confirm",
+      title: "确认转移企业所有权？",
+      icon: <ExclamationCircleOutlined style={{ color: "#c43c3c" }} />,
+      width: 480,
       okText: "确认转移",
+      cancelText: "取消",
       okButtonProps: { danger: true },
       content: (
-        <div style={{ display: "grid", gap: 12, paddingTop: 8 }}>
-          <Typography.Text type="secondary">
-            转移后，新所有者将拥有企业最高管理权限，你的角色将变为企业管理员。
-          </Typography.Text>
+        <div className="org-settings-confirm__body">
+          <p>
+            转移后当前账号将降级为普通成员，新所有者获得企业最高权限。此操作不可撤销，请谨慎确认。
+          </p>
           <Select
             style={{ width: "100%" }}
             placeholder="选择新的企业所有者"
@@ -458,48 +490,126 @@ const formatDetailTime = (value?: string | null) => value
       ) : null}
 
       <Modal
-        title="企业设置"
+        className="org-settings-modal"
+        title={
+          <div className="org-settings-modal__title">
+            <span className="org-settings-modal__title-icon" aria-hidden>
+              <SettingOutlined />
+            </span>
+            <div>
+              <strong>企业设置</strong>
+              <small>管理企业信息、AI 能力与权限</small>
+            </div>
+          </div>
+        }
         open={settingsOpen}
         footer={null}
-        width={560}
+        width={640}
+        centered
         onCancel={() => {
           setSettingsOpen(false);
           setName(organization?.name || "");
         }}
         destroyOnHidden
       >
-        <div className="organization-settings-modal">
-          <section>
-            <Typography.Title level={5}>企业名称</Typography.Title>
-            <Typography.Text type="secondary">用于工作台、成员管理和企业连接中的企业标识。</Typography.Text>
-            <div className="organization-settings-name">
-              <Input
-                value={name}
-                maxLength={128}
-                onChange={(event) => setName(event.target.value)}
-                onPressEnter={() => void saveName()}
-              />
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void saveName()}>
-                保存名称
-              </Button>
-            </div>
+        <div className="org-settings-modal__body">
+          <section className="org-settings-section">
+            <header className="org-settings-section__head">
+              <span className="org-settings-section__icon" aria-hidden>
+                <BankOutlined />
+              </span>
+              <div>
+                <h3>企业信息</h3>
+                <p>用于工作台、成员管理与企业连接中的标识。</p>
+              </div>
+            </header>
+            <label className="org-settings-field">
+              <span>企业名称</span>
+              <div className="org-settings-field__row">
+                <Input
+                  value={name}
+                  maxLength={128}
+                  placeholder="输入企业名称"
+                  onChange={(event) => setName(event.target.value)}
+                  onPressEnter={() => void saveName()}
+                />
+                <button
+                  type="button"
+                  className="org-settings-save-btn"
+                  disabled={saving || !name.trim() || name.trim() === organization?.name}
+                  onClick={() => void saveName()}
+                >
+                  {saving ? "保存中…" : "保存"}
+                </button>
+              </div>
+            </label>
           </section>
 
-          {organization?.role === "owner" && (
-            <>
-              <Divider />
-              <section className="organization-danger-zone">
-                <div>
-                  <Typography.Title level={5}>转移企业所有权</Typography.Title>
-                  <Typography.Text type="secondary">
-                    转移后，你将降级为企业管理员，新所有者获得企业最高权限。
-                  </Typography.Text>
+          {organization?.canManage && (
+            <section className="org-settings-section org-settings-ai">
+              <div className="org-settings-ai__card">
+                <div className="org-settings-ai__top">
+                  <span className="org-settings-ai__badge" aria-hidden>
+                    <ThunderboltOutlined />
+                  </span>
+                  <div className="org-settings-ai__copy">
+                    <div className="org-settings-ai__heading">
+                      <h3>SOP 自我进化</h3>
+                      <span
+                        className={
+                          organization.sopEvolutionEnabled !== false
+                            ? "org-settings-status is-on"
+                            : "org-settings-status is-off"
+                        }
+                      >
+                        {organization.sopEvolutionEnabled !== false ? "已开启" : "已关闭"}
+                      </span>
+                    </div>
+                    <p>
+                      AI 会根据运行数据、执行反馈持续发现流程优化机会，并生成改进建议。
+                    </p>
+                  </div>
+                  <Switch
+                    className="org-settings-toggle"
+                    checked={organization.sopEvolutionEnabled !== false}
+                    loading={savingEvolution}
+                    onChange={(checked) => void saveEvolutionToggle(checked)}
+                  />
                 </div>
-                <Button icon={<SwapOutlined />} danger onClick={transferOwnership}>
+                {organization.sopEvolutionEnabled !== false && (
+                  <div className="org-settings-ai__insight">
+                    <span className="org-settings-ai__insight-label">最近优化</span>
+                    <span className="org-settings-ai__insight-value">
+                      {(organization.pendingEvolutionCount ?? 0) > 0
+                        ? `已发现 ${organization.pendingEvolutionCount} 个流程优化机会`
+                        : "暂无待处理的优化建议"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {organization?.role === "owner" && (
+            <section className="org-settings-section org-settings-danger">
+              <div className="org-settings-danger__card">
+                <span className="org-settings-danger__icon" aria-hidden>
+                  <ExclamationCircleOutlined />
+                </span>
+                <div className="org-settings-danger__copy">
+                  <h3>企业所有权</h3>
+                  <p>转移后当前账号将降级为普通成员，新所有者获得企业最高权限。</p>
+                </div>
+                <button
+                  type="button"
+                  className="org-settings-danger__btn"
+                  onClick={transferOwnership}
+                >
+                  <SwapOutlined />
                   转移所有权
-                </Button>
-              </section>
-            </>
+                </button>
+              </div>
+            </section>
           )}
         </div>
       </Modal>

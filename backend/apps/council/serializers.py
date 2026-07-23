@@ -22,6 +22,10 @@ class AgentProfileSerializer(serializers.ModelSerializer):
         child=serializers.CharField(max_length=64),
         required=False,
     )
+    sop_keys = serializers.ListField(
+        child=serializers.CharField(max_length=96),
+        required=False,
+    )
     knowledge_base_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1),
         required=False,
@@ -50,6 +54,7 @@ class AgentProfileSerializer(serializers.ModelSerializer):
             "quota_remaining",
             "status",
             "skill_ids",
+            "sop_keys",
             "knowledge_base_ids",
             "capability_instructions",
             "lifecycle_status",
@@ -167,6 +172,36 @@ class AgentProfileSerializer(serializers.ModelSerializer):
         missing = [skill_id for skill_id in normalized if skill_id not in available]
         if missing:
             raise serializers.ValidationError(f"以下 Skill 不存在或无权访问：{', '.join(missing)}")
+        return normalized
+
+    def validate_sop_keys(self, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not normalized:
+            return []
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not getattr(user, "is_authenticated", False):
+            raise serializers.ValidationError("登录后才能绑定 SOP。")
+
+        organization = self.instance.organization if self.instance else organization_for_user(user)
+        if organization is None:
+            raise serializers.ValidationError("当前账号没有可用企业，无法绑定 SOP。")
+
+        from apps.orchestration.models import SopDefinition
+
+        available = set(
+            SopDefinition.objects.filter(
+                Q(organization=organization) | Q(organization__isnull=True),
+                status=SopDefinition.Status.PUBLISHED,
+                sop_key__in=normalized,
+            ).values_list("sop_key", flat=True)
+        )
+        missing = [sop_key for sop_key in normalized if sop_key not in available]
+        if missing:
+            raise serializers.ValidationError(
+                f"以下 SOP 不存在、未发布或无权访问：{', '.join(missing)}"
+            )
         return normalized
 
     def validate_knowledge_base_ids(self, value: list[int]) -> list[int]:

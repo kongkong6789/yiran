@@ -43,7 +43,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { App, Avatar, Button, Dropdown, Empty, Image, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip } from "antd";
+import { App, Avatar, Button, Dropdown, Empty, Image, Input, Modal, Select, Space, Spin, Table, Tabs, Tag, Tooltip } from "antd";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -58,6 +58,7 @@ import {
   getMe,
   getMetricContracts,
   getSop,
+  getSopEvolutionMetrics,
   getSopRun,
   getSopVersion,
   getSourceSnapshots,
@@ -70,6 +71,7 @@ import {
   publishSopVersion,
   rejectSopEvolutionProposal,
   rewriteSopWithAi,
+  rewriteSopWithAiStream,
   trialSopEvolutionProposal,
   trialSopVersion,
   trialSopVersionStream,
@@ -255,6 +257,24 @@ type FlowChangeInfo = {
   applied: boolean;
   undone?: boolean;
 };
+type RewriteTimelineKind = "hello" | "status" | "tool" | "stream" | "heartbeat" | "done" | "error";
+type RewriteTimelineEvent = {
+  id: string;
+  kind: RewriteTimelineKind;
+  time: string;
+  title: string;
+  detail?: string;
+  status: "ok" | "running" | "failed" | "waiting";
+};
+type RewriteStreamState = {
+  status: "running" | "completed" | "failed";
+  startedAt: number;
+  events: RewriteTimelineEvent[];
+  streamChars?: number;
+  currentHint?: string;
+  tools?: SopToolStep[];
+  durationSec?: number;
+};
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -263,6 +283,7 @@ type ChatMessage = {
   images?: string[];
   tools?: SopToolStep[];
   toolsLive?: boolean;
+  rewrite?: RewriteStreamState;
   trial?: TrialRunState;
   flowChange?: FlowChangeInfo;
   undoDraft?: SopDraftPayload;
@@ -331,7 +352,7 @@ function formatSopToolLabel(tool: { name: string; summary?: string }): string {
   return friendly;
 }
 
-function errorText(error: unknown, fallback: string) {
+function errorText(error: unknown, fallback: string, kind: "trial" | "rewrite" | "generic" = "generic") {
   const err = error as {
     code?: string;
     response?: { status?: number; data?: { error?: string; detail?: string; message?: string } };
@@ -341,9 +362,17 @@ function errorText(error: unknown, fallback: string) {
   const fromApi = data?.error || data?.detail || data?.message;
   if (fromApi) return String(fromApi);
   if (err?.code === "ECONNABORTED" || /timeout/i.test(String(err?.message || ""))) {
-    return "试跑超时了。流程执行可能仍在后台完成，请稍后重试或简化流程后再跑。";
+    if (kind === "trial") {
+      return "试跑超时了。流程执行可能仍在后台完成，请稍后重试或简化流程后再跑。";
+    }
+    if (kind === "rewrite") {
+      return "AI 改写超时了。整条流程改写耗时较长，可改为选中单个步骤再改，或把需求写得更具体后重试。";
+    }
+    return "请求超时，请稍后重试。";
   }
-  if (err?.response?.status === 404) return "试跑接口不存在，请确认后端已重启。";
+  if (err?.response?.status === 404) {
+    return kind === "trial" ? "试跑接口不存在，请确认后端已重启。" : "接口不存在，请确认后端已重启。";
+  }
   if (err?.message && /network|failed/i.test(err.message)) return `网络异常：${err.message}`;
   return fallback;
 }
@@ -361,6 +390,35 @@ function defaultWelcome(name?: string, nodes: SopGraphNode[] = []): ChatMessage 
       ? `已加载「${name}」。\n\n当前流程包含：\n${list}\n\n你可以：\n- 修改任意步骤\n- 直接描述需求\n- 上传流程截图\n- 说「跑一遍流程」试跑`
       : `你好，我是流程协作助手。\n\n当前还是空白流程，你可以：\n${list}\n\n也可以上传截图，或直接说「跑一遍流程」验证。`,
   };
+}
+
+function mainFlowChain(draft: SopDraftPayload): string[] {
+  const nodes = draft.graph.nodes || [];
+  const byKey = new Map(nodes.map((node) => [node.key, node]));
+  const outgoing = new Map<string, string[]>();
+  for (const edge of draft.graph.edges || []) {
+    const list = outgoing.get(edge.source) || [];
+    list.push(edge.target);
+    outgoing.set(edge.source, list);
+  }
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let cursor = draft.graph.start || nodes[0]?.key || "";
+  while (cursor && byKey.has(cursor) && !seen.has(cursor)) {
+    seen.add(cursor);
+    const node = byKey.get(cursor);
+    chain.push(node?.title || cursor);
+    const terminals = new Set(draft.graph.terminals || []);
+    if (terminals.has(cursor) || node?.type === "end") break;
+    const nexts = outgoing.get(cursor) || [];
+    cursor = nexts[0] || "";
+  }
+  // Append any remaining nodes not on the main path so removals still show in diff,
+  // but prefer the executable path first.
+  for (const node of nodes) {
+    if (!seen.has(node.key)) chain.push(node.title || node.key);
+  }
+  return chain;
 }
 
 function diffFlowChange(before: SopDraftPayload, after: SopDraftPayload): Omit<FlowChangeInfo, "applied" | "undone"> {
@@ -381,7 +439,7 @@ function diffFlowChange(before: SopDraftPayload, after: SopDraftPayload): Omit<F
     added,
     removed,
     modified,
-    chain: after.graph.nodes.map((node) => node.title || node.key),
+    chain: mainFlowChain(after),
   };
 }
 
@@ -406,9 +464,15 @@ function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes:
         })),
         trial: rawTrial && typeof rawTrial === "object"
           ? {
-              status: rawTrial.status === "running"
-                ? "completed"
-                : (rawTrial.status === "awaiting_confirm" ? "awaiting_confirm" : (rawTrial.status || "completed")),
+              status: (
+                rawTrial.status === "running"
+                  ? "completed"
+                  : rawTrial.status === "awaiting_confirm"
+                    ? "awaiting_confirm"
+                    : rawTrial.status === "failed"
+                      ? "failed"
+                      : "completed"
+              ) as TrialRunState["status"],
               total: Number(rawTrial.total) || 0,
               current: Number(rawTrial.current) || 0,
               currentTitle: String(rawTrial.currentTitle || ""),
@@ -441,7 +505,7 @@ function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes:
                 ? rawTrial.logs.map((log) => ({
                     time: String(log.time || ""),
                     text: String(log.text || ""),
-                    status: mapToolStatus(log.status),
+                    status: mapToolStatus(log.status) as TrialLog["status"],
                   }))
                 : [],
             }
@@ -569,23 +633,147 @@ function formatTrialClock(date = new Date()) {
   return date.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function SopToolProcess({ tools }: { tools: SopToolStep[] }) {
-  if (!tools.length) return null;
+function SopToolProcess({
+  tools,
+  live = false,
+  liveHint = "",
+}: {
+  tools: SopToolStep[];
+  live?: boolean;
+  liveHint?: string;
+}) {
+  if (!tools.length && !liveHint) return null;
+  const running = tools.find((tool) => tool.status === "running");
   return (
-    <ul className="sop-tool-process">
-      {tools.map((tool, index) => {
-        const label = formatSopToolLabel(tool);
-        return (
-          <li key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
-            {tool.status === "running" && <LoadingOutlined spin />}
-            {tool.status === "ok" && <CheckCircleFilled />}
-            {tool.status === "failed" && <CloseCircleFilled />}
-            <span>{label}</span>
-          </li>
-        );
-      })}
-    </ul>
+    <div className={`sop-tool-process-wrap${live ? " is-live" : ""}`}>
+      {live && (
+        <p className="sop-tool-live-hint">
+          <LoadingOutlined spin />
+          <span>{liveHint || (running ? `正在${formatSopToolLabel(running)}…` : "正在处理…")}</span>
+        </p>
+      )}
+      {!!tools.length && (
+        <ul className="sop-tool-process">
+          {tools.map((tool, index) => {
+            const label = formatSopToolLabel(tool);
+            return (
+              <li key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
+                {tool.status === "running" && <LoadingOutlined spin />}
+                {tool.status === "ok" && <CheckCircleFilled />}
+                {tool.status === "failed" && <CloseCircleFilled />}
+                <span>{label}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
+}
+
+function rewriteTimelineIcon(status: RewriteTimelineEvent["status"]) {
+  if (status === "running") return <LoadingOutlined spin />;
+  if (status === "failed") return <CloseCircleFilled />;
+  if (status === "waiting") return <HistoryOutlined />;
+  return <CheckCircleFilled />;
+}
+
+function SopRewriteTimelinePanel({ rewrite }: { rewrite: RewriteStreamState }) {
+  const [open, setOpen] = useState(rewrite.status === "running");
+  const elapsed = rewrite.durationSec
+    ?? Math.max(1, Math.round((Date.now() - rewrite.startedAt) / 1000));
+  const heading = rewrite.status === "completed"
+    ? "改写完成"
+    : rewrite.status === "failed"
+      ? "改写失败"
+      : "AI 改写进行中";
+  const hint = rewrite.currentHint
+    || (rewrite.status === "running" ? "正在处理…" : "已记录完整过程");
+  const tools = rewrite.tools || [];
+
+  useEffect(() => {
+    if (rewrite.status === "running") setOpen(true);
+  }, [rewrite.status]);
+
+  return (
+    <div className={`sop-rewrite-timeline-card is-${rewrite.status}`}>
+      <div className="sop-rewrite-timeline-head">
+        <div>
+          <strong>{heading}</strong>
+          <p>{hint}</p>
+        </div>
+        <div className="sop-rewrite-timeline-meta">
+          <span>{elapsed}s</span>
+          {rewrite.streamChars ? <span>已生成 {rewrite.streamChars} 字</span> : null}
+          <button type="button" onClick={() => setOpen((value) => !value)}>
+            {open ? "收起过程" : "展开过程"}
+          </button>
+        </div>
+      </div>
+      {tools.length > 0 && (
+        <ul className="sop-rewrite-tool-strip">
+          {tools.map((tool, index) => (
+            <li key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
+              {tool.status === "running" ? <LoadingOutlined spin /> : tool.status === "failed" ? <CloseCircleFilled /> : <CheckCircleFilled />}
+              <span>{formatSopToolLabel(tool)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && (
+        <ol className="sop-rewrite-timeline">
+          {rewrite.events.map((event) => (
+            <li key={event.id} className={`is-${event.status} kind-${event.kind}`}>
+              <div className="sop-rewrite-timeline-dot">{rewriteTimelineIcon(event.status)}</div>
+              <div className="sop-rewrite-timeline-body">
+                <div className="sop-rewrite-timeline-row">
+                  <strong>{event.title}</strong>
+                  <time>{event.time}</time>
+                </div>
+                {event.detail ? <p>{event.detail}</p> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function appendRewriteEvent(
+  rewrite: RewriteStreamState,
+  event: Omit<RewriteTimelineEvent, "id" | "time"> & { id?: string; time?: string },
+  mergeKind?: RewriteTimelineKind,
+): RewriteStreamState {
+  const next: RewriteTimelineEvent = {
+    id: event.id || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    time: event.time || formatTrialClock(),
+    kind: event.kind,
+    title: event.title,
+    detail: event.detail,
+    status: event.status,
+  };
+  const events = [...rewrite.events];
+  if (mergeKind) {
+    const last = events[events.length - 1];
+    if (last && last.kind === mergeKind) {
+      events[events.length - 1] = { ...last, ...next, id: last.id };
+      return { ...rewrite, events };
+    }
+  }
+  return { ...rewrite, events: [...events, next].slice(-40) };
+}
+
+function finalizeRewriteEvents(rewrite: RewriteStreamState, status: "completed" | "failed"): RewriteStreamState {
+  return {
+    ...rewrite,
+    status,
+    events: rewrite.events.map((event) => (
+      event.status === "running" || event.status === "waiting"
+        ? { ...event, status: status === "completed" ? "ok" : "failed" }
+        : event
+    )),
+  };
 }
 
 function looksLikeHtmlDocument(content: string): boolean {
@@ -1840,10 +2028,24 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
   const [runRows, setRunRows] = useState<SopRunItem[]>([]);
   const [signalRows, setSignalRows] = useState<SopEvolutionSignalItem[]>([]);
   const [proposalRows, setProposalRows] = useState<SopEvolutionProposalItem[]>([]);
+  const [evolutionMetrics, setEvolutionMetrics] = useState<{
+    enabled: boolean;
+    definition: { callCount: number; trialCount: number; successRate: number };
+    signalCount: number;
+    pendingProposals: number;
+    acceptedComparisons: Array<{
+      proposalId: number;
+      title: string;
+      before: { version?: string | null; callCount: number; successRate: number };
+      after: { version?: string | null; callCount: number; successRate: number };
+      deltaSuccessRate: number;
+    }>;
+  } | null>(null);
   const [analyzingEvolution, setAnalyzingEvolution] = useState(false);
   const [proposalBusyId, setProposalBusyId] = useState<number | null>(null);
   const [runDetail, setRunDetail] = useState<SopRunItem | null>(null);
   const [runFilter, setRunFilter] = useState<"all" | "live" | "trial">("all");
+  const [evolutionTab, setEvolutionTab] = useState<"runs" | "evolve">("evolve");
   const [actions, setActions] = useState<ActionContract[]>([]);
   const [assets, setAssets] = useState<DataAssetOption[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
@@ -2059,17 +2261,19 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     if (!record) return;
     setRunsLoading(true);
     try {
-      const [runs, signals, proposals] = await Promise.all([
+      const [runs, signals, proposals, metrics] = await Promise.all([
         listSopRuns(record.key, {
           limit: 40,
           ...(filter === "trial" ? { trial: true } : filter === "live" ? { trial: false } : {}),
         }),
         listSopEvolutionSignals(record.key, { limit: 20 }),
         listSopEvolutionProposals(record.key, { limit: 30 }),
+        getSopEvolutionMetrics(record.key).catch(() => null),
       ]);
       setRunRows(runs.results || []);
       setSignalRows(signals.results || []);
       setProposalRows(proposals.results || []);
+      setEvolutionMetrics(metrics);
     } catch (error) {
       message.error(errorText(error, "运行记录加载失败"));
     } finally {
@@ -2085,7 +2289,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       message.success(
         result.count
           ? `已生成 ${result.count} 条进化提案${result.autoDraftedIds?.length ? `，其中 ${result.autoDraftedIds.length} 条低风险已自动开草稿` : ""}`
-          : "暂无足够信号生成提案（正式运行信号累计 ≥ 2 才会触发）",
+          : "暂无足够可进化信号。试跑里的「等待确认」是正常暂停，不会当成缺陷；需要反复缺字段、失败或转人工才会出提案。",
       );
       await refreshRuns();
       await refreshVersions();
@@ -2271,8 +2475,8 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
             note: "确认后继续真实执行后续节点（如报告生成）；前序收集/确认步骤会快速复核。",
             logs: [
               ...prevLogs,
-              { time: startedAt, text: "已确认，继续执行后续步骤", status: "ok" },
-              { time: startedAt, text: "正在执行后续业务节点（报告生成可能需要数十秒）…", status: "running" },
+              { time: startedAt, text: "已确认，继续执行后续步骤", status: "ok" as const },
+              { time: startedAt, text: "正在执行后续业务节点（报告生成可能需要数十秒）…", status: "running" as const },
             ].slice(-28),
           },
         };
@@ -2701,6 +2905,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       : scopedKeys.length
         ? "修改选中步骤"
         : "改写整条流程";
+    const rewriteStartedAt = Date.now();
     const placeholder: ChatMessage = {
       id: assistantId,
       role: "assistant",
@@ -2708,8 +2913,42 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
         ? `好的，正在为您执行「${draft.name || "当前流程"}」整条流程，请稍候…`
         : "",
       tools: trial ? undefined : [{ name: "read_graph", summary: "读取当前流程", status: "running" }],
-      toolsLive: true,
+      toolsLive: !trial,
       createdAt: Date.now(),
+      rewrite: trial
+        ? undefined
+        : {
+            status: "running",
+            startedAt: rewriteStartedAt,
+            currentHint: consult
+              ? "正在查阅可用能力…"
+              : scopedKeys.length
+                ? "正在读取选中步骤…"
+                : "正在读取当前流程…",
+            tools: [{ name: "read_graph", summary: "读取当前流程", status: "running" }],
+            events: [
+              {
+                id: `hello-${rewriteStartedAt}`,
+                kind: "hello",
+                time: formatTrialClock(),
+                title: "已发起改写请求",
+                detail: consult
+                  ? "咨询模式：只回答问题，不改流程"
+                  : scopedKeys.length
+                    ? `编辑范围：${scopedKeys.length} 个步骤`
+                    : "编辑范围：整条流程",
+                status: "ok",
+              },
+              {
+                id: `status-${rewriteStartedAt}`,
+                kind: "status",
+                time: formatTrialClock(),
+                title: "读取流程",
+                detail: "准备调用模型…",
+                status: "running",
+              },
+            ],
+          },
       trial: trial
         ? {
             status: "running",
@@ -2734,7 +2973,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           item.id === assistantId
             ? {
                 ...item,
-                content: errorText(error, "试跑失败，请稍后重试。"),
+                content: errorText(error, "试跑失败，请稍后重试。", "trial"),
                 toolsLive: false,
                 trial: {
                   status: "failed",
@@ -2743,7 +2982,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                   currentTitle: "试跑失败",
                   logs: [
                     ...(item.trial?.logs || []).filter((log) => log.status !== "running"),
-                    { time: formatTrialClock(), text: errorText(error, "试跑失败"), status: "failed" },
+                    { time: formatTrialClock(), text: errorText(error, "试跑失败", "trial"), status: "failed" },
                   ],
                 },
               }
@@ -2755,67 +2994,217 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       return;
     }
 
-    const timers: number[] = [];
-    timers.push(window.setTimeout(() => {
+    const patchRewrite = (updater: (rewrite: RewriteStreamState) => RewriteStreamState) => {
       setMessages((current) => current.map((item) => {
-        if (item.id !== assistantId || !item.toolsLive) return item;
+        if (item.id !== assistantId || !item.rewrite || !item.toolsLive) return item;
+        const next = updater(item.rewrite);
         return {
           ...item,
-          tools: [
-            { name: "read_graph", summary: "读取当前流程", status: "ok" },
-            { name: rewriteName, summary: rewriteSummary, status: "running" },
-          ],
+          rewrite: next,
+          tools: next.tools || item.tools,
+          content: "",
         };
       }));
-    }, 400));
+    };
+
+    // Fallback staged progress only if stream stays silent (e.g. non-SSE fallback path).
+    const timers: number[] = [];
     timers.push(window.setTimeout(() => {
-      setMessages((current) => current.map((item) => {
-        if (item.id !== assistantId || !item.toolsLive) return item;
-        const tools = item.tools?.length
-          ? item.tools
-          : [
-              { name: "read_graph", summary: "读取当前流程", status: "ok" as const },
-              { name: rewriteName, summary: rewriteSummary, status: "running" as const },
-            ];
-        return { ...item, tools };
-      }));
-    }, 900));
+      patchRewrite((rewrite) => {
+        if (rewrite.events.some((event) => event.kind === "stream" || event.kind === "heartbeat")) {
+          return rewrite;
+        }
+        const tools = [
+          { name: "read_graph", summary: "读取当前流程", status: "ok" as const },
+          { name: rewriteName, summary: rewriteSummary, status: "running" as const },
+        ];
+        return appendRewriteEvent(
+          { ...rewrite, tools, currentHint: consult ? "正在整理能力目录…" : "已读取流程，正在调用模型…" },
+          {
+            kind: "status",
+            title: consult ? "整理能力目录" : "调用模型",
+            detail: consult ? "正在整理可用业务能力…" : "模型开始处理改写请求…",
+            status: "running",
+          },
+          "status",
+        );
+      });
+    }, 800));
 
     try {
       const beforeDraft = draft;
-      const response = await rewriteSopWithAi({
+      const requestBody = {
         instruction: text || "请根据附图修改",
         draft,
         history: messages.map(({ role, content }) => ({ role, content })),
         targetNodeKeys: scopedKeys,
         images,
-        mode: consult ? "consult" : "edit",
-      });
+        mode: consult ? "consult" as const : "edit" as const,
+      };
+      let response:
+        | Awaited<ReturnType<typeof rewriteSopWithAi>>
+        | null = null;
+      let streamChars = 0;
+      let usedStream = false;
+      try {
+        await rewriteSopWithAiStream(requestBody, {
+          onHello: () => {
+            usedStream = true;
+            patchRewrite((rewrite) => appendRewriteEvent(
+              rewrite,
+              {
+                kind: "hello",
+                title: "流式通道已建立",
+                detail: "开始接收状态与模型输出",
+                status: "ok",
+              },
+              "hello",
+            ));
+          },
+          onStatus: (payload) => {
+            usedStream = true;
+            const tools = (payload.tools || []).map((tool) => ({
+              name: tool.name,
+              summary: tool.summary,
+              status: mapToolStatus(tool.status),
+            }));
+            const messageText = String(payload.message || "正在处理…");
+            patchRewrite((rewrite) => appendRewriteEvent(
+              {
+                ...rewrite,
+                tools: tools.length ? tools : rewrite.tools,
+                currentHint: messageText,
+              },
+              {
+                kind: "status",
+                title: messageText.replace(/…$/, "") || "状态更新",
+                detail: tools.length
+                  ? tools.map((tool) => formatSopToolLabel(tool)).join(" → ")
+                  : undefined,
+                status: tools.some((tool) => tool.status === "failed")
+                  ? "failed"
+                  : tools.some((tool) => tool.status === "running")
+                    ? "running"
+                    : "ok",
+              },
+              "status",
+            ));
+          },
+          onAssistantDelta: (payload) => {
+            usedStream = true;
+            const delta = String(payload.delta || "");
+            if (!delta) return;
+            streamChars += delta.length;
+            patchRewrite((rewrite) => appendRewriteEvent(
+              {
+                ...rewrite,
+                streamChars,
+                currentHint: `模型正在输出…（已 ${streamChars} 字）`,
+                tools: (rewrite.tools || []).map((tool) => (
+                  ["rewrite_flow", "rewrite_nodes", "list_actions"].includes(tool.name)
+                    ? { ...tool, status: "running" as const }
+                    : tool
+                )),
+              },
+              {
+                kind: "stream",
+                title: "模型输出中",
+                detail: `已接收 ${streamChars} 字（结构草稿流式生成中，完成后会整理成可读说明）`,
+                status: "running",
+              },
+              "stream",
+            ));
+          },
+          onHeartbeat: (payload) => {
+            usedStream = true;
+            const messageText = String(payload.message || "仍在处理，请稍候…");
+            patchRewrite((rewrite) => appendRewriteEvent(
+              { ...rewrite, currentHint: messageText },
+              {
+                kind: "heartbeat",
+                title: "保持连接",
+                detail: messageText,
+                status: "waiting",
+              },
+              "heartbeat",
+            ));
+          },
+          onDone: (payload) => {
+            usedStream = true;
+            response = payload as Awaited<ReturnType<typeof rewriteSopWithAi>>;
+          },
+          onError: (messageText) => {
+            throw new Error(messageText || "SOP 改写失败");
+          },
+        });
+        if (!response) {
+          throw new Error("流式改写未返回结果");
+        }
+      } catch {
+        if (!usedStream) {
+          patchRewrite((rewrite) => appendRewriteEvent(
+            { ...rewrite, currentHint: "流式通道不可用，改用整包请求…" },
+            {
+              kind: "status",
+              title: "回退到同步改写",
+              detail: "SSE 不可用或中断，改用一次性请求",
+              status: "waiting",
+            },
+          ));
+        }
+        response = await rewriteSopWithAi(requestBody);
+      }
       timers.forEach((timer) => window.clearTimeout(timer));
-      const unchanged = response.changed === false || response.scope === "consult";
-      const tools = (response.tools || []).map((tool) => ({
+      const finalResponse = response;
+      if (!finalResponse) {
+        throw new Error("SOP 改写未返回结果");
+      }
+      const unchanged = finalResponse.changed === false || finalResponse.scope === "consult";
+      const tools = (finalResponse.tools || []).map((tool) => ({
         name: tool.name,
         summary: tool.summary,
         status: mapToolStatus(tool.status),
       }));
+      const durationSec = Math.max(1, Math.round((Date.now() - rewriteStartedAt) / 1000));
       if (unchanged) {
         setMessages((current) => current.map((item) => (
           item.id === assistantId
             ? {
                 ...item,
-                content: response.assistant || "已回答，未修改流程。",
-                model: response.model,
+                content: finalResponse.assistant || "已回答，未修改流程。",
+                model: finalResponse.model,
                 tools: tools.length ? tools : item.tools?.map((tool) => ({ ...tool, status: "ok" as const })),
                 toolsLive: false,
+                rewrite: item.rewrite
+                  ? {
+                      ...appendRewriteEvent(
+                        {
+                          ...finalizeRewriteEvents(item.rewrite, "completed"),
+                          durationSec,
+                          tools: tools.length ? tools : item.rewrite.tools,
+                          currentHint: "已完成咨询，未修改流程",
+                          streamChars: item.rewrite.streamChars,
+                        },
+                        {
+                          kind: "done",
+                          title: "改写结束",
+                          detail: "咨询完成，流程保持不变",
+                          status: "ok",
+                        },
+                      ),
+                      status: "completed",
+                      durationSec,
+                    }
+                  : undefined,
               }
             : item
         )));
         return;
       }
-      const change = diffFlowChange(beforeDraft, response.draft);
-      setPendingDrafts((current) => ({ ...current, [assistantId]: response.draft }));
+      const change = diffFlowChange(beforeDraft, finalResponse.draft);
+      setPendingDrafts((current) => ({ ...current, [assistantId]: finalResponse.draft }));
       // Preview on canvas immediately; user can still undo via the change card.
-      setDraft(response.draft);
+      setDraft(finalResponse.draft);
       setDirty(true);
       if (scopedKeys.length) setSelectedNodeKeys(scopedKeys);
       const chainText = change.chain.length
@@ -2825,12 +3214,33 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
         item.id === assistantId
           ? {
               ...item,
-              content: `${response.assistant}${chainText}`,
-              model: response.model,
+              content: `${finalResponse.assistant}${chainText}`,
+              model: finalResponse.model,
               tools: tools.length ? tools : item.tools?.map((tool) => ({ ...tool, status: "ok" as const })),
               toolsLive: false,
               undoDraft: beforeDraft,
               flowChange: { ...change, applied: true, undone: false },
+              rewrite: item.rewrite
+                ? {
+                    ...appendRewriteEvent(
+                      {
+                        ...finalizeRewriteEvents(item.rewrite, "completed"),
+                        durationSec,
+                        tools: tools.length ? tools : item.rewrite.tools,
+                        currentHint: "改写完成，已预览到画布",
+                        streamChars: item.rewrite.streamChars,
+                      },
+                      {
+                        kind: "done",
+                        title: "改写完成",
+                        detail: `耗时 ${durationSec}s · 已写入 ${finalResponse.draft.graph.nodes.length} 个步骤`,
+                        status: "ok",
+                      },
+                    ),
+                    status: "completed",
+                    durationSec,
+                  }
+                : undefined,
             }
           : item
       )));
@@ -2845,11 +3255,35 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
         } else {
           tools.push({ name: rewriteName, summary: rewriteSummary, status: "failed" });
         }
+        const errText = errorText(
+          error,
+          consult ? "暂时无法回答，请稍后重试。" : "AI 暂时无法修改这个流程，请稍后重试。",
+          "rewrite",
+        );
         return {
           ...item,
-          content: errorText(error, consult ? "暂时无法回答，请稍后重试。" : "AI 暂时无法修改这个流程，请稍后重试。"),
+          content: errText,
           tools,
           toolsLive: false,
+          rewrite: item.rewrite
+            ? {
+                ...appendRewriteEvent(
+                  {
+                    ...finalizeRewriteEvents(item.rewrite, "failed"),
+                    durationSec: Math.max(1, Math.round((Date.now() - rewriteStartedAt) / 1000)),
+                    tools,
+                    currentHint: errText,
+                  },
+                  {
+                    kind: "error",
+                    title: "改写失败",
+                    detail: errText,
+                    status: "failed",
+                  },
+                ),
+                status: "failed",
+              }
+            : undefined,
         };
       }));
     } finally {
@@ -2907,7 +3341,8 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     if (sending) return;
     if (!record) {
       const saved = await saveDraft();
-      if (!saved?.version) return;
+      const savedVersion = saved?.version;
+      if (!savedVersion) return;
       const text = "跑一遍流程";
       const assistantId = `a-${Date.now()}`;
       setMessages((current) => [
@@ -2920,7 +3355,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           toolsLive: true,
           trial: {
             status: "running",
-            total: Math.max((saved.version.graph?.nodes || draft.graph.nodes).length, 1),
+            total: Math.max((savedVersion.graph?.nodes || draft.graph.nodes).length, 1),
             current: 0,
             currentTitle: "准备执行",
             logs: [{ time: formatTrialClock(), text: "开始执行流程", status: "ok" }],
@@ -2930,23 +3365,23 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       setSending(true);
       try {
         await runTrialInChat(text, assistantId, {
-          key: saved.key,
-          version: saved.version.version,
-          graph: saved.version.graph || draft.graph,
+          key: saved!.key,
+          version: savedVersion.version,
+          graph: savedVersion.graph || draft.graph,
         });
       } catch (error) {
         setMessages((current) => current.map((item) => (
           item.id === assistantId
             ? {
                 ...item,
-                content: errorText(error, "试跑失败，请稍后重试。"),
+                content: errorText(error, "试跑失败，请稍后重试。", "trial"),
                 toolsLive: false,
                 trial: {
                   status: "failed",
                   total: Math.max(draft.graph.nodes.length, 1),
                   current: 0,
                   currentTitle: "试跑失败",
-                  logs: [{ time: formatTrialClock(), text: errorText(error, "试跑失败"), status: "failed" }],
+                  logs: [{ time: formatTrialClock(), text: errorText(error, "试跑失败", "trial"), status: "failed" }],
                 },
               }
             : item
@@ -3016,7 +3451,9 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           当前版本 v{selectedVersion?.version || draft.version}
         </button>
         {record && (
-          <Button icon={<HistoryOutlined />} onClick={() => void openRuns()}>运行记录</Button>
+          <Button icon={<ThunderboltOutlined />} onClick={() => { setEvolutionTab("evolve"); void openRuns(); }}>
+            自我进化
+          </Button>
         )}
         <Button icon={<SaveOutlined />} loading={saving} disabled={readOnly} onClick={() => void saveDraft()}>保存流程</Button>
         {record?.canEdit && selectedVersion?.status === "draft" && <Button type="primary" onClick={() => void publishCurrent()}>发布</Button>}
@@ -3088,9 +3525,13 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                   <span>{item.role === "assistant" ? "小助手" : "我"}</span>
                   <time>{formatChatClock(item.createdAt)}</time>
                 </div>
-                {item.content ? (
-                  <div className={`sop-chat-bubble${item.toolsLive && !item.trial && !item.flowChange ? " is-thinking" : ""}`}>
-                    <p>{item.content}</p>
+                {item.content && !(item.toolsLive && item.rewrite) ? (
+                  <div className={`sop-chat-bubble${item.toolsLive && !item.trial && !item.flowChange && !item.rewrite ? " is-thinking" : ""}`}>
+                    {item.role === "assistant" ? (
+                      <ChatMarkdown content={item.content} />
+                    ) : (
+                      <p>{item.content}</p>
+                    )}
                     {!!item.images?.length && (
                       <div className="sop-chat-images">
                         <Image.PreviewGroup>
@@ -3103,6 +3544,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                     {item.model && !item.trial && <small>{item.model}</small>}
                   </div>
                 ) : null}
+                {item.rewrite ? <SopRewriteTimelinePanel rewrite={item.rewrite} /> : null}
                 {item.trial ? (
                   <SopTrialRunCard
                     trial={item.trial}
@@ -3146,12 +3588,16 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                     onUndo={() => undoFlowChange(item.id)}
                   />
                 ) : null}
-                {!item.trial && !item.flowChange && !!item.tools?.length && (
-                  <div className="sop-chat-bubble">
-                    <SopToolProcess tools={item.tools} />
+                {!item.trial && !item.flowChange && !item.rewrite && (!!item.tools?.length || item.toolsLive) && (
+                  <div className={`sop-chat-bubble${item.toolsLive ? " is-thinking" : ""}`}>
+                    <SopToolProcess
+                      tools={item.tools || []}
+                      live={Boolean(item.toolsLive)}
+                      liveHint={item.toolsLive ? (item.content || "正在处理…") : ""}
+                    />
                   </div>
                 )}
-                {!item.content && item.toolsLive && !item.trial && (
+                {!item.content && item.toolsLive && !item.trial && !item.rewrite && !(item.tools?.length) && (
                   <div className="sop-chat-bubble is-thinking"><p>正在思考…</p></div>
                 )}
               </div>
@@ -3167,7 +3613,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
               <button
                 type="button"
                 key={chip.text}
-                className={chip.accent ? "is-accent" : ""}
+                className={"accent" in chip && chip.accent ? "is-accent" : ""}
                 disabled={sending}
                 onClick={() => setInput(chip.text)}
               >
@@ -3337,135 +3783,211 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     </Modal>
     <Modal
       open={runsOpen}
-      title="运行记录与自动进化"
+      title="自我进化"
       footer={null}
-      width={900}
+      width={920}
       onCancel={() => { setRunsOpen(false); setRunDetail(null); }}
     >
-      <div className="sop-version-manager">
-        <div className="sop-version-manager-head">
+      <div className="sop-evo-shell">
+        <div className="sop-evo-hero">
           <div>
             <strong>{record?.name}</strong>
-            <span>正式执行计入成功率与进化信号；试跑单独统计。提案最多落到草稿，需人工发布。</span>
-          </div>
-          <Space wrap>
-            <Select
-              size="small"
-              value={runFilter}
-              style={{ width: 120 }}
-              options={[
-                { value: "all", label: "全部" },
-                { value: "live", label: "正式" },
-                { value: "trial", label: "试跑" },
-              ]}
-              onChange={(value: "all" | "live" | "trial") => {
-                setRunFilter(value);
-                void refreshRuns(value);
-              }}
-            />
-            <Button size="small" icon={<ReloadOutlined />} loading={runsLoading} onClick={() => void refreshRuns()}>刷新</Button>
-            {record?.canEdit && !record.system && (
-              <Button
-                size="small"
-                type="primary"
-                icon={<ThunderboltOutlined />}
-                loading={analyzingEvolution}
-                onClick={() => void runAnalyzeEvolution()}
-              >
-                生成进化提案
-              </Button>
+            <p>从运行结果学习 → 生成可校验的改流程提案 → 你确认后写入草稿 → 手动发布。系统不会偷偷改线上版本。</p>
+            {evolutionMetrics && evolutionMetrics.enabled === false && (
+              <p style={{ color: "#b45309" }}>当前企业已关闭 SOP 自我进化，请到「企业与成员 → 企业设置」开启。</p>
             )}
-          </Space>
-        </div>
-        {!!signalRows.length && (
-          <div className="sop-run-signals">
-            <strong>进化信号</strong>
-            <div className="sop-run-signal-chips">
-              {signalRows.slice(0, 8).map((signal) => (
-                <Tag key={signal.id}>
-                  {SOP_SIGNAL_LABEL[signal.signalType] || signal.signalType}
-                  {signal.nodeKey ? ` · ${signal.nodeKey}` : ""} ×{signal.count}
-                </Tag>
-              ))}
-            </div>
           </div>
-        )}
-        <div className="sop-run-signals">
-          <strong>进化提案</strong>
-          {!proposalRows.length ? (
-            <span style={{ color: "#7f8793", fontSize: 12 }}>暂无提案。正式运行产生信号后，点击「生成进化提案」。</span>
-          ) : (
-            <div className="sop-proposal-list">
-              {proposalRows.map((proposal) => (
-                <div key={proposal.id} className="sop-proposal-card">
-                  <div className="sop-proposal-card-head">
-                    <strong>{proposal.title}</strong>
-                    <Space size={4}>
-                      <Tag>{SOP_PROPOSAL_STATUS[proposal.status] || proposal.status}</Tag>
-                      <Tag color={proposal.riskLevel === "high" ? "red" : proposal.riskLevel === "medium" ? "orange" : "green"}>
-                        {proposal.riskLevel === "high" ? "高风险" : proposal.riskLevel === "medium" ? "中风险" : "低风险"}
-                      </Tag>
-                      <Tag>{proposal.category}</Tag>
-                    </Space>
+          {record?.canEdit && !record.system && (
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              loading={analyzingEvolution}
+              disabled={evolutionMetrics?.enabled === false}
+              onClick={() => {
+                setEvolutionTab("evolve");
+                void runAnalyzeEvolution();
+              }}
+            >
+              分析并生成提案
+            </Button>
+          )}
+        </div>
+        <Tabs
+          activeKey={evolutionTab}
+          onChange={(key) => setEvolutionTab(key as "runs" | "evolve")}
+          items={[
+            {
+              key: "evolve",
+              label: `进化提案${proposalRows.length ? ` (${proposalRows.length})` : ""}`,
+              children: (
+                <div className="sop-evo-pane">
+                  <div className="sop-evo-metrics">
+                    <div>
+                      <em>{evolutionMetrics?.definition.successRate ?? record?.successRate ?? 0}%</em>
+                      <span>正式成功率</span>
+                    </div>
+                    <div>
+                      <em>{evolutionMetrics?.signalCount ?? signalRows.length}</em>
+                      <span>信号条目</span>
+                    </div>
+                    <div>
+                      <em>{evolutionMetrics?.pendingProposals ?? proposalRows.filter((row) => !["accepted", "rejected", "expired"].includes(row.status)).length}</em>
+                      <span>待处理提案</span>
+                    </div>
+                    <div>
+                      <em>{runRows.filter((row) => !row.isTrial).length}/{runRows.filter((row) => row.isTrial).length}</em>
+                      <span>正式 / 试跑</span>
+                    </div>
                   </div>
-                  <p>{proposal.rationale || "—"}</p>
-                  {proposal.draftVersion && <small>草稿版本 v{proposal.draftVersion}</small>}
-                  {record?.canEdit && !record.system && !["accepted", "rejected", "expired"].includes(proposal.status) && (
-                    <Space wrap size={6} style={{ marginTop: 8 }}>
-                      <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("trial", proposal.id)}>试跑</Button>
-                      <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("draft", proposal.id)}>生成草稿</Button>
-                      <Button size="small" type="primary" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("accept", proposal.id)}>采纳</Button>
-                      <Button size="small" danger loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("reject", proposal.id)}>拒绝</Button>
-                    </Space>
+                  {!!evolutionMetrics?.acceptedComparisons?.length && (
+                    <div className="sop-run-signals">
+                      <strong>采纳前后成功率对比</strong>
+                      <div className="sop-proposal-list">
+                        {evolutionMetrics.acceptedComparisons.slice(0, 5).map((row) => (
+                          <div key={row.proposalId} className="sop-proposal-card">
+                            <div className="sop-proposal-card-head">
+                              <strong>{row.title}</strong>
+                              <Tag color={row.deltaSuccessRate >= 0 ? "green" : "red"}>
+                                {row.deltaSuccessRate >= 0 ? "+" : ""}{row.deltaSuccessRate}%
+                              </Tag>
+                            </div>
+                            <p>
+                              基线 v{row.before.version || "—"}：{row.before.successRate}%（{row.before.callCount} 次）
+                              {" → "}
+                              进化稿 v{row.after.version || "—"}：{row.after.successRate}%（{row.after.callCount} 次）
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!!signalRows.length && (
+                    <div className="sop-run-signals">
+                      <strong>当前学到的信号</strong>
+                      <div className="sop-run-signal-chips">
+                        {signalRows.slice(0, 10).map((signal) => (
+                          <Tag key={signal.id} color={(signal.payloadSummary as { from_trial?: boolean })?.from_trial ? "blue" : "default"}>
+                            {SOP_SIGNAL_LABEL[signal.signalType] || signal.signalType}
+                            {signal.nodeKey ? ` · ${signal.nodeKey}` : ""} ×{signal.count}
+                          </Tag>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!proposalRows.length ? (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description={
+                        evolutionMetrics?.enabled === false
+                          ? "企业已关闭自我进化。"
+                          : signalRows.length
+                            ? "已有信号，点击右上角「分析并生成提案」。"
+                            : "还没有可学习的信号。先在编辑器里多试跑几次（确认点暂停是正常的），或等正式执行产生卡点/失败后再分析。"
+                      }
+                    />
+                  ) : (
+                    <div className="sop-proposal-list">
+                      {proposalRows.map((proposal) => (
+                        <div key={proposal.id} className="sop-proposal-card">
+                          <div className="sop-proposal-card-head">
+                            <strong>{proposal.title}</strong>
+                            <Space size={4}>
+                              <Tag>{SOP_PROPOSAL_STATUS[proposal.status] || proposal.status}</Tag>
+                              <Tag color={proposal.riskLevel === "high" ? "red" : proposal.riskLevel === "medium" ? "orange" : "green"}>
+                                {proposal.riskLevel === "high" ? "高风险" : proposal.riskLevel === "medium" ? "中风险" : "低风险"}
+                              </Tag>
+                            </Space>
+                          </div>
+                          <p>{proposal.rationale || "—"}</p>
+                          {proposal.draftVersion && <small>已落到草稿 v{proposal.draftVersion}（发布后才会影响正式执行）</small>}
+                          {(proposal.evidence as { skillId?: string })?.skillId && (
+                            <small>草稿技能：{(proposal.evidence as { skillId?: string }).skillId}</small>
+                          )}
+                          {record?.canEdit && !record.system && !["accepted", "rejected", "expired"].includes(proposal.status) && (
+                            <Space wrap size={6} style={{ marginTop: 8 }}>
+                              <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("trial", proposal.id)}>验证试跑</Button>
+                              <Button size="small" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("draft", proposal.id)}>写入草稿</Button>
+                              <Button size="small" type="primary" loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("accept", proposal.id)}>采纳</Button>
+                              <Button size="small" danger loading={proposalBusyId === proposal.id} onClick={() => void handleProposalAction("reject", proposal.id)}>忽略</Button>
+                            </Space>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <Spin spinning={runsLoading}>
-          {!runRows.length ? (
-            <Empty description="暂无运行记录" />
-          ) : (
-            <div className="sop-version-list sop-run-list">
-              {runRows.map((run) => (
-                <button
-                  type="button"
-                  key={run.runKey}
-                  className={runDetail?.runKey === run.runKey ? "is-active" : ""}
-                  onClick={() => void openRunDetail(run.runKey)}
-                >
-                  <span>
-                    <strong>{SOP_RUN_STATUS_LABEL[run.status] || run.status}</strong>
-                    <Tag color={run.isTrial ? "blue" : "default"}>{run.isTrial ? "试跑" : run.source === "resume" ? "续跑" : "正式"}</Tag>
-                    <Tag>v{run.version}</Tag>
-                  </span>
-                  <span>
-                    {run.currentNode ? `节点 ${run.currentNode}` : "—"}
-                    {run.error ? ` · ${run.error}` : ""}
-                    {run.missingFields?.length ? ` · 缺少 ${run.missingFields.slice(0, 3).join("、")}` : ""}
-                  </span>
-                  <small>{run.startedAt ? new Date(run.startedAt).toLocaleString() : ""}</small>
-                </button>
-              ))}
-            </div>
-          )}
-        </Spin>
-        {runDetail && (
-          <div className="sop-run-detail">
-            <strong>步骤明细 · {runDetail.traceId}</strong>
-            <div className="sop-run-detail-nodes">
-              {(runDetail.nodes || []).map((node) => (
-                <div key={`${node.sequence}-${node.nodeKey}`}>
-                  <span>#{node.sequence} {node.title || node.nodeKey}</span>
-                  <Tag>{SOP_RUN_STATUS_LABEL[node.status] || node.status}</Tag>
-                  <em>{node.error || node.nodeType}</em>
+              ),
+            },
+            {
+              key: "runs",
+              label: "运行记录",
+              children: (
+                <div className="sop-evo-pane">
+                  <div className="sop-evo-runs-toolbar">
+                    <Select
+                      size="small"
+                      value={runFilter}
+                      style={{ width: 120 }}
+                      options={[
+                        { value: "all", label: "全部" },
+                        { value: "live", label: "正式" },
+                        { value: "trial", label: "试跑" },
+                      ]}
+                      onChange={(value: "all" | "live" | "trial") => {
+                        setRunFilter(value);
+                        void refreshRuns(value);
+                      }}
+                    />
+                    <Button size="small" icon={<ReloadOutlined />} loading={runsLoading} onClick={() => void refreshRuns()}>刷新</Button>
+                  </div>
+                  <Spin spinning={runsLoading}>
+                    {!runRows.length ? (
+                      <Empty description="暂无运行记录" />
+                    ) : (
+                      <div className="sop-version-list sop-run-list">
+                        {runRows.map((run) => (
+                          <button
+                            type="button"
+                            key={run.runKey}
+                            className={runDetail?.runKey === run.runKey ? "is-active" : ""}
+                            onClick={() => void openRunDetail(run.runKey)}
+                          >
+                            <span>
+                              <strong>{SOP_RUN_STATUS_LABEL[run.status] || run.status}</strong>
+                              <Tag color={run.isTrial ? "blue" : "default"}>{run.isTrial ? "试跑" : run.source === "resume" ? "续跑" : "正式"}</Tag>
+                              <Tag>v{run.version}</Tag>
+                            </span>
+                            <span>
+                              {run.currentNode ? `节点 ${run.currentNode}` : "—"}
+                              {run.error ? ` · ${run.error}` : ""}
+                              {run.missingFields?.length ? ` · 缺少 ${run.missingFields.slice(0, 3).join("、")}` : ""}
+                            </span>
+                            <small>{run.startedAt ? new Date(run.startedAt).toLocaleString() : ""}</small>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </Spin>
+                  {runDetail && (
+                    <div className="sop-run-detail">
+                      <strong>步骤明细 · {runDetail.traceId}</strong>
+                      <div className="sop-run-detail-nodes">
+                        {(runDetail.nodes || []).map((node) => (
+                          <div key={`${node.sequence}-${node.nodeKey}`}>
+                            <span>#{node.sequence} {node.title || node.nodeKey}</span>
+                            <Tag>{SOP_RUN_STATUS_LABEL[node.status] || node.status}</Tag>
+                            <em>{node.error || node.nodeType}</em>
+                          </div>
+                        ))}
+                        {!runDetail.nodes?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无节点明细" />}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
-              {!runDetail.nodes?.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无节点明细" />}
-            </div>
-          </div>
-        )}
+              ),
+            },
+          ]}
+        />
       </div>
     </Modal>
   </section>;

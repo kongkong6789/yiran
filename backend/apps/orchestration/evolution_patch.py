@@ -126,6 +126,18 @@ def apply_evolution_patch(graph: dict, patch: dict | None) -> dict:
             )
             edges = rewritten
 
+    # Policy: retry hint on execute_action
+    retry = policy_patch.get("retry")
+    if isinstance(retry, dict):
+        node_key = str(retry.get("nodeKey") or "").strip()
+        attempts = max(1, min(int(retry.get("maxAttempts") or 2), 5))
+        if node_key in by_key:
+            node = deepcopy(by_key[node_key])
+            config = dict(node.get("config") or {})
+            config["retry"] = {"max_attempts": attempts, "on_failure": "checkpoint"}
+            node["config"] = config
+            by_key[node_key] = node
+
     # Skill bind onto execute_action node
     bind = skill_patch.get("bindActionOnNode")
     if isinstance(bind, dict):
@@ -166,8 +178,10 @@ def estimate_risk(patch: dict | None, *, high_risk_actions: set[str] | None = No
     action_name = str(bind.get("actionName") or "")
     if action_name.startswith("notify.") or action_name in high_risk_actions or "high_risk" in action_name:
         return "high"
+    if skill.get("scaffoldFromPattern") or skill.get("suggestCallableSkillId"):
+        return "medium"
     if policy.get("addCheckpointBefore") or policy.get("notifyTargets"):
         return "medium"
-    if graph.get("removeNodeKeys") or len(graph.get("upsertNodes") or []) > 2:
+    if graph.get("removeNodeKeys") or graph.get("removeEdgeKeys") or len(graph.get("upsertNodes") or []) > 2:
         return "medium"
     return "low"

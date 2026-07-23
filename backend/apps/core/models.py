@@ -16,6 +16,7 @@ class Organization(models.Model):
         verbose_name="创建人",
     )
     is_active = models.BooleanField("是否启用", default=True, db_index=True)
+    sop_evolution_enabled = models.BooleanField("启用 SOP 自我进化", default=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 

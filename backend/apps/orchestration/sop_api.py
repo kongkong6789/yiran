@@ -27,8 +27,9 @@ def _known_action(name: str) -> bool:
 
 
 def _available_catalog(organization, user=None) -> dict:
-    """Assets + actions the editor/AI can bind."""
+    """Assets + actions + knowledge bases the editor/AI can bind."""
     from apps.datalake.models import SourceSnapshot
+    from apps.knowledge.access import visible_knowledge_bases
 
     from .action_catalog import list_catalog_actions
 
@@ -54,7 +55,24 @@ def _available_catalog(organization, user=None) -> dict:
             "row_count": row.row_count or 0,
             "governance_status": row.governance_status,
         })
-    return {"availableActions": actions, "availableAssets": assets}
+
+    knowledge_bases: list[dict] = []
+    if user is not None:
+        for kb in visible_knowledge_bases(user).order_by("name")[:80]:
+            knowledge_bases.append({
+                "id": kb.id,
+                "name": kb.name,
+                "visibility": kb.visibility,
+                "status": getattr(kb, "status", "") or "",
+                "file_count": int(getattr(kb, "file_count", 0) or 0),
+                "description": str(getattr(kb, "description", "") or "")[:160],
+            })
+
+    return {
+        "availableActions": actions,
+        "availableAssets": assets,
+        "availableKnowledgeBases": knowledge_bases,
+    }
 
 
 def _pick_action_name(text: str, *, fallback: str = "", actions: list[dict] | None = None) -> str:
@@ -411,6 +429,58 @@ def _wants_full_rebuild(instruction: str, draft: dict) -> bool:
     return (not key and default_name and len(nodes) <= 4)
 
 
+def _instruction_allows_node_delete(instruction: str) -> bool:
+    """True when the user clearly wants nodes removed / skipped / simplified away."""
+    text = instruction or ""
+    delete_words = (
+        "删除", "去掉", "移除", "不要这个", "取消这一步", "删掉",
+        "跳过确认", "去掉确认", "不要确认", "取消确认", "无需确认", "不用确认",
+        "跳过人工", "去掉人工确认", "移除确认", "删除确认",
+        "精简", "简化", "砍掉", "略过",
+    )
+    if any(word in text for word in delete_words):
+        return True
+    # Soft structural edits that usually imply dropping bypassed steps.
+    if any(word in text for word in ("优化", "梳理", "整体")) and any(
+        word in text for word in ("确认", "多余", "冗余", "绕过", "跳过")
+    ):
+        return True
+    return False
+
+
+def _instruction_allows_structural_replace(instruction: str) -> bool:
+    """Broader than hard-delete: whole-flow rewrite / skip / simplify intents."""
+    text = instruction or ""
+    if _instruction_allows_node_delete(text):
+        return True
+    return any(word in text for word in (
+        "优化", "梳理", "整体流程", "重排", "调整流程", "改流程",
+        "跳过", "精简", "简化", "重构",
+    ))
+
+
+def _reachable_node_keys(start: str, edges: list[dict], node_keys: set[str]) -> set[str]:
+    if not start or start not in node_keys:
+        return set()
+    adjacency: dict[str, list[str]] = {key: [] for key in node_keys}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if source in adjacency and target in node_keys:
+            adjacency[source].append(target)
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        stack.extend(adjacency.get(key) or [])
+    return seen
+
+
 def _normalize_node_actions(graph: dict, fallback_action: str = "") -> dict:
     """Replace invented action names with registered contracts."""
     next_graph = deepcopy(graph)
@@ -499,10 +569,12 @@ def _merge_flow_graph(current_graph: dict, generated_graph: dict, instruction: s
     current = deepcopy(current_graph) if isinstance(current_graph, dict) else {}
     generated = deepcopy(generated_graph) if isinstance(generated_graph, dict) else {}
     text = instruction or ""
-    allow_delete = any(word in text for word in ("删除", "去掉", "移除", "不要这个", "取消这一步", "删掉"))
-    if _wants_full_rebuild(text, {"graph": current, "name": "", "key": ""}):
+    allow_delete = _instruction_allows_node_delete(text)
+    allow_structure = _instruction_allows_structural_replace(text)
+    # Only honor explicit rebuild phrases here. Do NOT use the empty-draft heuristic
+    # (it would treat every small existing SOP as "rebuild" and drop omitted nodes).
+    if any(word in text for word in ("从零", "重建", "重新设计", "全部重做", "推倒重来", "替换整条", "重搭")):
         merged = _normalize_node_actions(generated or current, fallback_action)
-        # keep layout from current when rebuilding titles only
         cur_layout = ((current.get("meta") or {}) if isinstance(current.get("meta"), dict) else {}).get("layout")
         if isinstance(cur_layout, dict) and cur_layout:
             merged.setdefault("meta", {})
@@ -520,6 +592,21 @@ def _merge_flow_graph(current_graph: dict, generated_graph: dict, instruction: s
         if isinstance(node, dict) and str(node.get("key") or "").strip()
     ]
     generated_keys = [str(node.get("key")) for node in generated_nodes]
+    generated_key_set = set(generated_keys)
+    generated_edges = [
+        edge for edge in (generated.get("edges") or [])
+        if isinstance(edge, dict)
+        and str(edge.get("source") or "") in generated_key_set
+        and str(edge.get("target") or "") in generated_key_set
+    ]
+    # Model returned a coherent replacement graph that dropped some nodes.
+    structural_replace = bool(
+        allow_structure
+        and generated_keys
+        and generated_edges
+        and len(generated_keys) >= 2
+        and any(key not in generated_key_set for key in current_nodes)
+    )
 
     for node in generated_nodes:
         key = str(node.get("key"))
@@ -552,14 +639,18 @@ def _merge_flow_graph(current_graph: dict, generated_graph: dict, instruction: s
         else:
             current_nodes[key] = incoming
 
-    if allow_delete and generated_keys:
+    # Drop nodes the model intentionally omitted when user asked to remove/skip/simplify,
+    # or when the generated graph is a full structural replacement.
+    if generated_keys and (allow_delete or structural_replace):
         keep = set(generated_keys)
-        start = str(current.get("start") or generated.get("start") or "")
-        terminals = [str(item) for item in (generated.get("terminals") or current.get("terminals") or [])]
-        keep.update([start, *terminals])
+        start_hint = str(generated.get("start") or "")
+        terminals_hint = [str(item) for item in (generated.get("terminals") or [])]
+        if start_hint in generated_key_set:
+            keep.add(start_hint)
+        keep.update(item for item in terminals_hint if item in generated_key_set)
         current_nodes = {key: node for key, node in current_nodes.items() if key in keep}
 
-    # Prefer generated order, then append preserved extras.
+    # Prefer generated order, then any remaining kept nodes.
     ordered_keys: list[str] = []
     for key in generated_keys:
         if key in current_nodes and key not in ordered_keys:
@@ -574,7 +665,12 @@ def _merge_flow_graph(current_graph: dict, generated_graph: dict, instruction: s
         terminals = [key for key, node in current_nodes.items() if node.get("type") == "end"] or ([ordered_keys[-1]] if ordered_keys else [])
 
     edge_map: dict[tuple[str, str, str], dict] = {}
-    for edge in [*(current.get("edges") or []), *(generated.get("edges") or [])]:
+    # When replacing structure / deleting, trust generated edges; don't resurrect bypassed old links.
+    edge_pool = generated_edges if (allow_delete or structural_replace) and generated_edges else [
+        *(current.get("edges") or []),
+        *(generated.get("edges") or []),
+    ]
+    for edge in edge_pool:
         if not isinstance(edge, dict):
             continue
         source = str(edge.get("source") or "")
@@ -603,10 +699,32 @@ def _merge_flow_graph(current_graph: dict, generated_graph: dict, instruction: s
     merged = {
         "start": start if start in current_nodes else (ordered_keys[0] if ordered_keys else start),
         "terminals": terminals,
-        "nodes": [current_nodes[key] for key in ordered_keys],
+        "nodes": [current_nodes[key] for key in ordered_keys if key in current_nodes],
         "edges": list(edge_map.values()),
         "meta": meta,
     }
+
+    # Safety net: drop nodes that the new topology no longer reaches from start
+    # (typical symptom of "assistant said removed" but merge kept orphans).
+    if allow_delete or structural_replace:
+        node_key_set = {str(node.get("key")) for node in merged["nodes"] if isinstance(node, dict)}
+        reachable = _reachable_node_keys(str(merged.get("start") or ""), list(merged.get("edges") or []), node_key_set)
+        if reachable:
+            keep_keys = set(reachable)
+            keep_keys.update(str(item) for item in (merged.get("terminals") or []) if str(item) in node_key_set)
+            # Also keep nodes that can still reach a terminal through remaining edges? For delete cases,
+            # unreachable-from-start nodes should go.
+            merged["nodes"] = [node for node in merged["nodes"] if str(node.get("key")) in keep_keys]
+            kept = {str(node.get("key")) for node in merged["nodes"]}
+            merged["edges"] = [
+                edge for edge in (merged.get("edges") or [])
+                if str(edge.get("source")) in kept and str(edge.get("target")) in kept
+            ]
+            # Clean layout positions for removed nodes.
+            layout = (merged.get("meta") or {}).get("layout") if isinstance(merged.get("meta"), dict) else None
+            if isinstance(layout, dict):
+                merged["meta"]["layout"] = {key: value for key, value in layout.items() if key in kept}
+
     merged = _normalize_node_actions(merged, fallback_action or str((current_nodes.get(start) or {}).get("config", {}).get("action_name") or ""))
     return _ensure_connected(merged)
 
@@ -914,7 +1032,7 @@ def _looks_like_consult(instruction: str) -> bool:
         "有哪些", "哪些技能", "哪些能力", "什么技能", "什么能力", "可用技能", "可用能力",
         "业务能力", "怎么用", "如何用", "是什么", "说明一下", "解释一下", "当前流程",
         "支持哪些", "能做什么", "有没有", "哪些动作", "技能列表", "能力列表", "怎么试跑",
-        "什么意思", "为什么", "是否",
+        "什么意思", "为什么", "是否", "知识库", "企业数据", "数据资产", "哪些数据",
     )
     if any(token in text for token in ask_tokens):
         return True
@@ -925,7 +1043,15 @@ def _looks_like_consult(instruction: str) -> bool:
     return False
 
 
-def _format_consult_catalog(*, actions: list, assets: list, draft: dict, graph: dict) -> str:
+def _format_consult_catalog(
+    *,
+    actions: list,
+    assets: list,
+    knowledge_bases: list | None = None,
+    draft: dict,
+    graph: dict,
+    focus: str = "",
+) -> str:
     action_lines = []
     for item in actions[:24]:
         if not isinstance(item, dict):
@@ -938,40 +1064,112 @@ def _format_consult_catalog(*, actions: list, assets: list, draft: dict, graph: 
             continue
         suffix = f"（{group}）" if group else ""
         action_lines.append(f"- **{title}** `{name}`{suffix}" + (f"：{desc[:80]}" if desc else ""))
+
+    asset_lines = []
+    for item in (assets or [])[:24]:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("asset_key") or "").strip()
+        title = str(item.get("display_name") or key).strip()
+        if not key:
+            continue
+        rows = item.get("row_count")
+        suffix = f"（{rows} 行）" if rows not in (None, "") else ""
+        asset_lines.append(f"- **{title}** `{key}`{suffix}")
+
+    kb_lines = []
+    for item in (knowledge_bases or [])[:24]:
+        if not isinstance(item, dict):
+            continue
+        kb_id = item.get("id")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        files = item.get("file_count")
+        visibility = str(item.get("visibility") or "").strip()
+        meta = []
+        if visibility:
+            meta.append(visibility)
+        if files not in (None, ""):
+            meta.append(f"{files} 个文件")
+        suffix = f"（{' · '.join(meta)}）" if meta else ""
+        kb_lines.append(f"- **{name}** `id={kb_id}`{suffix}")
+
     node_titles = [
         str(node.get("title") or node.get("key") or "")
         for node in (graph.get("nodes") or [])
         if isinstance(node, dict)
     ]
     bound = str(draft.get("actionName") or "").strip()
+    focus_text = str(focus or "").strip()
+    want_kb = any(word in focus_text for word in ("知识库", "知识", "文档", "制度", "参考资料"))
+    want_assets = any(word in focus_text for word in ("企业数据", "数据资产", "台账", "销售数据", "库存数据", "哪些数据"))
+    want_actions = any(word in focus_text for word in ("技能", "能力", "动作", "能做什么"))
+
     parts = []
-    if action_lines:
-        parts.append("当前可用业务能力/技能：\n" + "\n".join(action_lines))
-    else:
-        parts.append("当前没有可绑定的业务能力（请先在技能中心启用并勾选「可用于 SOP」）。")
-    if node_titles:
+    # Prefer answering the asked concept first; never conflate KB with assets.
+    if want_kb or not (want_assets or want_actions):
+        if kb_lines:
+            parts.append(
+                "可用的**知识库**（文档检索，绑定到节点「参考知识库」）：\n"
+                + "\n".join(kb_lines)
+            )
+        elif want_kb:
+            parts.append("当前没有可参考的知识库。请先在知识库中心创建/导入文档后再绑定。")
+
+    if want_assets or (not want_kb and not want_actions):
+        if asset_lines:
+            parts.append(
+                "可用的**企业数据**（结构化表/快照，绑定到节点「使用哪些企业数据」）：\n"
+                + "\n".join(asset_lines)
+            )
+        elif want_assets:
+            parts.append("当前没有可选企业数据资产。请先在数据湖发布快照后再绑定。")
+
+    if want_actions or (not want_kb and not want_assets):
+        if action_lines:
+            parts.append("当前可用业务能力/技能：\n" + "\n".join(action_lines))
+        else:
+            parts.append("当前没有可绑定的业务能力（请先在技能中心启用并勾选「可用于 SOP」）。")
+
+    if want_kb:
+        parts.append(
+            "说明：知识库 ≠ 企业数据。"
+            "知识库用于检索制度/文档；企业数据是销售台账等结构化资产。"
+            "若要挂到某一步，可说「给知识检索步骤绑定 unove 知识库」。"
+        )
+    if node_titles and not want_kb and not want_assets:
         parts.append("当前流程步骤：\n" + "\n".join(f"{index + 1}. {title}" for index, title in enumerate(node_titles)))
-    if bound:
+    if bound and not want_kb and not want_assets:
         parts.append(f"流程当前绑定动作：`{bound}`。如需替换或新增步骤，直接说「把第 X 步改成…」即可。")
-    else:
+    elif not want_kb and not want_assets:
         parts.append("如需改流程，直接说要增加/替换哪一步即可；本次咨询不会自动改画布。")
-    if assets:
-        parts.append(f"当前可选企业数据资产 {min(len(assets), 40)} 项（试跑/绑定时可选用）。")
     return "\n\n".join(parts)
 
 
 def _consult_sop_response(*, instruction: str, draft: dict, graph: dict, catalog: dict, user) -> Response:
     actions = catalog.get("availableActions") or []
     assets = catalog.get("availableAssets") or []
+    knowledge_bases = catalog.get("availableKnowledgeBases") or []
     tools = [
         _tool_step("read_graph", f"读取当前流程（{len(graph.get('nodes') or [])} 步）"),
-        _tool_step("list_actions", f"查阅可用能力（{len(actions)} 项）"),
+        _tool_step(
+            "list_catalog",
+            f"查阅目录（能力 {len(actions)} / 企业数据 {len(assets)} / 知识库 {len(knowledge_bases)}）",
+        ),
     ]
-    fallback_assistant = _format_consult_catalog(actions=actions, assets=assets, draft=draft, graph=graph)
+    fallback_assistant = _format_consult_catalog(
+        actions=actions,
+        assets=assets,
+        knowledge_bases=knowledge_bases,
+        draft=draft,
+        graph=graph,
+        focus=instruction,
+    )
     if not llm.llm_available(user):
         tools.append(_tool_step("answer", "基于能力目录直接回答"))
         return Response({
-            "assistant": fallback_assistant[:1200],
+            "assistant": fallback_assistant[:1600],
             "draft": draft,
             "model": "catalog",
             "scope": "consult",
@@ -982,10 +1180,14 @@ def _consult_sop_response(*, instruction: str, draft: dict, graph: dict, catalog
     system = (
         "你是 SOP 编辑助手。用户在咨询问题，不是要求修改流程。"
         "只返回一个 JSON 对象：{\"assistant\":\"中文回答\",\"changed\":false}。"
-        "根据 availableActions / availableAssets / currentDraft 回答："
-        "有哪些可用技能/业务能力、当前流程在做什么、如何试跑等。"
-        "禁止返回 graph，禁止改节点/边/名称。回答简洁，可用列表。"
-        "若用户其实想改流程，在回答末尾提示他们用明确改法（如「增加一步推送」），但本次仍不要改图。"
+        "必须严格区分三个概念，禁止混用：\n"
+        "1) availableKnowledgeBases = 知识库（文档/制度检索，绑定到节点的 knowledge_scope /「参考知识库」）\n"
+        "2) availableAssets = 企业数据（结构化表/快照，绑定到 data_bindings /「使用哪些企业数据」）\n"
+        "3) availableActions = 业务能力/技能（execute_action 可调用）\n"
+        "用户问「知识库」时只回答 availableKnowledgeBases，不要用企业数据资产冒充知识库。"
+        "用户问「企业数据/数据资产」时只回答 availableAssets。"
+        "禁止返回 graph，禁止改节点/边/名称。回答简洁，可用 Markdown 列表。"
+        "若用户其实想改流程，在回答末尾提示他们用明确改法，但本次仍不要改图。"
     )
     payload_text = json.dumps({
         "instruction": instruction,
@@ -1004,6 +1206,21 @@ def _consult_sop_response(*, instruction: str, draft: dict, graph: dict, catalog
             for row in (assets[:20] if isinstance(assets, list) else [])
             if isinstance(row, dict)
         ],
+        "availableKnowledgeBases": [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "visibility": row.get("visibility"),
+                "file_count": row.get("file_count"),
+            }
+            for row in (knowledge_bases[:30] if isinstance(knowledge_bases, list) else [])
+            if isinstance(row, dict)
+        ],
+        "conceptHint": {
+            "knowledgeBases": "文档检索知识库",
+            "assets": "企业结构化数据资产",
+            "actions": "可执行业务能力/技能",
+        },
     }, ensure_ascii=False)
     result = llm.chat_messages_result(
         system,
@@ -1024,9 +1241,25 @@ def _consult_sop_response(*, instruction: str, draft: dict, graph: dict, catalog
             # Model may return plain text for Q&A — accept it.
             plain = str(result.get("content") or "").strip()
             if plain and not plain.startswith("{"):
-                assistant = plain[:1200]
+                assistant = plain[:1600]
+    # Guardrail: if user asked about knowledge bases but answer only talks about assets, fall back.
+    asked_kb = any(word in str(instruction or "") for word in ("知识库", "知识库可以用", "参考知识"))
+    if asked_kb and knowledge_bases:
+        asset_keys = [
+            str(row.get("asset_key") or "")
+            for row in assets[:20]
+            if isinstance(row, dict) and row.get("asset_key")
+        ]
+        mentions_asset = any(key and key in assistant for key in asset_keys)
+        mentions_kb = any(
+            str(row.get("name") or "") and str(row.get("name")) in assistant
+            for row in knowledge_bases[:20]
+            if isinstance(row, dict)
+        )
+        if mentions_asset and not mentions_kb:
+            assistant = fallback_assistant
     return Response({
-        "assistant": assistant[:1200],
+        "assistant": assistant[:1600],
         "draft": draft,
         "model": result.get("model") or "consult",
         "scope": "consult",
@@ -1153,6 +1386,7 @@ def sop_ai_rewrite(request):
     catalog = _available_catalog(organization, user=request.user)
     available_actions = catalog["availableActions"]
     available_assets = catalog["availableAssets"]
+    available_knowledge_bases = catalog.get("availableKnowledgeBases") or []
 
     mode = str(request.data.get("mode") or "").strip().lower()
     if mode == "consult" or (mode != "edit" and not images and _looks_like_consult(instruction)):
@@ -1223,8 +1457,9 @@ def sop_ai_rewrite(request):
 config 必须包含 instruction、expected_user_info、allowed_actions、knowledge_scope、data_bindings、action_name。
 绑定规则：
 1. data_bindings.asset_keys / snapshot_ids 必须从 availableAssets 中选择真实值；涉及销售/库存时优先选对应资产。
-2. execute_action / gate 的 action_name 必须从 availableActions.name 中选，title 可用中文理解，但字段写 name。
-3. allowed_actions 需包含 continue_flow，执行节点还需 call_action:<action_name>。
+2. knowledge_scope.knowledge_base_ids 必须从 availableKnowledgeBases.id 中选择；不要把企业数据资产当成知识库。
+3. execute_action / gate 的 action_name 必须从 availableActions.name 中选，title 可用中文理解，但字段写 name。
+4. allowed_actions 需包含 continue_flow，执行节点还需 call_action:<action_name>。
 若用户附带了图片，先理解图中的流程/表单/白板内容，再落到选中步骤的修改。
 不要返回完整 graph，不要改 SOP 名称/key/未选中节点。"""
         payload_text = json.dumps({
@@ -1235,6 +1470,7 @@ config 必须包含 instruction、expected_user_info、allowed_actions、knowled
             "actionName": draft.get("actionName"),
             "availableActions": available_actions,
             "availableAssets": available_assets[:40],
+            "availableKnowledgeBases": available_knowledge_bases[:40],
         }, ensure_ascii=False)
         messages = [{"role": "user", "content": _user_message_content(payload_text, images)}]
         result = llm.chat_messages_result(
@@ -1295,16 +1531,18 @@ config 必须包含：
 - instruction：给 AI 的目标说明（中文）
 - expected_user_info：字符串数组（槽位/必填字段）
 - allowed_actions：ask_user / query_knowledge / handoff_human / continue_flow / confirm / call_action:<动作名>
-- knowledge_scope：{ knowledge_base_ids:[], retrieval_hint:"" }
+- knowledge_scope：{ knowledge_base_ids:[], retrieval_hint:"" }，knowledge_base_ids 必须从 availableKnowledgeBases.id 选择；禁止把 availableAssets 当成知识库
 - data_bindings：{ snapshot_ids:[], metric_ids:[], asset_keys:[], scope:"", brand_ids:[] }，必须从 availableAssets 选择真实 asset_key/snapshot_id
 - action_name：execute_action / gate 必须从 availableActions.name 选择（如 report.generate），禁止编造
 边字段：source、target、condition、priority。condition 仅允许 always、result_ok、result_failed、decision:<值>、field_present:<字段>、field_missing:<字段>。
 重要约束：
-1. 除非用户明确要求删除/重建，必须保留当前草稿里已有节点，只改需要改的步骤。
-2. 每个非终止节点都必须有出边，整条链路必须从 start 连到 terminals，禁止孤立节点。
-3. 节点 key 稳定且使用小写英文、数字、点、下划线或短横线；不要生成环。
-4. data_bind / execute_action 节点不要把企业数据留空；按用户意图从 availableAssets 选择。
-5. 若用户只是询问「有哪些技能/能力/怎么用」而没有明确改流程，不要改 graph，assistant 直接回答，并可在 JSON 加 "changed": false（仍需返回原 graph 原样）。
+1. 默认保留当前草稿里已有节点，只改需要改的步骤。
+2. 若用户明确要求删除/移除/跳过/精简某步（尤其是去掉人工确认），必须从 graph.nodes 和 graph.edges 中真正删除该节点，禁止只改连线却把旧节点留在画布上。
+3. 每个非终止节点都必须有出边，整条链路必须从 start 连到 terminals，禁止孤立节点。
+4. 节点 key 稳定且使用小写英文、数字、点、下划线或短横线；不要生成环。
+5. data_bind / execute_action 节点不要把企业数据留空；按用户意图从 availableAssets 选择。知识检索节点从 availableKnowledgeBases 绑定。
+6. 若用户只是询问「有哪些技能/能力/怎么用」而没有明确改流程，不要改 graph，assistant 直接回答，并可在 JSON 加 "changed": false（仍需返回原 graph 原样）。
+7. assistant 必须与最终 graph 一致：说「已移除某节点」时，该节点不得再出现在 nodes 里。
 若用户附带了图片，先理解图中的流程/表单/白板，再生成或修改整条 SOP。
 assistant 用简短中文说明本次修改、已绑定的企业数据/业务能力，以及仍需用户确认的信息。"""
     compact_history = [
@@ -1321,6 +1559,7 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
                     "currentDraft": draft,
                     "availableActions": available_actions,
                     "availableAssets": available_assets[:40],
+                    "availableKnowledgeBases": available_knowledge_bases[:40],
                 }, ensure_ascii=False),
                 images,
             ),

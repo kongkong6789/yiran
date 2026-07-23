@@ -16,7 +16,30 @@ class AgentProfileAdmin(admin.ModelAdmin):
     )
     list_filter = ("organization", "lifecycle_status", "execution_role")
     search_fields = ("name", "employee_code", "role", "expertise", "owner__username")
-
+    fields = (
+        "organization",
+        "name",
+        "emoji",
+        "employee_code",
+        "group",
+        "role",
+        "expertise",
+        "persona",
+        "execution_role",
+        "is_active",
+        "lifecycle_status",
+        "quota_limit",
+        "quota_used",
+        "skill_ids",
+        "sop_keys",
+        "knowledge_base_ids",
+        "capability_instructions",
+        "owner",
+        "created_by",
+        "archived_at",
+        "created_at",
+    )
+    readonly_fields = ("employee_code", "quota_used", "created_by", "archived_at", "created_at")
 
 @admin.register(Meeting)
 class MeetingAdmin(admin.ModelAdmin):

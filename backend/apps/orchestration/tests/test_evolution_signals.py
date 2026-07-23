@@ -58,8 +58,10 @@ class EvolutionSignalTests(TestCase):
             missing_fields=["品牌"],
         )
         tags = record_run_signals(run)
-        self.assertEqual(tags, [])
-        self.assertEqual(SopEvolutionSignal.objects.count(), 0)
+        self.assertIn("need_input", tags)
+        self.assertTrue(SopEvolutionSignal.objects.filter(definition=self.sop).exists())
+        signal = SopEvolutionSignal.objects.filter(definition=self.sop).first()
+        self.assertTrue((signal.payload_summary or {}).get("from_trial"))
 
     def test_live_need_input_records_signals(self):
         run = SopRun.objects.create(

@@ -34,6 +34,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   EditOutlined,
+  PartitionOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -49,6 +50,7 @@ import {
   getSkills,
   listKnowledgeBases,
   listAgents,
+  listSops,
   updateAgent,
   type Agent,
 } from "../api/client";
@@ -60,14 +62,16 @@ const EMOJI_CHOICES = ["🤖", "📈", "🧩", "💰", "🎯", "🧠", "⚙️",
 const CAPABILITY_RULE_TEMPLATE = `【触发条件】
 - 涉及事实、制度或历史资料时，先检索已选知识库。
 - 涉及可执行操作时，调用最匹配的 Skill。
+- 用户明确要求跑流程/周报/SOP 时，优先走已绑定的已发布 SOP。
 
 【调用顺序】
 1. 先确认用户意图与必要参数。
-2. 先检索取证，再执行操作；能力冲突时优先使用更具体的 Skill。
+2. 先检索取证，再执行操作；能力冲突时优先使用更具体的 Skill 或已绑定 SOP。
 
 【失败与边界】
 - 无结果时说明检索范围，并请求补充信息。
 - 调用失败时说明原因并给出替代方案，不得假装成功。
+- 未绑定或不在白名单的 SOP 不得执行。
 - 高风险或越权操作必须停止并请求确认。`;
 
 const PERSONA_TEMPLATE = `【角色定位】你是……
@@ -87,6 +91,7 @@ type AgentFormValues = Pick<
   | "quota_limit"
   | "is_active"
   | "skill_ids"
+  | "sop_keys"
   | "knowledge_base_ids"
   | "capability_instructions"
 >;
@@ -279,6 +284,7 @@ interface AgentFormDrawerProps {
   editing: Agent | null;
   groupOptions: { value: string }[];
   skillOptions: CapabilityOption<string>[];
+  sopOptions: CapabilityOption<string>[];
   knowledgeBaseOptions: CapabilityOption<number>[];
   capabilityOptionsLoading: boolean;
   submitting: boolean;
@@ -291,6 +297,7 @@ function AgentFormDrawer({
   editing,
   groupOptions,
   skillOptions,
+  sopOptions,
   knowledgeBaseOptions,
   capabilityOptionsLoading,
   submitting,
@@ -313,6 +320,7 @@ function AgentFormDrawer({
       expertise: editing?.expertise || "",
       persona: editing?.persona || "",
       skill_ids: [...(editing?.skill_ids || [])],
+      sop_keys: [...(editing?.sop_keys || [])],
       knowledge_base_ids: [...(editing?.knowledge_base_ids || [])],
       capability_instructions: editing?.capability_instructions || "",
       execution_role: editing?.execution_role || "operator",
@@ -414,7 +422,7 @@ function AgentFormDrawer({
           </Row>
           <div className="agents-form-demo-note">
             <Tag color="green">实时同步</Tag>
-            <Text type="secondary">选项来自 Skill 库和知识库，保存后会同步到当前智能体。</Text>
+            <Text type="secondary">选项来自 Skill 库、已发布 SOP 和知识库；保存后会同步到当前智能体。</Text>
           </div>
           <Row gutter={16}>
             <Col xs={24} md={12}>
@@ -432,6 +440,23 @@ function AgentFormDrawer({
                 Skill 提供操作流程和工具指令；执行任务或会议发言时会加载当前账号有权限的绑定项。
               </Text>
             </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="sop_keys" label="SOP">
+                <CapabilityPicker
+                  label="SOP"
+                  icon={<PartitionOutlined />}
+                  options={sopOptions}
+                  loading={capabilityOptionsLoading}
+                  searchPlaceholder="搜索已发布 SOP 名称或 key"
+                  emptyText="暂无已发布 SOP"
+                />
+              </Form.Item>
+              <Text type="secondary" className="agents-field-help">
+                仅可绑定已发布 SOP。名称设为「小策」或 employee_code=`xiaoce` 时，协作小策 bot 可按绑定列表调用。
+              </Text>
+            </Col>
+          </Row>
+          <Row gutter={16}>
             <Col xs={24} md={12}>
               <Form.Item name="knowledge_base_ids" label="知识库">
                 <CapabilityPicker
@@ -646,6 +671,7 @@ function AgentCard({
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
+  const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
   const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
   const [llm, setLlm] = useState(false);
@@ -676,10 +702,11 @@ export default function Agents() {
   const loadCapabilityOptions = useCallback(async () => {
     setCapabilityOptionsLoading(true);
     try {
-      const [personalSkills, skillAssets, knowledgeBases] = await Promise.all([
+      const [personalSkills, skillAssets, knowledgeBases, sops] = await Promise.all([
         getSkills(),
         getSkillAssets(),
         listKnowledgeBases(),
+        listSops(),
       ]);
       const skillMap = new Map<string, CapabilityOption<string>>();
       (skillAssets.results || []).forEach((skill) => {
@@ -701,6 +728,17 @@ export default function Agents() {
       });
       setSkillOptions(Array.from(skillMap.values())
         .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")));
+      setSopOptions(
+        (sops.results || [])
+          .filter((sop) => sop.status === "published")
+          .map((sop) => ({
+            value: sop.key,
+            label: sop.name || sop.key,
+            description: sop.description || sop.actionName || "",
+            meta: `已发布 · ${sop.key}${sop.currentVersion ? ` · v${sop.currentVersion}` : ""}`,
+          }))
+          .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
+      );
       setKnowledgeBaseOptions(knowledgeBases.map((knowledgeBase) => ({
         value: knowledgeBase.id,
         label: knowledgeBase.name,
@@ -708,7 +746,7 @@ export default function Agents() {
         meta: `${knowledgeBase.visibility === "private" ? "个人" : knowledgeBase.visibility === "company" ? "公司" : "团队"} · ${knowledgeBase.file_count} 个文件 · ${knowledgeBase.status === "ready" ? "可用" : `状态：${knowledgeBase.status}`}`,
       })));
     } catch (error) {
-      message.error(errorText(error, "Skill 库或知识库加载失败，请稍后重试"));
+      message.error(errorText(error, "Skill / SOP / 知识库加载失败，请稍后重试"));
     } finally {
       setCapabilityOptionsLoading(false);
     }
@@ -974,6 +1012,7 @@ export default function Agents() {
         editing={editing}
         groupOptions={groupOptions}
         skillOptions={skillOptions}
+        sopOptions={sopOptions}
         knowledgeBaseOptions={knowledgeBaseOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={submitting}

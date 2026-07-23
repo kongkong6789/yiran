@@ -1288,6 +1288,24 @@ def _run_xiaoce_reply_async(run_id) -> None:
                     {"skill_generation_failed": True},
                 )
         else:
+            from apps.collab.xiaoce_sop import try_handle_xiaoce_sop
+
+            sop_handled = try_handle_xiaoce_sop(
+                user=run.user,
+                room=run.room,
+                text=trigger_content,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            )
+            if sop_handled is not None:
+                ai_msg = complete_xiaoce_run(
+                    run.id,
+                    str(sop_handled.get("reply") or "SOP 已处理。"),
+                    sop_handled.get("meta") if isinstance(sop_handled.get("meta"), dict) else None,
+                )
+                _publish_xiaoce_message(run, ai_msg)
+                return
+
             history = _xiaoce_history_before(run.room, run.trigger_message_id)
             context_blocks = _xiaoce_context_reference_blocks(run)
             attachments = _xiaoce_input_attachments(run, trigger_content)

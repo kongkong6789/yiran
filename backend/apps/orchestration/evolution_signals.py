@@ -20,12 +20,15 @@ def _bump_signal(
     summary: dict | None = None,
 ) -> None:
     definition = run.version.definition
+    merged_summary = dict(summary or {})
+    if run.is_trial:
+        merged_summary["from_trial"] = True
     defaults = {
         "version": run.version,
         "organization_id": run.organization_id,
         "count": 0,
         "sample_run_ids": [],
-        "payload_summary": summary or {},
+        "payload_summary": merged_summary,
     }
     signal, _created = SopEvolutionSignal.objects.get_or_create(
         definition=definition,
@@ -37,21 +40,23 @@ def _bump_signal(
     run_id = str(run.run_key)
     if run_id not in sample_ids:
         sample_ids = ([run_id] + sample_ids)[:_SAMPLE_LIMIT]
+    # Preserve from_trial marker if any sample was trial-sourced.
+    next_summary = dict(signal.payload_summary or {})
+    next_summary.update(merged_summary)
     SopEvolutionSignal.objects.filter(id=signal.id).update(
         count=F("count") + 1,
         version_id=run.version_id,
         organization_id=run.organization_id,
         sample_run_ids=sample_ids,
-        payload_summary=summary or signal.payload_summary or {},
+        payload_summary=next_summary,
         last_seen_at=timezone.now(),
     )
 
 
 def record_run_signals(run: SopRun) -> list[str]:
-    """Record learning signals for a finished non-trial run. Returns outcome tags."""
+    """Record learning signals for a finished run (live or trial). Returns outcome tags."""
     tags: list[str] = []
-    if run.is_trial:
-        return tags
+    # Trial runs still teach the editor loop; they never bump success_rate counters.
 
     if run.status == SopRun.Status.NEED_INPUT:
         tags.append("need_input")
@@ -59,12 +64,14 @@ def record_run_signals(run: SopRun) -> list[str]:
         missing = [str(item) for item in (run.missing_fields or []) if str(item).strip()][:8]
         if any(str(item).startswith("_confirm_") for item in missing):
             tags.append("checkpoint_wait")
-            _bump_signal(
-                run=run,
-                signal_type=SopEvolutionSignal.SignalType.NEED_INPUT_LOOP,
-                node_key=node_key,
-                summary={"kind": "checkpoint", "missing": missing},
-            )
+            # Trial intentionally pauses on human confirm — not an evolution smell.
+            if not run.is_trial:
+                _bump_signal(
+                    run=run,
+                    signal_type=SopEvolutionSignal.SignalType.NEED_INPUT_LOOP,
+                    node_key=node_key,
+                    summary={"kind": "checkpoint", "missing": missing},
+                )
         else:
             _bump_signal(
                 run=run,

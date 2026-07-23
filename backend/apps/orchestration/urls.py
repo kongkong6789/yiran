@@ -1,18 +1,20 @@
 from django.urls import path
 
-from . import evolution_api, sop_api, sop_trial, views
+from . import evolution_api, sop_api, sop_rewrite_stream, sop_trial, views
 
 urlpatterns = [
     path("run/", views.run, name="orchestration-run"),
     path("catalog/", views.actions_catalog, name="orchestration-catalog"),
     path("resume/", views.resume, name="orchestration-resume"),
     path("sops/ai/rewrite/", sop_api.sop_ai_rewrite, name="orchestration-sop-ai-rewrite"),
+    path("sops/ai/rewrite/stream/", sop_rewrite_stream.sop_ai_rewrite_stream, name="orchestration-sop-ai-rewrite-stream"),
     path("sops/", sop_api.sops, name="orchestration-sops"),
     path("runs/<str:run_key>/", evolution_api.sop_run_detail, name="orchestration-sop-run-detail"),
     path("sops/<str:sop_key>/", sop_api.sop_detail, name="orchestration-sop-detail"),
     path("sops/<str:sop_key>/duplicate/", sop_api.sop_duplicate, name="orchestration-sop-duplicate"),
     path("sops/<str:sop_key>/runs/", evolution_api.sop_runs, name="orchestration-sop-runs"),
     path("sops/<str:sop_key>/evolution/signals/", evolution_api.sop_evolution_signals, name="orchestration-sop-evolution-signals"),
+    path("sops/<str:sop_key>/evolution/metrics/", evolution_api.sop_evolution_metrics, name="orchestration-sop-evolution-metrics"),
     path("sops/<str:sop_key>/evolution/proposals/", evolution_api.sop_evolution_proposals, name="orchestration-sop-evolution-proposals"),
     path("sops/<str:sop_key>/evolution/proposals/<int:proposal_id>/", evolution_api.sop_evolution_proposal_detail, name="orchestration-sop-evolution-proposal-detail"),
     path("sops/<str:sop_key>/evolution/proposals/<int:proposal_id>/trial/", evolution_api.sop_evolution_proposal_trial, name="orchestration-sop-evolution-proposal-trial"),

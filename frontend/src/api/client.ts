@@ -138,6 +138,8 @@ export interface OrganizationSummary {
   code: string;
   name: string;
   isActive: boolean;
+  sopEvolutionEnabled?: boolean;
+  pendingEvolutionCount?: number;
   memberCount: number;
   role: "owner" | "admin" | "member" | "";
   canManage: boolean;
@@ -156,11 +158,21 @@ export const switchCurrentOrganization = (organizationId: number) =>
     "/auth/organization/switch/",
     { organizationId },
   ).then((r) => r.data);
-export const updateCurrentOrganization = (name: string, organizationId?: number) =>
-  api.patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
-    "/auth/organization/",
-    { name, organizationId },
-  ).then((r) => r.data);
+export const updateCurrentOrganization = (
+  body: { name?: string; sopEvolutionEnabled?: boolean; organizationId?: number } | string,
+  organizationId?: number,
+) => {
+  const payload =
+    typeof body === "string"
+      ? { name: body, organizationId }
+      : { ...body, ...(organizationId ? { organizationId } : {}) };
+  return api
+    .patch<{ ok: boolean; organization: OrganizationSummary; members: OrganizationMember[] }>(
+      "/auth/organization/",
+      payload,
+    )
+    .then((r) => r.data);
+};
 export const transferOrganizationOwnership = (targetUserId: number, organizationId?: number) =>
   api.post<{
     ok: boolean;
@@ -1540,6 +1552,33 @@ export const listSopEvolutionProposals = (key: string, params: { limit?: number;
     )
     .then((r) => r.data);
 
+export const getSopEvolutionMetrics = (key: string) =>
+  api
+    .get<{
+      sopKey: string;
+      enabled: boolean;
+      definition: {
+        callCount: number;
+        trialCount: number;
+        successCount: number;
+        failureCount: number;
+        successRate: number;
+      };
+      recentLiveRuns: number;
+      recentTrialRuns: number;
+      signalCount: number;
+      pendingProposals: number;
+      acceptedComparisons: Array<{
+        proposalId: number;
+        title: string;
+        reviewedAt?: string | null;
+        before: { version?: string | null; callCount: number; successRate: number };
+        after: { version?: string | null; callCount: number; successRate: number };
+        deltaSuccessRate: number;
+      }>;
+    }>(`/orchestration/sops/${encodeURIComponent(key)}/evolution/metrics/`)
+    .then((r) => r.data);
+
 export const analyzeSopEvolution = (key: string) =>
   api
     .post<{ created: SopEvolutionProposalItem[]; autoDraftedIds: number[]; count: number }>(
@@ -1755,8 +1794,92 @@ export const rewriteSopWithAi = (body: {
 }>(
   "/orchestration/sops/ai/rewrite/",
   body,
-  { timeout: 90_000 },
+  { timeout: 180_000 },
 ).then((r) => r.data);
+
+export type SopRewriteStreamHandlers = {
+  onHello?: (data: { message?: string }) => void;
+  onStatus?: (data: {
+    message?: string;
+    tools?: Array<{ name: string; summary: string; status?: string }>;
+  }) => void;
+  onAssistantDelta?: (data: { delta?: string }) => void;
+  onDone?: (data: {
+    assistant: string;
+    draft: SopDraftPayload;
+    model: string;
+    scope?: "node" | "nodes" | "flow" | "consult";
+    changed?: boolean;
+    targetNodeKey?: string;
+    targetNodeKeys?: string[];
+    tools?: Array<{ name: string; summary: string; status?: string }>;
+  }) => void;
+  onHeartbeat?: (data: { message?: string; tick?: number }) => void;
+  onError?: (message: string) => void;
+  signal?: AbortSignal;
+};
+
+export async function rewriteSopWithAiStream(
+  body: {
+    instruction: string;
+    draft: SopDraftPayload;
+    history: Array<{ role: "user" | "assistant"; content: string }>;
+    targetNodeKey?: string | null;
+    targetNodeKeys?: string[];
+    images?: string[];
+    mode?: "edit" | "consult";
+  },
+  handlers: SopRewriteStreamHandlers = {},
+) {
+  const token = getAuthToken();
+  const res = await fetch(`${api.defaults.baseURL}/orchestration/sops/ai/rewrite/stream/`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Token ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: handlers.signal,
+    credentials: "same-origin",
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `SOP 改写流式接口失败（${res.status}）`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split(/\n\n/);
+    buf = parts.pop() || "";
+    for (const block of parts) {
+      const lines = block.split(/\n/);
+      let eventName = "message";
+      let dataLine = "";
+      for (const line of lines) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLine += line.slice(5).trim();
+      }
+      if (!dataLine) continue;
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = JSON.parse(dataLine);
+      } catch {
+        continue;
+      }
+      if (eventName === "hello") handlers.onHello?.(payload as never);
+      else if (eventName === "status") handlers.onStatus?.(payload as never);
+      else if (eventName === "assistant_delta") handlers.onAssistantDelta?.(payload as never);
+      else if (eventName === "heartbeat") handlers.onHeartbeat?.(payload as never);
+      else if (eventName === "done") handlers.onDone?.(payload as never);
+      else if (eventName === "error") handlers.onError?.(String(payload.error || "SOP 改写失败"));
+    }
+  }
+}
 
 export const syncJackyun = () =>
   api.post<{
@@ -2030,6 +2153,7 @@ export interface Agent {
   quota_remaining: number;
   status: "available" | "disabled" | "quota_exhausted";
   skill_ids: string[];
+  sop_keys: string[];
   knowledge_base_ids: number[];
   capability_instructions: string;
   created_at: string;
@@ -2134,6 +2258,7 @@ export const listAgents = () =>
         quota_remaining: quotaRemaining,
         status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
         skill_ids: Array.isArray(row.skill_ids) ? row.skill_ids.map(String) : [],
+        sop_keys: Array.isArray(row.sop_keys) ? row.sop_keys.map(String) : [],
         knowledge_base_ids: Array.isArray(row.knowledge_base_ids)
           ? row.knowledge_base_ids.map(Number).filter(Number.isFinite)
           : [],
