@@ -130,6 +130,65 @@ def _published_versions_for_keys(*, organization, keys: list[str]) -> list[SopVe
     return versions
 
 
+_LIST_SOP_RE = re.compile(
+    r"(有哪些|有什么|哪些|什么).{0,8}(sop|流程|周报|日报)|"
+    r"(sop|流程).{0,8}(有哪些|有什么|列表|清单|可以|能用|试用)|"
+    r"(支持|能跑|会跑).{0,8}(哪些|什么).{0,6}(sop|流程)",
+    re.IGNORECASE,
+)
+_ASK_SOP_RE = re.compile(
+    r"(你不是有|不是有|有没有|有个|那个).{0,16}(sop|流程|周报|日报)|"
+    r"(sop|流程).{0,8}(叫|名叫|名称)|"
+    r"天猫销售.{0,4}(日|周)报",
+    re.IGNORECASE,
+)
+
+
+def looks_like_sop_meta_question(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    return bool(_LIST_SOP_RE.search(cleaned) or _ASK_SOP_RE.search(cleaned))
+
+
+def _format_bound_catalog(versions: list[SopVersion]) -> str:
+    if not versions:
+        return "当前还没有绑定可调用的已发布 SOP。"
+    lines = ["我当前可调用的已发布 SOP："]
+    for version in versions[:20]:
+        definition = version.definition
+        lines.append(f"- 《{definition.name}》（`{definition.sop_key}`）")
+    lines.append("直接说「跑一下《名称》」或带上品牌和日期，我就可以执行。")
+    return "\n".join(lines)
+
+
+def _soft_match_bound_versions(text: str, versions: list[SopVersion]) -> list[SopVersion]:
+    """宽松点名：日报/周报、本地库/本地版 等近义也能对上。"""
+    cleaned = _normalize_name(text)
+    if not cleaned:
+        return []
+    hits: list[SopVersion] = []
+    for version in versions:
+        name = _normalize_name(version.definition.name)
+        soft = _normalize_name(re.sub(r"[（(].*?[）)]", "", version.definition.name))
+        aliases = {
+            name,
+            soft,
+            name.replace("周报", "日报").replace("本地版", "本地库"),
+            name.replace("日报", "周报").replace("本地库", "本地版"),
+            soft.replace("周报", "日报"),
+            soft.replace("日报", "周报"),
+        }
+        if any(alias and alias in cleaned for alias in aliases):
+            hits.append(version)
+            continue
+        # token overlap: 天猫+销售+(日|周)报
+        if "天猫" in cleaned and "销售" in cleaned and (("周报" in cleaned) or ("日报" in cleaned)):
+            if "天猫" in name and "销售" in name and (("周报" in name) or ("日报" in name)):
+                hits.append(version)
+    return list({item.id: item for item in hits}.values())
+
+
 def looks_like_sop_run_intent(text: str) -> bool:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -414,18 +473,22 @@ def interpret_xiaoce_turn_with_llm(
         "你是小策会话里的 SOP 路由器，只做结构化判断，不回答用户。\n"
         "根据用户这句话，判断意图，并抽取可填入 SOP 的槽位。\n"
         "只输出 JSON："
-        '{"intent":"run_sop|resume|cancel|chat","sop_key":"","slots":{},'
+        '{"intent":"run_sop|resume|cancel|list_sops|ask_sop|chat","sop_key":"","slots":{},'
         '"confirm":false,"reason":"一句话"}。\n'
         "规则：\n"
         "1) intent=run_sop：用户想新开/执行某个已绑定 SOP（含周报、销售明细汇总等）。\n"
         "2) intent=resume：存在 pending 时，用户在补充参数、确认继续，或仍在完成同一流程。\n"
         "3) intent=cancel：明确取消当前 pending 流程。\n"
-        "4) intent=chat：普通闲聊/问答，与 SOP 无关。\n"
-        "5) 有 pending 时，除非用户明确换话题闲聊，否则优先 resume。\n"
-        "6) sop_key 必须来自可调用列表；不确定则留空。\n"
-        "7) slots 只填能从原文可靠抽出的字段，键名优先用列表中的英文槽位"
+        "4) intent=list_sops：用户问有哪些/能试用哪些 SOP/流程。\n"
+        "5) intent=ask_sop：用户点名确认某个 SOP 是否存在（如「你不是有天猫销售日报吗」）；"
+        "即使名称略有出入（日报/周报、本地库/本地版），也尽量从可调用列表选最接近的 sop_key。\n"
+        "6) intent=chat：普通闲聊/问答，与 SOP 能力无关；"
+        "不要把「有没有某 SOP」当成知识库文档检索。\n"
+        "7) 有 pending 时，除非用户明确换话题闲聊，否则优先 resume。\n"
+        "8) sop_key 必须来自可调用列表；不确定则留空。\n"
+        "9) slots 只填能从原文可靠抽出的字段，键名优先用列表中的英文槽位"
         "（如 brand、date_range），值为简洁字符串。\n"
-        "8) 用户说确认/继续时 confirm=true。"
+        "10) 用户说确认/继续时 confirm=true。"
     )
     user_prompt = (
         f"可调用 SOP：\n{_catalog_for_llm(versions)}\n\n"
@@ -451,7 +514,7 @@ def interpret_xiaoce_turn_with_llm(
         return None
 
     intent = str(data.get("intent") or "").strip().lower()
-    if intent not in {"run_sop", "resume", "cancel", "chat"}:
+    if intent not in {"run_sop", "resume", "cancel", "list_sops", "ask_sop", "chat"}:
         return None
     sop_key = str(data.get("sop_key") or "").strip()
     allowed = {version.definition.sop_key for version in versions}
@@ -497,6 +560,19 @@ def interpret_xiaoce_turn_rules(
             "confirm": bool(_CONFIRM_RE.match(cleaned)),
             "source": "rules",
         }
+    if _LIST_SOP_RE.search(cleaned):
+        return {"intent": "list_sops", "sop_key": "", "slots": {}, "confirm": False, "source": "rules"}
+    if _ASK_SOP_RE.search(cleaned) or looks_like_sop_meta_question(cleaned):
+        soft = _soft_match_bound_versions(cleaned, versions)
+        sop_key = soft[0].definition.sop_key if len(soft) == 1 else ""
+        return {
+            "intent": "ask_sop",
+            "sop_key": sop_key,
+            "slots": {},
+            "confirm": False,
+            "source": "rules",
+            "soft_matches": soft,
+        }
     if not looks_like_sop_run_intent(cleaned):
         return {"intent": "chat", "sop_key": "", "slots": {}, "confirm": False, "source": "rules"}
     matched = match_bound_sop_version(
@@ -505,6 +581,12 @@ def interpret_xiaoce_turn_rules(
         organization=organization,
         user=user,
     )
+    if matched is None:
+        soft = _soft_match_bound_versions(cleaned, versions)
+        if len(soft) == 1:
+            matched = soft[0]
+        elif len(soft) > 1:
+            matched = soft
     if matched is None or isinstance(matched, list):
         return {
             "intent": "run_sop",
@@ -646,9 +728,9 @@ def try_handle_xiaoce_sop(
         keys = list(dict.fromkeys([*keys, str(pending.get("sop_key")).strip()]))
     versions = _published_versions_for_keys(organization=organization, keys=keys)
 
-    # 无绑定且无 pending：只在明显像跑流程时提示，否则交给普通聊天。
+    # 无绑定且无 pending：只在明显像跑流程/问 SOP 时提示，否则交给普通聊天。
     if not versions and not pending:
-        if looks_like_sop_run_intent(cleaned):
+        if looks_like_sop_run_intent(cleaned) or looks_like_sop_meta_question(cleaned):
             return {
                 "reply": (
                     "想跑流程的话，需要先给小策绑定已发布 SOP。\n"
@@ -673,7 +755,59 @@ def try_handle_xiaoce_sop(
     confirm = bool(judged.get("confirm"))
 
     if intent == "chat":
-        return None
+        # 模型偶发漏判：点名/列举 SOP 时仍兜住，避免掉进知识库「SOP文档」检索。
+        if looks_like_sop_meta_question(cleaned):
+            intent = "list_sops" if _LIST_SOP_RE.search(cleaned) else "ask_sop"
+        else:
+            return None
+
+    if intent == "list_sops":
+        return {
+            "reply": _format_bound_catalog(versions),
+            "meta": {"sop_catalog": True, "sop_judge": judged},
+        }
+
+    if intent == "ask_sop":
+        sop_key = str(judged.get("sop_key") or "").strip()
+        version = next((item for item in versions if item.definition.sop_key == sop_key), None)
+        soft = judged.get("soft_matches")
+        if version is None:
+            soft_hits = soft if isinstance(soft, list) else _soft_match_bound_versions(cleaned, versions)
+            if len(soft_hits) == 1:
+                version = soft_hits[0]
+            elif len(soft_hits) > 1:
+                catalog = "\n".join(f"- 《{item.definition.name}》" for item in soft_hits[:8])
+                return {
+                    "reply": (
+                        "你说的名字和我这边略有差别，接近的可调用流程有：\n"
+                        f"{catalog}\n"
+                        "回复其中一个名称，或直接说「跑一下……」。"
+                    ),
+                    "meta": {"sop_ask": True, "sop_judge": judged},
+                }
+        if version is None and len(versions) == 1:
+            version = versions[0]
+        if version is None:
+            return {
+                "reply": (
+                    "我这边没有完全同名的流程。\n"
+                    f"{_format_bound_catalog(versions)}"
+                ),
+                "meta": {"sop_ask": True, "sop_judge": judged},
+            }
+        return {
+            "reply": (
+                f"有的。对应可调用流程是《{version.definition.name}》"
+                f"（`{version.definition.sop_key}`）。\n"
+                "如果说的是「日报/本地库」，我这边登记名是「周报/本地版」，是同一个绑定流程。\n"
+                "直接说「跑一下天猫销售周报」或带上品牌和日期即可。"
+            ),
+            "meta": {
+                "sop_ask": True,
+                "sop_key": version.definition.sop_key,
+                "sop_judge": judged,
+            },
+        }
 
     if intent == "cancel":
         return {
