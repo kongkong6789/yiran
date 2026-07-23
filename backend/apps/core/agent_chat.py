@@ -14,6 +14,7 @@ from apps.council.lightrag_modes import normalize_lightrag_mode, query_lightrag
 from apps.mcp.client import find_document_url_in_thread, is_document_followup, read_wecom_document
 from apps.mcp.nas_files import read_nas_for_agent
 from apps.skills.analytics import record_skill_usage
+from apps.skills.agent_editor import try_edit_skill_from_chat
 from apps.skills.service import build_skill_system_block, resolve_skills, skills_payload
 from apps.skills.runner import (
     diagnose_skill_execution,
@@ -222,8 +223,16 @@ def run_chat(
     emit_progress(progress_callback, "understanding", "completed")
     if active_skills:
         emit_progress(progress_callback, "skill", "running")
+    skill_edit_block = try_edit_skill_from_chat(
+        message,
+        active_skills,
+        user,
+        model=model_override,
+    ) if active_skills else None
     script_blocks = (
-        try_execute_skill_scripts(
+        [skill_edit_block]
+        if skill_edit_block is not None
+        else try_execute_skill_scripts(
             active_skills,
             message,
             user,
@@ -232,7 +241,7 @@ def run_chat(
         )
         if active_skills else []
     )
-    if active_skills:
+    if active_skills and skill_edit_block is None:
         try:
             from apps.wecom.skill_todo import try_execute_wecom_todo_skills
 

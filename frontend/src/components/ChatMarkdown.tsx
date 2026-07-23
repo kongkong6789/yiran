@@ -58,16 +58,19 @@ const mdComponents: Components = {
   tr: ({ children }) => <tr>{children}</tr>,
   th: ({ children }) => <th>{children}</th>,
   td: ({ children }) => <td>{children}</td>,
-  code: ({ className, children }) => {
+  code: ({ node, className, children }) => {
     const lang = /language-([\w-]+)/.exec(className || "")?.[1] || "";
     const text = String(children ?? "").replace(/\n$/, "");
+    const isBlock = Boolean(className?.includes("language-"))
+      || Boolean(node?.position && node.position.start.line < node.position.end.line)
+      || String(children ?? "").includes("\n");
     if (lang === "mermaid") {
       return <MermaidBlock code={text} />;
     }
-    if (className?.includes("language-")) {
+    if (isBlock) {
       return (
         <pre className="agent-md-pre">
-          <code className={className}>{children}</code>
+          <code className={className || undefined}>{children}</code>
         </pre>
       );
     }

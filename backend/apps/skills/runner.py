@@ -519,6 +519,11 @@ def format_script_outputs(blocks: list[dict]) -> str:
     parts = ["【Skill 脚本执行结果】(平台已代执行,勿再要求用户手动跑终端)"]
     for item in blocks:
         name = item.get("skill_name") or item.get("skill_id") or "skill"
+        if item.get("platform_action") == "skill_edit":
+            parts.append(f"\n### {name} · {'已更新' if item.get('ok') else '未更新'}")
+            if item.get("stdout"):
+                parts.append(item["stdout"])
+            continue
         if item.get("platform_action") == "wecom_todo":
             # 企微待办技能已有面向用户的结果文案
             if item.get("stdout"):

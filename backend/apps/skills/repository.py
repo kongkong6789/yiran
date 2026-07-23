@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import shutil
 import uuid
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.text import slugify
 
 from .cos_storage import (
@@ -99,7 +103,7 @@ def list_skill_assets(user=None, *, shared: bool = True) -> list[SkillAsset]:
     if shared or user is None:
         visibility_filter = Q(visibility=SkillAsset.Visibility.SHARED)
         if user is not None:
-            visibility_filter |= Q(uploader=user)
+            visibility_filter |= Q(uploader=user) | Q(owner=user)
         rows = list(
             SkillAsset.objects.filter(visibility_filter)
             .select_related("uploader", "owner")
@@ -160,6 +164,189 @@ def load_asset_content(asset: SkillAsset) -> str:
     if not data:
         return ""
     return data.decode("utf-8", errors="replace")
+
+
+class SkillFileConflictError(ValueError):
+    """The file changed after the caller loaded the editor."""
+
+
+TEXT_FILE_SUFFIXES = {
+    ".md", ".markdown", ".txt", ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".json", ".yaml", ".yml", ".toml", ".sh", ".ps1", ".css", ".html",
+    ".csv", ".xml", ".ini", ".cfg",
+}
+MAX_EDITABLE_SKILL_FILE_BYTES = 512 * 1024
+
+
+def normalize_skill_file_path(raw_path: str) -> str:
+    value = str(raw_path or "").replace("\\", "/").strip().lstrip("/")
+    path = PurePosixPath(value)
+    if (
+        not value
+        or value.startswith("/")
+        or "\x00" in value
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or len(value) > 300
+    ):
+        raise ValueError("技能文件路径无效")
+    return path.as_posix()
+
+
+def asset_file_manifest(asset: SkillAsset) -> list[dict]:
+    rows = []
+    for item in asset.package_manifest or []:
+        path = normalize_skill_file_path(item.get("path") or "")
+        suffix = PurePosixPath(path).suffix.lower()
+        size = int(item.get("size") or 0)
+        rows.append({
+            "path": path,
+            "size": size,
+            "editable": suffix in TEXT_FILE_SUFFIXES and size <= MAX_EDITABLE_SKILL_FILE_BYTES,
+        })
+    return sorted(rows, key=lambda row: (row["path"].count("/"), row["path"].casefold()))
+
+
+def _manifest_item(asset: SkillAsset, file_path: str) -> dict | None:
+    normalized = normalize_skill_file_path(file_path)
+    return next(
+        (item for item in (asset.package_manifest or []) if normalize_skill_file_path(item.get("path") or "") == normalized),
+        None,
+    )
+
+
+def read_asset_file_bytes(asset: SkillAsset, file_path: str) -> bytes:
+    item = _manifest_item(asset, file_path)
+    if not item:
+        raise FileNotFoundError(file_path)
+    if asset.cos_bucket and cos_enabled():
+        key = str(item.get("cos_key") or "")
+        if not key:
+            raise FileNotFoundError(file_path)
+        return fetch_skill_bytes(asset.cos_bucket, key)
+    local_path = str(item.get("local_path") or "")
+    if not local_path:
+        local_path = str(_local_skill_root(asset.uploader_id, asset.skill_id) / normalize_skill_file_path(file_path))
+    path = Path(local_path).resolve()
+    root = _local_skill_root(asset.uploader_id, asset.skill_id).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("技能文件路径越界") from exc
+    if not path.is_file():
+        raise FileNotFoundError(file_path)
+    return path.read_bytes()
+
+
+def read_asset_text_file(asset: SkillAsset, file_path: str) -> str:
+    normalized = normalize_skill_file_path(file_path)
+    suffix = PurePosixPath(normalized).suffix.lower()
+    if suffix not in TEXT_FILE_SUFFIXES:
+        raise ValueError("该文件类型不支持在线查看或编辑")
+    data = read_asset_file_bytes(asset, normalized)
+    if len(data) > MAX_EDITABLE_SKILL_FILE_BYTES:
+        raise ValueError("文件超过 512KB，不能在线编辑")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("文件不是 UTF-8 文本，不能在线编辑") from exc
+
+
+def _sync_adopted_skill_content(asset: SkillAsset, file_path: str, content: str) -> None:
+    skill_md_path = normalize_skill_file_path(asset.skill_md_key or "SKILL.md")
+    if normalize_skill_file_path(file_path).casefold() != skill_md_path.casefold():
+        return
+    parsed = parse_skill_markdown(content, fallback_name=asset.name)
+    asset.name = parsed["name"] or asset.name
+    asset.description = parsed.get("description") or ""
+    asset.instructions_preview = (parsed["instructions"] or "")[:500]
+    UserSkill.objects.filter(source_asset=asset).update(
+        name=asset.name,
+        description=asset.description,
+        raw_content=parsed["raw_content"],
+        instructions=parsed["instructions"],
+        updated_at=timezone.now(),
+    )
+
+
+@transaction.atomic
+def save_asset_text_file(
+    asset: SkillAsset,
+    file_path: str,
+    content: str,
+    *,
+    expected_updated_at: str = "",
+) -> SkillAsset:
+    # 只锁 SkillAsset 本身；owner 是可空外键，PostgreSQL 不允许对外连接的可空侧 FOR UPDATE。
+    locked = SkillAsset.objects.select_for_update().get(id=asset.id)
+    current_version = locked.updated_at.isoformat()
+    if expected_updated_at and expected_updated_at != current_version:
+        raise SkillFileConflictError("技能已被其他人更新，请刷新后再保存")
+
+    normalized = normalize_skill_file_path(file_path)
+    suffix = PurePosixPath(normalized).suffix.lower()
+    if suffix not in TEXT_FILE_SUFFIXES:
+        raise ValueError("该文件类型不支持在线编辑")
+    payload = str(content).encode("utf-8")
+    if len(payload) > MAX_EDITABLE_SKILL_FILE_BYTES:
+        raise ValueError("文件超过 512KB，不能在线保存")
+
+    manifest = deepcopy(locked.package_manifest or [])
+    item = next(
+        (entry for entry in manifest if normalize_skill_file_path(entry.get("path") or "") == normalized),
+        None,
+    )
+    if locked.cos_bucket and cos_enabled():
+        stored = upload_skill_bytes(locked.uploader_id, locked.skill_id, normalized, payload)
+        next_entry = {
+            "path": normalized,
+            "cos_key": stored["cos_key"],
+            "cos_url": stored["cos_url"],
+            "size": len(payload),
+        }
+    else:
+        root = _local_skill_root(locked.uploader_id, locked.skill_id).resolve()
+        target = (root / normalized.replace("/", os.sep)).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("技能文件路径越界") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}-{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(payload)
+        temporary.replace(target)
+        next_entry = {
+            "path": normalized,
+            "cos_key": "",
+            "cos_url": "",
+            "size": len(payload),
+            "local_path": str(target),
+        }
+    if item is None:
+        manifest.append(next_entry)
+    else:
+        item.clear()
+        item.update(next_entry)
+
+    locked.package_manifest = manifest
+    locked.package_kind = "package" if len(manifest) > 1 else "single"
+    locked.file_size = sum(int(entry.get("size") or 0) for entry in manifest)
+    locked.content_hash = hashlib.sha256(
+        json.dumps(
+            [{"path": entry.get("path"), "size": entry.get("size")} for entry in manifest],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8") + payload
+    ).hexdigest()
+    locked.source_verified = False
+    metadata = dict(locked.source_metadata or {})
+    metadata["local_edit"] = True
+    metadata["verification_status"] = "modified"
+    locked.source_metadata = metadata
+    if normalized.casefold().endswith("skill.md") and not locked.skill_md_key:
+        locked.skill_md_key = normalized
+    _sync_adopted_skill_content(locked, normalized, str(content))
+    locked.save()
+    return locked
 
 
 def materialize_user_skill(user, asset: SkillAsset) -> UserSkill:

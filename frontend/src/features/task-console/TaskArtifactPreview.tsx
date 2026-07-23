@@ -21,6 +21,19 @@ export default function TaskArtifactPreview({ content, meta = {} }: Props) {
     );
   }
 
+  if (kind === "html") {
+    return (
+      <div className="task-artifact-preview-shell">
+        <iframe
+          className="task-artifact-html-frame"
+          title={meta.name || meta.filename || "HTML 报告预览"}
+          sandbox="allow-scripts allow-popups"
+          srcDoc={content}
+        />
+      </div>
+    );
+  }
+
   if (kind === "json") {
     let parsed: unknown = null;
     try {

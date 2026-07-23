@@ -59,7 +59,7 @@ def _scope(state: RuntimeState) -> RuntimeState:
         update.update(_step(state, "确定企业和数据范围", "block", update["error"]))
         return update
     update = _step(
-        state, "确定企业和数据范围", "done", "企业身份由 Django 登录会话解析",
+        state, "确定企业和数据范围", "done", "企业身份由平台登录会话解析",
         {"organization_id": state["organization"].id, "user_id": state["user"].id},
     )
     return update
@@ -68,10 +68,33 @@ def _scope(state: RuntimeState) -> RuntimeState:
 def _snapshot(state: RuntimeState) -> RuntimeState:
     if state.get("decision") == "block":
         return {}
+    if str(state.get("action") or "").startswith("skill:"):
+        from .skill_actions import run_skill_sop_action
+
+        return {"legacy_result": run_skill_sop_action(
+            action_name=str(state.get("action") or ""),
+            text=state["text"],
+            organization=state["organization"],
+            user=state["user"],
+            trace_id=state["trace_id"],
+            initial_steps=state.get("steps") or [],
+            payload=state.get("payload") or {},
+        )}
     if state.get("action") == "report.generate":
         from .business_analysis import run_business_analysis
 
         return {"legacy_result": run_business_analysis(
+            text=state["text"],
+            organization=state["organization"],
+            user=state["user"],
+            trace_id=state["trace_id"],
+            initial_steps=state.get("steps") or [],
+            payload=state.get("payload") or {},
+        )}
+    if state.get("action") == "notify.push":
+        from .notify_push import run_notify_push
+
+        return {"legacy_result": run_notify_push(
             text=state["text"],
             organization=state["organization"],
             user=state["user"],

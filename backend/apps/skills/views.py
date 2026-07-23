@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
@@ -26,11 +27,15 @@ from .parser import (
     parse_skill_markdown,
 )
 from .repository import (
+    SkillFileConflictError,
+    asset_file_manifest,
     delete_skill_asset,
     find_shared_asset,
     list_skill_assets,
     materialize_user_skill,
+    read_asset_text_file,
     save_skill_asset_from_bytes,
+    save_asset_text_file,
 )
 from .skillhub import SkillHubError, download_verified_skill, get_skill_detail, search_skills
 from .service import list_user_skills, resolve_skills, skills_payload
@@ -68,6 +73,11 @@ def _skill_row_payload(row: UserSkill) -> dict:
 
 
 def _asset_row_payload(row: SkillAsset, user=None) -> dict:
+    can_edit = bool(user and (
+        row.owner_id == user.id
+        or getattr(user, "is_staff", False)
+        or getattr(user, "is_superuser", False)
+    ))
     return {
         "id": row.id,
         "skill_id": row.skill_id,
@@ -93,9 +103,14 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
             (item.get("path") or "").startswith("scripts/")
             for item in (row.package_manifest or [])
         ),
+        "sop_callable": bool(row.sop_callable),
+        "action_key": row.action_key or f"skill:{row.id}",
+        "sop_high_risk": bool(row.sop_high_risk),
         "storage": "cos" if row.cos_bucket else "local",
         "uploader": getattr(row.uploader, "username", "") or "",
         "is_uploader": bool(user and row.uploader_id == user.id),
+        "is_owner": bool(user and row.owner_id == user.id),
+        "can_edit": can_edit,
         "owner_id": row.owner_id,
         "owner": (
             (row.owner.get_full_name().strip() or row.owner.username)
@@ -105,6 +120,18 @@ def _asset_row_payload(row: SkillAsset, user=None) -> dict:
         "created_at": row.created_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+def _asset_queryset_for_user(user):
+    if user.is_staff or user.is_superuser:
+        return SkillAsset.objects.all()
+    return SkillAsset.objects.filter(
+        Q(visibility=SkillAsset.Visibility.SHARED) | Q(uploader=user) | Q(owner=user)
+    )
+
+
+def _can_edit_asset(user, asset: SkillAsset) -> bool:
+    return bool(asset.owner_id == user.id or user.is_staff or user.is_superuser)
 
 
 def _usage_event_payload(row: SkillUsageEvent) -> dict:
@@ -336,6 +363,103 @@ def asset_visibility_update(request, asset_id: int):
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
+def asset_sop_update(request, asset_id: int):
+    asset = get_object_or_404(SkillAsset, id=asset_id)
+    if asset.uploader_id != request.user.id and asset.owner_id != request.user.id:
+        return Response({"ok": False, "error": "只有上传者或责任人可以设置 SOP 可用性"}, status=403)
+    if "sop_callable" in request.data:
+        asset.sop_callable = bool(request.data.get("sop_callable"))
+    if "sop_high_risk" in request.data:
+        asset.sop_high_risk = bool(request.data.get("sop_high_risk"))
+    if "action_key" in request.data:
+        raw_key = str(request.data.get("action_key") or "").strip()
+        if raw_key and not raw_key.startswith("skill:"):
+            return Response({"ok": False, "error": "action_key 必须以 skill: 开头，或留空自动生成"}, status=400)
+        asset.action_key = raw_key[:96]
+    asset.save(update_fields=["sop_callable", "sop_high_risk", "action_key", "updated_at"])
+    return Response({"ok": True, "asset": _asset_row_payload(asset, request.user)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def asset_publish_sop(request, asset_id: int):
+    """Publish skill as a minimal org SOP draft (skill ≈ SOP scaffold)."""
+    from apps.core.organizations import ensure_current_organization
+    from apps.orchestration.models import SopDefinition, SopVersion
+    from apps.orchestration.skill_actions import scaffold_sop_graph_for_skill, skill_action_key
+    from apps.orchestration.sop_schema import graph_hash, validate_graph
+
+    asset = get_object_or_404(SkillAsset, id=asset_id)
+    if not asset.sop_callable:
+        return Response({"ok": False, "error": "请先勾选「可用于 SOP」再发布为流程"}, status=400)
+    if asset.uploader_id != request.user.id and asset.owner_id != request.user.id:
+        # Allow adopters who enabled it to publish a personal org SOP copy
+        adopted = UserSkill.objects.filter(user=request.user, source_asset_id=asset.id, enabled=True).exists()
+        if not adopted:
+            return Response({"ok": False, "error": "请先采用并启用该技能"}, status=403)
+
+    organization = ensure_current_organization(request.user)
+    action_name = skill_action_key(asset.id, asset.action_key)
+    graph = scaffold_sop_graph_for_skill(asset=asset, action_name=action_name)
+    try:
+        validate_graph(graph)
+    except Exception as exc:  # noqa: BLE001
+        return Response({"ok": False, "error": f"流程脚手架校验失败：{exc}"}, status=400)
+
+    base_key = f"skill.{asset.skill_id}"[:80].lower().replace(" ", "-")
+    base_key = re.sub(r"[^a-z0-9_.-]", "", base_key) or f"skill.asset.{asset.id}"
+    sop_key = base_key
+    suffix = 1
+    while SopDefinition.objects.filter(organization=organization, sop_key=sop_key).exists():
+        suffix += 1
+        sop_key = f"{base_key}.{suffix}"[:96]
+
+    sop = SopDefinition.objects.create(
+        sop_key=sop_key,
+        organization=organization,
+        name=(asset.name or asset.skill_id)[:128],
+        business_domain="技能流程",
+        description=(asset.description or f"由技能 {asset.skill_id} 发布")[:500],
+        action_name=action_name[:96],
+        status=SopDefinition.Status.DRAFT,
+        created_by=request.user,
+        updated_by=request.user,
+    )
+    version = "1.0.0"
+    content_hash = graph_hash(
+        graph=graph,
+        input_schema={},
+        output_schema={},
+        trigger_intents=[asset.name],
+        examples=[f"运行{asset.name}"],
+    )
+    row = SopVersion.objects.create(
+        definition=sop,
+        version=version,
+        status=SopVersion.Status.DRAFT,
+        graph=graph,
+        input_schema={},
+        output_schema={},
+        trigger_intents=[asset.name][:30],
+        utterance_examples=[f"运行{asset.name}", f"执行技能 {asset.skill_id}"][:30],
+        content_hash=content_hash,
+        change_summary="由技能中心一键发布",
+        created_by=request.user,
+    )
+    sop.current_version = version
+    sop.save(update_fields=["current_version", "updated_at"])
+    return Response({
+        "ok": True,
+        "sop_key": sop.sop_key,
+        "version": row.version,
+        "name": sop.name,
+        "action_name": action_name,
+        "message": "已生成 SOP 草稿，可在流程中心继续编辑",
+    })
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
 def asset_category_update(request, asset_id: int):
     asset = get_object_or_404(
         SkillAsset.objects.select_related("owner", "uploader"),
@@ -436,6 +560,71 @@ def asset_usage_history(request, asset_id: int):
         "page_size": page_size,
         "count": total,
         "results": [_usage_event_payload(row) for row in rows],
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def asset_files(request, asset_id: int):
+    asset = get_object_or_404(
+        _asset_queryset_for_user(request.user).select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(asset, request.user),
+        "files": asset_file_manifest(asset),
+        "version": asset.updated_at.isoformat(),
+        "can_edit": _can_edit_asset(request.user, asset),
+    })
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def asset_file_detail(request, asset_id: int, file_path: str):
+    asset = get_object_or_404(
+        _asset_queryset_for_user(request.user).select_related("owner", "uploader"),
+        id=asset_id,
+    )
+    if request.method == "GET":
+        try:
+            content = read_asset_text_file(asset, file_path)
+        except FileNotFoundError:
+            return Response({"ok": False, "error": "技能文件不存在"}, status=404)
+        except ValueError as exc:
+            return Response({"ok": False, "error": str(exc)}, status=400)
+        return Response({
+            "ok": True,
+            "path": file_path,
+            "content": content,
+            "version": asset.updated_at.isoformat(),
+            "can_edit": _can_edit_asset(request.user, asset),
+        })
+
+    if not _can_edit_asset(request.user, asset):
+        return Response({"ok": False, "error": "仅技能责任人可编辑文件内容"}, status=403)
+    content = request.data.get("content")
+    if not isinstance(content, str):
+        return Response({"ok": False, "error": "content 必须是文本"}, status=400)
+    try:
+        updated = save_asset_text_file(
+            asset,
+            file_path,
+            content,
+            expected_updated_at=str(request.data.get("expected_version") or ""),
+        )
+    except SkillFileConflictError as exc:
+        return Response({"ok": False, "error": str(exc), "conflict": True}, status=409)
+    except ValueError as exc:
+        return Response({"ok": False, "error": str(exc)}, status=400)
+    return Response({
+        "ok": True,
+        "asset": _asset_row_payload(updated, request.user),
+        "path": file_path,
+        "content": content,
+        "files": asset_file_manifest(updated),
+        "version": updated.updated_at.isoformat(),
+        "can_edit": True,
     })
 
 

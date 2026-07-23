@@ -392,6 +392,7 @@ class WorkTask(models.Model):
 class WorkTaskArtifact(models.Model):
     class Kind(models.TextChoices):
         MARKDOWN = "md", "Markdown 文档"
+        HTML = "html", "HTML 报告"
         JSON = "json", "JSON 数据"
         XLSX = "xlsx", "Excel 工作簿"
 

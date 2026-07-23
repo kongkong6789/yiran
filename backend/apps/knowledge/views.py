@@ -1,5 +1,7 @@
 from io import BytesIO
+from urllib.parse import quote, urlencode
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.http import FileResponse
@@ -40,10 +42,11 @@ from .access import (
     sync_default_permissions,
     visible_knowledge_bases,
 )
+from .ingest_router import enqueue_knowledge_ingest
+from .module_http import ModuleIngestError, get_json, module_user_context
 from .traditional_rag import (
     TraditionalRagError,
     enqueue_file_reingest,
-    enqueue_ingest_upload,
     hybrid_search,
     keyword_search,
     read_stored_file,
@@ -161,10 +164,18 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         kb = self.get_object()
         if not _can_manage_knowledge_base(self.request.user, kb):
             raise PermissionDenied("You do not have permission to edit this knowledge base")
+        permission_fields = {"visibility", "teamIds", "team_ids", "teamId"}
+        should_sync_permissions = any(field in self.request.data for field in permission_fields)
         visibility = serializer.validated_data.get("visibility", kb.visibility)
-        team_ids = _validated_team_ids_from_request(self.request, required=visibility == KnowledgeBase.Visibility.TEAM)
+        team_ids = None
+        if should_sync_permissions:
+            team_ids = _validated_team_ids_from_request(
+                self.request,
+                required=visibility == KnowledgeBase.Visibility.TEAM,
+            )
         kb = serializer.save()
-        sync_default_permissions(kb, self.request.user, team_ids=team_ids)
+        if should_sync_permissions:
+            sync_default_permissions(kb, self.request.user, team_ids=team_ids)
         _log(self.request.user, kb, "knowledge_base.updated", "knowledge_base", kb.id)
 
     def destroy(self, request, *args, **kwargs):
@@ -212,10 +223,10 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
             chunk_size = request.data.get("chunk_size")
             chunk_overlap = request.data.get("chunk_overlap")
             asset_role = (request.data.get("asset_role") or "upload").strip()
-            result = enqueue_ingest_upload(
+            result = enqueue_knowledge_ingest(
                 knowledge_base=kb,
                 upload=upload,
-                user=None,
+                user=request.user,
                 segment_mode=request.data.get("segment_mode") or "general",
                 chunk_size=int(chunk_size) if chunk_size not in (None, "") else None,
                 chunk_overlap=int(chunk_overlap) if chunk_overlap not in (None, "") else None,
@@ -231,10 +242,15 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
         _log(
             request.user,
             result.file.knowledge_base,
-            "file.traditional_rag_queued",
+            "file.ingest_queued",
             "knowledge_file",
             result.file.id,
-            {"filename": result.file.original_filename, "job_id": result.job.id},
+            {
+                "filename": result.file.original_filename,
+                "job_id": result.job.id,
+                "retrieval_mode": kb.retrieval_mode,
+                "routes": result.routes,
+            },
         )
         return Response(
             {
@@ -242,6 +258,7 @@ class KnowledgeBaseViewSet(viewsets.ModelViewSet):
                 "job": KnowledgeIngestJobSerializer(result.job).data,
                 "chunk_count": len(result.chunks),
                 "job_id": result.job.id,
+                "routes": result.routes,
                 "chunks_preview": KnowledgeChunkRefSerializer(result.chunks[:20], many=True).data,
             },
             status=status.HTTP_202_ACCEPTED,
@@ -481,6 +498,110 @@ class KnowledgeFileViewSet(viewsets.ModelViewSet):
             file.save(update_fields=["chunk_count", "updated_at"])
             _log(request.user, file.knowledge_base, "chunk.deleted", "knowledge_chunk", chunk_id, {"file_id": file.id})
         return Response({"deleted": bool(deleted), "chunk_id": chunk_id})
+
+    @action(detail=True, methods=["get"], url_path="graph-detail")
+    def graph_detail(self, request, pk=None):
+        file = self.get_object()
+        metadata = file.metadata or {}
+        external = metadata.get("external_ingest") if isinstance(metadata, dict) else None
+        routes = external.get("routes", {}) if isinstance(external, dict) else {}
+        graph_route = routes.get("graph_rag", {}) if isinstance(routes, dict) else {}
+        source_id = str(graph_route.get("source_id") or "")
+        document_id = str(graph_route.get("document_id") or "")
+        if not source_id:
+            binding = file.knowledge_base.source_bindings.filter(
+                source_type=KnowledgeSourceBinding.SourceType.GRAPH,
+                enabled=True,
+            ).first()
+            source_id = str(getattr(binding, "source_id", "") or "")
+        if not source_id and not document_id:
+            return Response({
+                "configured": bool(getattr(settings, "GRAPH_RAG_BASE_URL", "") and getattr(settings, "GRAPH_RAG_INTERNAL_TOKEN", "")),
+                "file": KnowledgeFileSerializer(file).data,
+                "route": graph_route,
+                "message": "This file has no GraphRAG route metadata yet.",
+                "source": None,
+                "document": None,
+                "graph": None,
+                "runs": [],
+                "selected_run": None,
+                "edges": [],
+                "extractions": [],
+            })
+        if not getattr(settings, "GRAPH_RAG_BASE_URL", "") or not getattr(settings, "GRAPH_RAG_INTERNAL_TOKEN", ""):
+            return Response({"error": "not_configured", "message": "GraphRAG is not configured."}, status=400)
+
+        user = module_user_context(request.user)
+        timeout = float(getattr(settings, "GRAPH_RAG_QUERY_TIMEOUT_SECONDS", 45))
+
+        def fetch(path: str, params: dict | None = None) -> tuple[dict | None, dict | None]:
+            url = f"{settings.GRAPH_RAG_BASE_URL}{path}"
+            if params:
+                url = f"{url}?{urlencode(params)}"
+            try:
+                return get_json(url, token=settings.GRAPH_RAG_INTERNAL_TOKEN, user=user, timeout=timeout), None
+            except ModuleIngestError as error:
+                return None, {"error": error.code, "message": error.message, "details": error.details}
+
+        source_payload = None
+        document_payload = None
+        graph_payload = None
+        errors: dict[str, dict] = {}
+        if source_id:
+            source_payload, error = fetch(f"/graph/sources/{quote(source_id)}")
+            if error:
+                errors["source"] = error
+            graph_payload, error = fetch("/graph/curation/detail", {"source_id": source_id, "max_nodes": 160, "include_metrics": "true"})
+            if error:
+                errors["graph"] = error
+        if document_id:
+            document_payload, error = fetch(f"/graph/documents/{quote(document_id)}")
+            if error:
+                errors["document"] = error
+
+        runs: list[dict] = []
+        if source_id:
+            runs_payload, error = fetch("/graph/assets/runs", {"source_id": source_id})
+            if error:
+                errors["runs"] = error
+            else:
+                runs = runs_payload.get("runs", []) if isinstance(runs_payload, dict) else []
+        selected_run = None
+        if runs:
+            selected_run = next((run for run in runs if document_id and str(run.get("document_id") or "") == document_id), None)
+            if selected_run is None and file.content_hash:
+                selected_run = next((run for run in runs if str(run.get("content_hash") or "") == file.content_hash), None)
+            if selected_run is None:
+                selected_run = runs[0]
+
+        edges: list[dict] = []
+        extractions: list[dict] = []
+        if selected_run and selected_run.get("id"):
+            run_id = str(selected_run["id"])
+            edge_payload, error = fetch(f"/graph/assets/runs/{quote(run_id)}/edges", {"include_all": "true"})
+            if error:
+                errors["edges"] = error
+            else:
+                edges = edge_payload.get("edges", []) if isinstance(edge_payload, dict) else []
+            extraction_payload, error = fetch(f"/graph/assets/runs/{quote(run_id)}/extractions")
+            if error:
+                errors["extractions"] = error
+            else:
+                extractions = extraction_payload.get("extractions", []) if isinstance(extraction_payload, dict) else []
+
+        return Response({
+            "configured": True,
+            "file": KnowledgeFileSerializer(file).data,
+            "route": graph_route,
+            "source": source_payload.get("source", source_payload) if isinstance(source_payload, dict) else None,
+            "document": document_payload.get("document", document_payload) if isinstance(document_payload, dict) else None,
+            "graph": graph_payload,
+            "runs": runs,
+            "selected_run": selected_run,
+            "edges": edges,
+            "extractions": extractions,
+            "errors": errors,
+        })
 
     @action(detail=True, methods=["post"])
     def start_ingest(self, request, pk=None):

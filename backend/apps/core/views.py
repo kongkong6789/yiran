@@ -550,7 +550,12 @@ def _work_task_artifact_payload(row: WorkTaskArtifact) -> dict:
         "id": row.id,
         "name": row.name,
         "filename": row.filename,
-        "type": "document" if row.kind == WorkTaskArtifact.Kind.MARKDOWN else "data" if row.kind == WorkTaskArtifact.Kind.JSON else "file",
+        "type": (
+            "html" if row.kind == WorkTaskArtifact.Kind.HTML
+            else "document" if row.kind == WorkTaskArtifact.Kind.MARKDOWN
+            else "data" if row.kind == WorkTaskArtifact.Kind.JSON
+            else "file"
+        ),
         "format": row.get_kind_display(),
         "size": f"{max(1, round(row.size / 1024))} KB",
         "created_at": row.created_at.isoformat(),
@@ -622,6 +627,10 @@ def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: 
     from openpyxl import Workbook
 
     report_markdown = str(result_data.get("report_markdown") or "").strip()
+    report_html = str(result_data.get("report_html") or "").strip()
+    if not report_html and str(result_data.get("output_format") or "").lower() == "html" and report_markdown:
+        from apps.orchestration.report_html import markdown_to_html_document
+        report_html = markdown_to_html_document(report_markdown, title=row.title)
     summary = [
         f"# {row.title}",
         "",
@@ -710,6 +719,14 @@ def _generate_work_task_artifacts(row: WorkTask, parameters: dict, result_data: 
         (WorkTaskArtifact.Kind.JSON, "分析结果与证据" if report_markdown else "任务原始数据", _safe_filename(row.title, "json"), "application/json; charset=utf-8", json_bytes),
         (WorkTaskArtifact.Kind.XLSX, "分析数据与证据" if report_markdown else "任务执行数据", _safe_filename(row.title, "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", stream.getvalue()),
     ]
+    if report_html:
+        artifacts.insert(0, (
+            WorkTaskArtifact.Kind.HTML,
+            "AI 经营分析报告（HTML）",
+            _safe_filename(row.title, "html"),
+            "text/html; charset=utf-8",
+            report_html.encode("utf-8"),
+        ))
     result = []
     for kind, name, filename, content_type, content in artifacts:
         artifact, _ = WorkTaskArtifact.objects.update_or_create(

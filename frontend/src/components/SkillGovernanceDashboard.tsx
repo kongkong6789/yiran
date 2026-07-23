@@ -69,6 +69,8 @@ import {
   updateSkillAssetCategory,
   updateSkillAssetOwner,
   updateSkillAssetVisibility,
+  updateSkillAssetSop,
+  publishSkillAsSop,
   uploadSkillAssetFolder,
   type SkillAnalyticsResponse,
   type SkillAnalyticsRow,
@@ -85,6 +87,7 @@ import {
   type UserSkillItem,
 } from "../api/client";
 import { authenticatedAvatarUrl } from "../utils/avatar";
+import SkillWorkspaceDrawer from "./SkillWorkspaceDrawer";
 
 type Props = {
   onInvoke?: (skill: UserSkillItem) => void;
@@ -348,6 +351,7 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [usageTotal, setUsageTotal] = useState(0);
   const [usagePage, setUsagePage] = useState(1);
   const [usageAsset, setUsageAsset] = useState<{ id: number; name: string } | null>(null);
+  const [workspaceAsset, setWorkspaceAsset] = useState<SkillAssetItem | null>(null);
   const [actionSkillId, setActionSkillId] = useState<string | null>(null);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("manage");
   const [governanceView, setGovernanceView] = useState<GovernanceView>("all");
@@ -610,8 +614,13 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   };
 
   const rowActionItems = (entry: SkillEntry): MenuProps["items"] => {
-    const canEditAsset = Boolean(entry.asset && (entry.asset.is_uploader || analytics?.can_manage));
+    const canEditAsset = Boolean(entry.asset && (entry.asset.can_edit || analytics?.can_manage));
     const items: MenuProps["items"] = [
+      ...(entry.asset ? [{
+        key: "open",
+        icon: <FolderOpenOutlined />,
+        label: canEditAsset ? "打开并编辑技能" : "打开技能详情",
+      }] : []),
       {
         key: "manage",
         icon: <EditOutlined />,
@@ -651,6 +660,10 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   };
 
   const handleRowAction = (entry: SkillEntry, key: string) => {
+    if (key === "open" && entry.asset) {
+      setWorkspaceAsset(entry.asset);
+      return;
+    }
     if (key === "manage") {
       setSelectedSkillId(entry.skillId);
       setResponsibilityPanelView("manage");
@@ -1177,10 +1190,31 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
             onAdopt={() => selectedEntry && void runAction(selectedEntry.skillId, () => adoptSkillAsset(selectedEntry.skillId), "已添加到我的技能")}
             onInvoke={selectedEntry?.personal && onInvoke ? () => onInvoke(selectedEntry.personal!) : undefined}
             onViewUsageHistory={() => selectedEntry && openUsageHistory(selectedEntry)}
+            onOpenWorkspace={selectedEntry?.asset ? () => setWorkspaceAsset(selectedEntry.asset!) : undefined}
             onVisibilityChange={(visibility) => {
               if (!selectedEntry?.asset) return;
               const success = visibility === "shared" ? "已发布到共享仓库，团队成员可主动采用" : "已取消共享，并撤销其他成员的采用入口";
               void runAction(selectedEntry.skillId, () => updateSkillAssetVisibility(selectedEntry.asset!.id, visibility), success);
+            }}
+            onSopCallableChange={(enabled) => {
+              if (!selectedEntry?.asset) return;
+              void runAction(
+                selectedEntry.skillId,
+                () => updateSkillAssetSop(selectedEntry.asset!.id, { sop_callable: enabled }),
+                enabled ? "已允许在 SOP 中调用此技能" : "已取消 SOP 可用",
+              );
+            }}
+            onPublishSop={() => {
+              if (!selectedEntry?.asset) return;
+              void runAction(
+                selectedEntry.skillId,
+                async () => {
+                  const result = await publishSkillAsSop(selectedEntry.asset!.id);
+                  if (!result.ok) throw new Error(result.error || "发布失败");
+                  return result;
+                },
+                "已生成 SOP 草稿，可在流程中心继续编辑",
+              );
             }}
             onDelete={() => {
               if (!selectedEntry) return;
@@ -1376,6 +1410,13 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
           <Pagination current={usagePage} pageSize={20} total={usageTotal} showSizeChanger={false} onChange={(nextPage) => void loadUsageHistory(usageAsset.id, nextPage)} />
         )}
       </Drawer>
+
+      <SkillWorkspaceDrawer
+        open={Boolean(workspaceAsset)}
+        asset={workspaceAsset}
+        onClose={() => setWorkspaceAsset(null)}
+        onUpdated={() => void load()}
+      />
 
       <SkillHubDrawer
         open={skillHubOpen}
@@ -1835,7 +1876,7 @@ function RankingSwitcher({ mode, onModeChange, skillRows, peopleRows, selectedSk
   );
 }
 
-function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onDelete }: {
+function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canManage, owners, actionLoading, onOwnerChange, onCategoryChange, onToggle, onAdopt, onInvoke, onViewUsageHistory, onVisibilityChange, onSopCallableChange, onPublishSop, onDelete }: {
   entry: SkillEntry | null;
   panelView: "overview" | "manage";
   onPanelViewChange: (view: "overview" | "manage") => void;
@@ -1848,7 +1889,10 @@ function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canMana
   onAdopt: () => void;
   onInvoke?: () => void;
   onViewUsageHistory: () => void;
+  onOpenWorkspace?: () => void;
   onVisibilityChange: (visibility: "shared" | "private") => void;
+  onSopCallableChange: (enabled: boolean) => void;
+  onPublishSop: () => void;
   onDelete: () => void;
 }) {
   if (!entry) return <section className="skill-insight-panel"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择技能查看详情" /></section>;
@@ -1891,6 +1935,34 @@ function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canMana
               ) : <Tag bordered={false} icon={categoryIcon(entry.category)}>{categoryLabel}</Tag>}
               <small>分类会同步影响左侧筛选与统计</small>
             </div>
+            {entry.asset && (entry.asset.is_uploader || canManage) && (
+              <div className="skill-responsibility-category">
+                <span>可用于 SOP</span>
+                <span className="skill-enable-control">
+                  <Switch
+                    checked={Boolean(entry.asset.sop_callable)}
+                    loading={actionLoading}
+                    onChange={onSopCallableChange}
+                  />
+                  {entry.asset.sop_callable ? "已对流程开放" : "未对流程开放"}
+                </span>
+                <small>开启后，已启用该技能的成员可在 SOP「执行业务能力」里选择它。</small>
+                {entry.asset.sop_callable && (
+                  <Button size="small" loading={actionLoading} onClick={onPublishSop} style={{ marginTop: 8 }}>
+                    发布为 SOP 模板
+                  </Button>
+                )}
+              </div>
+            )}
+            {entry.asset?.sop_callable && !(entry.asset.is_uploader || canManage) && entry.personal?.enabled && (
+              <div className="skill-responsibility-category">
+                <span>可用于 SOP</span>
+                <Tag bordered={false} color="green">已对流程开放</Tag>
+                <Button size="small" loading={actionLoading} onClick={onPublishSop} style={{ marginTop: 8 }}>
+                  发布为 SOP 模板
+                </Button>
+              </div>
+            )}
             {entry.asset?.source === "skillhub" && (
               <div className="skill-responsibility-source">
                 <span><GlobalOutlined /> SkillHub · v{entry.asset.source_version || "未知版本"}</span>
@@ -1902,11 +1974,12 @@ function SkillResponsibilityPanel({ entry, panelView, onPanelViewChange, canMana
         )}
       </div>
       <div className="skill-responsibility-actions">
-        {entry.personal ? <span className="skill-enable-control"><Switch checked={entry.personal.enabled} loading={actionLoading} onChange={onToggle} />{entry.personal.enabled ? "已启用" : "已停用"}</span> : <Button type="primary" icon={<ImportOutlined />} loading={actionLoading} onClick={onAdopt}>添加到我的技能</Button>}
-        {onInvoke && <Button onClick={onInvoke} disabled={!entry.personal?.enabled}>调用技能</Button>}
-        {entry.asset?.is_uploader && entry.asset.visibility === "private" && <Button icon={<ShareAltOutlined />} loading={actionLoading} onClick={() => onVisibilityChange("shared")}>发布共享</Button>}
-        {entry.asset?.is_uploader && entry.asset.visibility === "shared" && <Popconfirm title="取消共享后，其他成员已采用的入口会被撤销。确定继续？" onConfirm={() => onVisibilityChange("private")}><Button icon={<LockOutlined />} loading={actionLoading}>取消共享</Button></Popconfirm>}
-        {(entry.asset?.is_uploader || entry.personal) && <Popconfirm title={entry.asset?.is_uploader ? "删除技能资产？所有成员的采用入口会一并移除。" : "从我的技能中移除？"} onConfirm={onDelete}><Button type="text" danger icon={<DeleteOutlined />} aria-label={entry.asset?.is_uploader ? "删除技能资产" : "移除我的技能"} /></Popconfirm>}
+        {onOpenWorkspace && <Button size="small" icon={<FolderOpenOutlined />} onClick={onOpenWorkspace}>打开技能</Button>}
+        {entry.personal ? <span className="skill-enable-control"><Switch size="small" aria-label={entry.personal.enabled ? "停用技能" : "启用技能"} checked={entry.personal.enabled} loading={actionLoading} onChange={onToggle} />{entry.personal.enabled ? "已启用" : "已停用"}</span> : <Button size="small" type="primary" icon={<ImportOutlined />} loading={actionLoading} onClick={onAdopt}>添加到我的技能</Button>}
+        {onInvoke && <Button size="small" onClick={onInvoke} disabled={!entry.personal?.enabled}>调用技能</Button>}
+        {entry.asset?.is_uploader && entry.asset.visibility === "private" && <Button size="small" icon={<ShareAltOutlined />} loading={actionLoading} onClick={() => onVisibilityChange("shared")}>发布共享</Button>}
+        {entry.asset?.is_uploader && entry.asset.visibility === "shared" && <Popconfirm title="取消共享后，其他成员已采用的入口会被撤销。确定继续？" onConfirm={() => onVisibilityChange("private")}><Button size="small" icon={<LockOutlined />} loading={actionLoading}>取消共享</Button></Popconfirm>}
+        {(entry.asset?.is_uploader || entry.personal) && <Popconfirm title={entry.asset?.is_uploader ? "删除技能资产？所有成员的采用入口会一并移除。" : "从我的技能中移除？"} onConfirm={onDelete}><Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={entry.asset?.is_uploader ? "删除技能资产" : "移除我的技能"} /></Popconfirm>}
       </div>
     </section>
   );
