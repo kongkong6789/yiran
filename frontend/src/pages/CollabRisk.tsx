@@ -881,6 +881,8 @@ export default function CollabRisk({
   const stickBottomRef = useRef(true);
   const forceStickUntilRef = useRef(0);
   const manualScrollUntilRef = useRef(0);
+  const initialBottomRoomRef = useRef<string | null>(null);
+  const initialBottomSettleUntilRef = useRef(0);
   const bottomScrollFrameRef = useRef<number | null>(null);
   const bottomScrollBehaviorRef = useRef<"auto" | "smooth">("auto");
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
@@ -1158,6 +1160,8 @@ export default function CollabRisk({
     stickBottomRef.current = false;
     forceStickUntilRef.current = 0;
     manualScrollUntilRef.current = Date.now() + 600;
+    initialBottomRoomRef.current = null;
+    initialBottomSettleUntilRef.current = 0;
     if (bottomScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(bottomScrollFrameRef.current);
       bottomScrollFrameRef.current = null;
@@ -1225,27 +1229,6 @@ export default function CollabRisk({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }, []);
-
-  useEffect(() => {
-    const scroller = messageScrollerRef.current;
-    if (!scroller || typeof ResizeObserver === "undefined") return undefined;
-    let frame = 0;
-    const settleIfPinned = () => {
-      if (!stickBottomRef.current) return;
-      window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        scheduleMessagesToBottom("auto");
-      });
-    };
-    const observer = new ResizeObserver(settleIfPinned);
-    observer.observe(scroller);
-    const content = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
-    if (content) observer.observe(content);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [activeId, scheduleMessagesToBottom, visibleMessages.length]);
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
@@ -1365,6 +1348,8 @@ export default function CollabRisk({
         setHighlightId(targetMessageId);
         stickBottomRef.current = false;
         forceStickUntilRef.current = 0;
+        initialBottomRoomRef.current = null;
+        initialBottomSettleUntilRef.current = 0;
         const targetIndex = nextMessages
           .filter((item) => item.status !== "deleted")
           .findIndex((item) => item.id === targetMessageId);
@@ -1389,6 +1374,8 @@ export default function CollabRisk({
         setFirstItemIndex(VIRT_BASE_INDEX);
         stickBottomRef.current = true;
         forceStickUntilRef.current = Date.now() + 240;
+        initialBottomRoomRef.current = id;
+        initialBottomSettleUntilRef.current = Date.now() + 1_200;
         window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
       }
       roomViewCacheRef.current.set(id, {
@@ -1629,6 +1616,9 @@ export default function CollabRisk({
     draftCoachSeq.current += 1;
 
     const cached = roomViewCacheRef.current.get(roomId);
+    const hasPendingTarget = pendingSearchTargetRef.current?.roomId === roomId;
+    initialBottomRoomRef.current = hasPendingTarget ? null : roomId;
+    initialBottomSettleUntilRef.current = hasPendingTarget ? 0 : Date.now() + 1_200;
     if (cached) {
       setActiveRoom(cached.room);
       setMessages(cached.messages);
@@ -4454,13 +4444,20 @@ export default function CollabRisk({
                 computeItemKey={(_index, item) => String(item.meta?.client_message_key || item.id)}
                 firstItemIndex={firstItemIndex}
                 initialTopMostItemIndex={{
-                  index: Math.max(0, visibleMessages.length - 1),
+                  index: "LAST",
                   align: "end",
                 }}
-                followOutput={() => {
+                followOutput={(isAtBottom) => {
                   if (Date.now() < manualScrollUntilRef.current) return false;
                   if (Date.now() < forceStickUntilRef.current) return "auto";
-                  return stickBottomRef.current ? "auto" : false;
+                  return isAtBottom && stickBottomRef.current ? "auto" : false;
+                }}
+                totalListHeightChanged={() => {
+                  if (
+                    initialBottomRoomRef.current !== activeId
+                    || Date.now() > initialBottomSettleUntilRef.current
+                  ) return;
+                  scheduleMessagesToBottom("auto");
                 }}
                 atBottomThreshold={24}
                 atBottomStateChange={(bottom) => {
@@ -4706,7 +4703,7 @@ export default function CollabRisk({
                                         rootClassName="collab-msg-image-root"
                                         draggable={Boolean(a.url)}
                                         onLoad={() => {
-                                          if (stickBottomRef.current) scrollMessagesToBottom("auto");
+                                          virtuosoRef.current?.autoscrollToBottom();
                                         }}
                                         onDragStart={(event) => {
                                           if (!a.url) {

@@ -181,10 +181,15 @@ test("chat supports stable bottom scrolling, team grouping, translation, and ini
   assert.match(chatSource, /key:\s*"translate"/);
   assert.match(chatSource, /translations\[m\.id\] \? "隐藏译文" : "翻译消息"/);
   assert.doesNotMatch(chatSource, /autoTranslate|collab-auto-translate|中英互译/);
-  assert.match(chatSource, /ResizeObserver\(settleIfPinned\)/);
+  assert.doesNotMatch(chatSource, /ResizeObserver\(settleIfPinned\)/);
   assert.match(chatSource, /const scheduleMessagesToBottom/);
   assert.match(chatSource, /bottomScrollFrameRef/);
   assert.match(chatSource, /manualScrollUntilRef/);
+  assert.match(chatSource, /initialTopMostItemIndex=\{\{[\s\S]*?index:\s*"LAST"/);
+  assert.match(chatSource, /followOutput=\{\(isAtBottom\)[\s\S]*?isAtBottom && stickBottomRef\.current/);
+  assert.match(chatSource, /totalListHeightChanged=\{\(\) => \{[\s\S]*?initialBottomRoomRef\.current !== activeId/);
+  assert.match(chatSource, /initialBottomSettleUntilRef\.current = Date\.now\(\) \+ 1_200/);
+  assert.match(chatSource, /virtuosoRef\.current\?\.autoscrollToBottom\(\)/);
   assert.match(chatSource, /atBottomThreshold=\{24\}/);
   assert.doesNotMatch(chatSource, /scroller\.scrollTop\s*=\s*scroller\.scrollHeight/);
   assert.match(monitorStyles, /\.collab-message-menu \.ant-dropdown-menu-item-danger/);
