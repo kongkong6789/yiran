@@ -70,12 +70,17 @@ def _message_meta(run: XiaoceRun, process_status: str, **extra) -> dict:
     }
 
 
-def _create_bot_message(run: XiaoceRun, content: str, meta: dict) -> CollabMessage:
+def _create_bot_message(
+    run: XiaoceRun,
+    content: str,
+    meta: dict,
+    attachments: list[dict] | None = None,
+) -> CollabMessage:
     return CollabMessage.objects.create(
         room=run.room,
         sender=get_xiaoce_bot_user(),
         content=(content or "")[:8000],
-        attachments=[],
+        attachments=attachments or [],
         mentions=[],
         msg_type="ai",
         ai_kind="xiaoce",
@@ -87,11 +92,13 @@ def _complete_locked_run(
     locked: XiaoceRun,
     reply: str,
     meta: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> CollabMessage:
     message = _create_bot_message(
         locked,
         reply,
         _message_meta(locked, "completed", **(meta or {})),
+        attachments,
     )
     locked.status = XiaoceRun.Status.COMPLETED
     locked.finished_at = timezone.now()
@@ -170,11 +177,12 @@ def complete_xiaoce_run(
     run_id,
     reply: str,
     meta: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> CollabMessage | None:
     _, locked = _lock_room_then_run(run_id)
     if locked is None or locked.status != XiaoceRun.Status.RUNNING:
         return None
-    return _complete_locked_run(locked, reply, meta)
+    return _complete_locked_run(locked, reply, meta, attachments)
 
 
 def _staging_skill_id(skill_id: str, run_id) -> tuple[str, str]:

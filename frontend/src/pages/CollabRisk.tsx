@@ -101,10 +101,18 @@ import "../styles/xiaoceChatTheme.css";
 const MSG_WINDOW = 30;
 const TRANSLATION_BATCH_SIZE = 8;
 const VIRT_BASE_INDEX = 100_000;
+const TRUE_BOTTOM_EPSILON_PX = 1;
 /** 有缓存时切房先秒开，超过此时长才后台整窗刷新 */
 const ROOM_CACHE_FRESH_MS = 5 * 60_000;
 /** 列表加载后空闲预取的会话数 */
 const ROOM_PREFETCH_IDLE = 8;
+
+function isMessageScrollerAtTrueBottom(
+  scroller: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
+) {
+  return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+    <= TRUE_BOTTOM_EPSILON_PX;
+}
 
 const RISK_META: Record<string, { color: string; label: string }> = {
   green: { color: "success", label: "正常" },
@@ -845,7 +853,16 @@ export default function CollabRisk({
   });
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
+  // `followOutput` can run before Virtuoso has emitted a new atBottom state. Keep
+  // an explicit user-intent lock so a wheel/touch/key scroll is never overridden
+  // by a pending streaming update or an earlier programmatic scroll-to-bottom.
+  const manualMessageScrollLockRef = useRef(false);
+  const messageAtBottomRef = useRef(true);
+  const messageScrollIntentRevisionRef = useRef(0);
   const forceStickUntilRef = useRef(0);
+  const messageTouchStartYRef = useRef<number | null>(null);
+  const messagePointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const messageScrollerRef = useRef<HTMLElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<any>(null);
@@ -1103,10 +1120,52 @@ export default function CollabRisk({
     return show;
   }, [visibleMessages]);
 
+  const syncMessageFollowFromScroller = useCallback(() => {
+    const scroller = messageScrollerRef.current;
+    const atTrueBottom = Boolean(scroller && isMessageScrollerAtTrueBottom(scroller));
+    messageAtBottomRef.current = atTrueBottom;
+    if (!atTrueBottom) return false;
+    manualMessageScrollLockRef.current = false;
+    stickBottomRef.current = true;
+    forceStickUntilRef.current = 0;
+    return true;
+  }, []);
+
+  const setMessageScroller = useCallback((element: HTMLElement | Window | null) => {
+    const previous = messageScrollerRef.current;
+    if (previous) previous.removeEventListener("scroll", syncMessageFollowFromScroller);
+    const next = element instanceof HTMLElement ? element : null;
+    messageScrollerRef.current = next;
+    if (next) next.addEventListener("scroll", syncMessageFollowFromScroller, { passive: true });
+  }, [syncMessageFollowFromScroller]);
+
+  useEffect(() => () => {
+    messageScrollerRef.current?.removeEventListener("scroll", syncMessageFollowFromScroller);
+    messageScrollerRef.current = null;
+  }, [syncMessageFollowFromScroller]);
+
+  const lockMessageFollow = useCallback((movingAwayFromBottom = false) => {
+    // A downward wheel at the newest message does not move the list. Do not turn
+    // that harmless gesture into a permanent "new messages stay hidden" state.
+    if (messageAtBottomRef.current && !movingAwayFromBottom) return;
+    messageScrollIntentRevisionRef.current += 1;
+    manualMessageScrollLockRef.current = true;
+    stickBottomRef.current = false;
+    // A user gesture always wins over a previous send/switch animation window.
+    forceStickUntilRef.current = 0;
+  }, []);
+
   const scrollMessagesToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
+    const intentRevision = ++messageScrollIntentRevisionRef.current;
+    manualMessageScrollLockRef.current = false;
+    messageAtBottomRef.current = true;
     stickBottomRef.current = true;
     forceStickUntilRef.current = Date.now() + 420;
     requestAnimationFrame(() => {
+      if (
+        manualMessageScrollLockRef.current
+        || messageScrollIntentRevisionRef.current !== intentRevision
+      ) return;
       virtuosoRef.current?.scrollToIndex({
         index: "LAST",
         align: "end",
@@ -1114,6 +1173,14 @@ export default function CollabRisk({
       });
     });
   }, []);
+
+  const scrollMessagesToBottomIfFollowing = useCallback((
+    behavior: "auto" | "smooth" = "auto",
+  ) => {
+    if (manualMessageScrollLockRef.current) return false;
+    scrollMessagesToBottom(behavior);
+    return true;
+  }, [scrollMessagesToBottom]);
 
   const loadRooms = useCallback(async (selectFirst = false) => {
     setLoadingRooms(true);
@@ -1257,7 +1324,7 @@ export default function CollabRisk({
         setFirstItemIndex(VIRT_BASE_INDEX);
         stickBottomRef.current = true;
         forceStickUntilRef.current = Date.now() + 2000;
-        window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
+        window.setTimeout(() => scrollMessagesToBottomIfFollowing("auto"), 40);
       }
       roomViewCacheRef.current.set(id, {
         room: reconciledRoom,
@@ -1392,7 +1459,7 @@ export default function CollabRisk({
         setRoomDetailLoading(false);
       }
     }
-  }, [getRoomDataRevision, message, scrollMessagesToBottom]);
+  }, [getRoomDataRevision, message, scrollMessagesToBottomIfFollowing]);
 
   const prefetchRoom = useCallback((roomId: string) => {
     if (!roomId || roomId === activeIdRef.current) return;
@@ -1439,6 +1506,12 @@ export default function CollabRisk({
     setSelectedMessageIds(new Set());
     // 先把当前会话的输入框状态存起来
     const prevId = beginRoomSelection(activeIdRef, roomLoadSeqRef, roomId);
+    // Reset the previous room's manual lock for this explicit navigation. Any
+    // gesture made in the newly selected room can still cancel its delayed
+    // post-layout scroll before that callback runs.
+    manualMessageScrollLockRef.current = false;
+    messageAtBottomRef.current = true;
+    messageScrollIntentRevisionRef.current += 1;
     setStatsLoading(false);
     setLoadingOlder(
       loadingOlderRequestRef.current.get(roomId) === roomLoadSeqRef.current,
@@ -1498,7 +1571,7 @@ export default function CollabRisk({
       setRoomDetailLoading(false);
       stickBottomRef.current = true;
       forceStickUntilRef.current = Date.now() + 800;
-      window.setTimeout(() => scrollMessagesToBottom("auto"), 40);
+      window.setTimeout(() => scrollMessagesToBottomIfFollowing("auto"), 40);
     } else {
       // 用会话列表里的摘要立刻占位，避免切到空的「协作会话」引导页
       const listRoom = roomsRef.current.find((room) => room.id === roomId) || null;
@@ -1515,7 +1588,7 @@ export default function CollabRisk({
     setHighlightId(null);
     prevActiveIdForComposerRef.current = roomId;
     setActiveId(roomId);
-  }, [scrollMessagesToBottom]);
+  }, [scrollMessagesToBottomIfFollowing]);
 
   const refreshStats = useCallback(async (id?: string | null) => {
     const rid = id || activeIdRef.current;
@@ -1870,7 +1943,10 @@ export default function CollabRisk({
       ? pendingSearchTargetRef.current
       : null;
     if (pendingTarget) pendingSearchTargetRef.current = null;
+    messageScrollIntentRevisionRef.current += 1;
     stickBottomRef.current = !pendingTarget;
+    manualMessageScrollLockRef.current = Boolean(pendingTarget);
+    messageAtBottomRef.current = !pendingTarget;
     const cached = roomViewCacheRef.current.get(activeId);
     const fresh = Boolean(
       cached && Date.now() - (cached.fetchedAt || 0) < ROOM_CACHE_FRESH_MS,
@@ -1899,7 +1975,9 @@ export default function CollabRisk({
   }, [loadingRooms, roomIdsKey, prefetchRoom]);
 
   const mergeLiveMessages = useCallback((incoming: CollabMessage[], changed?: CollabMessage[]) => {
-    const shouldStick = stickBottomRef.current || Date.now() < forceStickUntilRef.current;
+    const shouldStick = !manualMessageScrollLockRef.current && (
+      stickBottomRef.current || Date.now() < forceStickUntilRef.current
+    );
     const roomId = activeIdRef.current;
     if (!roomId || (!incoming.length && !changed?.length)) return;
     mutateRoomData(roomId, { messages: (prev) => {
@@ -2619,7 +2697,7 @@ export default function CollabRisk({
         xiaoceRun: () => mergedRun,
       });
       if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
-        scrollMessagesToBottom("auto");
+        scrollMessagesToBottomIfFollowing("auto");
         setMention(null);
       }
       // 统计看板稍后刷新，不挡发送体感
@@ -2744,7 +2822,7 @@ export default function CollabRisk({
         xiaoceRun: () => nextRun,
       });
       if (activeIdRef.current === roomId) {
-        scrollMessagesToBottom("auto");
+        scrollMessagesToBottomIfFollowing("auto");
       }
     } catch (error: any) {
       message.error(error?.response?.data?.error || "暂停失败，请重试");
@@ -3008,7 +3086,7 @@ export default function CollabRisk({
       selectRoom(forwardTargetId);
       window.setTimeout(() => {
         void loadRoomDetail(forwardTargetId, { soft: true });
-        scrollMessagesToBottom("smooth");
+        scrollMessagesToBottomIfFollowing("smooth");
       }, 60);
       message.success(forwardMode === "merge" ? "已合并转发" : "已逐条转发");
     } catch (error: any) {
@@ -4161,7 +4239,38 @@ export default function CollabRisk({
               </div>
             )}
 
-            <div className="collab-messages">
+            <div
+              className="collab-messages"
+              onWheelCapture={(event) => {
+                if (event.deltaY !== 0) lockMessageFollow(event.deltaY < 0);
+              }}
+              onKeyDownCapture={(event) => {
+                if (["ArrowUp", "PageUp", "Home"].includes(event.key)) lockMessageFollow(true);
+                else if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) lockMessageFollow();
+              }}
+              onTouchStartCapture={(event) => {
+                messageTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+              }}
+              onTouchMoveCapture={(event) => {
+                const startY = messageTouchStartYRef.current;
+                const currentY = event.touches[0]?.clientY;
+                if (startY !== null && currentY !== undefined && Math.abs(currentY - startY) > 4) {
+                  lockMessageFollow(currentY > startY);
+                }
+              }}
+              onTouchEndCapture={() => { messageTouchStartYRef.current = null; }}
+              onPointerDownCapture={(event) => {
+                messagePointerStartRef.current = { x: event.clientX, y: event.clientY };
+              }}
+              onPointerMoveCapture={(event) => {
+                const start = messagePointerStartRef.current;
+                if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) {
+                  lockMessageFollow(event.clientY > start.y);
+                }
+              }}
+              onPointerUpCapture={() => { messagePointerStartRef.current = null; }}
+              onPointerCancelCapture={() => { messagePointerStartRef.current = null; }}
+            >
               {visibleMessages.length === 0 ? (
                 <div className="collab-empty soft">
                   {roomDetailLoading
@@ -4172,6 +4281,7 @@ export default function CollabRisk({
               <Virtuoso
                 key={activeId || "none"}
                 ref={virtuosoRef}
+                scrollerRef={setMessageScroller}
                 className="collab-virtuoso"
                 data={visibleMessages}
                 computeItemKey={(_index, item) => String(item.meta?.client_message_key || item.id)}
@@ -4180,14 +4290,23 @@ export default function CollabRisk({
                   index: Math.max(0, visibleMessages.length - 1),
                   align: "end",
                 }}
-                followOutput={() => {
+                followOutput={(isAtBottom) => {
+                  if (manualMessageScrollLockRef.current) return false;
                   if (Date.now() < forceStickUntilRef.current) return "auto";
-                  return stickBottomRef.current ? "auto" : false;
+                  return isAtBottom && stickBottomRef.current ? "auto" : false;
                 }}
                 atBottomThreshold={56}
                 atBottomStateChange={(bottom) => {
-                  if (bottom) stickBottomRef.current = true;
-                  else if (Date.now() >= forceStickUntilRef.current) stickBottomRef.current = false;
+                  if (bottom) {
+                    // Virtuoso's bottom state is threshold based. Only the DOM
+                    // scroller's actual end may release a manual browsing lock.
+                    syncMessageFollowFromScroller();
+                  } else {
+                    messageAtBottomRef.current = false;
+                    if (Date.now() >= forceStickUntilRef.current) {
+                      stickBottomRef.current = false;
+                    }
+                  }
                 }}
                 startReached={() => {
                   if (stickBottomRef.current || Date.now() < forceStickUntilRef.current) return;
