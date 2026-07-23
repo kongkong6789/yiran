@@ -35,7 +35,7 @@ test("a composite snapshot can launch inventory analysis in the existing work pa
 
 test("enterprise data lives inside knowledge and the legacy route only redirects", () => {
   assert.match(knowledgeSource, /tab"\) === "enterprise-data"/);
-  assert.match(knowledgeSource, /<EnterpriseData \/>/);
+  assert.match(knowledgeSource, /<EnterpriseData[\s\S]*?onBackToDocuments=/);
   assert.match(knowledgeSource, /文档知识/);
   assert.match(knowledgeSource, /企业数据/);
   assert.match(appSource, /path="datalake" element={<Navigate to="\/knowledge\?tab=enterprise-data" replace \/>}/);

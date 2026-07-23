@@ -48,9 +48,6 @@ const DOMAINS: Domain[] = [
     samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 12,
   },
   {
-    samples: ["企业微信", "金蝶云", "向量库", "接口清单"], share: 18,
-  },
-  {
     name: "办流程", sub: "Tasks", desc: "提交需求、自动执行、审批",
     color: "#f2a23c", route: "/console", countLabel: "198 个节点",
     samples: ["审批流", "编排任务", "执行记录", "审计"], share: 12,
