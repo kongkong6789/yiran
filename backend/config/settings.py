@@ -17,6 +17,7 @@ import os
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR.parent.parent / ".env")
 load_dotenv(BASE_DIR / ".env")
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-insecure-key-change-me")
@@ -250,6 +251,10 @@ LIGHTRAG_QUERY_MODE = os.getenv("LIGHTRAG_QUERY_MODE", "mix").strip().lower()
 GRAPH_RAG_BASE_URL = os.getenv("GRAPH_RAG_BASE_URL", "http://127.0.0.1:8102").strip().rstrip("/")
 GRAPH_RAG_INTERNAL_TOKEN = os.getenv("GRAPH_RAG_INTERNAL_TOKEN", os.getenv("RAG_INTERNAL_TOKEN", "")).strip()
 GRAPH_RAG_QUERY_TIMEOUT_SECONDS = float(os.getenv("GRAPH_RAG_QUERY_TIMEOUT_SECONDS", "45"))
+GRAPH_RAG_INGEST_TIMEOUT_SECONDS = float(os.getenv("GRAPH_RAG_INGEST_TIMEOUT_SECONDS", "120"))
+NANO_BRAIN_BASE_URL = os.getenv("NANO_BRAIN_BASE_URL", "").strip().rstrip("/")
+NANO_BRAIN_INTERNAL_TOKEN = os.getenv("NANO_BRAIN_INTERNAL_TOKEN", os.getenv("RAG_INTERNAL_TOKEN", "")).strip()
+NANO_BRAIN_INGEST_TIMEOUT_SECONDS = float(os.getenv("NANO_BRAIN_INGEST_TIMEOUT_SECONDS", "120"))
 AGE_PG_HOST = _pg_env("AGE_POSTGRES_HOST", "AGE_PG_HOST", default=PG_HOST)
 AGE_PG_PORT = int(_pg_env("AGE_POSTGRES_PORT", "AGE_PG_PORT", default=str(PG_PORT)))
 AGE_PG_DB = _pg_env("AGE_POSTGRES_DB", "AGE_PG_DB", default=PG_DB)
