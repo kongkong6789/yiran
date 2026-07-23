@@ -246,6 +246,10 @@ DATABASE_ROUTERS = ["config.db_routers.KnowledgeDatabaseRouter"]
 # 未配置时回退 POSTGRES_*
 LIGHTRAG_SOURCE_ID = os.getenv("LIGHTRAG_SOURCE_ID", "")
 LIGHTRAG_WORKSPACE = os.getenv("LIGHTRAG_WORKSPACE", "")
+LIGHTRAG_QUERY_MODE = os.getenv("LIGHTRAG_QUERY_MODE", "mix").strip().lower()
+GRAPH_RAG_BASE_URL = os.getenv("GRAPH_RAG_BASE_URL", "http://127.0.0.1:8102").strip().rstrip("/")
+GRAPH_RAG_INTERNAL_TOKEN = os.getenv("GRAPH_RAG_INTERNAL_TOKEN", os.getenv("RAG_INTERNAL_TOKEN", "")).strip()
+GRAPH_RAG_QUERY_TIMEOUT_SECONDS = float(os.getenv("GRAPH_RAG_QUERY_TIMEOUT_SECONDS", "45"))
 AGE_PG_HOST = _pg_env("AGE_POSTGRES_HOST", "AGE_PG_HOST", default=PG_HOST)
 AGE_PG_PORT = int(_pg_env("AGE_POSTGRES_PORT", "AGE_PG_PORT", default=str(PG_PORT)))
 AGE_PG_DB = _pg_env("AGE_POSTGRES_DB", "AGE_PG_DB", default=PG_DB)

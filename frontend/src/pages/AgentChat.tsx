@@ -34,8 +34,10 @@ import { authenticatedAvatarUrl } from "../utils/avatar";
 const { TextArea } = Input;
 
 const MODEL_STORAGE_KEY = "liangce_chat_model";
+const LIGHTRAG_MODE_STORAGE_KEY = "liangce_lightrag_mode";
 
 type ModelKind = "chat" | "vision" | "image";
+type LightRagMode = "local" | "global" | "hybrid" | "mix" | "naive" | "bypass";
 
 type ModelPreset = {
   value: string;
@@ -52,6 +54,15 @@ const FALLBACK_PRESETS: ModelPreset[] = [
   { value: "gpt-image-2", title: "gpt-image-2", kind: "image" },
   { value: "gemini-3.1-flash-image-preview", title: "gemini-3.1-flash-image-preview", kind: "image" },
   { value: "gemini-3-pro-image-preview", title: "gemini-3-pro-image-preview", kind: "image" },
+];
+
+const LIGHTRAG_MODE_OPTIONS: { value: LightRagMode; label: string }[] = [
+  { value: "mix", label: "LightRAG: mix" },
+  { value: "local", label: "LightRAG: local" },
+  { value: "global", label: "LightRAG: global" },
+  { value: "hybrid", label: "LightRAG: hybrid" },
+  { value: "naive", label: "LightRAG: naive" },
+  { value: "bypass", label: "Bypass" },
 ];
 
 function kindOfModel(value: string, presets: ModelPreset[]): ModelKind {
@@ -150,6 +161,14 @@ export default function AgentChat() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseItem[]>([]);
   const [knowledgeMode, setKnowledgeMode] = useState<"auto" | "none" | "selected">("auto");
   const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<number[]>([]);
+  const [lightRagMode, setLightRagMode] = useState<LightRagMode>(() => {
+    try {
+      const saved = localStorage.getItem(LIGHTRAG_MODE_STORAGE_KEY) as LightRagMode | null;
+      return saved && LIGHTRAG_MODE_OPTIONS.some((item) => item.value === saved) ? saved : "mix";
+    } catch {
+      return "mix";
+    }
+  });
 
   const selectedKind = kindOfModel(selectedModel, modelPresets);
   const activeSession = sessions.find((s) => s.id === activeId) || null;
@@ -289,6 +308,14 @@ export default function AgentChat() {
   }, [selectedModel]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(LIGHTRAG_MODE_STORAGE_KEY, lightRagMode);
+    } catch {
+      // ignore localStorage errors
+    }
+  }, [lightRagMode]);
+
+  useEffect(() => {
     if (!activeId) {
       setMessages([]);
       return;
@@ -383,7 +410,7 @@ export default function AgentChat() {
     setMessages((prev) => [...prev, {
       role: "user",
       content: userContent,
-      meta: files.length || knowledgeMode !== "auto" || selectedKnowledgeBaseIds.length ? { attachments: attachMeta, knowledge_mode: knowledgeMode, knowledge_base_ids: selectedKnowledgeBaseIds } : undefined,
+      meta: files.length || knowledgeMode !== "auto" || selectedKnowledgeBaseIds.length || lightRagMode !== "mix" ? { attachments: attachMeta, knowledge_mode: knowledgeMode, knowledge_base_ids: selectedKnowledgeBaseIds, lightrag_mode: lightRagMode } : undefined,
     }]);
     setDraft("");
     setPendingFiles([]);
@@ -401,6 +428,7 @@ export default function AgentChat() {
         model: model || undefined,
         knowledge_mode: knowledgeMode,
         knowledge_base_ids: knowledgeMode === "selected" ? selectedKnowledgeBaseIds : [],
+        lightrag_mode: lightRagMode,
       });
       if (!res.ok || !res.reply) {
         message.error(res.error || "对话失败");
@@ -781,6 +809,15 @@ export default function AgentChat() {
                     { value: "none", label: "不使用知识库" },
                     { value: "selected", label: "指定知识库" },
                   ]}
+                  popupMatchSelectWidth={180}
+                  suffixIcon={<DatabaseOutlined />}
+                  disabled={viewingOthers}
+                />
+                <Select
+                  className="agent-chat-lightrag-mode-select"
+                  value={lightRagMode}
+                  onChange={(value) => setLightRagMode(value as LightRagMode)}
+                  options={LIGHTRAG_MODE_OPTIONS}
                   popupMatchSelectWidth={180}
                   suffixIcon={<DatabaseOutlined />}
                   disabled={viewingOthers}

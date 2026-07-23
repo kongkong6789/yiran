@@ -13,6 +13,7 @@ import {
   InputNumber,
   List,
   Modal,
+  Pagination,
   Popconfirm,
   Progress,
   Row,
@@ -587,6 +588,7 @@ export default function Knowledge() {
   const [detailSearch, setDetailSearch] = useState("");
   const [detailTypeFilter, setDetailTypeFilter] = useState("全部");
   const [detailPageSize, setDetailPageSize] = useState(10);
+  const [detailCurrentPage, setDetailCurrentPage] = useState(1);
   const [processedFile, setProcessedFile] = useState<KnowledgeTemplateFile | null>(null);
   const [chunkPageFile, setChunkPageFile] = useState<KnowledgeTemplateFile | null>(null);
   const [deletedTemplateFiles, setDeletedTemplateFiles] = useState<Record<string, string[]>>({});
@@ -615,6 +617,15 @@ export default function Knowledge() {
     const start = Math.max(1, Math.min(chunkCurrentPage - 1, total - 2));
     return Array.from({ length: Math.min(3, total) }, (_, index) => start + index).filter((page) => page <= total);
   }, [chunkCurrentPage, chunkPageSize, chunkTotalCount]);
+
+  function changeDetailPage(page: number) {
+    setDetailCurrentPage(Math.min(Math.max(page, 1), detailTotalPages));
+  }
+
+  function changeDetailPageSize(pageSize: number) {
+    setDetailPageSize(pageSize);
+    setDetailCurrentPage(1);
+  }
 
   function changeChunkPage(page: number, pageSize = chunkPageSize) {
     const nextPage = Math.min(Math.max(page, 1), Math.max(1, Math.ceil((chunkTotalCount || 0) / pageSize)));
@@ -659,6 +670,9 @@ export default function Knowledge() {
       return typeOk && keywordOk;
     });
   }, [detailFiles, detailSearch, detailTypeFilter]);
+  const detailTotalPages = Math.max(1, Math.ceil(filteredDetailFiles.length / detailPageSize));
+  const detailPageStartIndex = (detailCurrentPage - 1) * detailPageSize;
+  const detailPagedFiles = filteredDetailFiles.slice(detailPageStartIndex, detailPageStartIndex + detailPageSize);
   const detailTotalChars = filteredDetailFiles.reduce((sum, file) => sum + (file.charCount ?? Math.max(file.chunks, 1) * 58), 0);
   const detailReadyCount = filteredDetailFiles.filter((file) => file.status === "ready").length;
   const selectedSourceObjects = sources.filter((item) => selectedSources.includes(item.id));
@@ -1395,6 +1409,7 @@ export default function Knowledge() {
 
   useEffect(() => {
     if (detailTemplateId) void refreshKnowledgeDocs(detailTemplateId);
+    setDetailCurrentPage(1);
     setChunkPageFile(null);
     setOpenSheetId(null);
     setOpenDocFileId(null);
@@ -1403,6 +1418,14 @@ export default function Knowledge() {
     setChunkTotalCount(0);
   }, [detailTemplateId]);
 
+
+  useEffect(() => {
+    setDetailCurrentPage(1);
+  }, [detailSearch, detailTypeFilter]);
+
+  useEffect(() => {
+    if (detailCurrentPage > detailTotalPages) setDetailCurrentPage(detailTotalPages);
+  }, [detailCurrentPage, detailTotalPages]);
 
   useEffect(() => {
     const maxPage = Math.max(1, Math.ceil(chunkTotalCount / chunkPageSize));
@@ -1923,7 +1946,7 @@ export default function Knowledge() {
                 </tr>
               </thead>
               <tbody>
-                {filteredDetailFiles.length ? filteredDetailFiles.map((file, index) => {
+                {detailPagedFiles.length ? detailPagedFiles.map((file, index) => {
                   const statusText = displayStatus(file.status);
                   const chars = file.charCount ?? Math.max(file.chunks, 1) * 58;
                   const recallCount = file.recallCount ?? 0;
@@ -1941,7 +1964,7 @@ export default function Knowledge() {
                       <td className="check-col" onDoubleClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" aria-label={`选择 ${file.name}`} />
                       </td>
-                      <td className="index-col">{index + 1}</td>
+                      <td className="index-col">{detailPageStartIndex + index + 1}</td>
                       <td>
                         <button className="doc-name" onClick={() => void openChunkPage(file)}>
                           <span className="file-type-icon">
@@ -1999,13 +2022,15 @@ export default function Knowledge() {
           </div>
 
           <div className="doc-pagination">
-            <Space>
-              <Button disabled>‹</Button>
-              <span>1 / 1</span>
-              <Button disabled>›</Button>
-            </Space>
-            <span className="page-number">1</span>
-            <Segmented value={detailPageSize} onChange={(value) => setDetailPageSize(Number(value))} options={[10, 25, 50]} />
+            <Pagination
+              current={detailCurrentPage}
+              pageSize={detailPageSize}
+              total={filteredDetailFiles.length}
+              showSizeChanger={false}
+              showLessItems={false}
+              onChange={(page: number) => changeDetailPage(page)}
+            />
+            <Segmented value={detailPageSize} onChange={(value) => changeDetailPageSize(Number(value))} options={[10, 25, 50]} />
           </div>
         </section>
       ) : (
@@ -3610,25 +3635,25 @@ const styles = `
 .doc-status.suggested { color: #64748b; }
 .doc-status.suggested::before { background: #cbd5e1; }
 .doc-pagination {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   margin-top: 18px;
   padding: 18px 30px 0;
 }
-.doc-pagination > :last-child {
-  justify-self: end;
+.doc-pagination .ant-pagination {
+  margin: 0;
 }
-.page-number {
-  display: inline-flex;
-  width: 40px;
-  height: 40px;
-  align-items: center;
-  justify-content: center;
+.doc-pagination .ant-pagination-item {
+  border: 0;
   border-radius: 10px;
+}
+.doc-pagination .ant-pagination-item-active {
   background: #f1f5f9;
-  color: #1e293b;
+}
+.doc-pagination .ant-pagination-item-active a {
+  color: #0f172a;
 }
 .config-json {
   white-space: pre-wrap;
