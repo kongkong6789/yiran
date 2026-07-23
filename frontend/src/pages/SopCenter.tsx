@@ -624,8 +624,7 @@ function SopStructuredSource({ draft, disabled, onChange }: {
       })).filter((row) => row.value));
     }).catch(() => setMetrics([]));
     listKnowledgeBases().then((data) => {
-      const rows = Array.isArray(data) ? data : (data.results || []);
-      setKnowledgeBases(rows);
+      setKnowledgeBases(data);
     }).catch(() => setKnowledgeBases([]));
   }, []);
 
@@ -1144,7 +1143,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, onBack, onSav
       setAssets(buildDataAssetOptions(rows));
     }).catch(() => setAssets([]));
     listKnowledgeBases().then((data) => {
-      setKnowledgeBases(Array.isArray(data) ? data : (data.results || []));
+      setKnowledgeBases(data);
     }).catch(() => setKnowledgeBases([]));
   }, []);
 
