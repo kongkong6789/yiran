@@ -6126,10 +6126,19 @@ body {
 .agents-directory-page {
   min-height: 100vh;
   box-sizing: border-box;
-  padding: 17px 52px 56px;
+  padding: 18px 22px 44px;
   color: #18181a;
-  background: #fff;
+  background: #f5f7fa;
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.agents-directory-workspace {
+  box-sizing: border-box;
+  padding: 20px 22px 26px;
+  border: 1px solid #e4e8ef;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(26, 39, 64, 0.045);
 }
 
 .agents-directory-header {
@@ -6142,16 +6151,23 @@ body {
   display: flex;
   width: 100%;
   min-width: 0;
-  height: 51px;
+  height: 46px;
   align-items: center;
   gap: 9px;
   box-sizing: border-box;
-  padding: 0 22px;
-  border: 1px solid #f5f5f5;
-  border-radius: 20px;
+  padding: 0 16px;
+  border: 1px solid #e6e9ef;
+  border-radius: 11px;
   color: #75809c;
+  background: #fafbfc;
+  box-shadow: none;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.agents-directory-search:focus-within {
+  border-color: #cfc6f5;
   background: #fff;
-  box-shadow: 0 0 7px rgba(0, 0, 0, 0.055);
+  box-shadow: 0 0 0 3px rgba(105, 76, 213, 0.08);
 }
 
 .agents-directory-search .anticon {
@@ -6226,8 +6242,8 @@ body {
 .agents-directory-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
-  margin: 35px 0 34px;
+  gap: 14px;
+  margin: 22px 0 20px;
 }
 
 .agents-directory-summary button {
@@ -6322,9 +6338,10 @@ body {
   display: flex;
   align-items: stretch;
   gap: 36px;
-  height: 35px;
-  margin-bottom: 16px;
-  padding-left: 18px;
+  height: 42px;
+  margin-bottom: 18px;
+  padding-left: 6px;
+  border-bottom: 1px solid #edf0f4;
 }
 
 .agents-directory-tabs button {
@@ -6357,7 +6374,7 @@ body {
 .agents-directory-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 32px;
+  gap: 22px;
   align-items: start;
 }
 
@@ -6365,20 +6382,22 @@ body {
   position: relative;
   display: flex;
   min-width: 0;
-  height: 262px;
+  height: 278px;
   flex-direction: column;
   box-sizing: border-box;
-  padding: 12px 10px;
+  padding: 12px;
   overflow: visible;
-  border: 1px solid #f4f4f4;
-  border-radius: 20px;
+  border: 1px solid #e8ebf0;
+  border-radius: 16px;
   background: #fff;
+  box-shadow: 0 2px 8px rgba(26, 39, 64, 0.035);
   transition: box-shadow 160ms ease, transform 160ms ease;
 }
 
 .agent-directory-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.1);
+  border-color: #ddd8f2;
+  box-shadow: 0 12px 26px rgba(37, 45, 66, 0.09);
 }
 
 .agent-directory-card__more {
@@ -6494,9 +6513,9 @@ body {
   align-items: center;
   gap: 10px;
   box-sizing: border-box;
-  margin-top: 34px;
+  margin-top: 32px;
   padding: 8px;
-  border-radius: 18px;
+  border-radius: 13px;
   background: #f6f6f6;
 }
 
@@ -6593,14 +6612,25 @@ body {
 }
 
 .agent-directory-card__description {
-  display: -webkit-box;
-  height: 38px;
+  display: block;
+  height: 54px;
   flex: none;
-  margin: 8px 0;
+  box-sizing: border-box;
+  margin: 14px 2px 16px;
+  padding: 9px 11px;
   overflow: hidden;
-  color: #75809c;
+  border: 1px solid #eef0f4;
+  border-radius: 10px;
+  color: #687187;
+  background: #fafbfc;
   font-size: 12px;
-  line-height: 18px;
+  line-height: 17px;
+}
+
+.agent-directory-card__description > span {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -6655,7 +6685,10 @@ body {
 
 @media (max-width: 1120px) {
   .agents-directory-page {
-    padding-inline: 28px;
+    padding-inline: 18px;
+  }
+  .agents-directory-workspace {
+    padding-inline: 18px;
   }
   .agents-directory-summary {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6667,7 +6700,11 @@ body {
 
 @media (max-width: 680px) {
   .agents-directory-page {
-    padding: 14px 16px 36px;
+    padding: 12px 10px 28px;
+  }
+  .agents-directory-workspace {
+    padding: 16px 14px 24px;
+    border-radius: 14px;
   }
   .agents-directory-header {
     align-items: center;
@@ -6787,29 +6824,40 @@ body {
 .agent-dashboard-hero-actions {
   display: flex;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 16px;
 }
 
 .agent-dashboard-hero-actions button {
   display: inline-flex;
-  height: 32px;
+  height: 36px;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 0 13px;
-  border: 1px solid #e3e7f1;
-  border-radius: 14px;
-  color: #858b9c;
+  gap: 6px;
+  padding: 0 16px;
+  border: 1px solid #d9ddec;
+  border-radius: 12px;
+  color: #4f566b;
   background: #fff;
-  box-shadow: 0 6px 6px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 5px 12px rgba(23, 31, 51, 0.08);
   cursor: pointer;
   font-size: 12px;
+  font-weight: 600;
   white-space: nowrap;
+  transition: color 160ms ease, border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.agent-dashboard-hero-actions button:first-child {
+  border-color: #d9d2fb;
+  color: #6046d7;
+  background: #f7f5ff;
 }
 
 .agent-dashboard-hero-actions button:hover {
-  color: #18181a;
-  background: #f6f6f6;
+  border-color: #bfb2f4;
+  color: #4f35c7;
+  background: #f1edff;
+  box-shadow: 0 8px 18px rgba(95, 72, 207, 0.14);
+  transform: translateY(-1px);
 }
 
 .agent-dashboard-profile {
@@ -6879,29 +6927,61 @@ body {
 
 .agent-dashboard-hero-metrics {
   display: grid;
-  width: min(560px, 100%);
+  width: min(600px, 100%);
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .agent-dashboard-hero-metrics span {
-  display: inline-flex;
+  display: grid;
   min-width: 0;
-  height: 30px;
+  height: 34px;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  grid-template-columns: auto auto;
+  column-gap: 6px;
   box-sizing: border-box;
-  padding: 0 20px;
+  padding: 0 14px;
   border-radius: 10px;
+  border: 1px solid transparent;
   color: #464c5e;
   background: #f6f6f6;
   font-size: 12px;
+  line-height: 1;
   white-space: nowrap;
 }
 
 .agent-dashboard-hero-metrics strong {
-  color: #18181a;
+  display: inline-flex;
+  align-items: center;
+  color: inherit;
   font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.agent-dashboard-hero-metrics .is-knowledge {
+  border-color: #dbeafe;
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.agent-dashboard-hero-metrics .is-skill {
+  border-color: #ede9fe;
+  color: #7c3aed;
+  background: #f5f3ff;
+}
+
+.agent-dashboard-hero-metrics .is-sop {
+  border-color: #ffedd5;
+  color: #d97706;
+  background: #fff7ed;
+}
+
+.agent-dashboard-hero-metrics .is-scheduled {
+  border-color: #ccfbf1;
+  color: #0f766e;
+  background: #f0fdfa;
 }
 
 .agent-dashboard-editor {
@@ -7370,7 +7450,7 @@ body {
 
 .agent-dashboard-growth {
   min-width: 0;
-  margin-top: 8px;
+  padding: 2px 0 4px;
 }
 
 .agent-dashboard-growth h2 {
@@ -7386,10 +7466,10 @@ body {
 .agent-dashboard-growth-track {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(7, minmax(120px, 1fr));
-  gap: 16px;
+  min-width: 0;
+  gap: 18px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 0 6px 4px;
 }
 
 .agent-dashboard-growth-track::before {
@@ -7406,7 +7486,7 @@ body {
   position: relative;
   z-index: 1;
   display: flex;
-  min-width: 120px;
+  min-width: 150px;
   flex-direction: column;
   align-items: center;
   gap: 7px;
@@ -7427,7 +7507,7 @@ body {
 .agent-dashboard-growth-track article > div {
   position: relative;
   display: flex;
-  width: 136px;
+  width: min(168px, 100%);
   flex-direction: column;
   gap: 4px;
   box-sizing: border-box;
@@ -7465,6 +7545,54 @@ body {
   color: #464c5e;
   font-size: 12px;
   font-weight: 400;
+}
+
+.agent-dashboard-growth-track article.is-knowledge > i {
+  background: #2563eb;
+}
+
+.agent-dashboard-growth-track article.is-skill > i {
+  background: #7c3aed;
+}
+
+.agent-dashboard-growth-track article.is-sop > i {
+  background: #d97706;
+}
+
+.agent-dashboard-growth-track article.is-created > i {
+  background: #0f766e;
+}
+
+.agent-dashboard-growth-track article.is-knowledge > div {
+  background: #eff6ff;
+}
+
+.agent-dashboard-growth-track article.is-knowledge > div::before {
+  background: #eff6ff;
+}
+
+.agent-dashboard-growth-track article.is-skill > div {
+  background: #f5f3ff;
+}
+
+.agent-dashboard-growth-track article.is-skill > div::before {
+  background: #f5f3ff;
+}
+
+.agent-dashboard-growth-track article.is-sop > div {
+  background: #fff7ed;
+}
+
+.agent-dashboard-growth-track article.is-sop > div::before {
+  background: #fff7ed;
+}
+
+.agent-dashboard-growth-track article.is-created > div {
+  background: #f0fdfa;
+}
+
+.agent-dashboard-growth-track article.is-created > div::before {
+  background: #f0fdfa;
 }
 
 .agent-dashboard-capabilities {

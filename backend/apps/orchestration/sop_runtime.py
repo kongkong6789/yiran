@@ -39,9 +39,13 @@ def _published_version(definition: SopDefinition) -> SopVersion | None:
 
 def match_sop(*, text: str, payload: dict, organization, user) -> SopVersion | None:
     explicit = str(payload.get("_sop_key") or payload.get("sop_key") or "").strip()
+    allowed_sop_keys = payload.get("_allowed_sop_keys")
     qs = SopDefinition.objects.filter(
         Q(organization=organization) | Q(organization__isnull=True), status=SopDefinition.Status.PUBLISHED
     )
+    if isinstance(allowed_sop_keys, list):
+        allowed = [str(key).strip() for key in allowed_sop_keys if str(key).strip()]
+        qs = qs.filter(sop_key__in=allowed)
     definition = None
     if explicit:
         definition = qs.filter(sop_key=explicit).order_by("organization_id").last()

@@ -254,7 +254,13 @@ export default function VisualInterface() {
       failures.push(result.reason?.response?.data?.detail || result.reason?.message || `数据源 ${index + 1} 加载失败`);
       return fallback;
     };
-    const agents = read<Awaited<ReturnType<typeof listAgents>>>(0, { results: [], llm: false });
+    const agents = read<Awaited<ReturnType<typeof listAgents>>>(0, {
+      count: 0,
+      results: [],
+      llm: false,
+      organization: null,
+      permissions: { can_create: false, can_manage_all: false },
+    });
     const loops = read<Awaited<ReturnType<typeof listLoops>>>(2, { results: [] });
     const automations = read<Awaited<ReturnType<typeof listWorkAutomations>> | null>(5, null);
     setData({

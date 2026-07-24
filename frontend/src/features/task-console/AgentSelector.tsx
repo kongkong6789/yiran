@@ -11,18 +11,11 @@ interface Props {
 
 const statusText: Record<Agent["status"], string> = {
   available: "可用",
+  pending: "待审批",
   disabled: "已停用",
-  quota_exhausted: "额度已用尽",
 };
 
 const AGENT_TOOLTIP = "决定本次任务使用的知识、技能、数据权限和执行规则。执行智能体负责实际执行任务，任务负责人负责接收、跟进和验收。";
-
-const formatQuota = (value?: number) => {
-  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
-  return safeValue >= 10000 && safeValue % 10000 === 0
-    ? `${safeValue / 10000}万`
-    : safeValue.toLocaleString("zh-CN");
-};
 
 export default function AgentSelector({ agents, value, loading = false, onChange }: Props) {
   const selected = agents.find((agent) => agent.id === value);
@@ -57,7 +50,6 @@ export default function AgentSelector({ agents, value, loading = false, onChange
               <Typography.Text type="secondary" className="task-agent-option-desc" ellipsis={{ tooltip: true }}>
                 {agent.expertise || agent.persona || agent.role || "尚未填写能力说明"}
               </Typography.Text>
-              <small>剩余额度：{formatQuota(agent.quota_remaining)}</small>
             </div>
           ) : option.label;
         }}
@@ -84,7 +76,6 @@ export default function AgentSelector({ agents, value, loading = false, onChange
               <span className={`task-agent-availability is-${selected.status}`}>
                 {statusText[selected.status]}
               </span>
-              <span>剩余额度：{formatQuota(selected.quota_remaining)}</span>
             </div>
           </div>
         </div>

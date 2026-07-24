@@ -53,7 +53,7 @@ class AgentProfile(models.Model):
         db_index=True,
     )
     name = models.CharField("名称", max_length=64)
-    emoji = models.CharField("头像 emoji", max_length=8, default="🤖")
+    emoji = models.CharField("头像 emoji", max_length=64, default="🤖")
     group = models.CharField("分类", max_length=64, blank=True, default="未分类")
     role = models.CharField("角色/人设", max_length=128, blank=True)
     expertise = models.CharField("专长", max_length=200, blank=True)
@@ -65,10 +65,9 @@ class AgentProfile(models.Model):
         default=ExecutionRole.OPERATOR,
     )
     is_active = models.BooleanField("可用于任务执行", default=True)
-    quota_limit = models.PositiveBigIntegerField("任务额度上限", default=10000)
-    quota_used = models.PositiveBigIntegerField("已使用额度", default=0)
     skill_ids = models.JSONField("绑定 Skill ID", default=list, blank=True)
     knowledge_base_ids = models.JSONField("绑定知识库 ID", default=list, blank=True)
+    sop_keys = models.JSONField("绑定 SOP Key", default=list, blank=True)
     capability_instructions = models.TextField("能力调用规则", blank=True, default="")
     lifecycle_status = models.CharField(
         "生命周期",
@@ -79,10 +78,6 @@ class AgentProfile(models.Model):
     )
     archived_at = models.DateTimeField("归档时间", null=True, blank=True, db_index=True)
     created_at = models.DateTimeField("创建时间", auto_now_add=True)
-
-    @property
-    def quota_remaining(self) -> int:
-        return max(0, self.quota_limit - self.quota_used)
 
     def set_active(self, active: bool) -> None:
         self.is_active = bool(active)
