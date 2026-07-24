@@ -757,6 +757,14 @@ export const getSkillAnalytics = (params?: { trend_start?: string; trend_end?: s
 export const getSkillAssetUsage = (assetId: number, params?: { page?: number; page_size?: number }) =>
   api.get<SkillUsageHistoryResponse>(`/skills/assets/id/${assetId}/usage/`, { params }).then((r) => r.data);
 
+export const getAgentSkillOptions = () =>
+  api.get<AgentSkillOptionsResponse>("/council/agents/skill-options/").then((r) => r.data);
+
+export const updateAgentSkills = (agentId: number, skillIds: string[]) =>
+  api.patch<AgentSkillConfigResponse>(`/council/agents/${agentId}/skills/`, {
+    skill_ids: skillIds,
+  }).then((r) => r.data);
+
 export const updateSkillAssetOwner = (assetId: number, ownerId: number | null) =>
   api.patch<{ ok: boolean; asset: SkillAssetItem }>(`/skills/assets/id/${assetId}/owner/`, {
     owner_id: ownerId,
@@ -980,6 +988,39 @@ export type SkillHubCategoryFilter = ""
   | "it-ops-security"
   | "life-service";
 
+export interface AgentSkillOption {
+  skill_id: string;
+  name: string;
+  description: string;
+  visibility: "shared" | "private";
+  source: "upload" | "skillhub" | "personal";
+  asset_id: number | null;
+  owner: { id: number; username: string; display_name: string } | null;
+  is_personal_enabled: boolean;
+}
+
+export interface AgentSkillConfigAgent {
+  id: number;
+  name: string;
+  emoji: string;
+  group: string;
+  owner: { id: number; username: string; display_name: string } | null;
+  is_active: boolean;
+  lifecycle_status: string;
+  skill_ids: string[];
+}
+
+export interface AgentSkillOptionsResponse {
+  agents: AgentSkillConfigAgent[];
+  skills: AgentSkillOption[];
+}
+
+export interface AgentSkillConfigResponse {
+  agent: AgentSkillConfigAgent;
+  skill_ids: string[];
+  skills: AgentSkillOption[];
+}
+
 export interface SkillHubSecurityReport {
   status: string;
   status_text: string;
@@ -1118,6 +1159,8 @@ export interface SkillUsageEventItem {
   id: number;
   skill_id: string;
   skill_name: string;
+  agent_id?: number | null;
+  agent_name?: string;
   user_id: number | null;
   user: string;
   avatar_url: string;

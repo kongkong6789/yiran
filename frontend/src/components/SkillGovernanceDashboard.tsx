@@ -59,6 +59,7 @@ import {
   createSkillAsset,
   deleteSkill,
   deleteSkillAsset,
+  getAgentSkillOptions,
   getSkillAnalytics,
   getSkillAssetUsage,
   getSkillAssets,
@@ -66,12 +67,15 @@ import {
   importSkillHubSkill,
   searchSkillHub,
   toggleSkill,
+  updateAgentSkills,
   updateSkillAssetCategory,
   updateSkillAssetOwner,
   updateSkillAssetVisibility,
   updateSkillAssetSop,
   publishSkillAsSop,
   uploadSkillAssetFolder,
+  type AgentSkillConfigAgent,
+  type AgentSkillOption,
   type SkillAnalyticsResponse,
   type SkillAnalyticsRow,
   type SkillAssetCategory,
@@ -316,8 +320,9 @@ function getErrorMessage(error: unknown, fallback: string): string {
     return "上传超时，请检查网络或缩小技能包后重试";
   }
   if (!("response" in error)) return fallback;
-  const response = (error as { response?: { data?: { error?: unknown } } }).response;
-  return typeof response?.data?.error === "string" ? response.data.error : fallback;
+  const response = (error as { response?: { data?: { error?: unknown; detail?: unknown } } }).response;
+  if (typeof response?.data?.error === "string") return response.data.error;
+  return typeof response?.data?.detail === "string" ? response.data.detail : fallback;
 }
 
 export default function SkillGovernanceDashboard({ onInvoke }: Props) {
@@ -345,6 +350,14 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [createOpen, setCreateOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
   const [createDraft, setCreateDraft] = useState<CreateSkillDraft>(EMPTY_CREATE_SKILL);
+  const [agentSkillOpen, setAgentSkillOpen] = useState(false);
+  const [agentSkillLoading, setAgentSkillLoading] = useState(false);
+  const [agentSkillSaving, setAgentSkillSaving] = useState(false);
+  const [agentSkillError, setAgentSkillError] = useState("");
+  const [agentSkillAgents, setAgentSkillAgents] = useState<AgentSkillConfigAgent[]>([]);
+  const [agentSkillOptions, setAgentSkillOptions] = useState<AgentSkillOption[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
+  const [selectedAgentSkillIds, setSelectedAgentSkillIds] = useState<string[]>([]);
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState<SkillUsageEventItem[]>([]);
@@ -404,6 +417,52 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const openAgentSkillConfig = useCallback(async () => {
+    setAgentSkillOpen(true);
+    setAgentSkillLoading(true);
+    setAgentSkillError("");
+    try {
+      const result = await getAgentSkillOptions();
+      const configurableAgents = result.agents || [];
+      setAgentSkillAgents(configurableAgents);
+      setAgentSkillOptions(result.skills || []);
+      const initialAgent = configurableAgents[0] || null;
+      setSelectedAgentId(initialAgent?.id ?? null);
+      setSelectedAgentSkillIds(initialAgent?.skill_ids || []);
+    } catch (error: unknown) {
+      const detail = getErrorMessage(error, "智能体技能配置加载失败");
+      setAgentSkillError(detail);
+      message.error(detail);
+    } finally {
+      setAgentSkillLoading(false);
+    }
+  }, []);
+
+  const handleAgentSkillChange = (agentId: number) => {
+    const agent = agentSkillAgents.find((item) => item.id === agentId);
+    setSelectedAgentId(agentId);
+    setSelectedAgentSkillIds(agent?.skill_ids || []);
+  };
+
+  const handleAgentSkillSave = async () => {
+    if (selectedAgentId === null) return;
+    setAgentSkillSaving(true);
+    try {
+      const result = await updateAgentSkills(selectedAgentId, selectedAgentSkillIds);
+      setAgentSkillAgents((current) => current.map((agent) => (
+        agent.id === selectedAgentId
+          ? { ...agent, skill_ids: result.skill_ids }
+          : agent
+      )));
+      setSelectedAgentSkillIds(result.skill_ids);
+      message.success(`已为${result.agent.name}配置 ${result.skill_ids.length} 个技能`);
+    } catch (error: unknown) {
+      message.error(getErrorMessage(error, "智能体技能配置保存失败"));
+    } finally {
+      setAgentSkillSaving(false);
+    }
+  };
 
   const handleTrendRangeChange = useCallback(async (nextRange: [Dayjs, Dayjs]) => {
     setTrendLoading(true);
@@ -995,6 +1054,7 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
               </div>
               <div className="skill-governance-toolbar__actions">
                 <Button icon={<GlobalOutlined />} onClick={openSkillHub}>技能市场</Button>
+                <Button icon={<RobotOutlined />} onClick={() => void openAgentSkillConfig()}>配置智能体</Button>
                 <label className="skill-upload-category">
                   <span>上传至</span>
                   <Select aria-label="上传技能的能力分类" value={uploadCategory} onChange={setUploadCategory} options={SKILL_CATEGORY_OPTIONS} />
@@ -1057,11 +1117,13 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
               menu={{
                 items: [
                   { key: "create", icon: <PlusOutlined />, label: "创建技能" },
+                  { key: "agent-skills", icon: <RobotOutlined />, label: "配置智能体技能" },
                   { key: "market", icon: <GlobalOutlined />, label: "从技能市场导入" },
                   { key: "refresh", icon: <ReloadOutlined />, label: "刷新数据" },
                 ],
                 onClick: ({ key }) => {
                   if (key === "create") setCreateOpen(true);
+                  if (key === "agent-skills") void openAgentSkillConfig();
                   if (key === "market") openSkillHub();
                   if (key === "refresh") void load();
                 },
@@ -1387,6 +1449,75 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
       </Modal>
 
       <Drawer
+        width="min(520px, 100vw)"
+        open={agentSkillOpen}
+        title="配置智能体技能"
+        onClose={() => setAgentSkillOpen(false)}
+        footer={(
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button onClick={() => setAgentSkillOpen(false)}>取消</Button>
+            <Button
+              type="primary"
+              loading={agentSkillSaving}
+              disabled={selectedAgentId === null || agentSkillLoading}
+              onClick={() => void handleAgentSkillSave()}
+            >
+              保存技能配置
+            </Button>
+          </div>
+        )}
+      >
+        <Spin spinning={agentSkillLoading}>
+          {agentSkillError ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={agentSkillError}>
+              <Button onClick={() => void openAgentSkillConfig()}>重新加载</Button>
+            </Empty>
+          ) : agentSkillAgents.length ? (
+            <div className="skill-create-form">
+              <label>
+                <span>选择智能体</span>
+                <Select
+                  aria-label="选择需要配置技能的智能体"
+                  value={selectedAgentId ?? undefined}
+                  options={agentSkillAgents.map((agent) => ({
+                    value: agent.id,
+                    label: `${agent.emoji || "AI"} ${agent.name}${agent.group ? ` · ${agent.group}` : ""}`,
+                  }))}
+                  onChange={handleAgentSkillChange}
+                />
+              </label>
+              <label>
+                <span>配置技能</span>
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  maxTagCount="responsive"
+                  aria-label="选择智能体可使用的技能"
+                  placeholder="选择这个智能体可调用的技能"
+                  value={selectedAgentSkillIds}
+                  optionFilterProp="label"
+                  options={agentSkillOptions.map((skill) => ({
+                    value: skill.skill_id,
+                    label: `${skill.name} · ${skill.skill_id}`,
+                  }))}
+                  onChange={setSelectedAgentSkillIds}
+                />
+              </label>
+              <Typography.Text type="secondary" aria-live="polite">
+                已选择 {selectedAgentSkillIds.length} 个技能。保存后，其他人调用该智能体时，实际使用的技能会归因到这个智能体并进入技能统计。
+              </Typography.Text>
+            </div>
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={agentSkillLoading ? "正在加载可配置智能体" : "暂无你可以配置的智能体"}
+            />
+          )}
+        </Spin>
+      </Drawer>
+
+      <Drawer
         rootClassName="skill-usage-drawer"
         width={560}
         open={usageOpen}
@@ -1399,7 +1530,13 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
               {usageRows.map((event) => (
                 <article key={event.id}>
                   <Avatar size={34} src={authenticatedAvatarUrl(event.avatar_url)}>{initials(event.user)}</Avatar>
-                  <div><strong>{event.user}</strong><span>{event.source_label} · {event.skill_name || event.skill_id}</span></div>
+                  <div>
+                    <strong>{event.user}</strong>
+                    <span>
+                      {event.source_label} · {event.skill_name || event.skill_id}
+                      {event.agent_name ? ` · ${event.agent_name}` : ""}
+                    </span>
+                  </div>
                   <time dateTime={event.used_at}>{formatDateTime(event.used_at)}</time>
                 </article>
               ))}

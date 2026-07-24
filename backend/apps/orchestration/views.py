@@ -65,7 +65,16 @@ def run(request):
     organization = ensure_current_organization(request.user)
     role = executor.execution_role if executor else _business_role(request.user)
     requested_trace_id = str(request.data.get("trace_id") or "").strip()
-    capability = build_agent_capability_context(executor, request.user, text) if executor else None
+    capability = (
+        build_agent_capability_context(
+            executor,
+            request.user,
+            text,
+            record_usage=True,
+        )
+        if executor
+        else None
+    )
     run_payload = dict(payload) if isinstance(payload, dict) else {}
     if capability:
         run_payload["_agent_kb_ids"] = capability.get("configured_knowledge_base_ids") or []

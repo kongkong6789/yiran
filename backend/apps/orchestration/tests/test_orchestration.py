@@ -5,7 +5,7 @@ from rest_framework.test import APITestCase
 
 from apps.council.models import AgentProfile
 from apps.core.organizations import ensure_current_organization
-from apps.skills.models import UserSkill
+from apps.skills.models import SkillUsageEvent, UserSkill
 
 
 class RealAgentExecutionTests(APITestCase):
@@ -59,6 +59,12 @@ class RealAgentExecutionTests(APITestCase):
         self.assertEqual(response.data["executor"]["name"], "真实运营智能体")
         capability_step = next(step for step in response.data["steps"] if step["node"] == "智能体能力加载")
         self.assertEqual(capability_step["data"]["skills"][0]["skill_id"], skill.skill_id)
+        usage = SkillUsageEvent.objects.get(
+            agent=self.agent,
+            user=self.user,
+            skill_id=skill.skill_id,
+        )
+        self.assertEqual(usage.source, SkillUsageEvent.Source.AGENT)
 
     def test_disabled_agent_cannot_execute(self):
         self.agent.is_active = False

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from apps.skills.models import UserSkill
-from apps.skills.service import build_skill_system_block, skills_payload
+from apps.skills.analytics import record_skill_usage
+from apps.skills.models import SkillUsageEvent, UserSkill
+from apps.skills.service import build_skill_system_block, resolve_skills, skills_payload
 
 from .models import AgentProfile
 
@@ -13,6 +14,8 @@ def build_agent_capability_context(
     agent: AgentProfile | None,
     user,
     query: str = "",
+    *,
+    record_usage: bool = False,
 ) -> dict[str, Any]:
     """Build capability summary + prompt fragments for orchestration / meetings.
 
@@ -39,16 +42,16 @@ def build_agent_capability_context(
     skill_ids = [str(s).strip() for s in (agent.skill_ids or []) if str(s).strip()]
     skills: list[UserSkill] = []
     if skill_ids and user is not None and getattr(user, "is_authenticated", False):
-        by_id = {
-            row.skill_id: row
-            for row in UserSkill.objects.filter(user=user, skill_id__in=skill_ids, enabled=True)
-        }
-        # Preserve agent binding order; fall back to any matching row for the id.
-        missing = [sid for sid in skill_ids if sid not in by_id]
-        if missing:
-            for row in UserSkill.objects.filter(skill_id__in=missing, enabled=True).order_by("id"):
-                by_id.setdefault(row.skill_id, row)
+        resolved = resolve_skills("", user, skill_ids=skill_ids)
+        by_id = {row.skill_id: row for row in resolved}
         skills = [by_id[sid] for sid in skill_ids if sid in by_id]
+        if record_usage:
+            record_skill_usage(
+                skills,
+                user,
+                source=SkillUsageEvent.Source.AGENT,
+                agent=agent,
+            )
 
     skill_prompt = build_skill_system_block(skills).strip()
     instructions = (agent.capability_instructions or "").strip()

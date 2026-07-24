@@ -1,9 +1,29 @@
 from django.urls import path
 
-from . import views
+from . import agent_api, views
 
 urlpatterns = [
+    path(
+        "agents/skill-options/",
+        agent_api.agent_skill_options,
+        name="council-agent-skill-options",
+    ),
+    path(
+        "agents/skill-usage/summary/",
+        agent_api.agent_skill_usage_summary,
+        name="council-agent-skill-usage-summary",
+    ),
     path("agents/", views.agents, name="council-agents"),
+    path(
+        "agents/<int:agent_id>/skills/",
+        agent_api.agent_skills,
+        name="council-agent-skills",
+    ),
+    path(
+        "agents/<int:agent_id>/skill-usage/",
+        agent_api.agent_skill_usage,
+        name="council-agent-skill-usage",
+    ),
     path("agents/<int:agent_id>/", views.agent_detail, name="council-agent-detail"),
     path("meetings/", views.meetings, name="council-meetings"),
     path("meetings/pause-active/", views.meetings_pause_active, name="council-meetings-pause-active"),
