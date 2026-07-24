@@ -28,8 +28,6 @@ class AgentProfileAdmin(admin.ModelAdmin):
         "execution_role",
         "is_active",
         "lifecycle_status",
-        "quota_limit",
-        "quota_used",
         "skill_ids",
         "sop_keys",
         "knowledge_base_ids",
@@ -39,7 +37,8 @@ class AgentProfileAdmin(admin.ModelAdmin):
         "archived_at",
         "created_at",
     )
-    readonly_fields = ("employee_code", "quota_used", "created_by", "archived_at", "created_at")
+    readonly_fields = ("employee_code", "created_by", "archived_at", "created_at")
+
 
 @admin.register(Meeting)
 class MeetingAdmin(admin.ModelAdmin):

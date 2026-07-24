@@ -2162,7 +2162,6 @@ export interface Agent {
   skill_ids: string[];
   sop_keys: string[];
   knowledge_base_ids: number[];
-  sop_keys: string[];
   sops: AgentSopSummary[];
   capability_instructions: string;
   lifecycle_status: "draft" | "published" | "disabled" | "archived";

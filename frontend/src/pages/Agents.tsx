@@ -27,7 +27,6 @@ import {
   EllipsisOutlined,
   MessageOutlined,
   PlusOutlined,
-  ProfileOutlined,
   SearchOutlined,
   StopOutlined,
   ToolOutlined,
@@ -75,7 +74,6 @@ export type AgentFormValues = Pick<
   | "skill_ids"
   | "sop_keys"
   | "knowledge_base_ids"
-  | "sop_keys"
   | "capability_instructions"
 >;
 
@@ -251,104 +249,6 @@ function CapabilityPicker<T extends string | number>({
 
 type DirectoryFilter = "all" | "online" | "offline" | "pending";
 
-const DEMO_AGENTS: Agent[] = [
-  {
-    id: -1,
-    name: "行政",
-    emoji: "",
-    group: "行政",
-    role: "事务管家",
-    expertise: "统筹会议室预订、办公用品申领、用章申请等行政事务，把琐碎的事务性沟通标准化，让行政团队从重复问答中解放出来。",
-    persona: "",
-    execution_role: "operator",
-    is_active: true,
-    quota_limit: 10000,
-    quota_used: 0,
-    quota_remaining: 10000,
-    status: "available",
-    skill_ids: ["meeting"],
-    knowledge_base_ids: [1, 2],
-    capability_instructions: "行政 SOP",
-    created_at: "2026-01-01T00:00:00Z",
-  },
-  {
-    id: -2,
-    name: "财务",
-    emoji: "",
-    group: "财务",
-    role: "报销管家",
-    expertise: "熟悉公司报销、差旅、预算与发票全流程，能解答报销政策、核对单据合规性、发起报销与额度查询。",
-    persona: "",
-    execution_role: "manager",
-    is_active: true,
-    quota_limit: 10000,
-    quota_used: 0,
-    quota_remaining: 10000,
-    status: "available",
-    skill_ids: ["audit", "budget"],
-    knowledge_base_ids: [1, 2, 3],
-    capability_instructions: "财务 SOP",
-    created_at: "2026-01-02T00:00:00Z",
-  },
-  {
-    id: -3,
-    name: "法务",
-    emoji: "",
-    group: "法务",
-    role: "合规审查官",
-    expertise: "覆盖合同审查、条款风险识别与合规咨询，依据企业合规制度和历史判例给出审查意见，遇到高风险或无先例的条款自动升级。",
-    persona: "",
-    execution_role: "director",
-    is_active: true,
-    quota_limit: 10000,
-    quota_used: 0,
-    quota_remaining: 10000,
-    status: "available",
-    skill_ids: ["review"],
-    knowledge_base_ids: [1, 2, 3, 4],
-    capability_instructions: "法务 SOP",
-    created_at: "2026-01-03T00:00:00Z",
-  },
-  {
-    id: -4,
-    name: "IT",
-    emoji: "",
-    group: "技术支持",
-    role: "内部支持工程师",
-    expertise: "处理账号权限、设备申领、常见故障排查等 IT 服务请求，能按 SOP 分流工单、调用内部系统接口开通权限。",
-    persona: "",
-    execution_role: "operator",
-    is_active: true,
-    quota_limit: 10000,
-    quota_used: 0,
-    quota_remaining: 10000,
-    status: "available",
-    skill_ids: ["ticket", "account", "device"],
-    knowledge_base_ids: [1, 2],
-    capability_instructions: "IT SOP",
-    created_at: "2026-01-04T00:00:00Z",
-  },
-  {
-    id: -5,
-    name: "人事",
-    emoji: "",
-    group: "人力资源",
-    role: "员工服务助手",
-    expertise: "面向全体在职员工的 HR 服务窗口，解答假期、社保公积金、薪酬福利、考勤等高频制度问题，可发起请假与开具证明等事务申请。",
-    persona: "",
-    execution_role: "manager",
-    is_active: true,
-    quota_limit: 10000,
-    quota_used: 0,
-    quota_remaining: 10000,
-    status: "available",
-    skill_ids: ["leave", "certificate"],
-    knowledge_base_ids: [1, 2, 3],
-    capability_instructions: "人事 SOP",
-    created_at: "2026-01-05T00:00:00Z",
-  },
-];
-
 const errorText = (error: unknown, fallback: string) => {
   if (typeof error === "object" && error) {
     const response = (error as { response?: { data?: { detail?: string; error?: string } } }).response;
@@ -364,7 +264,6 @@ export interface AgentFormModalProps {
   skillOptions: CapabilityOption<string>[];
   sopOptions: CapabilityOption<string>[];
   knowledgeBaseOptions: CapabilityOption<number>[];
-  sopOptions: CapabilityOption<string>[];
   capabilityOptionsLoading: boolean;
   submitting: boolean;
   onClose: () => void;
@@ -378,7 +277,6 @@ export function AgentFormModal({
   skillOptions,
   sopOptions,
   knowledgeBaseOptions,
-  sopOptions,
   capabilityOptionsLoading,
   submitting,
   onClose,
@@ -401,7 +299,6 @@ export function AgentFormModal({
       skill_ids: [...(editing?.skill_ids || [])],
       sop_keys: [...(editing?.sop_keys || [])],
       knowledge_base_ids: [...(editing?.knowledge_base_ids || [])],
-      sop_keys: [...(editing?.sop_keys || [])],
       capability_instructions: editing?.capability_instructions || "",
       execution_role: editing?.execution_role || "operator",
       is_active: editing?.is_active ?? true,
@@ -631,25 +528,6 @@ export function AgentFormModal({
                 />
                 </Form.Item>
               </div>
-              <div className="agents-capability-config__card">
-                <div className="agents-capability-config__meta">
-                  <span className="agents-capability-config__icon"><ProfileOutlined /></span>
-                  <div>
-                    <Text strong>SOP 流程</Text>
-                    <Text type="secondary">限定该智能体可匹配和执行的已发布标准流程</Text>
-                  </div>
-                </div>
-                <Form.Item name="sop_keys" noStyle>
-                  <CapabilityPicker
-                    label="SOP"
-                    icon={<ProfileOutlined />}
-                    options={sopOptions}
-                    loading={capabilityOptionsLoading}
-                    searchPlaceholder="搜索 SOP 名称、说明或业务域"
-                    emptyText="暂无已发布 SOP"
-                  />
-                </Form.Item>
-              </div>
             </div>
           </section>
           <section className="agents-unified-prompt" aria-labelledby="agents-unified-prompt-title">
@@ -834,7 +712,6 @@ export default function Agents() {
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
   const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
-  const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -1153,7 +1030,6 @@ export default function Agents() {
         skillOptions={skillOptions}
         sopOptions={sopOptions}
         knowledgeBaseOptions={knowledgeBaseOptions}
-        sopOptions={sopOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={submitting}
         onClose={closeModal}

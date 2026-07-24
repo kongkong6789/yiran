@@ -68,7 +68,6 @@ class AgentProfile(models.Model):
     skill_ids = models.JSONField("绑定 Skill ID", default=list, blank=True)
     sop_keys = models.JSONField("绑定已发布 SOP key", default=list, blank=True)
     knowledge_base_ids = models.JSONField("绑定知识库 ID", default=list, blank=True)
-    sop_keys = models.JSONField("绑定 SOP Key", default=list, blank=True)
     capability_instructions = models.TextField("能力调用规则", blank=True, default="")
     lifecycle_status = models.CharField(
         "生命周期",

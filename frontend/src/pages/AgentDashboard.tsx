@@ -46,26 +46,6 @@ import {
 type AgentProfileTab = "work" | "scheduled" | "memory" | "logs";
 type TimelineMode = "day" | "week" | "month";
 
-const FALLBACK_AGENT: Agent = {
-  id: -1,
-  name: "IT",
-  emoji: "",
-  group: "技术支持",
-  role: "内部支持工程师",
-  expertise: "处理账号权限、设备申领、常见故障排查等 IT 服务请求，能按 SOP 分流工单、调用内部系统接口开通权限，复杂问题转交人工工程师。",
-  persona: "稳健、清晰、优先按标准流程排查问题。",
-  execution_role: "operator",
-  is_active: true,
-  quota_limit: 10000,
-  quota_used: 0,
-  quota_remaining: 10000,
-  status: "available",
-  skill_ids: ["文本翻译", "日志分析", "诊断脚本执行"],
-  knowledge_base_ids: [1, 2],
-  capability_instructions: "故障报修受理 / 权限开通工单分流",
-  created_at: "2026-07-08T00:00:00Z",
-};
-
 const PROFILE_TABS: Array<{ key: AgentProfileTab; label: string; icon: React.ReactNode }> = [
   { key: "work", label: "工作记录", icon: <ProfileOutlined /> },
   { key: "scheduled", label: "定时任务", icon: <ClockCircleOutlined /> },
@@ -127,7 +107,6 @@ export default function AgentDashboard() {
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
   const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
-  const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [tab, setTab] = useState<AgentProfileTab>("work");
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("day");
   const [anchorDate, setAnchorDate] = useState(() => new Date(2026, 6, 23));
@@ -421,7 +400,6 @@ export default function AgentDashboard() {
         skillOptions={skillOptions}
         sopOptions={sopOptions}
         knowledgeBaseOptions={knowledgeBaseOptions}
-        sopOptions={sopOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={saving}
         onClose={() => setEditMode(false)}

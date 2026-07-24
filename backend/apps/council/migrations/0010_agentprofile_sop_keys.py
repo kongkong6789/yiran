@@ -1,4 +1,6 @@
-from django.db import migrations, models
+# Duplicate of enterprise+0011 sop_keys path after merge; keep as no-op leaf for history.
+
+from django.db import migrations
 
 
 class Migration(migrations.Migration):
@@ -7,10 +9,4 @@ class Migration(migrations.Migration):
         ("council", "0009_agentprofile_archived_at_and_more"),
     ]
 
-    operations = [
-        migrations.AddField(
-            model_name="agentprofile",
-            name="sop_keys",
-            field=models.JSONField(blank=True, default=list, verbose_name="绑定已发布 SOP key"),
-        ),
-    ]
+    operations = []
