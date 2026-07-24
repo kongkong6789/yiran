@@ -31,7 +31,11 @@ class EventStreamRenderer(BaseRenderer):
 
 
 def _sse(event: str, data: dict) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+    # Trailing comment pad helps intermediate proxies flush small heartbeats promptly.
+    pad = ""
+    if event == "heartbeat":
+        pad = f": {' ' * 1024}\n"
+    return f"{pad}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
 
 
 def _business_role(user) -> str:
@@ -338,6 +342,7 @@ def sop_version_trial_stream(request, sop_key: str, version: str):
                 user=user_row,
                 organization=org_row,
                 on_progress=on_progress,
+                graph_override=graph,
             )
             events.put(("done", _trial_response_body(sop_row, version_row, result, graph=graph)))
         except Exception as exc:  # noqa: BLE001
@@ -406,6 +411,7 @@ def sop_version_trial_stream(request, sop_key: str, version: str):
                 break
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-    response["Cache-Control"] = "no-cache"
+    response["Cache-Control"] = "no-cache, no-transform"
     response["X-Accel-Buffering"] = "no"
+    response["Connection"] = "keep-alive"
     return response

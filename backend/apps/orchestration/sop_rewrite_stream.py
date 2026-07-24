@@ -18,10 +18,14 @@ from apps.council import llm
 from .sop_api import (
     _available_catalog,
     _autofill_graph_bindings,
+    _clarification_response,
+    _CLARIFY_RULES_FLOW,
+    _CLARIFY_RULES_NODES,
     _consult_sop_response,
     _ensure_connected,
     _extract_json_object,
     _fallback_rewrite,
+    _is_clarification_response,
 )
 from .sop_api import (
     _looks_like_consult,
@@ -145,11 +149,12 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
         _stream_status(events, message="正在读取选中步骤并调用模型…", tools=tools)
         system = """你是企业 SOP 步骤编辑器。用户已选中一个或多个流程步骤，你只能修改这些步骤，禁止改动未选中步骤或整图结构。
 只返回一个 JSON 对象，禁止 Markdown。字段：
-- assistant：简短中文，说明改了哪些步骤
+- assistant：简短中文，说明改了哪些步骤；若需澄清则说明缺什么
 - nodes：数组，每项 { key, type, title, config }，key 必须属于选中步骤
 - 若只改一步，也可返回 node：{ key, type, title, config }
 - edgesFromNode（仅单步时可选）：该步骤出边 [{target, condition, priority}]
-节点 type 仅允许 collect_info、data_bind、knowledge_query、checkpoint、execute_action、gate、handoff、end。"""
+节点 type 仅允许 collect_info、data_bind、knowledge_query、checkpoint、execute_action、gate、handoff、end。
+""" + _CLARIFY_RULES_NODES
         payload_text = json.dumps({
             "instruction": instruction,
             "targetNodeKeys": target_keys,
@@ -174,6 +179,15 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
             return
         try:
             generated = _extract_json_object(str(result["content"]))
+            if _is_clarification_response(generated):
+                events.put(("done", _clarification_response(
+                    generated,
+                    draft=draft,
+                    node_count=node_count,
+                    model=str(result.get("model") or ""),
+                    target_keys=target_keys,
+                )))
+                return
             graph = _finalize_graph_for_stream(
                 _merge_targeted_nodes(draft, generated, target_keys),
                 available_assets=available_assets,
@@ -215,7 +229,8 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
     _stream_status(events, message="正在读取当前流程并准备整条改写…", tools=tools)
     system = """你是企业 SOP 流程设计师（流程型技能 / SkillCard）。根据用户指令修改当前 SOP 草稿，只返回一个 JSON 对象，禁止 Markdown。
 返回字段必须为 assistant、key、name、businessDomain、description、actionName、triggerIntents、utteranceExamples、graph。
-若用户要求删除/移除/跳过/精简某节点（尤其人工确认），必须从 graph.nodes 与 edges 中真正删除，禁止只改连线却保留旧节点；assistant 描述必须与最终 graph 一致。"""
+若用户要求删除/移除/跳过/精简某节点（尤其人工确认），必须从 graph.nodes 与 edges 中真正删除，禁止只改连线却保留旧节点；assistant 描述必须与最终 graph 一致。
+""" + _CLARIFY_RULES_FLOW
     compact_history = [
         {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")[:1000]}
         for item in history[-8:] if isinstance(item, dict)
@@ -235,7 +250,7 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
             ),
         },
     ]
-    _stream_status(events, message="模型正在改写整条流程…", tools=tools)
+    _stream_status(events, message="模型正在理解意图并准备改写…", tools=tools)
     result = llm.chat_messages_result(
         system,
         messages,
@@ -251,6 +266,14 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
         return
     try:
         generated = _extract_json_object(str(result["content"]))
+        if _is_clarification_response(generated):
+            events.put(("done", _clarification_response(
+                generated,
+                draft=draft,
+                node_count=node_count,
+                model=str(result.get("model") or ""),
+            )))
+            return
         if generated.get("changed") is False:
             body = {
                 "assistant": str(generated.get("assistant") or "这是说明，未修改流程。")[:1200],
@@ -302,6 +325,14 @@ def _run_rewrite_stream(data: dict, *, user, organization, events: queue.Queue):
         )
         try:
             generated = _extract_json_object(str(repair.get("content") or ""))
+            if _is_clarification_response(generated):
+                events.put(("done", _clarification_response(
+                    generated,
+                    draft=draft,
+                    node_count=node_count,
+                    model=str(result.get("model") or repair.get("model") or ""),
+                )))
+                return
             graph = _finalize_graph_for_stream(
                 _merge_flow_graph(
                     current_graph,
@@ -401,6 +432,7 @@ def sop_ai_rewrite_stream(request):
                 break
 
     response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
-    response["Cache-Control"] = "no-cache"
+    response["Cache-Control"] = "no-cache, no-transform"
     response["X-Accel-Buffering"] = "no"
+    response["Connection"] = "keep-alive"
     return response

@@ -24,6 +24,17 @@ from .sop_schema import normalize_node_config, project_node_context, validate_gr
 _sop_progress_cb: contextvars.ContextVar[Any] = contextvars.ContextVar("sop_progress_cb", default=None)
 
 
+def emit_runtime_progress(event: dict) -> None:
+    """Safe progress emit for nested actions (report.generate, etc.)."""
+    emit = _sop_progress_cb.get()
+    if not callable(emit):
+        return
+    try:
+        emit(event if isinstance(event, dict) else {})
+    except Exception:
+        pass
+
+
 class SopState(TypedDict, total=False):
     text: str
     payload: dict

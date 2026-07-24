@@ -1015,6 +1015,90 @@ def _tool_step(name: str, summary: str, status: str = "ok") -> dict:
     return {"name": name, "summary": summary, "status": status}
 
 
+def _normalize_clarify_questions(raw) -> list[str]:
+    """Keep short, clickable follow-up prompts for the editor chat UI."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        out.append(text[:180])
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _is_clarification_response(generated: dict) -> bool:
+    if not isinstance(generated, dict):
+        return False
+    if generated.get("need_clarification") is True or generated.get("needClarification") is True:
+        return True
+    if generated.get("changed") is False and _normalize_clarify_questions(
+        generated.get("questions") or generated.get("clarify_questions")
+    ):
+        return True
+    return False
+
+
+def _clarification_response(
+    generated: dict,
+    *,
+    draft: dict,
+    node_count: int,
+    model: str = "",
+    target_keys: list[str] | None = None,
+) -> dict:
+    questions = _normalize_clarify_questions(
+        generated.get("questions") or generated.get("clarify_questions")
+    )
+    assistant = str(
+        generated.get("assistant")
+        or "改之前想先跟你确认几点，避免猜错业务意图。"
+    ).strip()
+    if questions and "？" not in assistant and "?" not in assistant:
+        assistant = f"{assistant.rstrip('。.')}。请先选一项或直接回复。"
+    payload = {
+        "assistant": assistant[:1200],
+        "draft": draft,
+        "model": model or "",
+        "scope": "clarify",
+        "changed": False,
+        "needClarification": True,
+        "questions": questions,
+        "tools": [
+            _tool_step("read_graph", f"读取当前流程（{node_count} 步）"),
+            _tool_step("clarify", "信息不足，先向你确认再改"),
+        ],
+    }
+    if target_keys:
+        payload["targetNodeKeys"] = target_keys
+    return payload
+
+
+_CLARIFY_RULES_FLOW = """
+协作规则（必须遵守）：
+A. 指令已足够明确（改哪步、做什么、删/加/换意图清楚）→ 直接改 graph，可省略 changed 或设为 true。
+B. 关键信息不足、存在多种合理改法、或绑定动作/数据有歧义 → 禁止猜测落稿。只返回：
+   {"assistant":"先确认…","changed":false,"need_clarification":true,"questions":["短问句或可选回复1","…"]}
+   questions 1～4 条，写成用户可直接点选/发送的短句；不要返回改后的 graph（可省略 graph）。
+C. 只问缺的关键点：目标步骤、业务动作名、删还是跳过、通知渠道、确认点是否保留、数据资产选哪个等。
+D. 对话历史里用户已回答过的问题不要重复问。
+E. 有截图且能读出明确改法时可直接改，不要为了问而问。
+F. 用户只是询问能力/怎么用 → changed:false，不必 need_clarification。
+"""
+
+_CLARIFY_RULES_NODES = """
+协作规则（必须遵守）：
+A. 对选中步骤的改法已足够明确 → 直接返回 nodes/node 修改。
+B. 缺关键信息（例如改成什么动作、文案目标、保留还是删除确认逻辑）→ 禁止猜测。只返回：
+   {"assistant":"先确认…","changed":false,"need_clarification":true,"questions":["短问句1","…"]}
+   不要返回 nodes/node。
+C. 只问缺的关键点；历史里已答过的不要重复问。
+"""
+
+
 def _looks_like_consult(instruction: str) -> bool:
     """True when the user is asking about capabilities / explaining, not editing the graph."""
     text = str(instruction or "").strip()
@@ -1284,6 +1368,109 @@ def _can_edit(sop: SopDefinition, user) -> bool:
     return bool(sop.organization_id and (sop.created_by_id == user.id or is_organization_admin(user, sop.organization)))
 
 
+def _normalize_editor_chat(raw) -> list[dict]:
+    """Persist editor chat per SOP version (text + compact trial/change cards)."""
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict] = []
+    for item in raw[-80:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content and not item.get("trial") and not item.get("flowChange") and not item.get("clarification"):
+            continue
+        tools = []
+        for tool in (item.get("tools") or [])[:20]:
+            if not isinstance(tool, dict):
+                continue
+            tools.append({
+                "name": str(tool.get("name") or "")[:64],
+                "summary": str(tool.get("summary") or "")[:240],
+                "status": str(tool.get("status") or "ok")[:16],
+            })
+        entry: dict = {
+            "id": str(item.get("id") or "")[:64],
+            "role": role,
+            "content": content[:12000],
+            "model": str(item.get("model") or "")[:64],
+            "tools": tools,
+        }
+        images = []
+        for url in (item.get("images") or [])[:4]:
+            text = str(url or "")
+            if text.startswith("http://") or text.startswith("https://"):
+                images.append(text[:500])
+        if images:
+            entry["images"] = images
+
+        trial = item.get("trial")
+        if isinstance(trial, dict):
+            artifacts = []
+            for artifact in (trial.get("artifacts") or [])[:4]:
+                if not isinstance(artifact, dict):
+                    continue
+                artifacts.append({
+                    "id": str(artifact.get("id") or "artifact")[:64],
+                    "kind": str(artifact.get("kind") or "text")[:32],
+                    "title": str(artifact.get("title") or "产物")[:120],
+                    "summary": str(artifact.get("summary") or "")[:240],
+                    "content": str(artifact.get("content") or "")[:12000],
+                })
+            logs = []
+            for log in (trial.get("logs") or [])[-30:]:
+                if not isinstance(log, dict):
+                    continue
+                logs.append({
+                    "time": str(log.get("time") or "")[:32],
+                    "text": str(log.get("text") or "")[:400],
+                    "status": str(log.get("status") or "ok")[:16],
+                })
+            pending = trial.get("pendingConfirm") if isinstance(trial.get("pendingConfirm"), dict) else None
+            entry["trial"] = {
+                "status": str(trial.get("status") or "completed")[:32],
+                "total": int(trial.get("total") or 0),
+                "current": int(trial.get("current") or 0),
+                "currentTitle": str(trial.get("currentTitle") or "")[:200],
+                "durationSec": trial.get("durationSec"),
+                "outputLabel": str(trial.get("outputLabel") or "")[:120],
+                "note": str(trial.get("note") or "")[:400],
+                "involvesPush": trial.get("involvesPush") if isinstance(trial.get("involvesPush"), bool) else None,
+                "pushedToUser": trial.get("pushedToUser") if isinstance(trial.get("pushedToUser"), bool) else None,
+                "pendingConfirm": {
+                    "kind": str(pending.get("kind") or "checkpoint")[:64],
+                    "nodeKey": str(pending.get("nodeKey") or "")[:64],
+                    "title": str(pending.get("title") or "")[:120],
+                    "instruction": str(pending.get("instruction") or "")[:800],
+                    "missing": [str(item)[:64] for item in (pending.get("missing") or [])[:12]],
+                } if pending else None,
+                "artifacts": artifacts,
+                "logs": logs,
+            }
+
+        change = item.get("flowChange")
+        if isinstance(change, dict):
+            entry["flowChange"] = {
+                "added": [str(value)[:120] for value in (change.get("added") or [])[:40]],
+                "removed": [str(value)[:120] for value in (change.get("removed") or [])[:40]],
+                "modified": [str(value)[:120] for value in (change.get("modified") or [])[:40]],
+                "chain": [str(value)[:160] for value in (change.get("chain") or [])[:40]],
+                "applied": bool(change.get("applied")),
+                "undone": bool(change.get("undone")),
+            }
+
+        clarification = item.get("clarification")
+        if isinstance(clarification, dict) and isinstance(clarification.get("questions"), list):
+            questions = [str(q).strip()[:180] for q in clarification.get("questions") or [] if str(q).strip()]
+            if questions:
+                entry["clarification"] = {"questions": questions[:4]}
+
+        cleaned.append(entry)
+    return cleaned
+
+
 def _version_payload(row: SopVersion, *, include_graph: bool = True) -> dict:
     payload = {
         "id": row.id,
@@ -1293,6 +1480,7 @@ def _version_payload(row: SopVersion, *, include_graph: bool = True) -> dict:
         "changeSummary": row.change_summary,
         "triggerIntents": row.trigger_intents,
         "utteranceExamples": row.utterance_examples,
+        "editorChat": row.editor_chat or [],
         "publishedAt": row.published_at.isoformat() if row.published_at else None,
         "createdAt": row.created_at.isoformat(),
     }
@@ -1449,7 +1637,7 @@ def sop_ai_rewrite(request):
         ]
         system = """你是企业 SOP 步骤编辑器。用户已选中一个或多个流程步骤，你只能修改这些步骤，禁止改动未选中步骤或整图结构。
 只返回一个 JSON 对象，禁止 Markdown。字段：
-- assistant：简短中文，说明改了哪些步骤
+- assistant：简短中文，说明改了哪些步骤；若需澄清则说明缺什么
 - nodes：数组，每项 { key, type, title, config }，key 必须属于选中步骤
 - 若只改一步，也可返回 node：{ key, type, title, config }
 - edgesFromNode（仅单步时可选）：该步骤出边 [{target, condition, priority}]
@@ -1461,7 +1649,8 @@ config 必须包含 instruction、expected_user_info、allowed_actions、knowled
 3. execute_action / gate 的 action_name 必须从 availableActions.name 中选，title 可用中文理解，但字段写 name。
 4. allowed_actions 需包含 continue_flow，执行节点还需 call_action:<action_name>。
 若用户附带了图片，先理解图中的流程/表单/白板内容，再落到选中步骤的修改。
-不要返回完整 graph，不要改 SOP 名称/key/未选中节点。"""
+不要返回完整 graph，不要改 SOP 名称/key/未选中节点。
+""" + _CLARIFY_RULES_NODES
         payload_text = json.dumps({
             "instruction": instruction,
             "targetNodeKeys": target_keys,
@@ -1483,6 +1672,14 @@ config 必须包含 instruction、expected_user_info、allowed_actions、knowled
             return _soft_fallback(str(result.get("error") or "模型未返回内容，改用本地工具"))
         try:
             generated = _extract_json_object(str(result["content"]))
+            if _is_clarification_response(generated):
+                return Response(_clarification_response(
+                    generated,
+                    draft=draft,
+                    node_count=node_count,
+                    model=str(result.get("model") or ""),
+                    target_keys=target_keys,
+                ))
             graph = _finalize_graph(_merge_targeted_nodes(draft, generated, target_keys))
             tools.append(_tool_step("validate_graph", "合并并校验选中步骤"))
             tools.append(_tool_step("bind_assets", "补齐企业数据与业务能力绑定"))
@@ -1544,7 +1741,8 @@ config 必须包含：
 6. 若用户只是询问「有哪些技能/能力/怎么用」而没有明确改流程，不要改 graph，assistant 直接回答，并可在 JSON 加 "changed": false（仍需返回原 graph 原样）。
 7. assistant 必须与最终 graph 一致：说「已移除某节点」时，该节点不得再出现在 nodes 里。
 若用户附带了图片，先理解图中的流程/表单/白板，再生成或修改整条 SOP。
-assistant 用简短中文说明本次修改、已绑定的企业数据/业务能力，以及仍需用户确认的信息。"""
+assistant 用简短中文说明本次修改、已绑定的企业数据/业务能力，以及仍需用户确认的信息。
+""" + _CLARIFY_RULES_FLOW
     compact_history = [
         {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")[:1000]}
         for item in history[-8:] if isinstance(item, dict)
@@ -1575,6 +1773,13 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
         return _soft_fallback(str(result.get("error") or "模型未返回内容，改用本地编排工具"))
     try:
         generated = _extract_json_object(str(result["content"]))
+        if _is_clarification_response(generated):
+            return Response(_clarification_response(
+                generated,
+                draft=draft,
+                node_count=node_count,
+                model=str(result.get("model") or ""),
+            ))
         if generated.get("changed") is False:
             return Response({
                 "assistant": str(generated.get("assistant") or "这是说明，未修改流程。")[:1200],
@@ -1604,6 +1809,13 @@ assistant 用简短中文说明本次修改、已绑定的企业数据/业务能
         )
         try:
             generated = _extract_json_object(str(repair.get("content") or ""))
+            if _is_clarification_response(generated):
+                return Response(_clarification_response(
+                    generated,
+                    draft=draft,
+                    node_count=node_count,
+                    model=str(result.get("model") or repair.get("model") or ""),
+                ))
             graph = _finalize_graph(_merge_flow_graph(
                 current_graph,
                 generated.get("graph") or current_graph,
@@ -1814,7 +2026,34 @@ def sop_version_detail(request, sop_key: str, version: str):
         return Response({"error": "SOP 版本不存在。"}, status=404)
     if request.method == "GET":
         return Response(_version_payload(row))
-    if not _can_edit(sop, request.user) or row.status != SopVersion.Status.DRAFT:
+    if not _can_edit(sop, request.user):
+        return Response({"error": "没有权限修改该 SOP。"}, status=403)
+
+    chat_keys = {"editorChat", "editor_chat"}
+    data_keys = {str(key) for key in request.data.keys()}
+    chat_only = bool(data_keys) and data_keys <= chat_keys
+    if chat_only:
+        # Editor chat is per-version UX state; allow on draft and published.
+        incoming = _normalize_editor_chat(
+            request.data.get("editorChat", request.data.get("editor_chat"))
+        )
+        existing = row.editor_chat if isinstance(row.editor_chat, list) else []
+        # Guard against accidental wipe when client only hydrated a welcome message.
+        if existing and len(existing) > 1 and len(incoming) <= 1:
+            only_welcome = (
+                not incoming
+                or (
+                    len(incoming) == 1
+                    and str(incoming[0].get("id") or "") == "welcome"
+                )
+            )
+            if only_welcome:
+                return Response(_version_payload(row))
+        row.editor_chat = incoming
+        row.save(update_fields=["editor_chat", "updated_at"])
+        return Response(_version_payload(row))
+
+    if row.status != SopVersion.Status.DRAFT:
         return Response({"error": "只有当前工作区的草稿版本可以修改。"}, status=403)
     try:
         values = _version_values(request.data, fallback=row)
@@ -1822,6 +2061,10 @@ def sop_version_detail(request, sop_key: str, version: str):
         return Response({"error": str(exc)}, status=400)
     for field, value in values.items():
         setattr(row, field, value)
+    if "editorChat" in request.data or "editor_chat" in request.data:
+        row.editor_chat = _normalize_editor_chat(
+            request.data.get("editorChat", request.data.get("editor_chat"))
+        )
     row.save()
     return Response(_version_payload(row))
 

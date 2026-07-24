@@ -1786,8 +1786,10 @@ export const rewriteSopWithAi = (body: {
   assistant: string;
   draft: SopDraftPayload;
   model: string;
-  scope?: "node" | "nodes" | "flow" | "consult";
+  scope?: "node" | "nodes" | "flow" | "consult" | "clarify";
   changed?: boolean;
+  needClarification?: boolean;
+  questions?: string[];
   targetNodeKey?: string;
   targetNodeKeys?: string[];
   tools?: Array<{ name: string; summary: string; status?: string }>;
@@ -1808,8 +1810,10 @@ export type SopRewriteStreamHandlers = {
     assistant: string;
     draft: SopDraftPayload;
     model: string;
-    scope?: "node" | "nodes" | "flow" | "consult";
+    scope?: "node" | "nodes" | "flow" | "consult" | "clarify";
     changed?: boolean;
+    needClarification?: boolean;
+    questions?: string[];
     targetNodeKey?: string;
     targetNodeKeys?: string[];
     tools?: Array<{ name: string; summary: string; status?: string }>;

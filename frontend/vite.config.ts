@@ -30,13 +30,17 @@ export default defineConfig(({ mode }) => {
           configure: (proxy) => {
             proxy.on("proxyRes", (proxyRes, req, res) => {
               const url = req.url || "";
-              if (url.includes("/events")) {
-                proxyRes.headers["cache-control"] = "no-cache, no-transform";
-                proxyRes.headers["x-accel-buffering"] = "no";
-                // 立刻把头刷给浏览器，避免整段缓冲
-                if (typeof (res as { flushHeaders?: () => void }).flushHeaders === "function") {
-                  (res as { flushHeaders: () => void }).flushHeaders();
-                }
+              const contentType = String(proxyRes.headers["content-type"] || "");
+              const isSse =
+                contentType.includes("text/event-stream")
+                || url.includes("/events")
+                || url.includes("/stream");
+              if (!isSse) return;
+              proxyRes.headers["cache-control"] = "no-cache, no-transform";
+              proxyRes.headers["x-accel-buffering"] = "no";
+              // 立刻把头刷给浏览器，避免整段缓冲（试跑/改写 SSE 否则会憋到结束才刷）
+              if (typeof (res as { flushHeaders?: () => void }).flushHeaders === "function") {
+                (res as { flushHeaders: () => void }).flushHeaders();
               }
             });
           },

@@ -11415,8 +11415,10 @@ body {
 .task-workspace-content.is-task-detail .task-detail-back {
   margin-top: 0;
 }
-.task-workspace-content > .work-todos-page {
+/* WorkHub wraps WorkTodos in a keep-alive panel div, so use a descendant selector. */
+.task-workspace-content .work-todos-page {
   max-width: none;
+  width: 100%;
   margin: 0;
   padding: 0;
 }
@@ -12546,8 +12548,9 @@ body {
 .sop-chat-bubble.is-thinking { display: flex; align-items: center; gap: 8px; color: #7f8490; }
 .sop-chat-composer { padding: 12px; border-top: 1px solid #e7e9ee; background: #fff; }
 .sop-chat-composer .ant-input { resize: none; border: 0; box-shadow: none; background: #f7f8fa; }
-.sop-chat-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
-.sop-chat-composer > div > span { color: #a0a5af; font-size: 10px; }
+/* 仅旧版 composer（TextArea + 底部操作行）；勿作用于 is-agent 下的 .sop-agent-input */
+.sop-chat-composer:not(.is-agent) > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
+.sop-chat-composer:not(.is-agent) > div > span { color: #a0a5af; font-size: 10px; }
 .sop-flow-canvas { position: relative; min-width: 0; min-height: 0; height: 100%; background: #fbfcfd; }
 .sop-flow-canvas .react-flow__attribution { display: none; }
 .sop-native-controls { display: none !important; }
@@ -20885,6 +20888,50 @@ body {
 .sop-tool-process li.is-ok .anticon { color: #3d9a6a; }
 .sop-tool-process li.is-failed { color: #c44b45; }
 .sop-tool-process li.is-failed .anticon { color: #c44b45; }
+
+/* AI rewrite progress — reuse trial-card layout language */
+.sop-rewrite-card-meta {
+  color: #8b91a1;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sop-rewrite-tool-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.sop-rewrite-tool-pills > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid #e8eaf0;
+  border-radius: 999px;
+  background: #f7f8fb;
+  color: #5f6573;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.sop-rewrite-tool-pills > span .anticon { font-size: 11px; }
+.sop-rewrite-tool-pills > span.is-running {
+  border-color: #d9d0f5;
+  background: #f5f2ff;
+  color: #5b45c9;
+}
+.sop-rewrite-tool-pills > span.is-ok {
+  border-color: #cfe8d9;
+  background: #f3faf6;
+  color: #2f7a52;
+}
+.sop-rewrite-tool-pills > span.is-failed {
+  border-color: #f0d0cc;
+  background: #fff5f4;
+  color: #c44b45;
+}
+
 .sop-trial-card {
   position: relative;
   overflow: hidden;
@@ -21451,7 +21498,52 @@ body {
 .sop-prompt-chips.is-agent {
   margin-bottom: 12px;
 }
+.sop-clarify-chips {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid #ebe4ff;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #faf8ff 0%, #fff 100%);
+}
+.sop-clarify-label {
+  color: #7a7198;
+  font-size: 12px;
+}
+.sop-clarify-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sop-clarify-chip-row > button {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 7px 12px;
+  border: 1px solid #d9d0f5;
+  border-radius: 999px;
+  background: #fff;
+  color: #4b3f78;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.sop-clarify-chip-row > button:hover:not(:disabled) {
+  border-color: #b7a6ef;
+  background: #f4f0ff;
+  color: #5b45c9;
+}
+.sop-clarify-chip-row > button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
 .sop-agent-input {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   border: 1px solid #e5e7ee;
   border-radius: 16px;
   background: #fff;
@@ -21472,6 +21564,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid #f0f2f6;
@@ -21479,11 +21572,14 @@ body {
 .sop-agent-input-left,
 .sop-agent-input-right {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 .sop-agent-input-left > button {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
@@ -21492,7 +21588,13 @@ body {
   background: transparent;
   color: #6b7280;
   font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+}
+.sop-agent-input-left > button .anticon {
+  display: inline-flex;
+  font-size: 14px;
 }
 .sop-agent-input-left > button:hover:not(:disabled) {
   background: #f4f0ff;
@@ -21503,6 +21605,11 @@ body {
   color: #9aa1af;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sop-agent-input-right .sop-chat-send-btn.ant-btn-primary:not(:disabled) {
+  background: #5b45c9;
+  border-color: #5b45c9;
 }
 .sop-flow-change-card {
   border: 1px solid #e4e1f5;
@@ -21753,6 +21860,36 @@ body {
 .sop-version-list > button > span:first-child { display: flex; align-items: center; gap: 8px; }
 .sop-version-list > button > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #69717e; font-size: 11px; }
 .sop-version-list > button small { color: #989faa; font-size: 10px; text-align: right; }
+.sop-evo-shell { display: grid; gap: 4px; }
+.sop-evo-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f7f5ff 0%, #f3f7fb 100%);
+  border: 1px solid #e7e3f5;
+}
+.sop-evo-hero strong { display: block; font-size: 15px; color: #2f3340; }
+.sop-evo-hero p { margin: 6px 0 0; color: #6b7280; font-size: 12px; line-height: 1.55; max-width: 560px; }
+.sop-evo-pane { display: grid; gap: 12px; min-height: 320px; }
+.sop-evo-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.sop-evo-metrics > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fafbfc;
+  border: 1px solid #eef0f3;
+}
+.sop-evo-metrics em { font-style: normal; font-size: 18px; font-weight: 650; color: #303540; }
+.sop-evo-metrics span { font-size: 11px; color: #8b93a1; }
+.sop-evo-runs-toolbar { display: flex; gap: 8px; align-items: center; }
 .sop-run-signals { display: grid; gap: 8px; padding: 12px 14px; border-radius: 8px; background: #f7f8fa; }
 .sop-run-signals > strong { font-size: 12px; color: #3f4652; }
 .sop-run-signal-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -21787,6 +21924,8 @@ body {
 
 @media (max-width: 1100px) {
   .sop-distill-page { height: auto; min-height: 0; }
+  .sop-evo-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sop-evo-hero { flex-direction: column; }
   .sop-distill-workbench { grid-template-columns: 1fr; }
   .sop-chat-panel { min-height: 560px; }
   .sop-design-panel { min-height: 700px; }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 
 
@@ -74,9 +75,64 @@ def resolve_report_output_format(payload: dict | None, text: str = "", instructi
     return "markdown"
 
 
-def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告") -> str:
+def markdown_to_html_document(
+    markdown: str,
+    *,
+    title: str = "经营分析报告",
+    kpis: list[dict] | None = None,
+    charts: list[dict] | None = None,
+) -> str:
     body = _markdown_to_html_body(markdown or "")
     safe_title = html.escape(title or "经营分析报告")
+    kpi_html = _render_kpi_strip(kpis or [])
+    charts_html = _render_chart_canvases(charts or [])
+    charts_payload = json.dumps(charts or [], ensure_ascii=False).replace("</", "<\\/")
+    chart_boot = ""
+    if charts:
+        chart_boot = f"""
+  <script id="report-charts-data" type="application/json">{charts_payload}</script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    (function() {{
+      const node = document.getElementById("report-charts-data");
+      if (!node || !window.Chart) return;
+      let charts = [];
+      try {{ charts = JSON.parse(node.textContent || "[]"); }} catch (err) {{ return; }}
+      const palette = ["#0f766e", "#2563eb", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#65a30d"];
+      charts.forEach((spec) => {{
+        const canvas = document.getElementById(spec.id);
+        if (!canvas) return;
+        const colors = (spec.labels || []).map((_, i) => palette[i % palette.length]);
+        const datasets = (spec.datasets || []).map((ds, di) => ({{
+          label: ds.label || spec.title || "系列",
+          data: ds.data || [],
+          borderColor: palette[di % palette.length],
+          backgroundColor: spec.type === "line" ? "rgba(15,118,110,.12)" : colors,
+          fill: spec.type === "line",
+          tension: 0.25,
+          borderWidth: 2,
+          pointRadius: 3,
+        }}));
+        new Chart(canvas, {{
+          type: spec.type === "doughnut" ? "doughnut" : (spec.type || "line"),
+          data: {{ labels: spec.labels || [], datasets }},
+          options: {{
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {{
+              legend: {{ position: "bottom", labels: {{ boxWidth: 12, font: {{ size: 11 }} }} }},
+              title: {{ display: false }},
+            }},
+            scales: spec.type === "doughnut" ? {{}} : {{
+              x: {{ ticks: {{ maxRotation: 45, font: {{ size: 10 }} }}, grid: {{ display: false }} }},
+              y: {{ beginAtZero: true, ticks: {{ font: {{ size: 10 }} }} }},
+            }},
+          }},
+        }});
+      }});
+    }})();
+  </script>
+"""
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -85,12 +141,13 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
   <title>{safe_title}</title>
   <style>
     :root {{
-      --bg: #f6f4ef;
+      --bg: #f4f7f6;
       --card: #ffffff;
       --ink: #1f2937;
       --muted: #6b7280;
-      --line: #e7e2d8;
+      --line: #e5ebe8;
       --accent: #0f766e;
+      --accent-soft: #ecfdf8;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -98,26 +155,86 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
       font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(circle at top left, rgba(15,118,110,.08), transparent 40%),
-        linear-gradient(180deg, #fbfaf7 0%, var(--bg) 100%);
+        radial-gradient(circle at top left, rgba(15,118,110,.10), transparent 42%),
+        linear-gradient(180deg, #fbfcfb 0%, var(--bg) 100%);
       line-height: 1.7;
     }}
     .wrap {{
-      max-width: 920px;
+      max-width: 980px;
       margin: 0 auto;
-      padding: 28px 20px 48px;
+      padding: 28px 20px 56px;
     }}
     .sheet {{
       background: var(--card);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 28px 32px;
-      box-shadow: 0 10px 30px rgba(31, 41, 55, .05);
+      border-radius: 18px;
+      padding: 28px 32px 36px;
+      box-shadow: 0 12px 34px rgba(31, 41, 55, .06);
+    }}
+    .hero {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .hero h1 {{
+      margin: 0;
+      font-size: 1.7rem;
+      letter-spacing: -.02em;
+    }}
+    .meta {{
+      color: var(--muted);
+      font-size: .85rem;
+    }}
+    .kpi-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin: 0 0 22px;
+    }}
+    .kpi-card {{
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #fff, var(--accent-soft));
+    }}
+    .kpi-card .label {{ color: var(--muted); font-size: .78rem; }}
+    .kpi-card .value {{
+      margin-top: 4px;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #134e4a;
+      font-variant-numeric: tabular-nums;
+    }}
+    .kpi-card .sub {{ margin-top: 2px; color: var(--muted); font-size: .72rem; }}
+    .chart-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 14px;
+      margin: 8px 0 24px;
+    }}
+    .chart-card {{
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px 16px;
+      background: #fff;
+    }}
+    .chart-card h3 {{
+      margin: 0 0 10px;
+      font-size: .95rem;
+      color: var(--accent);
+    }}
+    .chart-card .chart-box {{
+      position: relative;
+      height: 240px;
     }}
     h1, h2, h3, h4 {{ line-height: 1.3; margin: 1.2em 0 .55em; }}
-    h1 {{ font-size: 1.85rem; margin-top: 0; letter-spacing: -.02em; }}
-    h2 {{ font-size: 1.35rem; border-bottom: 1px solid var(--line); padding-bottom: .35em; }}
-    h3 {{ font-size: 1.1rem; color: var(--accent); }}
+    h2 {{ font-size: 1.28rem; border-bottom: 1px solid var(--line); padding-bottom: .35em; }}
+    h3 {{ font-size: 1.05rem; color: var(--accent); }}
     p {{ margin: .75em 0; }}
     ul, ol {{ padding-left: 1.35em; }}
     li {{ margin: .28em 0; }}
@@ -125,7 +242,7 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
       margin: 1em 0;
       padding: .75em 1em;
       border-left: 4px solid var(--accent);
-      background: #f3faf8;
+      background: var(--accent-soft);
       color: #374151;
     }}
     code {{
@@ -155,12 +272,7 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
       text-align: left;
       vertical-align: top;
     }}
-    th {{ background: #f8faf9; }}
-    .meta {{
-      color: var(--muted);
-      font-size: .85rem;
-      margin-bottom: 1.2rem;
-    }}
+    th {{ background: #f5faf8; }}
     .mermaid {{
       background: #fff;
       border: 1px solid var(--line);
@@ -177,15 +289,25 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
       color: var(--muted);
       font-size: .92rem;
     }}
+    @media (max-width: 640px) {{
+      .sheet {{ padding: 20px 16px 28px; }}
+      .chart-card .chart-box {{ height: 220px; }}
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <article class="sheet">
-      <div class="meta">经营分析报告</div>
+      <header class="hero">
+        <h1>{safe_title}</h1>
+        <div class="meta">经营分析报告 · 可信数据驱动</div>
+      </header>
+      {kpi_html}
+      {charts_html}
       {body}
     </article>
   </div>
+  {chart_boot}
   <script type="module">
     import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
     mermaid.initialize({{ startOnLoad: false, theme: "neutral", securityLevel: "loose" }});
@@ -217,6 +339,50 @@ def markdown_to_html_document(markdown: str, *, title: str = "经营分析报告
 </body>
 </html>
 """
+
+
+def _fmt_kpi_value(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return html.escape(str(value))
+    if abs(number - round(number)) < 1e-9 and abs(number) >= 1:
+        return f"{int(round(number)):,}"
+    if abs(number) >= 100:
+        return f"{number:,.1f}"
+    return f"{number:,.2f}"
+
+
+def _render_kpi_strip(kpis: list[dict]) -> str:
+    if not kpis:
+        return ""
+    cards = []
+    for row in kpis[:8]:
+        label = html.escape(str(row.get("label") or row.get("column") or "指标"))
+        asset = html.escape(str(row.get("asset") or ""))
+        value = _fmt_kpi_value(row.get("sum"))
+        cards.append(
+            f'<div class="kpi-card"><div class="label">{label}</div>'
+            f'<div class="value">{value}</div>'
+            f'<div class="sub">{asset}</div></div>'
+        )
+    return f'<section class="kpi-grid" aria-label="关键指标">{"".join(cards)}</section>'
+
+
+def _render_chart_canvases(charts: list[dict]) -> str:
+    if not charts:
+        return ""
+    cards = []
+    for spec in charts[:6]:
+        chart_id = html.escape(str(spec.get("id") or f"chart-{len(cards)+1}"))
+        title = html.escape(str(spec.get("title") or "图表"))
+        cards.append(
+            f'<div class="chart-card"><h3>{title}</h3>'
+            f'<div class="chart-box"><canvas id="{chart_id}"></canvas></div></div>'
+        )
+    return f'<section class="chart-grid" aria-label="经营图表">{"".join(cards)}</section>'
 
 
 def sanitize_mermaid_source(code: str) -> str | None:

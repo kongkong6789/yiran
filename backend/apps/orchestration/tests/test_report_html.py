@@ -9,3 +9,8 @@ class ReportHtmlTests(SimpleTestCase):
 
         self.assertIn("<ul><li>第一项</li><li>第二项</li></ul>", rendered)
         self.assertIn("<ol><li>第一步</li><li>第二步</li></ol>", rendered)
+
+    def test_html_document_keeps_hero_title(self):
+        rendered = markdown_to_html_document("正文内容", title="天猫销售周报")
+        self.assertIn("<h1>天猫销售周报</h1>", rendered)
+        self.assertIn("正文内容", rendered)

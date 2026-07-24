@@ -286,6 +286,7 @@ type ChatMessage = {
   rewrite?: RewriteStreamState;
   trial?: TrialRunState;
   flowChange?: FlowChangeInfo;
+  clarification?: { questions: string[] };
   undoDraft?: SopDraftPayload;
   createdAt?: number;
 };
@@ -332,6 +333,7 @@ const SOP_TOOL_LABELS: Record<string, string> = {
   read_intent: "理解你的意图",
   list_actions: "查阅可用业务能力",
   answer: "回答问题",
+  clarify: "先向你确认",
   rewrite_flow: "改写整条流程",
   rewrite_nodes: "修改选中步骤",
   llm_rewrite: "调用模型改写",
@@ -520,6 +522,15 @@ function chatFromVersion(version?: SopVersionItem, fallbackName?: string, nodes:
               undone: Boolean(rawChange.undone),
             }
           : undefined,
+        clarification: Array.isArray((item as { clarification?: { questions?: unknown } }).clarification?.questions)
+          ? {
+              questions: ((item as { clarification: { questions: unknown[] } }).clarification.questions)
+                .map(String)
+                .map((q) => q.trim())
+                .filter(Boolean)
+                .slice(0, 4),
+            }
+          : undefined,
       };
     });
   return restored.length ? restored : [defaultWelcome(fallbackName, nodes)];
@@ -568,6 +579,9 @@ function persistableChat(messages: ChatMessage[]) {
             applied: item.flowChange.applied,
             undone: item.flowChange.undone,
           }
+        : undefined,
+      clarification: item.clarification?.questions?.length
+        ? { questions: item.clarification.questions.slice(0, 4) }
         : undefined,
     }));
 }
@@ -671,70 +685,113 @@ function SopToolProcess({
   );
 }
 
-function rewriteTimelineIcon(status: RewriteTimelineEvent["status"]) {
-  if (status === "running") return <LoadingOutlined spin />;
-  if (status === "failed") return <CloseCircleFilled />;
-  if (status === "waiting") return <HistoryOutlined />;
-  return <CheckCircleFilled />;
-}
-
 function SopRewriteTimelinePanel({ rewrite }: { rewrite: RewriteStreamState }) {
   const [open, setOpen] = useState(rewrite.status === "running");
+  const tools = rewrite.tools || [];
+  const events = rewrite.events || [];
   const elapsed = rewrite.durationSec
     ?? Math.max(1, Math.round((Date.now() - rewrite.startedAt) / 1000));
-  const heading = rewrite.status === "completed"
-    ? "改写完成"
-    : rewrite.status === "failed"
-      ? "改写失败"
-      : "AI 改写进行中";
-  const hint = rewrite.currentHint
-    || (rewrite.status === "running" ? "正在处理…" : "已记录完整过程");
-  const tools = rewrite.tools || [];
 
   useEffect(() => {
     if (rewrite.status === "running") setOpen(true);
   }, [rewrite.status]);
 
+  const markStatus: TrialRunState["status"] = rewrite.status === "completed"
+    ? "completed"
+    : rewrite.status === "failed"
+      ? "failed"
+      : "running";
+  const heading = rewrite.status === "completed"
+    ? "改写完成"
+    : rewrite.status === "failed"
+      ? "改写失败"
+      : "AI 改写进行中";
+  const activeTool = [...tools].reverse().find((tool) => tool.status === "running")
+    || tools[tools.length - 1];
+  const doneTools = tools.filter((tool) => tool.status === "ok" || tool.status === "failed").length;
+  const toolTotal = Math.max(tools.length, 1);
+  const progress = rewrite.status === "completed"
+    ? 100
+    : rewrite.status === "failed"
+      ? Math.max(12, Math.round((doneTools / toolTotal) * 100))
+      : Math.min(94, Math.max(8, Math.round(((doneTools + 0.45) / toolTotal) * 100)));
+  const hint = rewrite.currentHint
+    || (rewrite.status === "running"
+      ? (activeTool ? `正在${formatSopToolLabel(activeTool)}…` : "正在处理…")
+      : rewrite.status === "failed"
+        ? "改写中断，可展开查看过程"
+        : `已完成，耗时 ${elapsed}s`);
+  const logRows = events.length
+    ? events
+    : tools.map((tool, index) => ({
+        id: `tool-${tool.name}-${index}`,
+        time: "",
+        title: formatSopToolLabel(tool),
+        detail: "",
+        status: tool.status as RewriteTimelineEvent["status"],
+      }));
+
   return (
-    <div className={`sop-rewrite-timeline-card is-${rewrite.status}`}>
-      <div className="sop-rewrite-timeline-head">
-        <div>
-          <strong>{heading}</strong>
-          <p>{hint}</p>
+    <div className={`sop-trial-card sop-rewrite-card is-${markStatus}`}>
+      <div className="sop-trial-card-head">
+        <div className="sop-trial-card-title">
+          <SopTrialStatusIcon status={markStatus} />
+          <div>
+            <strong>{heading}</strong>
+            <p>{hint}</p>
+          </div>
         </div>
-        <div className="sop-rewrite-timeline-meta">
-          <span>{elapsed}s</span>
-          {rewrite.streamChars ? <span>已生成 {rewrite.streamChars} 字</span> : null}
-          <button type="button" onClick={() => setOpen((value) => !value)}>
-            {open ? "收起过程" : "展开过程"}
+        <div className="sop-trial-card-head-actions">
+          <span className="sop-rewrite-card-meta">
+            {elapsed}s
+            {rewrite.streamChars ? ` · ${rewrite.streamChars} 字` : ""}
+          </span>
+          <button type="button" className="sop-trial-card-detail" onClick={() => setOpen((value) => !value)}>
+            {open ? "收起详情" : "查看详情"}
           </button>
         </div>
       </div>
+
+      <div className="sop-trial-card-progress">
+        <div className="sop-trial-card-bar" aria-hidden>
+          <i style={{ width: `${progress}%` }} />
+        </div>
+        <em>{progress}%</em>
+      </div>
+
       {tools.length > 0 && (
-        <ul className="sop-rewrite-tool-strip">
+        <div className="sop-rewrite-tool-pills">
           {tools.map((tool, index) => (
-            <li key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
-              {tool.status === "running" ? <LoadingOutlined spin /> : tool.status === "failed" ? <CloseCircleFilled /> : <CheckCircleFilled />}
-              <span>{formatSopToolLabel(tool)}</span>
+            <span key={`${tool.name}-${index}`} className={`is-${tool.status}`}>
+              {tool.status === "running" ? <LoadingOutlined spin /> : null}
+              {tool.status === "ok" ? <CheckCircleFilled /> : null}
+              {tool.status === "failed" ? <CloseCircleFilled /> : null}
+              {formatSopToolLabel(tool)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {open && (
+        <ul className="sop-trial-card-logs">
+          {logRows.map((row) => (
+            <li key={row.id} className={`is-${row.status}`}>
+              <em>{row.time || "--:--:--"}</em>
+              <span>
+                {row.title}
+                {row.detail ? ` · ${row.detail}` : ""}
+              </span>
+              {row.status === "ok" && <CheckCircleFilled />}
+              {row.status === "running" && (
+                <b className="sop-trial-running-label"><i className="sop-trial-dot" aria-hidden />执行中</b>
+              )}
+              {row.status === "waiting" && (
+                <b className="sop-trial-waiting-label">等待中</b>
+              )}
+              {row.status === "failed" && <CloseCircleFilled />}
             </li>
           ))}
         </ul>
-      )}
-      {open && (
-        <ol className="sop-rewrite-timeline">
-          {rewrite.events.map((event) => (
-            <li key={event.id} className={`is-${event.status} kind-${event.kind}`}>
-              <div className="sop-rewrite-timeline-dot">{rewriteTimelineIcon(event.status)}</div>
-              <div className="sop-rewrite-timeline-body">
-                <div className="sop-rewrite-timeline-row">
-                  <strong>{event.title}</strong>
-                  <time>{event.time}</time>
-                </div>
-                {event.detail ? <p>{event.detail}</p> : null}
-              </div>
-            </li>
-          ))}
-        </ol>
       )}
     </div>
   );
@@ -2017,6 +2074,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
   const autoTrialDone = useRef(false);
   const trialAbortRef = useRef<AbortController | null>(null);
   const activeTrialMessageIdRef = useRef<string | null>(null);
+  const chatHydratedRef = useRef(false);
   messagesRef.current = messages;
   const [view, setView] = useState<"flow" | "source">("flow");
   const [selectedNodeKeys, setSelectedNodeKeys] = useState<string[]>([]);
@@ -2346,10 +2404,37 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     if (openVersionsOnMount && record) setVersionOpen(true);
   }, [openVersionsOnMount, record]);
 
+  // Load per-version chat once; never autosave before hydration (avoids wiping DB with welcome).
   useEffect(() => {
-    if (!record || !selectedVersion?.version) return;
+    chatHydratedRef.current = false;
+    if (!record?.key || !selectedVersion?.version) {
+      chatHydratedRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    void getSopVersion(record.key, selectedVersion.version)
+      .then((detail) => {
+        if (cancelled) return;
+        setSelectedVersion(detail);
+        setMessages(chatFromVersion(detail, draft.name || record.name, detail.graph?.nodes || draft.graph.nodes));
+        chatHydratedRef.current = true;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        chatHydratedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Only re-hydrate when switching SOP / version, not on every draft rename.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [record?.key, selectedVersion?.version]);
+
+  useEffect(() => {
+    if (!record || !selectedVersion?.version || !chatHydratedRef.current) return;
     if (chatSaveTimer.current) window.clearTimeout(chatSaveTimer.current);
     chatSaveTimer.current = window.setTimeout(() => {
+      if (!chatHydratedRef.current) return;
       const payload = persistableChat(messagesRef.current);
       void updateSopVersion(record.key, selectedVersion.version, { editorChat: payload }).catch(() => undefined);
     }, 800);
@@ -2371,12 +2456,14 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
   const selectVersion = async (version: string) => {
     if (!record) return;
     try {
+      chatHydratedRef.current = false;
       const detail = await getSopVersion(record.key, version);
       setSelectedVersion(detail);
       setDraft({ ...draft, version: detail.version, triggerIntents: detail.triggerIntents || [], utteranceExamples: detail.utteranceExamples || [], graph: detail.graph });
       setMessages(chatFromVersion(detail, draft.name || record.name, detail.graph.nodes));
       setSelectedNodeKeys([]);
       setVersionOpen(false);
+      chatHydratedRef.current = true;
     } catch (error) { message.error(errorText(error, "版本内容加载失败")); }
   };
 
@@ -2386,12 +2473,14 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     const parts = base.split(".").map(Number);
     const next = `${parts[0] || 1}.${(parts[1] || 0) + 1}.0`;
     try {
+      chatHydratedRef.current = false;
       const created = await createSopVersion(record.key, { version: next, changeSummary: `基于 ${base} 创建` });
       setSelectedVersion(created);
       setDraft({ ...draft, version: created.version, graph: created.graph, triggerIntents: created.triggerIntents || [], utteranceExamples: created.utteranceExamples || [] });
       setMessages([defaultWelcome(draft.name || record.name, created.graph.nodes || draft.graph.nodes)]);
       await refreshVersions();
       setVersionOpen(false);
+      chatHydratedRef.current = true;
       message.success(`已创建可编辑草稿 ${next}`);
     } catch (error) { message.error(errorText(error, "创建新版本失败")); }
   };
@@ -2515,20 +2604,38 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
     const controller = new AbortController();
     trialAbortRef.current = controller;
     activeTrialMessageIdRef.current = assistantId;
+    let sawStreamEvent = false;
+    const streamWatchdogs: number[] = [];
+    streamWatchdogs.push(window.setTimeout(() => {
+      if (sawStreamEvent || controller.signal.aborted) return;
+      appendRunning("正在连接试跑通道…");
+      patchTrial((trial) => ({
+        ...trial,
+        current: Math.max(trial.current, 1),
+        currentTitle: trial.currentTitle === "准备执行" ? "连接试跑通道" : trial.currentTitle,
+      }));
+    }, 900));
+    streamWatchdogs.push(window.setTimeout(() => {
+      if (sawStreamEvent || controller.signal.aborted) return;
+      appendRunning("仍在执行中，报告生成可能需要一些时间…");
+    }, 3500));
 
     try {
       await trialSopVersionStream(key, version, { text, graph, payload: trialPayload }, {
         signal: controller.signal,
         onHello: (data) => {
           if (controller.signal.aborted) return;
+          sawStreamEvent = true;
           patchTrial((trial) => ({
             ...trial,
             total: Math.max(Number(data.total) || trial.total, 1),
+            current: Math.max(trial.current, 1),
             currentTitle: "连接试跑通道",
           }));
         },
         onProgress: (data) => {
           if (controller.signal.aborted) return;
+          sawStreamEvent = true;
           const title = String(data.title || data.detail || "执行中");
           const detail = String(data.detail || title);
           // Resume after confirm: ignore the fresh "start" heartbeat so logs don't jump back.
@@ -2542,10 +2649,12 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           }
           patchTrial((trial) => {
             const canvasTotal = Math.max(trial.total, stepTotal, 1);
-            // Never treat the last canvas node as "done" while still running.
-            const nextCurrent = status === "running" || status === "waiting"
-              ? Math.min(Math.max(index, 1), canvasTotal)
-              : Math.min(Math.max(index, trial.current), canvasTotal);
+            // Nested action progress may send index=0; keep current step, only refresh title/logs.
+            const nextCurrent = index <= 0
+              ? Math.max(trial.current, 1)
+              : status === "running" || status === "waiting"
+                ? Math.min(Math.max(index, 1), canvasTotal)
+                : Math.min(Math.max(index, trial.current), canvasTotal);
             const logs = trial.logs
               .filter((log) => log.status !== "running" && !log.text.startsWith("正在生成结果"))
               .concat({
@@ -2554,7 +2663,9 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                   ? detail
                   : data.kind === "finish" && status === "waiting"
                     ? `等待确认：${title}`
-                    : `步骤 ${Math.max(index, 1)}/${canvasTotal} ${detail}`,
+                    : index > 0
+                      ? `步骤 ${Math.max(index, 1)}/${canvasTotal} ${detail}`
+                      : detail,
                 status: status === "failed" ? "failed" : status === "waiting" ? "waiting" : status === "running" ? "running" : "ok",
               });
             return {
@@ -2568,6 +2679,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
         },
         onHeartbeat: (data) => {
           if (controller.signal.aborted) return;
+          sawStreamEvent = true;
           const messageText = String(data.message || "正在生成结果，请稍候…");
           appendRunning(messageText);
           patchTrial((trial) => ({
@@ -2842,6 +2954,7 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
         throw error;
       }
     } finally {
+      streamWatchdogs.forEach((timer) => window.clearTimeout(timer));
       if (trialAbortRef.current === controller) trialAbortRef.current = null;
       if (activeTrialMessageIdRef.current === assistantId) activeTrialMessageIdRef.current = null;
     }
@@ -3159,7 +3272,19 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
       if (!finalResponse) {
         throw new Error("SOP 改写未返回结果");
       }
-      const unchanged = finalResponse.changed === false || finalResponse.scope === "consult";
+      const unchanged = finalResponse.changed === false
+        || finalResponse.scope === "consult"
+        || finalResponse.scope === "clarify"
+        || finalResponse.needClarification === true;
+      const clarifyQuestions = (finalResponse.questions || [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      const isClarify = unchanged && (
+        finalResponse.needClarification === true
+        || finalResponse.scope === "clarify"
+        || clarifyQuestions.length > 0
+      );
       const tools = (finalResponse.tools || []).map((tool) => ({
         name: tool.name,
         summary: tool.summary,
@@ -3171,10 +3296,13 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
           item.id === assistantId
             ? {
                 ...item,
-                content: finalResponse.assistant || "已回答，未修改流程。",
+                content: finalResponse.assistant || (isClarify ? "改之前想先跟你确认几点。" : "已回答，未修改流程。"),
                 model: finalResponse.model,
                 tools: tools.length ? tools : item.tools?.map((tool) => ({ ...tool, status: "ok" as const })),
                 toolsLive: false,
+                clarification: isClarify && clarifyQuestions.length
+                  ? { questions: clarifyQuestions }
+                  : undefined,
                 rewrite: item.rewrite
                   ? {
                       ...appendRewriteEvent(
@@ -3182,13 +3310,13 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                           ...finalizeRewriteEvents(item.rewrite, "completed"),
                           durationSec,
                           tools: tools.length ? tools : item.rewrite.tools,
-                          currentHint: "已完成咨询，未修改流程",
+                          currentHint: isClarify ? "需要你确认后再改流程" : "已完成咨询，未修改流程",
                           streamChars: item.rewrite.streamChars,
                         },
                         {
                           kind: "done",
-                          title: "改写结束",
-                          detail: "咨询完成，流程保持不变",
+                          title: isClarify ? "等待确认" : "改写结束",
+                          detail: isClarify ? "信息不足，先向你确认再落稿" : "咨询完成，流程保持不变",
                           status: "ok",
                         },
                       ),
@@ -3544,6 +3672,23 @@ function SopEditor({ initial, record, openVersionsOnMount = false, autoTrialOnMo
                     {item.model && !item.trial && <small>{item.model}</small>}
                   </div>
                 ) : null}
+                {!!item.clarification?.questions?.length && (
+                  <div className="sop-clarify-chips">
+                    <span className="sop-clarify-label">你可以这样回复</span>
+                    <div className="sop-clarify-chip-row">
+                      {item.clarification.questions.map((question) => (
+                        <button
+                          type="button"
+                          key={question}
+                          disabled={sending || readOnly}
+                          onClick={() => void send(question)}
+                        >
+                          {question}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {item.rewrite ? <SopRewriteTimelinePanel rewrite={item.rewrite} /> : null}
                 {item.trial ? (
                   <SopTrialRunCard
