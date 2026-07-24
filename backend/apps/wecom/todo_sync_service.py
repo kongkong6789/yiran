@@ -178,7 +178,14 @@ def sync_work_todo_group(sync_group_id: UUID | str, *, force: bool = False) -> d
         _mark_failed([row], code=code, reason=reason, claim_token=claim_token)
     resolved_rows = [row for row in sync_rows if row.id in recipient_userids]
     if not resolved_rows:
-        return {"ok": False, "syncStatus": WorkTodo.SyncStatus.FAILED, "detail": "没有可同步的企业微信负责人，平台待办已保留。"}
+        reasons = list(dict.fromkeys(reason for _row, _code, reason in unresolved if reason))
+        detail = "；".join(reasons[:3]) or "没有可同步的企业微信负责人，平台待办已保留。"
+        return {
+            "ok": False,
+            "syncStatus": WorkTodo.SyncStatus.FAILED,
+            "detail": detail,
+            "errorCodes": list(dict.fromkeys(code for _row, code, _reason in unresolved if code)),
+        }
 
     native_id = next((row.wecom_todo_id for row in resolved_rows if row.wecom_todo_id_encrypted), "")
     try:

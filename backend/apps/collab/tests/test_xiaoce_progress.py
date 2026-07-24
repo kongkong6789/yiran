@@ -64,6 +64,29 @@ class XiaoceProgressTests(TestCase):
         )
         self.assertNotIn("PostgreSQL", " ".join(STAGES["knowledge_search"]))
 
+    def test_trace_records_observable_tool_activity_without_secrets(self):
+        reporter = XiaoceProgressReporter(self.run.id)
+
+        reporter.trace(
+            "tool-call-1",
+            "正在读取文件",
+            "running",
+            detail="input/brief.md api_key=sk-secret-value",
+        )
+        reporter.trace(
+            "tool-call-1",
+            "已读取文件",
+            "completed",
+            detail="input/brief.md",
+        )
+
+        self.run.refresh_from_db()
+        step = self.run.progress_steps[0]
+        self.assertEqual(step["code"], "trace:tool-call-1")
+        self.assertEqual(step["status"], "completed")
+        self.assertEqual(step["detail"], "input/brief.md")
+        self.assertNotIn("sk-secret-value", str(xiaoce_run_payload(self.run)))
+
     def test_payload_exposes_only_public_progress_fields(self):
         reporter = XiaoceProgressReporter(self.run.id)
         reporter.fail("knowledge_search", error_code="knowledge_unavailable")

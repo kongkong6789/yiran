@@ -5,12 +5,14 @@ import { useNavigate } from "react-router-dom";
 import {
   getAuthToken,
   getCollabUnread,
+  markCollabRoomRead,
   type CollabUnreadItem,
 } from "../api/client";
 import { authenticatedAvatarUrl } from "../utils/avatar";
 
 type Props = {
   enabled?: boolean;
+  onUnreadChange?: (total: number) => void;
 };
 
 type UnreadPreview = {
@@ -20,9 +22,19 @@ type UnreadPreview = {
 
 const PREVIEW_LIFETIME_MS = 30_000;
 const MAX_VISIBLE_PREVIEWS = 5;
+const COLLAB_ROOMS_SNAPSHOT_EVENT = "liangce:collab-rooms-snapshot";
 
 function previewKey(item: CollabUnreadItem) {
   return `${item.room_id}:${item.last_message?.id || item.updated_at}`;
+}
+
+function unreadSnapshotKey(items: CollabUnreadItem[], total: number) {
+  return [
+    total,
+    ...items.map((item) => (
+      `${item.room_id}:${item.unread_count}:${item.last_message?.id || ""}:${item.updated_at}`
+    )),
+  ].join("|");
 }
 
 function UnreadPreviewToast({
@@ -91,19 +103,63 @@ function UnreadPreviewToast({
   );
 }
 
-export default function CollabUnreadBell({ enabled = true }: Props) {
+export default function CollabUnreadBell({ enabled = true, onUnreadChange }: Props) {
   const nav = useNavigate();
   const [total, setTotal] = useState(0);
   const [items, setItems] = useState<CollabUnreadItem[]>([]);
   const [open, setOpen] = useState(false);
   const [previews, setPreviews] = useState<UnreadPreview[]>([]);
   const latestPreviewKeyByRoomRef = useRef(new Map<string, string>());
+  const itemsRef = useRef<CollabUnreadItem[]>([]);
+  const totalRef = useRef(0);
+  const publishedSnapshotKeyRef = useRef("");
+
+  const publishRoomsSnapshot = useCallback((
+    nextItems: CollabUnreadItem[],
+    nextTotal: number,
+  ) => {
+    const snapshotKey = unreadSnapshotKey(nextItems, nextTotal);
+    if (publishedSnapshotKeyRef.current === snapshotKey) return;
+    publishedSnapshotKeyRef.current = snapshotKey;
+    window.dispatchEvent(new CustomEvent(COLLAB_ROOMS_SNAPSHOT_EVENT, {
+      detail: {
+        items: nextItems,
+        total: nextTotal,
+        snapshotKey,
+      },
+    }));
+  }, []);
+
+  const clearRoomUnread = useCallback((roomId: string) => {
+    const current = itemsRef.current;
+    const removed = current.find((item) => item.room_id === roomId)?.unread_count || 0;
+    if (!removed && !current.some((item) => item.room_id === roomId)) return;
+    const nextItems = current.filter((item) => item.room_id !== roomId);
+    const nextTotal = Math.max(0, totalRef.current - removed);
+    itemsRef.current = nextItems;
+    totalRef.current = nextTotal;
+    latestPreviewKeyByRoomRef.current.delete(roomId);
+    setItems(nextItems);
+    setTotal(nextTotal);
+    onUnreadChange?.(nextTotal);
+    setPreviews((entries) => entries.filter((entry) => entry.item.room_id !== roomId));
+    publishRoomsSnapshot(nextItems, nextTotal);
+  }, [onUnreadChange, publishRoomsSnapshot]);
 
   const openRoom = useCallback((item: CollabUnreadItem) => {
     setOpen(false);
-    setPreviews((current) => current.filter((entry) => entry.item.room_id !== item.room_id));
+    clearRoomUnread(item.room_id);
     nav(`/collab?room=${encodeURIComponent(item.room_id)}`);
-  }, [nav]);
+    void markCollabRoomRead(item.room_id, item.last_message?.id)
+      .then(() => {
+        window.dispatchEvent(new CustomEvent("liangce:collab-unread-refresh", {
+          detail: { roomId: item.room_id, read: true },
+        }));
+      })
+      .catch(() => {
+        window.dispatchEvent(new Event("liangce:collab-unread-refresh"));
+      });
+  }, [clearRoomUnread, nav]);
 
   const dismissPreview = useCallback((key: string) => {
     setPreviews((current) => current.filter((entry) => entry.key !== key));
@@ -111,17 +167,26 @@ export default function CollabUnreadBell({ enabled = true }: Props) {
 
   const refresh = useCallback(async () => {
     if (!enabled || !getAuthToken()) {
+      itemsRef.current = [];
+      totalRef.current = 0;
       setTotal(0);
+      onUnreadChange?.(0);
       setItems([]);
       setPreviews([]);
       latestPreviewKeyByRoomRef.current.clear();
+      publishRoomsSnapshot([], 0);
       return;
     }
     try {
       const data = await getCollabUnread();
       const nextItems = data.results || [];
-      setTotal(data.total_unread || 0);
+      const nextTotal = data.total_unread || 0;
+      itemsRef.current = nextItems;
+      totalRef.current = nextTotal;
+      setTotal(nextTotal);
+      onUnreadChange?.(nextTotal);
       setItems(nextItems);
+      publishRoomsSnapshot(nextItems, nextTotal);
       const unreadRoomIds = new Set(nextItems.map((item) => item.room_id));
       for (const roomId of latestPreviewKeyByRoomRef.current.keys()) {
         if (!unreadRoomIds.has(roomId)) latestPreviewKeyByRoomRef.current.delete(roomId);
@@ -149,19 +214,32 @@ export default function CollabUnreadBell({ enabled = true }: Props) {
     } catch {
       /* 未登录或无权限时静默 */
     }
-  }, [enabled]);
+  }, [enabled, onUnreadChange, publishRoomsSnapshot]);
 
   useEffect(() => {
     if (!enabled) return;
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 15000);
     const onFocus = () => { void refresh(); };
+    const onReadReceipt = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        roomId?: string;
+        read?: boolean;
+        optimistic?: boolean;
+      }>).detail;
+      const roomId = detail?.roomId;
+      if (roomId) clearRoomUnread(roomId);
+      if (detail?.optimistic) return;
+      void refresh();
+    };
     window.addEventListener("focus", onFocus);
+    window.addEventListener("liangce:collab-unread-refresh", onReadReceipt);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("liangce:collab-unread-refresh", onReadReceipt);
     };
-  }, [enabled, refresh]);
+  }, [clearRoomUnread, enabled, refresh]);
 
   useEffect(() => {
     if (open) void refresh();

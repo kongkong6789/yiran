@@ -65,7 +65,7 @@ export default function XiaoceProcess({
       {live ? (
         <div className="xiaoce-process-live-title">
           <LoadingOutlined spin />
-          <span>正在处理</span>
+          <span>正在思考与执行</span>
         </div>
       ) : statusTitle ? (
         <div className={`xiaoce-process-status is-${status}`}>
@@ -82,7 +82,7 @@ export default function XiaoceProcess({
           onClick={() => setManuallyExpanded((value) => !value)}
         >
           {expanded ? <DownOutlined /> : <RightOutlined />}
-          <span>查看处理过程（{visibleSteps.length}步）</span>
+          <span>查看思考与执行过程（{visibleSteps.length}步）</span>
         </button>
       ) : null}
 
@@ -91,7 +91,10 @@ export default function XiaoceProcess({
           {visibleSteps.map((step) => (
             <li key={step.code} className={`is-${step.status}`}>
               <StepIcon status={step.status} />
-              <span>{step.label}</span>
+              <span className="xiaoce-process-step-copy">
+                <span>{step.label}</span>
+                {step.detail ? <small>{step.detail}</small> : null}
+              </span>
             </li>
           ))}
         </ol>

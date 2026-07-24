@@ -175,3 +175,16 @@ export function connectorPrompt(server: McpServer): string {
   }
   return `请通过「${server.name}」连接器帮我：`;
 }
+
+/** Keep the visible prompt editable while sending a trusted connector allow-list. */
+export function connectorIdsFromMessage(value: string): string[] {
+  const text = (value || "").toLowerCase();
+  return [
+    ["wecom", ["企业微信连接器", "企微连接器", "doc.weixin.qq.com"]],
+    ["jackyun", ["吉客云连接器", "jackyun"]],
+    ["kingdee", ["金蝶连接器", "kingdee", "k3cloud"]],
+    ["nas", ["nas 读取", "nas 文件库", "网络盘"]],
+  ].filter(([, terms]) => (
+    (terms as string[]).some((term) => text.includes(term.toLowerCase()))
+  )).map(([id]) => id as string);
+}

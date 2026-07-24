@@ -26,7 +26,10 @@ import {
   type UserSkillItem,
 } from "../api/client";
 import ChatSkillPicker from "../components/ChatSkillPicker";
-import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
+import ChatConnectorPicker, {
+  connectorIdsFromMessage,
+  connectorPrompt,
+} from "../components/ChatConnectorPicker";
 import ChatMarkdown, { isReportLike, looksBlocky } from "../components/ChatMarkdown";
 import { useThemeMode } from "../theme/mode";
 import { authenticatedAvatarUrl } from "../utils/avatar";
@@ -401,6 +404,7 @@ export default function AgentChat() {
         model: model || undefined,
         knowledge_mode: knowledgeMode,
         knowledge_base_ids: knowledgeMode === "selected" ? selectedKnowledgeBaseIds : [],
+        connector_ids: connectorIdsFromMessage(content),
       });
       if (!res.ok || !res.reply) {
         message.error(res.error || "对话失败");

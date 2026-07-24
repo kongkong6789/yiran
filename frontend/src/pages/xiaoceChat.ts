@@ -13,6 +13,8 @@ export type XiaoceRoomLike = {
   title?: string;
   display_title?: string;
   message_count?: number;
+  unread_count?: number;
+  updated_at?: string;
   room_kind?: string;
   participants?: XiaoceParticipantLike[];
 };
@@ -68,7 +70,17 @@ export function partitionXiaoceRooms<T extends XiaoceRoomLike>(rooms: T[]): {
   for (const room of rooms) {
     (isXiaoceRoom(room) ? xiaoceTasks : otherRooms).push(room);
   }
-  return { xiaoceTasks, otherRooms };
+  const byUnreadThenRecent = (left: T, right: T) => {
+    const unreadBucket = Number(Number(right.unread_count || 0) > 0)
+      - Number(Number(left.unread_count || 0) > 0);
+    if (unreadBucket) return unreadBucket;
+    const recent = Date.parse(right.updated_at || "") - Date.parse(left.updated_at || "");
+    return Number.isFinite(recent) ? recent : 0;
+  };
+  return {
+    xiaoceTasks: xiaoceTasks.sort(byUnreadThenRecent),
+    otherRooms: otherRooms.sort(byUnreadThenRecent),
+  };
 }
 
 

@@ -1,11 +1,14 @@
 # Python
 backend/.venv/
+backend/.hermes-runtime/
+backend/.hermes-runtime-*/
 __pycache__/
 *.pyc
 backend/db.sqlite3
 backend/data/*.duckdb
 backend/.env
 backend/chat_attachments/
+backend/hermes_workspaces/
 backend/skill_workspaces/
 backend/profile_avatars/
 backend/backups/
@@ -19,6 +22,7 @@ frontend/vite.config.d.ts
 /.vite/
 
 # 编辑器
+.DS_Store
 .vscode/
 .idea/
 

@@ -56,6 +56,11 @@ def _resolve_credentials(user=None) -> tuple[str, str, str]:
     )
 
 
+def resolve_llm_credentials(user=None) -> tuple[str, str, str]:
+    """Return the effective OpenAI-compatible credentials for trusted runtimes."""
+    return _resolve_credentials(user)
+
+
 def llm_available(user=None) -> bool:
     api_key, _, _ = _resolve_credentials(user)
     return bool(api_key)
@@ -359,6 +364,20 @@ def _fallback_model_names(primary: str) -> list[str]:
             ordered.append(name)
     primary = (primary or "").strip()
     return [m for m in ordered if m and m != primary]
+
+
+def is_model_unavailable_error(error: str) -> bool:
+    """Public classifier shared by isolated agent runtimes."""
+    return _is_model_unavailable_error(error)
+
+
+def llm_model_candidates(primary: str) -> list[str]:
+    """Return a stable, de-duplicated primary + fallback model sequence."""
+    ordered: list[str] = []
+    for name in [(primary or "").strip(), *_fallback_model_names(primary)]:
+        if name and name not in ordered:
+            ordered.append(name)
+    return ordered
 
 
 def _retry_with_fallback_models(

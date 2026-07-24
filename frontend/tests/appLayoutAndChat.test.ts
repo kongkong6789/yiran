@@ -39,6 +39,10 @@ const artifactSource = readFileSync(
   new URL("../src/components/CollabArtifactsPanel.tsx", import.meta.url),
   "utf8",
 );
+const todoPreviewSource = readFileSync(
+  new URL("../src/components/CollabTodoPreview.tsx", import.meta.url),
+  "utf8",
+);
 
 function sourceBetween(start: string, end: string) {
   const from = layoutSource.indexOf(start);
@@ -211,12 +215,48 @@ test("unread notifications preview safely and deep-link without a blank screen",
   assert.match(unreadBellSource, /openRoom\(item\)/);
   assert.match(globalStyles, /@keyframes collab-unread-toast-lifecycle/);
   assert.match(globalStyles, /\.collab-unread-toast-stack\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?gap:\s*10px;/);
-  assert.match(globalStyles, /background:\s*color-mix\(in srgb, var\(--lc-canvas\) 66%, transparent\)/);
+  assert.match(globalStyles, /background:\s*color-mix\(in srgb, var\(--lc-canvas\) 88%, transparent\)/);
   assert.match(globalStyles, /backdrop-filter:\s*blur\(26px\) saturate\(175%\)/);
+  assert.match(globalStyles, /clip-path:\s*inset\(0 round 18px\)/);
+  assert.match(globalStyles, /\.collab-unread-toast-main:focus-visible\s*\{[\s\S]*?box-shadow:\s*inset/);
+  assert.match(monitorStyles, /\.collab-room-badges \.ant-badge-count\s*\{[\s\S]*?color:\s*#fff !important/);
+  assert.match(layoutSource, /onUnreadChange=\{setCollabUnreadTotal\}/);
+  assert.match(layoutSource, /item\.key === "collab-messages" && collabUnreadTotal > 0/);
   assert.match(globalStyles, /\.collab-unread-toast-avatar\s*\{/);
   assert.match(chatSource, /participants:\s*\[\]/);
   assert.match(chatSource, /\(activeRoom\.participants \|\| \[\]\)\.some/);
   assert.match(chatSource, /nextParams\.delete\("room"\)/);
+});
+
+test("unread snapshots refresh inactive conversation rows without a loading flash", () => {
+  assert.match(unreadBellSource, /const COLLAB_ROOMS_SNAPSHOT_EVENT = "liangce:collab-rooms-snapshot"/);
+  assert.match(unreadBellSource, /publishRoomsSnapshot\(nextItems, nextTotal\)/);
+  assert.match(unreadBellSource, /window\.dispatchEvent\(new CustomEvent\(COLLAB_ROOMS_SNAPSHOT_EVENT/);
+  assert.match(chatSource, /window\.addEventListener\("liangce:collab-rooms-snapshot", onUnreadSnapshot\)/);
+  assert.match(chatSource, /last_message:\s*unread\.last_message \|\| room\.last_message/);
+  assert.match(chatSource, /unread_count:\s*unread\.unread_count/);
+  assert.match(chatSource, /void loadRooms\(false, \{ silent: true \}\)/);
+  assert.match(chatSource, /if \(!silent\) setLoadingRooms\(true\)/);
+  assert.match(chatSource, /unread_count:\s*room\.id === activeIdRef\.current \? 0 : room\.unread_count/);
+});
+
+test("chat header previews pending todos and opens the todo center", () => {
+  assert.match(chatSource, /<CollabTodoPreview \/>/);
+  assert.match(todoPreviewSource, /listWeComTodos\(\{/);
+  assert.match(todoPreviewSource, /status:\s*"pending"/);
+  assert.match(todoPreviewSource, /navigate\("\/work\?tab=todos"\)/);
+  assert.match(todoPreviewSource, /className="collab-todo-preview-item"/);
+  assert.match(globalStyles, /\.collab-todo-popover \.ant-popover-inner/);
+});
+
+test("Xiaoce header identifies the configured Hermes runtime without mislabeling other chats", () => {
+  assert.match(chatSource, /isXiaoce && activeRoom\.agent_runtime === "hermes-agent"/);
+  assert.match(chatSource, /className="xiaoce-hermes-badge"/);
+  assert.match(chatSource, /aria-label="由 Hermes Agent 驱动"/);
+  assert.match(chatSource, /\.xiaoce-hermes-badge\s*\{[\s\S]*?border-radius:\s*999px/);
+  assert.match(chatSource, /\.xiaoce-hermes-badge::before\s*\{/);
+  assert.match(chatSource, /\.xiaoce-hermes-badge::after\s*\{/);
+  assert.match(chatSource, /#f4ce68/);
 });
 
 test("chat attachments preview instantly, download, drag-forward, and appear in the AI artifact drawer", () => {
@@ -225,14 +265,34 @@ test("chat attachments preview instantly, download, drag-forward, and appear in 
   assert.match(chatSource, /download=\{a\.name \|\| "聊天图片"\}/);
   assert.match(chatSource, /application\/x-liangce-chat-attachment/);
   assert.match(chatSource, /attachmentUrl=\{collabAttachUrl\}/);
+  assert.match(chatSource, /openArtifactPreview\(m\.id, a\.id\)/);
+  assert.match(chatSource, /aria-label=\{`预览产物 \$\{a\.name \|\| "附件"\}`\}/);
+  assert.match(chatSource, /selectedArtifactId=\{selectedArtifactId\}/);
+  assert.match(artifactSource, /collabArtifactId\(message\.id, attachment\.id\)/);
+  assert.match(artifactSource, /download=\{selected\.name\}/);
+  assert.match(artifactSource, />\s*下载\s*<\/Button>/);
   assert.match(artifactSource, /"xls", "xlsx", "csv", "tsv"/);
   assert.match(artifactSource, /"doc", "docx"/);
   assert.match(artifactSource, /selected\.kind === "pdf"/);
+  assert.match(artifactSource, /selected\.kind === "html" && preview\?\.html/);
+  assert.match(artifactSource, /sandbox=""/);
+  assert.match(artifactSource, /srcDoc=\{preview\.html\}/);
   assert.match(artifactSource, /preview=1/);
   assert.doesNotMatch(artifactSource, /looksLikeReport|inlineText|AI报告/);
   assert.match(artifactSource, /普通对话不会被收录/);
   assert.match(monitorStyles, /\.collab-page > \.collab-artifacts\s*\{[\s\S]*?grid-column:\s*3;/);
   assert.match(monitorStyles, /@media \(max-width: 860px\)[\s\S]*?\.collab-page > \.collab-artifacts\s*\{[\s\S]*?grid-column:\s*auto;/);
+});
+
+test("group AI identity keeps Liangce AI and Hermes readable", () => {
+  assert.match(
+    monitorStyles,
+    /\.collab-msg\.ai \.collab-msg-aside,[\s\S]*?width:\s*auto;[\s\S]*?max-width:\s*148px;/,
+  );
+  assert.match(
+    monitorStyles,
+    /\.collab-msg\.ai \.collab-msg-name-text,[\s\S]*?flex:\s*0 0 auto;[\s\S]*?overflow:\s*visible;/,
+  );
 });
 
 test("monitor owns a single complete scroll surface", () => {

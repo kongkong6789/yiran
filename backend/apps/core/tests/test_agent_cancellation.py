@@ -3,7 +3,11 @@ import tempfile
 from pathlib import Path
 from unittest import TestCase, mock
 
-from apps.core.agent_chat import run_chat, should_retrieve_knowledge
+from apps.core.agent_chat import (
+    collect_agent_knowledge_context,
+    run_chat,
+    should_retrieve_knowledge,
+)
 from apps.core.cancellation import AgentRunCancelled, raise_if_cancelled
 from apps.council import llm
 from apps.mcp.client import StreamableHttpClient
@@ -15,10 +19,30 @@ class AgentCancellationTests(TestCase):
         self.assertFalse(should_retrieve_knowledge("今天要读书，并同步到企业微信"))
         self.assertFalse(should_retrieve_knowledge("帮我润色这句话"))
         self.assertTrue(should_retrieve_knowledge("查一下公司的请假制度"))
+        self.assertTrue(should_retrieve_knowledge("查一下UNOVE的产品资料和定位"))
+        self.assertTrue(should_retrieve_knowledge("总结一下品牌定位和品牌介绍"))
         self.assertTrue(should_retrieve_knowledge("昨天 GMV 和退款率怎么样？"))
         self.assertTrue(should_retrieve_knowledge("任意请求", knowledge_mode="selected"))
         self.assertFalse(should_retrieve_knowledge("分析数据", knowledge_mode="none"))
         self.assertFalse(should_retrieve_knowledge("分析销售数据", doc_mode=True))
+
+    def test_pure_knowledge_base_query_uses_scoped_context_without_slow_business_connectors(self):
+        with (
+            mock.patch(
+                "apps.core.agent_chat._selected_knowledge_context",
+                return_value=("【知识库】产品备案号：A-001", [{"chunk_id": 1}]),
+            ),
+            mock.patch("apps.core.agent_chat.gather_knowledge") as business_knowledge,
+            mock.patch("apps.core.agent_chat.search_graph") as graph,
+        ):
+            context = collect_agent_knowledge_context(
+                "请根据公司知识库说明产品备案和成分资料",
+            )
+
+        self.assertEqual(context["blocks"], ["【知识库】产品备案号：A-001"])
+        self.assertEqual(context["selected_knowledge_refs"], [{"chunk_id": 1}])
+        business_knowledge.assert_not_called()
+        graph.assert_not_called()
 
     def test_guard_raises_for_cancelled_run(self):
         with self.assertRaises(AgentRunCancelled):

@@ -1135,6 +1135,7 @@ export const agentChat = (body: {
   message: string;
   conversation_id?: string;
   skill_ids?: string[];
+  connector_ids?: string[];
   model?: string;
   knowledge_mode?: "auto" | "none" | "selected" | string;
   knowledge_base_ids?: number[];
@@ -1148,6 +1149,7 @@ export const agentChat = (body: {
     if (body.knowledge_mode) form.append("knowledge_mode", body.knowledge_mode);
     body.knowledge_base_ids?.forEach((id) => form.append("knowledge_base_ids", String(id)));
     body.skill_ids?.forEach((id) => form.append("skill_ids", id));
+    body.connector_ids?.forEach((id) => form.append("connector_ids", id));
     body.files.forEach((file) => form.append("files", file));
     return api.post<AgentChatResult>("/agent/chat/", form, { timeout: 120_000 }).then((r) => r.data);
   }
@@ -2392,6 +2394,16 @@ export interface XiaoceRun {
   error_message: string;
   created_at: string;
   updated_at: string;
+  agent_kind?: "xiaoce" | "mention";
+  agent_name?: "小策bot" | "良策AI";
+}
+
+export interface XiaoceStreamUpdate {
+  run_id: string;
+  room_id: string;
+  content: string;
+  status: "streaming" | "completed" | "failed" | "cancelled";
+  updated_at?: string;
 }
 
 export interface CollabRoom {
@@ -2425,6 +2437,7 @@ export interface CollabRoom {
   unread_count?: number;
   last_read_message_id?: number;
   active_xiaoce_run?: XiaoceRun | null;
+  agent_runtime?: "hermes-agent" | "";
 }
 
 export interface CollabContextRoomRef {
@@ -2781,6 +2794,7 @@ export type CollabSyncEvent = {
   insights?: CollabInsight[];
   room?: Partial<CollabRoom>;
   xiaoce_runs?: XiaoceRun[];
+  xiaoce_streams?: XiaoceStreamUpdate[];
   read_receipts?: CollabReadReceipt[];
   after_id?: number;
   after_insight_id?: number;
@@ -2948,6 +2962,7 @@ export const sendCollabMessage = (
   replyToId?: number,
   runId?: string,
   contextRoomIds?: string[],
+  connectorIds?: string[],
 ) => {
   if (files?.length) {
     const form = new FormData();
@@ -2956,6 +2971,7 @@ export const sendCollabMessage = (
     if (replyToId) form.append("reply_to_id", String(replyToId));
     if (runId) form.append("run_id", runId);
     if (contextRoomIds?.length) form.append("context_room_ids", JSON.stringify(contextRoomIds));
+    if (connectorIds?.length) form.append("connector_ids", JSON.stringify(connectorIds));
     files.forEach((file) => form.append("files", file));
     return api
       .post<{
@@ -2988,6 +3004,7 @@ export const sendCollabMessage = (
         ...(replyToId ? { reply_to_id: replyToId } : {}),
         ...(runId ? { run_id: runId } : {}),
         ...(contextRoomIds?.length ? { context_room_ids: contextRoomIds } : {}),
+        ...(connectorIds?.length ? { connector_ids: connectorIds } : {}),
       },
       { timeout: 120_000 },
     )

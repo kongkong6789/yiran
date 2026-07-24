@@ -306,6 +306,7 @@ class XiaoceRun(models.Model):
     )
     current_stage = models.CharField(max_length=64, blank=True, default="")
     progress_steps = models.JSONField(default=list, blank=True)
+    meta = models.JSONField(default=dict, blank=True)
     error_code = models.CharField(max_length=64, blank=True, default="")
     error = models.TextField(blank=True, default="")
     cancelled_at = models.DateTimeField(null=True, blank=True)

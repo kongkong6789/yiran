@@ -348,6 +348,20 @@ MINERU_POLL_INTERVAL_SECONDS = float(os.getenv("MINERU_POLL_INTERVAL_SECONDS", "
 MINERU_POLL_TIMEOUT_SECONDS = float(os.getenv("MINERU_POLL_TIMEOUT_SECONDS", "1200"))
 
 CHAT_ATTACHMENTS_ROOT = BASE_DIR / "chat_attachments"
+# Hermes Agent 在独立虚拟环境和子进程中运行。每个用户/会话使用隔离目录，
+# 仅开放受控文件/记忆工具，并只把 artifacts/ 中的真实输出发布为附件。
+HERMES_AGENT_ENABLED = os.getenv("HERMES_AGENT_ENABLED", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+HERMES_WORKSPACE_ROOT = Path(
+    os.getenv("HERMES_WORKSPACE_ROOT", str(BASE_DIR / "hermes_workspaces"))
+)
+HERMES_RUNTIME_PYTHON = os.getenv("HERMES_RUNTIME_PYTHON", "")
+HERMES_AGENT_TIMEOUT_SECONDS = float(os.getenv("HERMES_AGENT_TIMEOUT_SECONDS", "180"))
+HERMES_AGENT_MAX_TURNS = int(os.getenv("HERMES_AGENT_MAX_TURNS", "10"))
 SKILLS_WORKSPACE_ROOT = BASE_DIR / "skill_workspaces"
 SKILL_SCRIPT_TIMEOUT = int(os.getenv("SKILL_SCRIPT_TIMEOUT", "180"))
 DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # 支持较大图片 multipart 直进内存

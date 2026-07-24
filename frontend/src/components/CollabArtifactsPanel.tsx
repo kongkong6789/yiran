@@ -32,6 +32,7 @@ export type CollabArtifact = {
 type PreviewPayload = {
   kind?: "spreadsheet" | "document" | "markdown" | "html" | "text" | "unsupported" | "error";
   text?: string;
+  html?: string;
   message?: string;
   sheets?: Array<{ name: string; rows: string[][] }>;
 };
@@ -41,6 +42,8 @@ type CollabArtifactsPanelProps = {
   attachmentUrl: (url?: string, download?: boolean) => string;
   onClose: () => void;
   onJumpToMessage?: (messageId: number) => void;
+  selectedArtifactId?: string;
+  onSelectArtifact?: (artifactId: string) => void;
 };
 
 function artifactKind(name: string, mime = ""): ArtifactKind {
@@ -55,6 +58,10 @@ function artifactKind(name: string, mime = ""): ArtifactKind {
   return "file";
 }
 
+export function collabArtifactId(messageId: number, attachmentId: string) {
+  return `attachment-${messageId}-${attachmentId}`;
+}
+
 export function buildCollabArtifacts(
   messages: CollabMessage[],
   attachmentUrl: (url?: string, download?: boolean) => string,
@@ -65,7 +72,7 @@ export function buildCollabArtifacts(
     for (const attachment of message.attachments || []) {
       if (!attachment.url) continue;
       artifacts.push({
-        id: `attachment-${message.id}-${attachment.id}`,
+        id: collabArtifactId(message.id, attachment.id),
         name: attachment.name || "AI 产物",
         kind: artifactKind(attachment.name || "", attachment.mime || ""),
         size: attachment.size || 0,
@@ -117,25 +124,29 @@ export function CollabArtifactsPanel({
   attachmentUrl,
   onClose,
   onJumpToMessage,
+  selectedArtifactId,
+  onSelectArtifact,
 }: CollabArtifactsPanelProps) {
   const artifacts = useMemo(
     () => buildCollabArtifacts(messages, attachmentUrl),
     [attachmentUrl, messages],
   );
-  const [selectedId, setSelectedId] = useState<string>("");
+  const [localSelectedId, setLocalSelectedId] = useState<string>("");
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const selected = artifacts.find((item) => item.id === selectedId) || artifacts[0] || null;
+  const activeSelectedId = selectedArtifactId ?? localSelectedId;
+  const selected = artifacts.find((item) => item.id === activeSelectedId) || artifacts[0] || null;
 
   useEffect(() => {
     if (!artifacts.length) {
-      setSelectedId("");
+      if (selectedArtifactId === undefined) setLocalSelectedId("");
       return;
     }
-    if (!artifacts.some((item) => item.id === selectedId)) {
-      setSelectedId(artifacts[0].id);
+    if (!artifacts.some((item) => item.id === activeSelectedId)) {
+      if (onSelectArtifact) onSelectArtifact(artifacts[0].id);
+      else setLocalSelectedId(artifacts[0].id);
     }
-  }, [artifacts, selectedId]);
+  }, [activeSelectedId, artifacts, onSelectArtifact, selectedArtifactId]);
 
   useEffect(() => {
     setPreview(null);
@@ -151,9 +162,15 @@ export function CollabArtifactsPanel({
     }
     const controller = new AbortController();
     setPreviewLoading(true);
-    void fetch(previewEndpoint(selected.previewUrl), { signal: controller.signal })
+    const url = selected.kind === "html"
+      ? selected.previewUrl
+      : previewEndpoint(selected.previewUrl);
+    void fetch(url, { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (selected.kind === "html") {
+          return { kind: "html", html: await response.text() } as PreviewPayload;
+        }
         return response.json() as Promise<PreviewPayload>;
       })
       .then(setPreview)
@@ -203,7 +220,10 @@ export function CollabArtifactsPanel({
                 type="button"
                 key={artifact.id}
                 className={artifact.id === selected?.id ? "is-active" : ""}
-                onClick={() => setSelectedId(artifact.id)}
+                onClick={() => {
+                  if (onSelectArtifact) onSelectArtifact(artifact.id);
+                  else setLocalSelectedId(artifact.id);
+                }}
                 role="option"
                 aria-selected={artifact.id === selected?.id}
               >
@@ -237,8 +257,11 @@ export function CollabArtifactsPanel({
                       size="small"
                       icon={<DownloadOutlined />}
                       href={selected.downloadUrl}
+                      download={selected.name}
                       aria-label="下载产物"
-                    />
+                    >
+                      下载
+                    </Button>
                   </Tooltip>
                 </span>
               </div>
@@ -248,6 +271,13 @@ export function CollabArtifactsPanel({
                   <img src={selected.previewUrl} alt={selected.name} />
                 ) : selected.kind === "pdf" && selected.previewUrl ? (
                   <iframe src={selected.previewUrl} title={selected.name} />
+                ) : selected.kind === "html" && preview?.html ? (
+                  <iframe
+                    sandbox=""
+                    srcDoc={preview.html}
+                    title={selected.name}
+                    referrerPolicy="no-referrer"
+                  />
                 ) : previewLoading ? (
                   <div className="collab-artifacts__loading"><LoadingOutlined spin /> 正在生成预览…</div>
                 ) : preview?.kind === "spreadsheet" ? (

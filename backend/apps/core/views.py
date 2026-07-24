@@ -1160,7 +1160,18 @@ def agent_chat(request):
 
     skill_ids = request.data.get("skill_ids") or []
     if isinstance(skill_ids, str):
-        skill_ids = [skill_ids]
+        skill_ids = request.data.getlist("skill_ids") if hasattr(request.data, "getlist") else [skill_ids]
+
+    from apps.core.connector_context import normalize_connector_ids
+
+    raw_connector_ids = request.data.get("connector_ids") or []
+    if isinstance(raw_connector_ids, str):
+        raw_connector_ids = (
+            request.data.getlist("connector_ids")
+            if hasattr(request.data, "getlist")
+            else [raw_connector_ids]
+        )
+    connector_ids = normalize_connector_ids(raw_connector_ids)
 
     model = str(request.data.get("model") or "").strip() or None
     knowledge_mode = str(request.data.get("knowledge_mode") or "auto").strip().lower()
@@ -1186,6 +1197,7 @@ def agent_chat(request):
             model=model,
             knowledge_mode=knowledge_mode,
             knowledge_base_ids=knowledge_base_ids,
+            connector_ids=connector_ids,
             session_key=str(session.id),
         )
     except Exception as exc:

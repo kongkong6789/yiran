@@ -1,0 +1,4 @@
+# Official NousResearch/Hermes Agent, pinned to the reviewed 0.19.0 source commit.
+# Hermes intentionally blocks wheel/sdist builds, so its supported developer-mode
+# editable install is used inside the dedicated runtime.
+-e git+https://github.com/NousResearch/hermes-agent.git@9a4d1a013078367249ea6b64e858aa35e08f18e4#egg=hermes-agent

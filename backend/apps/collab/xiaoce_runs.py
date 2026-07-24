@@ -14,7 +14,7 @@ from apps.skills.repository import (
     skill_asset_storage_snapshot,
 )
 
-from .mentions import get_xiaoce_bot_user
+from .mentions import get_collab_ai_user, get_xiaoce_bot_user
 from .models import CollabMessage, CollabRoom, XiaoceRun
 from .xiaoce_progress import ERROR_MESSAGES, _upsert_step, xiaoce_run_payload
 
@@ -62,23 +62,26 @@ def is_xiaoce_run_cancelled(run_id) -> bool:
 
 
 def _message_meta(run: XiaoceRun, process_status: str, **extra) -> dict:
+    agent_kind = "mention" if (run.trigger_message.meta or {}).get("agent_kind") == "mention" else "xiaoce"
     return {
         "run_id": str(run.id),
         "process_status": process_status,
         "process_steps": run.progress_steps or [],
+        "agent_kind": agent_kind,
         **extra,
     }
 
 
 def _create_bot_message(run: XiaoceRun, content: str, meta: dict) -> CollabMessage:
+    is_mention = (run.trigger_message.meta or {}).get("agent_kind") == "mention"
     return CollabMessage.objects.create(
         room=run.room,
-        sender=get_xiaoce_bot_user(),
+        sender=get_collab_ai_user() if is_mention else get_xiaoce_bot_user(),
         content=(content or "")[:8000],
         attachments=[],
         mentions=[],
         msg_type="ai",
-        ai_kind="xiaoce",
+        ai_kind="reply" if is_mention else "xiaoce",
         meta=meta,
     )
 

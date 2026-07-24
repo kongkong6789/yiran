@@ -23,7 +23,13 @@ from apps.agentctx.assembler import assemble_context
 from apps.agentctx.memory import maybe_update_memory
 from .chat_harness import ConversationHarness, HARNESS_SYSTEM_APPEND
 from .attachments import format_attachment_context, vision_image_parts
+from .generated_artifacts import (
+    artifact_system_append,
+    detect_artifact_request,
+    materialize_generated_artifacts,
+)
 from .cancellation import raise_if_cancelled
+from .connector_context import collect_connector_context
 from .progress import emit_progress
 from pathlib import Path
 
@@ -88,7 +94,8 @@ def _selected_knowledge_context(
         return "", []
     try:
         from apps.knowledge.access import visible_knowledge_bases
-        from apps.knowledge.traditional_rag import hybrid_search
+        from apps.knowledge.models import KnowledgeChunkRef
+        from apps.knowledge.traditional_rag import keyword_search
     except Exception:
         return "", []
     if not getattr(user, "is_authenticated", False):
@@ -108,11 +115,34 @@ def _selected_knowledge_context(
     refs: list[dict] = []
     blocks: list[str] = []
     per_base_limit = 3 if mode == "auto" else 4
+    allow_recent_fallback = mode == "selected" or any(
+        term in (message or "").casefold()
+        for term in (
+            "知识库", "资料库", "内部资料", "公司资料", "企业资料",
+            "产品资料", "品牌资料", "产品定位", "品牌定位", "产品介绍", "品牌介绍",
+        )
+    )
     for base in bases:
         try:
-            chunks = hybrid_search(query=message, knowledge_base_id=base.id, limit=per_base_limit)
+            chunks = keyword_search(
+                query=message,
+                knowledge_base_id=base.id,
+                limit=per_base_limit,
+            )
         except Exception:
             chunks = []
+        if not chunks and allow_recent_fallback:
+            try:
+                chunks = list(
+                    KnowledgeChunkRef.objects.select_related("file")
+                    .filter(
+                        file__knowledge_base_id=base.id,
+                        file__archived_at__isnull=True,
+                    )
+                    .order_by("-created_at")[:per_base_limit]
+                )
+            except Exception:
+                chunks = []
         if not chunks:
             continue
         lines = []
@@ -141,6 +171,7 @@ def _selected_knowledge_context(
 
 _KNOWLEDGE_SOURCE_TERMS = (
     "知识库", "内部资料", "公司资料", "企业资料", "参考资料", "资料库",
+    "产品资料", "品牌资料", "产品定位", "品牌定位", "产品介绍", "品牌介绍",
     "制度", "政策", "规定", "规范", "手册", "档案", "合同", "条款", "口径",
     "sop", "历史任务", "历史记录", "历史数据", "知识图谱", "业务图谱",
     "成分", "配方", "备案", "备案号", "备案编号", "备案信息", "货品", "货品ID", "商品编码", "条形码",
@@ -180,6 +211,127 @@ def should_retrieve_knowledge(
     return any(term in text for term in (*_KNOWLEDGE_SOURCE_TERMS, *_BUSINESS_EVIDENCE_TERMS))
 
 
+def collect_agent_knowledge_context(
+    message: str,
+    *,
+    user=None,
+    knowledge_mode: str = "auto",
+    knowledge_base_ids: list[int] | None = None,
+    doc_mode: bool = False,
+    cancel_check=None,
+) -> dict:
+    """Collect the same trusted knowledge evidence for every agent runtime."""
+    empty = {
+        "blocks": [],
+        "knowledge": "",
+        "graph": {"refs": [], "card": ""},
+        "selected_knowledge": "",
+        "selected_knowledge_refs": [],
+    }
+    if not should_retrieve_knowledge(
+        message,
+        knowledge_mode,
+        knowledge_base_ids,
+        doc_mode=doc_mode,
+    ):
+        return empty
+
+    normalized_message = re.sub(r"\s+", "", str(message or "")).casefold()
+    retrieve_business = any(term.casefold() in normalized_message for term in _BUSINESS_EVIDENCE_TERMS)
+    if retrieve_business:
+        try:
+            knowledge = gather_knowledge(message, top_k=4, user=user)
+        except Exception:
+            logging.getLogger(__name__).exception("agent knowledge retrieval failed")
+            knowledge = ""
+    else:
+        knowledge = ""
+    raise_if_cancelled(cancel_check)
+    retrieve_graph = retrieve_business or "图谱" in normalized_message
+    if retrieve_graph:
+        try:
+            graph = search_graph(message, top_k=4, max_edges=6)
+        except Exception:
+            logging.getLogger(__name__).exception("agent graph retrieval failed")
+            graph = {"refs": [], "card": ""}
+    else:
+        graph = {"refs": [], "card": ""}
+    raise_if_cancelled(cancel_check)
+    selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(
+        message,
+        knowledge_mode,
+        knowledge_base_ids,
+        user=user,
+    )
+    blocks: list[str] = []
+    for block in (
+        selected_knowledge,
+        knowledge,
+        str(graph.get("card") or ""),
+    ):
+        normalized = str(block or "").strip()
+        if normalized and normalized not in blocks:
+            blocks.append(normalized)
+    return {
+        "blocks": blocks,
+        "knowledge": knowledge,
+        "graph": graph,
+        "selected_knowledge": selected_knowledge,
+        "selected_knowledge_refs": selected_knowledge_refs,
+    }
+
+
+def execute_agent_skills(
+    *,
+    message: str,
+    history: list[dict] | None,
+    user=None,
+    skill_ids: list[str] | None = None,
+    active_skills=None,
+    cancel_check=None,
+    progress_callback=None,
+    usage_source: str = "agent",
+    execute: bool = True,
+) -> tuple[list, list[dict]]:
+    """Resolve and execute trusted Skills once.
+
+    Hermes consumes the resulting evidence, but write-capable Skills remain in
+    Django where authorization, auditing, and idempotency are enforced.
+    """
+    resolved = list(
+        active_skills
+        if active_skills is not None
+        else resolve_skills(message, user, skill_ids=skill_ids)
+    )
+    if not resolved or not execute:
+        return resolved, []
+
+    record_skill_usage(resolved, user, source=usage_source)
+    emit_progress(progress_callback, "skill", "running")
+    script_blocks = try_execute_skill_scripts(
+        resolved,
+        message,
+        user,
+        history=history or [],
+        cancel_check=cancel_check,
+    )
+    try:
+        from apps.wecom.skill_todo import try_execute_wecom_todo_skills
+
+        wecom_blocks = try_execute_wecom_todo_skills(
+            resolved,
+            message,
+            user,
+            history=history or [],
+        )
+        if wecom_blocks:
+            script_blocks = list(script_blocks or []) + wecom_blocks
+    except Exception:
+        logging.getLogger(__name__).exception("wecom todo skill execution failed")
+    emit_progress(progress_callback, "skill", "completed")
+    return resolved, list(script_blocks or [])
+
+
 def run_chat(
     message: str,
     history: list[dict] | None = None,
@@ -194,6 +346,9 @@ def run_chat(
     session_key: str | None = None,
     usage_source: str = "agent",
     extra_reference_blocks: list[str] | None = None,
+    connector_ids: list[str] | None = None,
+    execute_skills: bool = True,
+    execute_connectors: bool = True,
 ) -> dict:
     message = (message or "").strip()
     history = history or []
@@ -210,44 +365,22 @@ def run_chat(
     doc_url = find_document_url_in_thread(message, history)
     doc_mode = bool(doc_url) and is_document_followup(message, history, doc_url)
     active_skills = resolve_skills(message, user, skill_ids=skill_ids)
-    record_skill_usage(active_skills, user, source=usage_source)
     emit_progress(progress_callback, "understanding", "completed")
-    if active_skills:
-        emit_progress(progress_callback, "skill", "running")
-    script_blocks = (
-        try_execute_skill_scripts(
-            active_skills,
-            message,
-            user,
-            history=history,
-            cancel_check=cancel_check,
-        )
-        if active_skills else []
+    active_skills, script_blocks = execute_agent_skills(
+        message=message,
+        history=history,
+        user=user,
+        skill_ids=skill_ids,
+        active_skills=active_skills,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        usage_source=usage_source,
+        execute=execute_skills,
     )
-    if active_skills:
-        try:
-            from apps.wecom.skill_todo import try_execute_wecom_todo_skills
-
-            wecom_blocks = try_execute_wecom_todo_skills(
-                active_skills,
-                message,
-                user,
-                history=history,
-            )
-            if wecom_blocks:
-                script_blocks = list(script_blocks or []) + wecom_blocks
-        except Exception:
-            logging.getLogger(__name__).exception("wecom todo skill execution failed")
-    if active_skills:
-        emit_progress(progress_callback, "skill", "completed")
     raise_if_cancelled(cancel_check)
     script_output = format_script_outputs(script_blocks)
     skill_diag = diagnose_skill_execution(active_skills, message, script_blocks)
 
-    knowledge = ""
-    graph: dict = {"refs": []}
-    selected_knowledge = ""
-    selected_knowledge_refs: list[dict] = []
     retrieve_knowledge = should_retrieve_knowledge(
         message,
         knowledge_mode,
@@ -256,45 +389,51 @@ def run_chat(
     )
     if retrieve_knowledge:
         emit_progress(progress_callback, "knowledge_search", "running")
-        knowledge = gather_knowledge(message, top_k=4, user=user)
-        raise_if_cancelled(cancel_check)
-        graph = search_graph(message, top_k=4, max_edges=6)
-        raise_if_cancelled(cancel_check)
-        selected_knowledge, selected_knowledge_refs = _selected_knowledge_context(
-            message,
-            knowledge_mode,
-            knowledge_base_ids,
-            user=user,
-        )
+    knowledge_context = collect_agent_knowledge_context(
+        message,
+        user=user,
+        knowledge_mode=knowledge_mode,
+        knowledge_base_ids=knowledge_base_ids,
+        doc_mode=doc_mode,
+        cancel_check=cancel_check,
+    )
+    knowledge = str(knowledge_context["knowledge"] or "")
+    graph = knowledge_context["graph"]
+    selected_knowledge = str(knowledge_context["selected_knowledge"] or "")
+    selected_knowledge_refs = knowledge_context["selected_knowledge_refs"]
+    if retrieve_knowledge:
         emit_progress(progress_callback, "knowledge_search", "completed")
 
-    try:
-        mcp = (
-            read_wecom_document(
-                message,
-                document_url=doc_url,
-                user=user,
-                cancel_check=cancel_check,
-            )
-            if doc_url
-            else read_wecom_document(message, user=user, cancel_check=cancel_check)
+    connector_context = (
+        collect_connector_context(
+            message,
+            user=user,
+            history=history,
+            connector_ids=connector_ids,
+            cancel_check=cancel_check,
+            wecom_reader=read_wecom_document,
+            nas_reader=read_nas_for_agent,
         )
-    except Exception:
-        mcp = {"attempted": False, "content": "", "error": "wecom_unavailable"}
-    raise_if_cancelled(cancel_check)
-    try:
-        nas = read_nas_for_agent(user, message) if user is not None else {
-            "attempted": False, "content": "", "files": [], "error": "",
+        if execute_connectors
+        else {
+            "blocks": [],
+            "refs": [],
+            "source_files": [],
+            "attempted_count": 0,
+            "wecom": {"attempted": False, "content": "", "error": ""},
+            "nas": {"attempted": False, "content": "", "files": [], "error": ""},
+            "nas_files": [],
+            "document_url": doc_url or "",
         }
-    except Exception:
-        nas = {"attempted": False, "content": "", "files": [], "error": "nas_unavailable"}
-    nas_files = nas.get("files") or []
+    )
+    mcp = connector_context["wecom"]
+    nas = connector_context["nas"]
+    nas_files = connector_context["nas_files"]
     context_attachments = [*attachments, *nas_files]
     raise_if_cancelled(cancel_check)
     tool_count = (
         len(script_blocks)
-        + (1 if mcp.get("attempted") else 0)
-        + (1 if nas.get("attempted") else 0)
+        + int(connector_context.get("attempted_count") or 0)
     )
     if tool_count:
         emit_progress(
@@ -309,6 +448,7 @@ def run_chat(
         or graph.get("refs")
         or mcp.get("content")
         or nas.get("content")
+        or connector_context.get("blocks")
         or script_blocks
     )
     if has_evidence:
@@ -317,11 +457,7 @@ def run_chat(
         "rag": [],
         "knowledge_bases": selected_knowledge_refs,
         "graph": graph.get("refs") or [],
-        "mcp": (
-            ([{"server": "wecom", "tool": mcp.get("tool"), "source": mcp.get("source")}]
-             if mcp.get("content") else [])
-            + [{"server": "nas", "tool": "read_path", "source": item.get("native_path")} for item in nas_files]
-        ),
+        "mcp": connector_context.get("refs") or [],
         "nas": [
             {
                 "name": item.get("name"),
@@ -361,20 +497,7 @@ def run_chat(
         reference_blocks.append(selected_knowledge)
     if knowledge:
         reference_blocks.append(knowledge)
-    if mcp.get("content"):
-        reference_blocks.append(f"[MCP document: {mcp.get('source')}]\n{mcp['content']}")
-    elif mcp.get("attempted") and mcp.get("error"):
-        reference_blocks.append(
-            f"【企业微信 MCP 状态】读取失败:{mcp['error']}。"
-            "请明确告诉用户此错误及修复方向,不要假装已经读取文档。"
-        )
-    if nas.get("content"):
-        reference_blocks.append(f"【NAS 文件库】\n{nas['content']}")
-    elif nas.get("attempted") and nas.get("error"):
-        reference_blocks.append(
-            f"【NAS 文件库状态】读取失败：{nas['error']}。"
-            "请明确告诉用户错误与需要补充的完整路径，不要声称已经读取文件。"
-        )
+    reference_blocks.extend(connector_context.get("blocks") or [])
 
     reference_blocks = harness.trim_reference_blocks(reference_blocks)
 
@@ -453,12 +576,14 @@ def run_chat(
         user_content = user_block
     messages = [*clean_history, {"role": "user", "content": user_content}]
 
+    artifact_request = detect_artifact_request(message)
     system = (
         SYSTEM_PROMPT
         + HARNESS_SYSTEM_APPEND
         + (DOC_SYSTEM_APPEND if doc_mode else "")
         + (SKILL_EXEC_APPEND if active_skills else "")
         + build_skill_system_block(active_skills)
+        + artifact_system_append(artifact_request)
     )
     if image_parts and image_intent == "analyze":
         system += "\n\nAnalyze the attached image carefully and answer only from visible image evidence unless reference material is provided."
@@ -467,6 +592,8 @@ def run_chat(
     max_tokens = 3500 if has_script_data else (2500 if wants_table and mcp.get("content") else 900)
     if image_parts:
         max_tokens = max(max_tokens, 1200)
+    if artifact_request is not None:
+        max_tokens = max(max_tokens, 4200)
     budget_report = harness.finalize_budget(messages=messages, max_output_tokens=max_tokens)
     if budget_report.get("over_soft_budget") and not image_parts:
         remaining = harness.config.soft_turn_token_budget - budget_report["prompt_tokens_estimated"]
@@ -562,6 +689,14 @@ def run_chat(
             configured=llm_configured,
         )
 
+    generated_artifacts: list[dict] = []
+    if artifact_request is not None and user is not None:
+        reply, generated_artifacts = materialize_generated_artifacts(
+            message=message,
+            reply=reply,
+            user_id=user.id,
+        )
+
     if nas_files:
         file_links = [
             f"- [{item['name']}]({item['download_url']}) · `{item['native_path']}`"
@@ -597,12 +732,15 @@ def run_chat(
             or knowledge
             or mcp.get("content")
             or nas.get("content")
+            or connector_context.get("blocks")
             or attachments
             or generated_images
+            or generated_artifacts
         ),
         "doc_context": bool(doc_mode),
         "image_intent": image_intent,
         "generated_images": generated_images,
+        "generated_artifacts": generated_artifacts,
         "mcp": {
             "attempted": bool(mcp.get("attempted")),
             "ok": bool(mcp.get("content")),
@@ -611,6 +749,7 @@ def run_chat(
             "source": mcp.get("source") or doc_url,
         },
         "refs": refs,
+        "connectors": connector_context.get("refs") or [],
         "skills": skills_payload(active_skills),
         "skill_scripts": script_blocks,
         "nas_files": refs["nas"],

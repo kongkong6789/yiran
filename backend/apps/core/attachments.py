@@ -192,6 +192,24 @@ def preview_attachment(path: Path, filename: str, mime: str = "") -> dict:
     }
 
 
+def _preview_context_text(payload: dict) -> str:
+    text = str(payload.get("text") or "").strip()
+    if text:
+        return text[:MAX_TEXT_INJECT]
+    sheets = payload.get("sheets")
+    if not isinstance(sheets, list):
+        return ""
+    parts: list[str] = []
+    for sheet in sheets:
+        if not isinstance(sheet, dict):
+            continue
+        parts.append(f"### 工作表: {sheet.get('name') or 'Sheet'}")
+        for row in (sheet.get("rows") or [])[:60]:
+            if isinstance(row, list):
+                parts.append("\t".join(str(cell) for cell in row))
+    return "\n".join(parts)[:MAX_TEXT_INJECT]
+
+
 def _is_image(name: str, mime: str = "") -> bool:
     ext = Path((name or "").lower()).suffix
     if ext in IMAGE_EXTENSIONS:
@@ -259,9 +277,50 @@ def process_uploaded_files(files, user_id: int) -> list[dict]:
             text = _extract_text(name, data)
             item["text"] = text
             item["has_text"] = bool(text)
+        elif ext in {".docx", ".xlsx", ".xls"}:
+            text = _preview_context_text(preview_attachment(path, name, item["mime"]))
+            item["text"] = text
+            item["has_text"] = bool(text)
 
         results.append(item)
     return results
+
+
+def store_generated_attachment(
+    *,
+    payload: bytes,
+    filename: str,
+    user_id: int,
+    mime: str = "",
+) -> dict:
+    """Persist a bounded agent-generated file for chat preview and download."""
+    if len(payload) > MAX_ATTACH_BYTES:
+        raise ValueError(f"生成文件超过 {MAX_ATTACH_BYTES // (1024 * 1024)}MB 上限")
+    name = (filename or "AI-artifact.txt").replace("\\", "/").split("/")[-1]
+    ext = Path(name.lower()).suffix
+    if ext not in TEXT_EXTENSIONS and ext not in DOC_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+        raise ValueError(f"暂不支持生成文件类型: {name}")
+
+    root = attachments_root(user_id)
+    root.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4().hex}_{name}"
+    path = root / stored
+    path.write_bytes(payload)
+    resolved_mime = mime or mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    return {
+        "id": stored,
+        "name": name,
+        "size": len(payload),
+        "mime": resolved_mime,
+        "has_text": ext in TEXT_EXTENSIONS,
+        "is_image": ext in IMAGE_EXTENSIONS,
+        "is_file": ext not in IMAGE_EXTENSIONS,
+        "stored_path": str(path),
+        "url": f"/api/agent/attachments/{stored}",
+        "artifact": True,
+        "generated_by": "xiaoce",
+    }
 
 
 def format_attachment_context(attachments: list[dict]) -> str:

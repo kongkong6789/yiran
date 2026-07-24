@@ -42,6 +42,7 @@ def publish_sync(
     insights=None,
     room=None,
     xiaoce_runs=None,
+    xiaoce_streams=None,
     read_receipts=None,
 ) -> None:
     """与前端 CollabSyncEvent / 旧 SSE sync 对齐。"""
@@ -58,6 +59,8 @@ def publish_sync(
         payload["room"] = room
     if xiaoce_runs:
         payload["xiaoce_runs"] = xiaoce_runs
+    if xiaoce_streams:
+        payload["xiaoce_streams"] = xiaoce_streams
     if read_receipts:
         payload["read_receipts"] = read_receipts
     if not payload:

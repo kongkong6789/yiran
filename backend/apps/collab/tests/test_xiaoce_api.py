@@ -1,10 +1,13 @@
 import uuid
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.collab import views
@@ -15,6 +18,7 @@ from apps.collab.tests.test_xiaoce_runs import prepared_skill
 from apps.skills.models import SkillAsset, UserSkill
 
 
+@override_settings(HERMES_AGENT_ENABLED=False)
 class XiaoceApiTests(APITestCase):
     def setUp(self):
         realtime_patcher = patch("apps.collab.views.ws_push.publish_sync")
@@ -92,6 +96,16 @@ class XiaoceApiTests(APITestCase):
         by_id = {row["id"]: row for row in listed}
         self.assertEqual(by_id[task["id"]]["display_title"], "小策bot（GMV运算处理任务）")
         self.assertEqual(by_id[normal["id"]]["display_title"], self.colleague.username)
+
+    @override_settings(HERMES_AGENT_ENABLED=True)
+    def test_xiaoce_room_payload_exposes_the_configured_agent_runtime(self):
+        detail = self.client.get(f"/api/collab/rooms/{self.room.id}/")
+        listed = self.client.get("/api/collab/rooms/").data["results"]
+        listed_room = next(row for row in listed if row["id"] == str(self.room.id))
+
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data["agent_runtime"], "hermes-agent")
+        self.assertEqual(listed_room["agent_runtime"], "hermes-agent")
 
     def test_xiaoce_task_is_visible_only_to_its_owner(self):
         trigger = CollabMessage.objects.create(
@@ -199,6 +213,49 @@ class XiaoceApiTests(APITestCase):
         self.assertTrue(presence.data["users"][str(self.bot.id)]["online"])
 
     @patch("apps.collab.views.threading.Thread")
+    def test_normal_chat_ai_mention_starts_the_same_agent_run(self, thread_cls):
+        room = CollabRoom.objects.create(
+            created_by=self.user,
+            room_kind="dm",
+            title="普通单聊",
+        )
+        CollabParticipant.objects.create(room=room, user=self.user)
+        CollabParticipant.objects.create(room=room, user=self.colleague)
+        run_id = uuid.uuid4()
+
+        response = self.client.post(
+            f"/api/collab/rooms/{room.id}/messages/",
+            {"content": "@AI 请结合知识库给建议", "run_id": str(run_id)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["xiaoce_run"]["id"], str(run_id))
+        self.assertEqual(response.data["xiaoce_run"]["agent_kind"], "mention")
+        self.assertEqual(response.data["xiaoce_run"]["agent_name"], "良策AI")
+        self.assertEqual(response.data["message"]["meta"]["agent_kind"], "mention")
+        self.assertEqual(thread_cls.call_args.kwargs["target"], views._run_xiaoce_reply_async)
+        self.assertEqual(thread_cls.call_args.kwargs["args"], (run_id,))
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_send_persists_only_allowlisted_connector_selection(self, _thread_cls):
+        response = self.client.post(
+            self.messages_url,
+            {
+                "content": "请通过吉客云连接器查询库存",
+                "run_id": str(uuid.uuid4()),
+                "connector_ids": ["jackyun", "shell", "JACKYUN"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.data["message"]["meta"]["connector_ids"],
+            ["jackyun"],
+        )
+
+    @patch("apps.collab.views.threading.Thread")
     def test_second_send_is_rejected_without_creating_an_orphan_message(self, _thread_cls):
         self.client.post(
             self.messages_url,
@@ -274,6 +331,29 @@ class XiaoceApiTests(APITestCase):
         )
 
     @patch("apps.collab.views.threading.Thread")
+    def test_file_only_message_starts_xiaoce_reader(self, thread_cls):
+        run_id = uuid.uuid4()
+        upload = SimpleUploadedFile(
+            "brief.html",
+            b"<!doctype html><html><body><h1>July brief</h1></body></html>",
+            content_type="text/html",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with override_settings(CHAT_ATTACHMENTS_ROOT=Path(tmp)):
+                response = self.client.post(
+                    self.messages_url,
+                    {"run_id": str(run_id), "files": [upload]},
+                    format="multipart",
+                )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["xiaoce_run"]["id"], str(run_id))
+        self.assertEqual(response.data["message"]["content"], "")
+        self.assertEqual(response.data["message"]["attachments"][0]["name"], "brief.html")
+        thread_cls.return_value.start.assert_called_once()
+
+    @patch("apps.collab.views.threading.Thread")
     def test_reference_rejects_unowned_or_current_task(self, _thread_cls):
         foreign_room = self.create_context_room(owner=self.other, title="他人任务")
 
@@ -318,6 +398,34 @@ class XiaoceApiTests(APITestCase):
         self.assertTrue(first.data["message"]["meta"]["cancelled"])
         self.assertEqual(first.data["xiaoce_run"]["status"], "cancelled")
         self.assertIsNone(first.data["active_xiaoce_run"])
+
+    @patch("apps.collab.views.threading.Thread")
+    def test_stale_orphan_run_does_not_block_the_next_message(self, _thread_cls):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="旧任务",
+            msg_type="user",
+        )
+        stale = XiaoceRun.objects.create(
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        XiaoceRun.objects.filter(id=stale.id).update(
+            updated_at=timezone.now() - timedelta(minutes=10),
+        )
+        next_id = uuid.uuid4()
+
+        response = self.client.post(
+            self.messages_url,
+            {"content": "继续新任务", "run_id": str(next_id)},
+        )
+
+        stale.refresh_from_db()
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(stale.status, XiaoceRun.Status.FAILED)
+        self.assertEqual(response.data["xiaoce_run"]["id"], str(next_id))
 
     @patch("apps.collab.views.threading.Thread")
     def test_finished_or_unowned_run_cannot_be_cancelled(self, _thread_cls):
@@ -412,6 +520,95 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(run.result_message.content, "最终答案")
         self.assertEqual(run.result_message.meta["process_steps"], run.progress_steps)
 
+    @override_settings(HERMES_AGENT_ENABLED=True)
+    @patch("apps.core.agent_chat.run_chat")
+    @patch("apps.core.hermes_adapter.run_hermes_xiaoce")
+    @patch("apps.core.agent_chat.collect_agent_knowledge_context")
+    def test_worker_prefers_hermes_runtime(
+        self,
+        knowledge_context,
+        hermes,
+        legacy_run_chat,
+    ):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="生成经营分析",
+            msg_type="user",
+            meta={},
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        hermes.return_value = {
+            "ok": True,
+            "reply": "Hermes Agent 已完成",
+            "agent_runtime": "hermes-agent",
+        }
+        knowledge_context.return_value = {
+            "blocks": ["【知识库】经营目标：毛利提升 3 个点"],
+        }
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        legacy_run_chat.assert_not_called()
+        self.assertEqual(run.result_message.content, "Hermes Agent 已完成")
+        self.assertEqual(run.result_message.meta["agent_runtime"], "hermes-agent")
+        self.assertIn(
+            "【知识库】经营目标：毛利提升 3 个点",
+            hermes.call_args.kwargs["extra_reference_blocks"],
+        )
+        self.assertEqual(
+            hermes.call_args.kwargs["extra_reference_blocks"][0],
+            "【知识库】经营目标：毛利提升 3 个点",
+        )
+
+    @override_settings(HERMES_AGENT_ENABLED=True)
+    @patch("apps.core.agent_chat.run_chat")
+    @patch("apps.core.hermes_adapter.run_hermes_xiaoce")
+    def test_worker_executes_skill_once_then_hands_result_to_hermes(self, hermes, legacy_run_chat):
+        UserSkill.objects.create(
+            user=self.user,
+            skill_id="weekly-report",
+            name="weekly-report",
+            instructions="输出周报",
+            enabled=True,
+        )
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="请用 @weekly-report 完成本周复盘",
+            msg_type="user",
+            meta={},
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        hermes.return_value = {
+            "ok": True,
+            "reply": "Hermes 已根据 Skill 完成",
+            "agent_runtime": "hermes-agent",
+        }
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        hermes.assert_called_once()
+        legacy_run_chat.assert_not_called()
+        self.assertIn(
+            "【已授权 Skill】",
+            hermes.call_args.kwargs["extra_reference_blocks"][0],
+        )
+        self.assertEqual(run.result_message.content, "Hermes 已根据 Skill 完成")
+        self.assertEqual(run.result_message.meta["agent_runtime"], "hermes-agent")
+
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_exposes_generated_images_as_artifacts(self, run_chat):
         trigger = CollabMessage.objects.create(
@@ -443,6 +640,47 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(attachment["id"], "generated_gen.png")
         self.assertEqual(attachment["url"], "/api/agent/attachments/generated_gen.png")
         self.assertTrue(attachment["is_image"])
+
+    @patch("apps.core.agent_chat.run_chat")
+    def test_worker_exposes_generated_files_as_real_collab_artifacts(self, run_chat):
+        trigger = CollabMessage.objects.create(
+            room=self.room,
+            sender=self.user,
+            content="生成 HTML 报告",
+            msg_type="user",
+            meta={},
+        )
+        run = XiaoceRun.objects.create(
+            id=uuid.uuid4(),
+            room=self.room,
+            user=self.user,
+            trigger_message=trigger,
+        )
+        run_chat.return_value = {
+            "ok": True,
+            "reply": "报告已生成",
+            "generated_artifacts": [{
+                "id": "artifact_report.html",
+                "name": "经营报告.html",
+                "size": 128,
+                "mime": "text/html",
+                "has_text": True,
+                "is_image": False,
+                "artifact": True,
+            }],
+        }
+
+        views._run_xiaoce_reply_async(run.id)
+
+        run.refresh_from_db()
+        attachment = run.result_message.attachments[0]
+        self.assertEqual(attachment["id"], "artifact_report.html")
+        self.assertEqual(
+            attachment["url"],
+            "/api/collab/attachments/artifact_report.html/",
+        )
+        self.assertTrue(attachment["artifact"])
+        self.assertEqual(run.result_message.meta["generated_artifacts"], 1)
 
     @patch("apps.core.agent_chat.run_chat")
     def test_worker_injects_referenced_task_transcript(self, run_chat):
@@ -540,12 +778,15 @@ class XiaoceApiTests(APITestCase):
         self.assertNotIn("Traceback", run.result_message.content)
         self.assertNotIn("sk-secret-value", run.result_message.content)
 
+    @override_settings(HERMES_AGENT_ENABLED=True)
+    @patch("apps.core.hermes_adapter.run_hermes_xiaoce")
     @patch("apps.skills.repository.cos_enabled", return_value=False)
     @patch("apps.core.conversation_skill.prepare_conversation_skill")
     def test_worker_packages_explicit_request_and_enables_private_skill(
         self,
         prepare,
         _cos_enabled,
+        hermes,
     ):
         trigger = CollabMessage.objects.create(
             room=self.room,
@@ -572,3 +813,4 @@ class XiaoceApiTests(APITestCase):
         self.assertEqual(asset.visibility, SkillAsset.Visibility.PRIVATE)
         self.assertTrue(personal.enabled)
         self.assertEqual(run.result_message.meta["created_skill"]["skill_id"], asset.skill_id)
+        hermes.assert_not_called()

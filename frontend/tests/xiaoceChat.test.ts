@@ -125,6 +125,37 @@ test("partitions multiple Xiaoce tasks without reordering either group", () => {
   assert.deepEqual(result.otherRooms.map((room) => room.id), ["person", "group"]);
 });
 
+test("places unread conversations first and sorts equal unread counts by recency", () => {
+  const result = partitionXiaoceRooms([
+    {
+      id: "read-new",
+      room_kind: "dm",
+      unread_count: 0,
+      updated_at: "2026-07-24T10:00:00Z",
+      participants: [{ username: "甲" }],
+    },
+    {
+      id: "unread-old",
+      room_kind: "dm",
+      unread_count: 1,
+      updated_at: "2026-07-24T08:00:00Z",
+      participants: [{ username: "乙" }],
+    },
+    {
+      id: "unread-new",
+      room_kind: "dm",
+      unread_count: 3,
+      updated_at: "2026-07-24T09:00:00Z",
+      participants: [{ username: "丙" }],
+    },
+  ]);
+
+  assert.deepEqual(
+    result.otherRooms.map((room) => room.id),
+    ["unread-new", "unread-old", "read-new"],
+  );
+});
+
 test("API client exposes the dedicated Xiaoce task endpoint", () => {
   const source = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
   assert.ok(source.includes("export const createXiaoceTask"));
@@ -829,7 +860,7 @@ test("process component uses server snapshots and the required collapsed label",
     new URL("../src/components/XiaoceProcess.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /查看处理过程（\{visibleSteps\.length\}步）/);
+  assert.match(source, /查看思考与执行过程（\{visibleSteps\.length\}步）/);
   assert.match(source, /正在理解你的问题/);
   assert.match(source, /live \? \[\{/);
   assert.match(source, /aria-expanded/);
@@ -840,7 +871,9 @@ test("API types include durable Xiaoce progress and realtime snapshots", () => {
   const source = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
   assert.match(source, /export interface XiaoceProgressStep/);
   assert.match(source, /export interface XiaoceRun/);
+  assert.match(source, /export interface XiaoceStreamUpdate/);
   assert.match(source, /xiaoce_runs\?: XiaoceRun\[\]/);
+  assert.match(source, /xiaoce_streams\?: XiaoceStreamUpdate\[\]/);
   assert.match(source, /cancelXiaoceRun/);
   assert.match(source, /context_room_ids/);
   assert.match(source, /context_rooms\?: CollabContextRoomRef\[\]/);
@@ -998,6 +1031,8 @@ test("collaboration live hook forwards Xiaoce snapshots from websocket and fallb
   assert.match(source, /onXiaoceRuns/);
   assert.match(source, /data\.xiaoce_runs/);
   assert.match(source, /active_xiaoce_run/);
+  assert.match(source, /onXiaoceStreams/);
+  assert.match(source, /data\.xiaoce_streams/);
 });
 
 test("collaboration chat stabilizes empty Xiaoce snapshots before rendering", () => {
@@ -1010,20 +1045,23 @@ test("collaboration chat stabilizes empty Xiaoce snapshots before rendering", ()
 test("Xiaoce process presentation has dedicated responsive styles", () => {
   const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
   assert.match(source, /\.xiaoce-process/);
-  assert.match(source, /\.xiaoce-live-process/);
+  assert.match(source, /\.xiaoce-stream-message/);
   assert.match(source, /\.xiaoce-created-skill/);
   const processStyles = source.slice(
-    source.indexOf(".xiaoce-live-process {"),
+    source.indexOf(".xiaoce-stream-footer {"),
     source.indexOf(".collab-agent-composer {"),
   );
-  assert.match(processStyles, /var\(--lc-bg-elevated/);
-  assert.match(processStyles, /var\(--lc-border-light/);
+  assert.match(processStyles, /xiaoce-stream-bubble/);
   assert.match(processStyles, /var\(--lc-text-muted/);
-  assert.match(processStyles, /var\(--lc-accent-blue/);
+  assert.match(processStyles, /xiaoce-stream-thinking/);
 });
 
-test("Xiaoce bot and user messages anchor left and right while controls stay bounded", () => {
+test("Xiaoce bot and user messages anchor left and right while streaming stays in the conversation", () => {
   const source = readFileSync(new URL("../src/pages/CollabRisk.tsx", import.meta.url), "utf8");
+  const streamingSource = readFileSync(
+    new URL("../src/components/XiaoceStreamingMessage.tsx", import.meta.url),
+    "utf8",
+  );
   const theme = readFileSync(
     new URL("../src/styles/xiaoceChatTheme.css", import.meta.url),
     "utf8",
@@ -1036,10 +1074,13 @@ test("Xiaoce bot and user messages anchor left and right while controls stay bou
     /\.xiaoce-chat-shell \.collab-virt-item\s*\{([^}]*)\}/,
   )?.[1] || "";
   const boundedControlRule = layoutStyles.match(
-    /\.xiaoce-chat-shell \.xiaoce-live-process-inner,\s*\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
+    /\.xiaoce-chat-shell \.collab-agent-input-inner\s*\{([^}]*)\}/,
   )?.[1] || "";
 
-  assert.match(source, /className="xiaoce-live-process-inner"/);
+  assert.doesNotMatch(source, /className="xiaoce-live-process"/);
+  assert.match(source, /<XiaoceStreamingMessage/);
+  assert.match(streamingSource, /className="xiaoce-stream-message"/);
+  assert.match(streamingSource, /Hermes 正在思考并组织回答/);
   assert.match(source, /className="collab-agent-input-inner"/);
   assert.match(source, /\.collab-msg\.mine\s*\{[^}]*margin-left:\s*auto/);
   assert.match(messageRowRule, /margin-inline:\s*var\(--xiaoce-chat-column-gutter\)/);
@@ -1050,8 +1091,13 @@ test("Xiaoce bot and user messages anchor left and right while controls stay bou
   assert.match(theme, /--xiaoce-chat-scrollbar-width:\s*10px/);
   assert.match(messageRowRule, /padding-inline:\s*0/);
   assert.match(
-    layoutStyles,
-    /\.xiaoce-live-process[\s\S]*\.collab-agent-input[\s\S]*padding-right:\s*var\(--xiaoce-chat-scrollbar-width\)/,
+    theme,
+    /:root\[data-theme\] \.xiaoce-chat-shell \.collab-agent-input,[\s\S]*background:\s*transparent !important/,
   );
+  assert.match(
+    theme,
+    /\.xiaoce-chat-shell \.collab-msg\.ai \.collab-msg-name-text[\s\S]*flex:\s*0 0 auto/,
+  );
+  assert.match(theme, /\.xiaoce-chat-shell \.xiaoce-stream-footer/);
   assert.match(theme, /@media \(max-width: 860px\)[\s\S]*--xiaoce-chat-column-gutter:\s*10px/);
 });

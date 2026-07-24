@@ -74,6 +74,14 @@ Vite 输出 `Local: http://localhost:5173/` 后即可访问。停止服务时在
 `VITE_DEV_API_PROXY_TARGET` 修改。`runserver` 只提供 HTTP，公网 HTTPS 必须由
 Nginx、Caddy 或云负载均衡终止 TLS，再反向代理到 `http://127.0.0.1:8000`。
 
+### 小策文件产物与 Hermes Agent
+
+小策收到“生成 HTML/Markdown/JSON/CSV/TXT 文件”或“生成报告文件/产物”请求时，会把模型输出落成真实附件，而不是把普通对话伪装成产物。文件会出现在 AI 消息和右侧“AI 产物”栏，可在线预览、下载，也会作为当前任务的后续上下文继续读取。上传的 HTML、文本、DOCX、XLSX、XLS 同样可被提取为对话上下文。
+
+小策的 Agent 循环接入 [NousResearch/Hermes Agent](https://github.com/NousResearch/hermes-agent)，复用当前用户配置的 OpenAI 兼容 API、模型和密钥。每个用户及会话都有独立工作区：上传文件同步到只读输入目录，Hermes 仅启用良策受控文件工具与会话级持久记忆，只能向 `artifacts/` 生成文件；Shell、网络、浏览器、MCP、定时任务、代码执行与子 Agent 等高权限工具不开放。生成的 HTML、Markdown、TXT、JSON、CSV、XLSX、DOCX 和 PDF 会转成真实聊天附件，图片仍走现有图片模型链路。
+
+Hermes 使用独立虚拟环境，避免其固定依赖影响 Django 服务。首次拉取项目后执行 `cd backend && ./scripts/setup-hermes-runtime.sh` 完成安装；运行时的会话数据库、记忆和文件都写入隔离工作区。现有的对话自动生成 Skill、平台 Skill 调用和图片模型链路保持不变。设置 `HERMES_AGENT_ENABLED=false` 可回退到原有问答链路；Hermes 缺少配置、依赖不可用或执行失败时也会自动回退，不阻断小策回复。
+
 ## 主要 API
 
 启动后端后可打开 Swagger 文档：`http://127.0.0.1:8000/api/docs/`；局域网访问使用

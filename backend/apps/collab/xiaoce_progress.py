@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 
 from django.db import transaction
 from django.utils import timezone
 
 from . import ws_push
-from .models import CollabRoom, XiaoceRun
+from .models import CollabMessage, CollabRoom, XiaoceRun
 
 
 STAGES: dict[str, tuple[str, str]] = {
@@ -58,18 +59,38 @@ def _step_label(code: str, status: str, tool_count: int) -> str:
     return f"{running.rstrip('…')}失败"
 
 
-def _upsert_step(steps: list[dict], code: str, status: str, *, tool_count: int = 0) -> list[dict]:
+def _safe_text(value, *, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(
+        r"(?i)(api[_ -]?key|authorization|token|secret|password)\s*[:=]\s*\S+",
+        r"\1: [已隐藏]",
+        text,
+    )
+    return text[:limit]
+
+
+def _upsert_step(
+    steps: list[dict],
+    code: str,
+    status: str,
+    *,
+    tool_count: int = 0,
+    label: str = "",
+    detail: str = "",
+) -> list[dict]:
     now = _iso_now()
     updated = deepcopy(steps or [])
     index = next((i for i, item in enumerate(updated) if item.get("code") == code), None)
     count = _tool_count(tool_count)
+    resolved_label = _safe_text(label) or _step_label(code, status, count)
+    resolved_detail = _safe_text(detail)
     if index is None:
         step = {
             "code": code,
-            "label": _step_label(code, status, count),
+            "label": resolved_label,
             "status": status,
             "tool_count": count,
-            "detail": "",
+            "detail": resolved_detail,
             "started_at": now,
             "finished_at": now if status != "running" else "",
         }
@@ -77,9 +98,10 @@ def _upsert_step(steps: list[dict], code: str, status: str, *, tool_count: int =
     else:
         step = updated[index]
         step.update(
-            label=_step_label(code, status, count),
+            label=resolved_label,
             status=status,
             tool_count=count,
+            detail=resolved_detail or step.get("detail", ""),
             finished_at=now if status != "running" else "",
         )
     return updated
@@ -88,6 +110,16 @@ def _upsert_step(steps: list[dict], code: str, status: str, *, tool_count: int =
 def xiaoce_run_payload(run: XiaoceRun | None) -> dict | None:
     if run is None:
         return None
+    try:
+        trigger_meta = run.trigger_message.meta or {}
+    except Exception:
+        trigger_meta = (
+            CollabMessage.objects.filter(id=run.trigger_message_id)
+            .values_list("meta", flat=True)
+            .first()
+            or {}
+        )
+    agent_kind = "mention" if trigger_meta.get("agent_kind") == "mention" else "xiaoce"
     return {
         "id": str(run.id),
         "status": run.status,
@@ -98,6 +130,8 @@ def xiaoce_run_payload(run: XiaoceRun | None) -> dict | None:
         "error_message": ERROR_MESSAGES.get(run.error_code, "") if run.error_code else "",
         "created_at": run.created_at.isoformat() if run.created_at else "",
         "updated_at": run.updated_at.isoformat() if run.updated_at else "",
+        "agent_kind": agent_kind,
+        "agent_name": "良策AI" if agent_kind == "mention" else "小策bot",
     }
 
 
@@ -129,12 +163,35 @@ class XiaoceProgressReporter:
         self.run_id = run_id
 
     def start(self, code: str, *, detail: str = "") -> dict | None:
-        del detail
-        return self._record(code, "running")
+        return self._record(code, "running", detail=detail)
 
     def complete(self, code: str, *, tool_count: int = 0, detail: str = "") -> dict | None:
-        del detail
-        return self._record(code, "completed", tool_count=tool_count)
+        return self._record(code, "completed", tool_count=tool_count, detail=detail)
+
+    def trace(
+        self,
+        event_id: str,
+        label: str,
+        status: str,
+        *,
+        detail: str = "",
+    ) -> dict | None:
+        """Persist a safe, user-visible Hermes execution event.
+
+        This records observable tool activity only. It deliberately does not
+        store provider reasoning tokens or hidden chain-of-thought.
+        """
+        normalized = re.sub(r"[^a-zA-Z0-9:_-]+", "-", str(event_id or ""))[:48]
+        if not normalized:
+            return None
+        if status not in {"running", "completed", "failed", "cancelled"}:
+            status = "running"
+        return self._record_trace(
+            f"trace:{normalized}",
+            status,
+            label=_safe_text(label),
+            detail=_safe_text(detail),
+        )
 
     def fail(self, code: str, *, error_code: str = "stage_failed") -> dict | None:
         return self._record(code, "failed", error_code=error_code, terminal=True)
@@ -152,6 +209,7 @@ class XiaoceProgressReporter:
         status: str,
         *,
         tool_count: int = 0,
+        detail: str = "",
         error_code: str = "",
         terminal: bool = False,
     ) -> dict | None:
@@ -182,6 +240,7 @@ class XiaoceProgressReporter:
             code,
             status,
             tool_count=tool_count,
+            detail=detail,
         )
         fields = ["current_stage", "progress_steps", "updated_at"]
         if error_code:
@@ -200,5 +259,42 @@ class XiaoceProgressReporter:
                 fields.append("cancelled_at")
             fields.extend(["status", "finished_at"])
         run.save(update_fields=fields)
+        _publish_after_commit(run)
+        return xiaoce_run_payload(run)
+
+    @transaction.atomic
+    def _record_trace(
+        self,
+        code: str,
+        status: str,
+        *,
+        label: str,
+        detail: str = "",
+    ) -> dict | None:
+        room_id = (
+            XiaoceRun.objects.filter(id=self.run_id)
+            .values_list("room_id", flat=True)
+            .first()
+        )
+        if room_id is None:
+            return None
+        room = CollabRoom.objects.select_for_update().filter(id=room_id).first()
+        if room is None:
+            return None
+        run = (
+            XiaoceRun.objects.select_for_update()
+            .filter(id=self.run_id, room=room)
+            .first()
+        )
+        if run is None or run.status != XiaoceRun.Status.RUNNING:
+            return xiaoce_run_payload(run)
+        run.progress_steps = _upsert_step(
+            run.progress_steps,
+            code,
+            status,
+            label=label,
+            detail=detail,
+        )
+        run.save(update_fields=["progress_steps", "updated_at"])
         _publish_after_commit(run)
         return xiaoce_run_payload(run)

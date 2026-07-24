@@ -1,4 +1,4 @@
-import { App, Avatar, Button, Dropdown, Empty, Grid, Input, Layout, Menu, Popover, Space, Tooltip, Typography } from "antd";
+import { App, Avatar, Badge, Button, Dropdown, Empty, Grid, Input, Layout, Menu, Popover, Space, Tooltip, Typography } from "antd";
 import {
   ApartmentOutlined,
   ApiOutlined,
@@ -284,6 +284,7 @@ export default function AppLayout() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
   const [switchingOrganizationId, setSwitchingOrganizationId] = useState<number | null>(null);
+  const [collabUnreadTotal, setCollabUnreadTotal] = useState(0);
 
   useEffect(() => {
     getMe()
@@ -487,6 +488,25 @@ export default function AppLayout() {
     nav(section.defaultPath);
   }, [nav]);
 
+  const navItemIcon = (item: NavItem) => (
+    item.key === "collab-messages"
+      ? <Badge dot={collabUnreadTotal > 0} offset={[1, -1]}>{item.icon}</Badge>
+      : item.icon
+  );
+  const navItemLabel = (item: NavItem) => (
+    <span className="app-nav-item-label">
+      <span>{item.label}</span>
+      {item.key === "collab-messages" && collabUnreadTotal > 0 ? (
+        <Badge
+          className="app-nav-unread-badge"
+          count={collabUnreadTotal > 99 ? "99+" : collabUnreadTotal}
+          overflowCount={99}
+          size="small"
+        />
+      ) : null}
+    </span>
+  );
+
   const submitSearch = () => {
     const query = searchValue.trim().toLowerCase();
     if (!query) return;
@@ -652,7 +672,7 @@ export default function AppLayout() {
               onClick={() => setSettingsOpen(true)}
             />
           </Tooltip>
-          {user ? <CollabUnreadBell enabled /> : null}
+          {user ? <CollabUnreadBell enabled onUnreadChange={setCollabUnreadTotal} /> : null}
           <Dropdown menu={userMenu} placement="bottomRight" trigger={["click"]}>
             <button type="button" className="app-topnav-user" aria-label="打开账户菜单">
               <Avatar
@@ -697,8 +717,8 @@ export default function AppLayout() {
                 onClick={() => goNavItem(item)}
                 aria-current={selectedKeys.includes(item.key) ? "page" : undefined}
               >
-                {item.icon}
-                <span>{item.label}</span>
+                {navItemIcon(item)}
+                {navItemLabel(item)}
               </button>
             ))}
           </nav>
@@ -749,8 +769,8 @@ export default function AppLayout() {
                   activeSection.key === "common" && user?.is_superuser ? [LOGS_NAV] : [],
                 ).map((item) => ({
                   key: item.key,
-                  icon: item.icon,
-                  label: item.label,
+                  icon: navItemIcon(item),
+                  label: navItemLabel(item),
                   title: item.label,
                 }))
               : activeSection.groups.map((group) => ({
@@ -759,8 +779,8 @@ export default function AppLayout() {
                   label: group.label,
                   children: group.items.map((item) => ({
                     key: item.key,
-                    icon: item.icon,
-                    label: item.label,
+                    icon: navItemIcon(item),
+                    label: navItemLabel(item),
                     title: item.label,
                   })),
                 })).concat(
@@ -771,8 +791,8 @@ export default function AppLayout() {
                         label: "系统",
                         children: [{
                           key: LOGS_NAV.key,
-                          icon: LOGS_NAV.icon,
-                          label: LOGS_NAV.label,
+                          icon: navItemIcon(LOGS_NAV),
+                          label: navItemLabel(LOGS_NAV),
                           title: LOGS_NAV.label,
                         }],
                       }]

@@ -53,6 +53,7 @@ import {
   type AuthUser,
   type CollabInsight,
   type CollabMessage,
+  type CollabUnreadItem,
   type CollabTranslation,
   type CollabReadReceipt,
   type CollabRoom,
@@ -63,19 +64,28 @@ import {
   type CollabUserBrief,
   type UserSkillItem,
   type XiaoceRun,
+  type XiaoceStreamUpdate,
   type McpServer,
   type TeamSummary,
 } from "../api/client";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
 import ChatMarkdown from "../components/ChatMarkdown";
 import ChatSkillPicker from "../components/ChatSkillPicker";
 import ChatTodoModal from "../components/ChatTodoModal";
-import ChatConnectorPicker, { connectorPrompt } from "../components/ChatConnectorPicker";
+import CollabTodoPreview from "../components/CollabTodoPreview";
+import ChatConnectorPicker, {
+  connectorIdsFromMessage,
+  connectorPrompt,
+} from "../components/ChatConnectorPicker";
 import XiaoceProcess from "../components/XiaoceProcess";
+import XiaoceStreamingMessage from "../components/XiaoceStreamingMessage";
 import XiaoceTaskList from "../components/XiaoceTaskList";
 import CollabMonitorBoard from "../components/CollabMonitorBoard";
 import CollabMessageSearch from "../components/CollabMessageSearch";
-import { CollabArtifactsPanel } from "../components/CollabArtifactsPanel";
+import {
+  CollabArtifactsPanel,
+  collabArtifactId,
+} from "../components/CollabArtifactsPanel";
 import { CollabGroupMembersPopover } from "../components/CollabGroupMembersPopover";
 import { CollabWelcome } from "../components/CollabWelcome";
 import { useCollabRoomLive } from "../hooks/useCollabRoomLive";
@@ -301,6 +311,10 @@ function looksLikeMarkdown(content: string) {
 
 function isBilingualText(content: string) {
   return /[\u3400-\u4dbf\u4e00-\u9fffA-Za-z]/.test(content || "");
+}
+
+function requestsAiResponse(content: string) {
+  return /@(?:AI|ai|良策AI|良策ai|小策bot|小策)(?=\s|$)/.test(content || "");
 }
 
 function renderMessageBody(content: string, room: CollabRoom | null, asMarkdown: boolean) {
@@ -750,6 +764,40 @@ type CollabRiskProps = {
   onStartRoundtable?: (seed?: CollabRoundtableSeed) => void;
 };
 
+type CollabMessageListContext = {
+  loadingOlder: boolean;
+  hasMoreBefore: boolean;
+  xiaoceRun: XiaoceRun | null;
+  xiaoceStream: XiaoceStreamUpdate | null;
+};
+
+function CollabMessageListHeader({ context }: { context: CollabMessageListContext }) {
+  return (
+    <div className="collab-msg-history-tip">
+      {context.loadingOlder
+        ? "加载更早消息…"
+        : context.hasMoreBefore ? "上滑加载更早消息" : "已到会话开头"}
+    </div>
+  );
+}
+
+function CollabMessageListFooter({ context }: { context: CollabMessageListContext }) {
+  return (
+    <XiaoceStreamingMessage
+      run={context.xiaoceRun}
+      stream={context.xiaoceStream}
+    />
+  );
+}
+
+const COLLAB_MESSAGE_LIST_COMPONENTS: Components<
+  CollabMessage,
+  CollabMessageListContext
+> = {
+  Header: CollabMessageListHeader,
+  Footer: CollabMessageListFooter,
+};
+
 export default function CollabRisk({
   embedded = false,
   panel,
@@ -803,6 +851,9 @@ export default function CollabRisk({
   const [draftCoachLoading, setDraftCoachLoading] = useState(false);
   const [sendingRoomIds, setSendingRoomIds] = useState<Set<string>>(() => new Set());
   const [activeXiaoceRun, setActiveXiaoceRun] = useState<XiaoceRun | null>(null);
+  const [xiaoceStreamsByRoom, setXiaoceStreamsByRoom] = useState<
+    Record<string, XiaoceStreamUpdate>
+  >({});
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [skillRefreshKey, setSkillRefreshKey] = useState(0);
   const [loadingRooms, setLoadingRooms] = useState(false);
@@ -876,6 +927,7 @@ export default function CollabRisk({
     catch { return true; }
   });
   const [artifactsVisible, setArtifactsVisible] = useState(false);
+  const [selectedArtifactId, setSelectedArtifactId] = useState("");
   const [messagesAtBottom, setMessagesAtBottom] = useState(true);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRT_BASE_INDEX);
   const stickBottomRef = useRef(true);
@@ -934,7 +986,21 @@ export default function CollabRisk({
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
 
   const xiaoceRoom = isXiaoceRoom(activeRoom);
-  const xiaoceBusy = xiaoceRoom && activeXiaoceRun?.status === "running";
+  const agentBusy = activeXiaoceRun?.status === "running";
+  const xiaoceBusy = xiaoceRoom && agentBusy;
+  const activeXiaoceStream = activeId ? xiaoceStreamsByRoom[activeId] || null : null;
+  const collabMessageListContext = useMemo<CollabMessageListContext>(() => ({
+    loadingOlder,
+    hasMoreBefore,
+    xiaoceRun: agentBusy ? activeXiaoceRun : null,
+    xiaoceStream: activeXiaoceStream,
+  }), [
+    activeXiaoceRun,
+    activeXiaoceStream,
+    hasMoreBefore,
+    loadingOlder,
+    agentBusy,
+  ]);
   const sending = Boolean(activeId && sendingRoomIds.has(activeId));
   const { xiaoceTasks, otherRooms } = useMemo(
     () => partitionXiaoceRooms(rooms),
@@ -1032,6 +1098,11 @@ export default function CollabRisk({
       catch { /* ignore */ }
     }
   }, []);
+
+  const openArtifactPreview = useCallback((messageId: number, attachmentId: string) => {
+    setSelectedArtifactId(collabArtifactId(messageId, attachmentId));
+    setArtifactPanelVisible(true);
+  }, [setArtifactPanelVisible]);
 
   const isParticipant = useMemo(() => {
     if (!me || !activeRoom) return false;
@@ -1156,6 +1227,11 @@ export default function CollabRisk({
     scheduleMessagesToBottom(behavior);
   }, [scheduleMessagesToBottom]);
 
+  useEffect(() => {
+    if (!activeXiaoceStream?.content || !stickBottomRef.current) return;
+    scheduleMessagesToBottom("auto");
+  }, [activeXiaoceStream?.content, scheduleMessagesToBottom]);
+
   const releaseMessageAutoScroll = useCallback(() => {
     stickBottomRef.current = false;
     forceStickUntilRef.current = 0;
@@ -1230,15 +1306,20 @@ export default function CollabRisk({
     }
   }, []);
 
-  const loadRooms = useCallback(async (selectFirst = false) => {
-    setLoadingRooms(true);
+  const loadRooms = useCallback(async (
+    selectFirst = false,
+    options?: { silent?: boolean },
+  ) => {
+    const silent = Boolean(options?.silent);
+    if (!silent) setLoadingRooms(true);
     const revisionsAtStart = new Map(roomDataRevisionRef.current);
     try {
       const data = await listCollabRooms();
       setRooms((current) => {
         const currentById = new Map(current.map((room) => [room.id, room]));
-        return (data.results || []).map((room) => ({
+        const next = (data.results || []).map((room) => ({
           ...room,
+          unread_count: room.id === activeIdRef.current ? 0 : room.unread_count,
           active_xiaoce_run: mergeXiaoceRunSnapshot(
             currentById.get(room.id)?.active_xiaoce_run || null,
             room.active_xiaoce_run || null,
@@ -1249,21 +1330,68 @@ export default function CollabRisk({
             },
           ),
         }));
+        roomsRef.current = next;
+        return next;
       });
       if (selectFirst && !activeId && data.results?.[0]) {
         setActiveId(data.results[0].id);
       }
     } catch {
-      message.error("加载协作会话失败");
+      if (!silent) message.error("加载协作会话失败");
     } finally {
-      setLoadingRooms(false);
+      if (!silent) setLoadingRooms(false);
     }
   }, [activeId, getRoomDataRevision, message]);
+
+  useEffect(() => {
+    let authoritativeRefreshTimer: number | null = null;
+    const onUnreadSnapshot = (event: Event) => {
+      const items = (
+        event as CustomEvent<{ items?: CollabUnreadItem[] }>
+      ).detail?.items || [];
+      const unreadByRoomId = new Map(items.map((item) => [item.room_id, item]));
+      setRooms((current) => {
+        const next = current.map((room) => {
+          const unread = unreadByRoomId.get(room.id);
+          if (!unread) {
+            return room.unread_count ? { ...room, unread_count: 0 } : room;
+          }
+          const riskLevel = unread.risk_level;
+          return {
+            ...room,
+            title: unread.title || room.title,
+            risk_level: (
+              riskLevel === "green" || riskLevel === "yellow" || riskLevel === "red"
+            ) ? riskLevel : room.risk_level,
+            updated_at: unread.updated_at || room.updated_at,
+            last_message: unread.last_message || room.last_message,
+            unread_count: unread.unread_count,
+          };
+        });
+        roomsRef.current = next;
+        return next;
+      });
+      if (authoritativeRefreshTimer !== null) {
+        window.clearTimeout(authoritativeRefreshTimer);
+      }
+      authoritativeRefreshTimer = window.setTimeout(() => {
+        authoritativeRefreshTimer = null;
+        void loadRooms(false, { silent: true });
+      }, 120);
+    };
+    window.addEventListener("liangce:collab-rooms-snapshot", onUnreadSnapshot);
+    return () => {
+      window.removeEventListener("liangce:collab-rooms-snapshot", onUnreadSnapshot);
+      if (authoritativeRefreshTimer !== null) {
+        window.clearTimeout(authoritativeRefreshTimer);
+      }
+    };
+  }, [loadRooms]);
 
   const primeRoomSnapshot = useCallback((room: CollabRoom) => {
     const roomMessages = room.messages || [];
     const roomInsights = room.insights || [];
-    const xiaoceRun = isXiaoceRoom(room) ? (room.active_xiaoce_run || null) : null;
+    const xiaoceRun = room.active_xiaoce_run || null;
     roomViewCacheRef.current.set(room.id, {
       room,
       messages: roomMessages,
@@ -1314,9 +1442,7 @@ export default function CollabRisk({
       const currentRun = activeIdRef.current === id
         ? activeXiaoceRunRef.current
         : cachedAtResolution?.xiaoceRun || null;
-      const pageRun = isXiaoceRoom(hydratedRoom)
-        ? (page.room?.active_xiaoce_run || hydratedRoom.active_xiaoce_run || null)
-        : null;
+      const pageRun = page.room?.active_xiaoce_run || hydratedRoom.active_xiaoce_run || null;
       const stablePageRun = stabilizeXiaoceRunSnapshot(
         currentRun,
         pageRun,
@@ -1333,7 +1459,7 @@ export default function CollabRisk({
       });
       const nextMessages = reconciled.messages;
       const nextHasMore = Boolean(page.has_more_before ?? roomBase.has_more_before);
-      const nextXiaoce = isXiaoceRoom(hydratedRoom) ? reconciled.xiaoceRun : null;
+      const nextXiaoce = reconciled.xiaoceRun;
       const reconciledRoom = { ...hydratedRoom, active_xiaoce_run: nextXiaoce };
       activeXiaoceRunRef.current = nextXiaoce;
       activeRoomRef.current = reconciledRoom;
@@ -1424,13 +1550,11 @@ export default function CollabRisk({
           pageRun,
           [...incoming, ...cachedAtStart.messages],
         );
-        const nextRun = isXiaoceRoom(cachedAtStart.room)
-          ? mergeXiaoceRunSnapshot(cachedAtStart.xiaoceRun, stablePageRun, {
-              authoritative: true,
-              requestRevision,
-              currentRevision: getRoomDataRevision(id),
-            })
-          : null;
+        const nextRun = mergeXiaoceRunSnapshot(cachedAtStart.xiaoceRun, stablePageRun, {
+          authoritative: true,
+          requestRevision,
+          currentRevision: getRoomDataRevision(id),
+        });
         const reconciledRoom = {
           ...cachedAtStart.room,
           ...page.room,
@@ -1541,9 +1665,7 @@ export default function CollabRisk({
           messages: page.results,
           has_more_before: page.has_more_before,
         } as CollabRoom;
-        const nextXiaoce = isXiaoceRoom(hydratedRoom)
-          ? (hydratedRoom.active_xiaoce_run || listRoom?.active_xiaoce_run || null)
-          : null;
+        const nextXiaoce = hydratedRoom.active_xiaoce_run || listRoom?.active_xiaoce_run || null;
         roomViewCacheRef.current.set(roomId, {
           room: hydratedRoom,
           messages: page.results || [],
@@ -1809,7 +1931,14 @@ export default function CollabRisk({
 
   useEffect(() => {
     if (!activeId) return;
-    setRooms((prev) => prev.map((r) => (r.id === activeId ? { ...r, unread_count: 0 } : r)));
+    setRooms((prev) => {
+      const next = prev.map((r) => (r.id === activeId ? { ...r, unread_count: 0 } : r));
+      roomsRef.current = next;
+      return next;
+    });
+    window.dispatchEvent(new CustomEvent("liangce:collab-unread-refresh", {
+      detail: { roomId: activeId, read: true, optimistic: true },
+    }));
   }, [activeId]);
 
   // 消息级已读回执：新消息进入视区后短暂稳定再上报，避免“收到即已读”。
@@ -1836,7 +1965,12 @@ export default function CollabRisk({
             )),
           };
         });
-      }).catch(() => undefined);
+        window.dispatchEvent(new CustomEvent("liangce:collab-unread-refresh", {
+          detail: { roomId: activeId, read: true },
+        }));
+      }).catch(() => {
+        window.dispatchEvent(new Event("liangce:collab-unread-refresh"));
+      });
     }, 650);
     return () => window.clearTimeout(timer);
   }, [activeId, me, visibleMessages]);
@@ -2137,6 +2271,20 @@ export default function CollabRisk({
     if ([...incoming, ...(changed || [])].some((item) => Boolean(item.meta?.created_skill))) {
       setSkillRefreshKey((value) => value + 1);
     }
+    const completedRunIds = new Set(
+      incoming
+        .filter((item) => item.msg_type === "ai" && typeof item.meta?.run_id === "string")
+        .map((item) => String(item.meta?.run_id)),
+    );
+    if (completedRunIds.size) {
+      setXiaoceStreamsByRoom((current) => {
+        const stream = current[roomId];
+        if (!stream || !completedRunIds.has(stream.run_id)) return current;
+        const next = { ...current };
+        delete next[roomId];
+        return next;
+      });
+    }
   }, [mutateRoomData, scrollMessagesToBottom]);
 
   const mergeLiveInsights = useCallback((incoming: CollabInsight[]) => {
@@ -2174,6 +2322,31 @@ export default function CollabRisk({
       });
     }
   }, [getRoomDataRevision, mutateRoomData]);
+
+  const mergeLiveXiaoceStreams = useCallback((updates: XiaoceStreamUpdate[]) => {
+    if (!updates.length) return;
+    setXiaoceStreamsByRoom((current) => {
+      let next = current;
+      for (const update of updates) {
+        if (!update.room_id || !update.run_id) continue;
+        if (update.status !== "streaming") {
+          if (next[update.room_id]?.run_id !== update.run_id) continue;
+          if (next === current) next = { ...current };
+          delete next[update.room_id];
+          continue;
+        }
+        const previous = next[update.room_id];
+        if (
+          previous?.run_id === update.run_id
+          && previous.content === update.content
+          && previous.updated_at === update.updated_at
+        ) continue;
+        if (next === current) next = { ...current };
+        next[update.room_id] = update;
+      }
+      return next;
+    });
+  }, []);
 
   const mergeLiveReadReceipts = useCallback((receipts: CollabReadReceipt[]) => {
     if (!receipts.length) return;
@@ -2280,6 +2453,7 @@ export default function CollabRisk({
     mergeInsights: mergeLiveInsights,
     patchRoomMeta,
     onXiaoceRuns: mergeLiveXiaoceRuns,
+    onXiaoceStreams: mergeLiveXiaoceStreams,
     isRoomCurrent: isLiveRoomCurrent,
     getRoomRevision: getRoomDataRevision,
     onReadReceipts: mergeLiveReadReceipts,
@@ -2692,13 +2866,52 @@ export default function CollabRisk({
     }
     if (
       targetRoom
-      && isXiaoceRoom(targetRoom)
+      && (isXiaoceRoom(targetRoom) || requestsAiResponse(content))
       && isXiaoceTaskRunning(targetRoom, activeRoomRef.current, activeXiaoceRunRef.current)
     ) {
-      message.warning("小策bot 正在处理，请先暂停或等待完成");
+      message.warning(
+        isXiaoceRoom(targetRoom)
+          ? "小策bot 正在处理，请先暂停或等待完成"
+          : "良策AI 正在处理上一轮回答，请等待完成",
+      );
       return false;
     }
-    const runId = isXiaoceRoom(targetRoom) ? createXiaoceRunId() : undefined;
+    const runId = (
+      isXiaoceRoom(targetRoom) || requestsAiResponse(content)
+    ) ? createXiaoceRunId() : undefined;
+    const optimisticRun: XiaoceRun | null = runId ? {
+      id: runId,
+      status: "running",
+      room_id: targetRoomId,
+      current_stage: "understanding",
+      progress_steps: [{
+        code: "understanding",
+        label: "正在理解你的问题…",
+        status: "running",
+        tool_count: 0,
+        detail: "",
+        started_at: new Date().toISOString(),
+        finished_at: "",
+      }],
+      error_code: "",
+      error_message: "",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      agent_kind: isXiaoceRoom(targetRoom) ? "xiaoce" : "mention",
+      agent_name: isXiaoceRoom(targetRoom) ? "小策bot" : "良策AI",
+    } : null;
+    if (runId) {
+      setXiaoceStreamsByRoom((current) => ({
+        ...current,
+        [targetRoomId]: {
+          run_id: runId,
+          room_id: targetRoomId,
+          content: "",
+          status: "streaming",
+          updated_at: new Date().toISOString(),
+        },
+      }));
+    }
     stickBottomRef.current = true;
     forceStickUntilRef.current = 0;
     const tempId = -Date.now();
@@ -2754,6 +2967,10 @@ export default function CollabRisk({
     };
     mutateRoomData(targetRoomId, {
       messages: (current) => [...current, optimistic],
+      ...(optimisticRun ? {
+        room: (current) => ({ ...current, active_xiaoce_run: optimisticRun }),
+        xiaoceRun: () => optimisticRun,
+      } : {}),
     });
     if (isRoomAsyncResultCurrent(activeIdRef.current, targetRoomId)) {
       scrollMessagesToBottom("auto");
@@ -2768,6 +2985,7 @@ export default function CollabRisk({
         replyTarget?.id,
         runId,
         contextRoom ? [contextRoom.id] : undefined,
+        connectorIdsFromMessage(content),
       );
       const confirmedMessage: CollabMessage = {
         ...res.message,
@@ -2826,6 +3044,14 @@ export default function CollabRisk({
         }),
         xiaoceRun: () => mergedRun,
       });
+      if (runId && !mergedRun) {
+        setXiaoceStreamsByRoom((current) => {
+          if (current[targetRoomId]?.run_id !== runId) return current;
+          const next = { ...current };
+          delete next[targetRoomId];
+          return next;
+        });
+      }
       for (const attachment of confirmedMessage.attachments || []) {
         if (!attachment.preview_url || !attachment.url || !attachment.is_image) continue;
         const localUrl = attachment.preview_url;
@@ -2857,6 +3083,14 @@ export default function CollabRisk({
       window.setTimeout(() => { void refreshStats(targetRoomId); }, 800);
       return true;
     } catch (e: any) {
+      if (runId) {
+        setXiaoceStreamsByRoom((current) => {
+          if (current[targetRoomId]?.run_id !== runId) return current;
+          const next = { ...current };
+          delete next[targetRoomId];
+          return next;
+        });
+      }
       const removeOptimistic = (current: CollabMessage[]) => (
         current.filter((row) => row.id !== tempId)
       );
@@ -2881,8 +3115,21 @@ export default function CollabRisk({
         ...(mergedPendingRun ? {
           room: (room) => ({ ...room, active_xiaoce_run: mergedPendingRun }),
           xiaoceRun: () => mergedPendingRun,
+        } : runId ? {
+          room: (room) => ({ ...room, active_xiaoce_run: null }),
+          xiaoceRun: () => null,
         } : {}),
       });
+      if (pendingRun) {
+        // A second tab may finish/cancel the run immediately after this 409.
+        // Reconcile against the authoritative room snapshot instead of
+        // leaving this tab permanently blocked by the returned running row.
+        window.setTimeout(() => {
+          if (roomsRef.current.some((room) => room.id === targetRoomId)) {
+            void loadRoomDetail(targetRoomId, { soft: true });
+          }
+        }, 650);
+      }
       message.error(e?.response?.data?.error || "发送失败");
       return false;
     } finally {
@@ -2955,15 +3202,13 @@ export default function CollabRisk({
     const roomId = activeId;
     const runId = activeXiaoceRun?.id;
     if (!roomId || !runId || cancellingRunId) return;
-    const requestRevision = getRoomDataRevision(roomId);
     setCancellingRunId(runId);
     try {
       const response = await cancelXiaoceRun(roomId, runId);
-      const nextRun = mergeXiaoceRunSnapshot(activeXiaoceRunRef.current, null, {
-        authoritative: true,
-        requestRevision,
-        currentRevision: getRoomDataRevision(roomId),
-      });
+      // The cancel response is terminal and authoritative. Do not let a
+      // concurrent websocket revision keep a stale "running" snapshot alive.
+      const nextRun = null;
+      activeXiaoceRunRef.current = null;
       mutateRoomData(roomId, {
         messages: (previous) => {
           const index = previous.findIndex((item) => item.id === response.message.id);
@@ -4214,6 +4459,15 @@ export default function CollabRisk({
                       {roomTitle(activeRoom)}
                     </Typography.Title>
                   )}
+                  {isXiaoce && activeRoom.agent_runtime === "hermes-agent" ? (
+                    <span
+                      className="xiaoce-hermes-badge"
+                      aria-label="由 Hermes Agent 驱动"
+                      title="当前小策任务由 Hermes Agent 驱动"
+                    >
+                      Hermes
+                    </span>
+                  ) : null}
                   {isParticipant && (
                     (activeRoom.room_kind === "group" && activeRoom.status === "open") || isXiaoce
                   ) ? (
@@ -4238,6 +4492,7 @@ export default function CollabRisk({
                 </Typography.Text>
               </div>
               <Space className="collab-main-actions">
+                <CollabTodoPreview />
                 {isXiaoce ? (
                   <div className="xiaoce-theme-switch" role="group" aria-label="对话主题">
                     <Button
@@ -4425,7 +4680,7 @@ export default function CollabRisk({
               }}
               onTouchMoveCapture={releaseMessageAutoScroll}
             >
-              {visibleMessages.length === 0 ? (
+              {visibleMessages.length === 0 && !xiaoceBusy ? (
                 <div className="collab-empty soft">
                   {roomDetailLoading
                     ? "正在加载消息…"
@@ -4441,6 +4696,7 @@ export default function CollabRisk({
                 }}
                 className="collab-virtuoso"
                 data={visibleMessages}
+                context={collabMessageListContext}
                 computeItemKey={(_index, item) => String(item.meta?.client_message_key || item.id)}
                 firstItemIndex={firstItemIndex}
                 initialTopMostItemIndex={{
@@ -4470,14 +4726,7 @@ export default function CollabRisk({
                   void loadOlderMessages();
                 }}
                 increaseViewportBy={{ top: 480, bottom: 320 }}
-                components={{
-                  Header: () => (
-                    <div className="collab-msg-history-tip">
-                      {loadingOlder ? "加载更早消息…" : hasMoreBefore ? "上滑加载更早消息" : "已到会话开头"}
-                    </div>
-                  ),
-                  Footer: () => <div className="collab-msg-bottom-space" aria-hidden />,
-                }}
+                components={COLLAB_MESSAGE_LIST_COMPONENTS}
                 itemContent={(_index, m) => {
                 const isAi = m.msg_type === "ai" && m.status !== "recalled";
                 const isCollabSuggest = isAi && (
@@ -4582,6 +4831,11 @@ export default function CollabRisk({
                             <span className="collab-msg-name-text">
                               {isAi ? aiLabel : memberLabel(m.sender)}
                             </span>
+                            {isAi && m.meta?.agent_runtime === "hermes-agent" ? (
+                              <span className="xiaoce-hermes-badge" title="由 Hermes Agent 驱动">
+                                Hermes
+                              </span>
+                            ) : null}
                             {isCollabSuggest ? <em className="collab-suggest-tag">建议</em> : null}
                             {isInterject ? <em className="collab-interject-tag">警告</em> : null}
                           </span>
@@ -4743,6 +4997,7 @@ export default function CollabRisk({
                               </div>
                             )}
                             {m.attachments.filter((a) => !a.is_image).map((a) => {
+                              const opensArtifactPreview = Boolean(isAi && a.url && !a.uploading);
                               const body = (
                                 <>
                                 <FileOutlined />
@@ -4750,10 +5005,34 @@ export default function CollabRisk({
                                   <strong>{a.name || "附件"}</strong>
                                   <em>{a.uploading ? "正在发送…" : fmtSize(a.size || 0)}</em>
                                 </span>
-                                {a.uploading ? <LoadingOutlined spin /> : <DownloadOutlined />}
+                                {a.uploading
+                                  ? <LoadingOutlined spin />
+                                  : opensArtifactPreview ? <FolderOpenOutlined /> : <DownloadOutlined />}
                                 </>
                               );
-                              return a.url ? (
+                              return a.url && opensArtifactPreview ? (
+                                <button
+                                  type="button"
+                                  key={a.id}
+                                  className="collab-msg-file is-artifact"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openArtifactPreview(m.id, a.id);
+                                  }}
+                                  draggable
+                                  onDragStart={(event) => {
+                                    event.dataTransfer.effectAllowed = "copy";
+                                    event.dataTransfer.setData(DRAG_ATTACHMENT_TYPE, JSON.stringify({
+                                      url: a.url,
+                                      name: a.name,
+                                      mime: a.mime,
+                                    }));
+                                  }}
+                                  aria-label={`预览产物 ${a.name || "附件"}`}
+                                >
+                                  {body}
+                                </button>
+                              ) : a.url ? (
                                 <a
                                   key={a.id}
                                   className="collab-msg-file"
@@ -4795,7 +5074,7 @@ export default function CollabRisk({
                             ) : <span className="collab-translation-loading">正在翻译…</span>}
                           </div>
                         ) : null}
-                        {isXiaoceMessage && m.meta?.process_steps?.length ? (
+                        {isAi && m.meta?.process_steps?.length ? (
                           <XiaoceProcess
                             steps={m.meta.process_steps}
                             status={m.meta.process_status || "completed"}
@@ -4893,20 +5172,6 @@ export default function CollabRisk({
                     取消
                   </Button>
                 </Space>
-              </div>
-            ) : null}
-
-            {xiaoceBusy && activeXiaoceRun ? (
-              <div className="xiaoce-live-process">
-                <div className="xiaoce-live-process-inner">
-                  <span className="xiaoce-live-process-label">小策bot</span>
-                  <XiaoceProcess
-                    steps={activeXiaoceRun.progress_steps}
-                    status={activeXiaoceRun.status}
-                    live
-                    errorMessage={activeXiaoceRun.error_message}
-                  />
-                </div>
               </div>
             ) : null}
 
@@ -5341,6 +5606,8 @@ export default function CollabRisk({
           attachmentUrl={collabAttachUrl}
           onClose={() => setArtifactPanelVisible(false)}
           onJumpToMessage={jumpEvidence}
+          selectedArtifactId={selectedArtifactId}
+          onSelectArtifact={setSelectedArtifactId}
         />
       ) : null}
 
@@ -5779,6 +6046,63 @@ const css = `
   align-items: center;
   gap: 3px;
 }
+.collab-room-heading > .ant-typography {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xiaoce-hermes-badge {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 19px;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  padding: 1px 7px 1px 6px;
+  overflow: hidden;
+  border: 1px solid rgba(139, 86, 7, 0.56);
+  border-radius: 999px;
+  color: #553300;
+  background: linear-gradient(
+    135deg,
+    #fff9d9 0%,
+    #f4ce68 27%,
+    #fff1a5 49%,
+    #d99b27 74%,
+    #fff2a9 100%
+  );
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  letter-spacing: 0.035em;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.52);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -1px 0 rgba(124, 73, 0, 0.18),
+    0 2px 7px rgba(190, 125, 18, 0.2);
+  isolation: isolate;
+}
+.xiaoce-hermes-badge::before {
+  position: relative;
+  z-index: 1;
+  color: #8d5706;
+  content: "✦";
+  font-size: 8px;
+  line-height: 1;
+}
+.xiaoce-hermes-badge::after {
+  position: absolute;
+  top: -7px;
+  left: 36%;
+  width: 9px;
+  height: 34px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  content: "";
+  pointer-events: none;
+  transform: rotate(24deg);
+}
 .collab-group-title-trigger {
   display: inline-flex;
   min-width: 0;
@@ -6215,6 +6539,13 @@ const css = `
   flex-shrink: 0;
   overflow: visible !important;
 }
+.collab-room-badges .ant-badge-count {
+  color: #fff !important;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
 .collab-contact-item div { display: flex; flex-direction: column; min-width: 0; }
 .collab-contact-item span { font-size: 12px; color: #93a0b4; }
 .collab-contact-open-hint {
@@ -6475,7 +6806,7 @@ const css = `
   display: flex !important;
   align-items: flex-start !important;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
   width: fit-content;
   max-width: 88%;
   overflow: visible;
@@ -6532,6 +6863,17 @@ const css = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.collab-msg.ai .collab-msg-aside,
+.collab-msg.ai .collab-msg-name {
+  max-width: 148px;
+}
+.collab-msg-name .xiaoce-hermes-badge {
+  min-height: 16px;
+  margin-left: 1px;
+  padding: 0 5px;
+  font-size: 8px;
+  line-height: 13px;
 }
 .collab-bubble {
   background: rgba(255, 255, 255, 0.94);
@@ -6799,6 +7141,9 @@ const css = `
   border: none;
   background: transparent;
 }
+.collab-md.blocks.chat-md .agent-md-section .agent-md-root {
+  padding: 0;
+}
 .collab-md.blocks.chat-md .agent-md-section.is-lead .agent-md-h1:first-child,
 .collab-md.blocks.chat-md .agent-md-section.is-lead .agent-md-h2:first-child {
   margin: 0 0 10px;
@@ -7011,19 +7356,88 @@ const css = `
 .collab-context-composer button:hover {
   background: color-mix(in srgb, var(--lc-text, #172033) 7%, transparent);
 }
-.xiaoce-live-process {
-  flex-shrink: 0;
-  padding: 10px 16px 8px;
-  border-top: 1px solid var(--lc-border-light, #edf1f7);
-  background: color-mix(in srgb, var(--lc-bg-elevated, #fff) 92%, #f3f7ff);
+.xiaoce-stream-footer {
+  padding: 4px 18px 0;
 }
-.xiaoce-live-process-label {
-  display: block;
-  margin: 0 0 6px 2px;
+.xiaoce-stream-message {
+  display: flex;
+  width: min(760px, 88%);
+  align-items: flex-start;
+  gap: 10px;
+  margin-left: 18px;
+}
+.xiaoce-stream-avatar {
+  flex: 0 0 auto;
+  padding-top: 19px;
+}
+.xiaoce-stream-avatar .ant-avatar {
+  color: #0f766e;
+  border: 1px solid rgba(50, 178, 151, 0.24);
+  background: linear-gradient(145deg, #effffb, #d9f7ef);
+  box-shadow: 0 5px 14px rgba(15, 118, 110, 0.12);
+}
+.xiaoce-stream-main {
+  min-width: 0;
+  flex: 1;
+}
+.xiaoce-stream-sender {
+  display: flex;
+  min-height: 18px;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 4px;
   color: var(--lc-text-muted, #5c6b84);
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: 650;
+}
+.xiaoce-stream-bubble {
+  width: fit-content;
+  min-width: min(360px, 72vw);
+  max-width: 100%;
+  padding: 11px 13px;
+  border: 1px solid rgba(50, 178, 151, 0.27);
+  border-radius: 14px;
+  color: var(--lc-text, #25344e);
+  background:
+    radial-gradient(220px 90px at 0 0, rgba(45, 185, 156, 0.12), transparent 78%),
+    rgba(245, 254, 251, 0.97);
+  box-shadow: 0 4px 16px rgba(19, 97, 83, 0.07);
+}
+.xiaoce-stream-content {
+  position: relative;
+  min-height: 22px;
+}
+.xiaoce-stream-content .agent-md-root > :first-child {
+  margin-top: 0;
+}
+.xiaoce-stream-content .agent-md-root > :last-child {
+  margin-bottom: 0;
+}
+.xiaoce-stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  border-radius: 1px;
+  vertical-align: -0.12em;
+  background: #169f85;
+  animation: xiaoce-stream-caret 900ms steps(1, end) infinite;
+}
+.xiaoce-stream-thinking {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  color: #28695d;
+  font-size: 13px;
+  font-weight: 560;
+}
+.xiaoce-stream-thinking .anticon {
+  color: #19a689;
+}
+@keyframes xiaoce-stream-caret {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: 0.18; }
 }
 .xiaoce-process {
   width: min(420px, 100%);
@@ -7101,6 +7515,22 @@ const css = `
   min-height: 20px;
   color: var(--lc-text-muted, #6b7890);
   line-height: 1.45;
+}
+.xiaoce-process-step-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.xiaoce-process-step-copy > small {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--lc-text-muted, #7c879b);
+  font-size: 10.5px;
+  font-weight: 450;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .xiaoce-process-steps li.is-running {
   color: var(--lc-text, #172033);
@@ -8174,6 +8604,14 @@ const css = `
   text-decoration: none;
   max-width: 260px;
   cursor: grab;
+  font: inherit;
+  text-align: left;
+}
+.collab-msg-file.is-artifact {
+  cursor: pointer;
+}
+.collab-msg-file.is-artifact > .anticon:last-child {
+  color: #315efb;
 }
 .collab-msg-file.is-uploading {
   color: #718096;
@@ -8524,18 +8962,25 @@ const css = `
 /* 让 AI 身份和告警类型完整可读，避免“监控提醒”首字被压缩。 */
 .collab-msg.ai .collab-msg-aside,
 .collab-msg.interject .collab-msg-aside {
-  width: 92px;
-  max-width: 92px;
+  width: auto;
+  max-width: 148px;
   align-items: flex-start;
 }
 .collab-msg.ai .collab-msg-name,
 .collab-msg.interject .collab-msg-name {
-  width: 92px;
-  max-width: 92px;
+  width: max-content;
+  max-width: 148px;
   overflow: visible;
   text-overflow: clip;
   justify-content: flex-start;
   text-align: left;
+}
+.collab-msg.ai .collab-msg-name-text,
+.collab-msg.interject .collab-msg-name-text {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -8566,6 +9011,9 @@ const css = `
   .collab-summary-controls .ant-btn-primary {
     animation: none !important;
     transition-duration: 0.01ms !important;
+  }
+  .xiaoce-stream-caret {
+    animation: none !important;
   }
   .collab-msg-image-shell.is-uploading { background: #f4f6fa; }
 }
@@ -8912,7 +9360,8 @@ const css = `
   .collab-main { min-width: 0; }
   .collab-selection-toolbar { align-items: flex-start; flex-direction: column; }
   .collab-forward-card { width: min(320px, 56vw); }
-  .xiaoce-live-process { padding-inline: 10px; }
+  .xiaoce-stream-footer { padding-inline: 10px; }
+  .xiaoce-stream-message { width: 94%; margin-left: 10px; }
   .xiaoce-process { width: 100%; }
 }
 @media (max-width: 560px) {

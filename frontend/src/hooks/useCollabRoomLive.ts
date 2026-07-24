@@ -13,6 +13,7 @@ import {
   type CollabRoomStats,
   type CollabSyncEvent,
   type XiaoceRun,
+  type XiaoceStreamUpdate,
 } from "../api/client";
 import { isLiveGenerationCurrent } from "../pages/xiaoceChat";
 
@@ -27,6 +28,7 @@ type Args = {
     runs: XiaoceRun[],
     context?: { authoritative?: boolean; requestRevision?: number },
   ) => void;
+  onXiaoceStreams?: (updates: XiaoceStreamUpdate[]) => void;
   isRoomCurrent: (roomId: string) => boolean;
   getRoomRevision: (roomId: string) => number;
   onReadReceipts?: (receipts: CollabReadReceipt[]) => void;
@@ -46,6 +48,7 @@ export function useCollabRoomLive({
   mergeInsights,
   patchRoomMeta,
   onXiaoceRuns,
+  onXiaoceStreams,
   isRoomCurrent,
   getRoomRevision,
   onReadReceipts,
@@ -119,6 +122,9 @@ export function useCollabRoomLive({
           data.room.active_xiaoce_run ? [data.room.active_xiaoce_run] : [],
           { authoritative: runUpdateAuthoritative },
         );
+      }
+      if (data.xiaoce_streams?.length) {
+        onXiaoceStreams?.(data.xiaoce_streams);
       }
       if (data.read_receipts?.length) {
         onReadReceipts?.(data.read_receipts);
@@ -296,6 +302,7 @@ export function useCollabRoomLive({
     mergeInsights,
     patchRoomMeta,
     onXiaoceRuns,
+    onXiaoceStreams,
     isRoomCurrent,
     getRoomRevision,
     onReadReceipts,

@@ -9,14 +9,13 @@
 }
 
 /* Let message rows span the conversation so bot replies anchor left and the
-   current user's messages anchor right. Keep progress and composer readable. */
+   current user's messages anchor right. Keep the composer readable. */
 .xiaoce-chat-shell .collab-virt-item {
   min-width: 0;
   margin-inline: var(--xiaoce-chat-column-gutter);
   padding-inline: 0;
 }
 
-.xiaoce-chat-shell .xiaoce-live-process-inner,
 .xiaoce-chat-shell .collab-agent-input-inner {
   width: min(
     var(--xiaoce-chat-column-width),
@@ -27,20 +26,64 @@
 }
 
 /* Virtuoso's viewport loses this width to its vertical scrollbar. Reserve the
-   same right-side gutter for the sibling progress and composer rows so their
-   percentage widths and centering use the identical content box. */
-.xiaoce-chat-shell .xiaoce-live-process,
+   same right-side gutter for the composer row. */
 .xiaoce-chat-shell .collab-agent-input {
   padding-left: 0;
   padding-right: var(--xiaoce-chat-scrollbar-width);
+}
+
+/* The global themed chat input paints a full-width surface. Xiaoce only needs
+   the rounded composer itself, so the side gutters stay visually open. */
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input,
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input-inner {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input::before,
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input::after,
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input-inner::before,
+:root[data-theme] .xiaoce-chat-shell .collab-agent-input-inner::after {
+  display: none !important;
+  content: none !important;
 }
 
 .xiaoce-chat-shell .collab-msg.ai {
   max-width: min(520px, 86%);
 }
 
+.xiaoce-chat-shell .collab-msg.ai .collab-msg-name-text {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble {
   max-width: min(460px, 100%);
+}
+
+.xiaoce-chat-shell .xiaoce-stream-footer {
+  min-width: 0;
+  margin-inline: var(--xiaoce-chat-column-gutter);
+  padding-inline: 0;
+}
+
+.xiaoce-chat-shell .xiaoce-stream-message {
+  width: min(520px, 86%);
+}
+
+.xiaoce-chat-shell .xiaoce-stream-bubble {
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  border-color: var(--lc-line);
+  box-shadow: none;
+}
+
+.xiaoce-chat-shell .xiaoce-stream-content,
+.xiaoce-chat-shell .xiaoce-stream-content .agent-md-root,
+.xiaoce-chat-shell .xiaoce-stream-content .agent-md-p {
+  color: var(--lc-ink);
 }
 
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble > p {
@@ -67,7 +110,7 @@
 }
 
 .xiaoce-chat-shell .collab-msg {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .xiaoce-chat-shell .collab-main-head,
@@ -126,7 +169,7 @@
 
 .xiaoce-chat-shell .collab-msg.ai .collab-bubble:has(.collab-md.blocks),
 .xiaoce-chat-shell .collab-msg.peer .collab-bubble:has(.collab-md.blocks) {
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: var(--lc-surface) !important;
   border: 1px solid var(--lc-line) !important;
   border-radius: 14px;
