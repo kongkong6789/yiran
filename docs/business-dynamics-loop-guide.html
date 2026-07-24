@@ -3,316 +3,755 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>商务动态学 × Loop 应用建议</title>
+  <title>商务动态学 × Loop · 从数据到系统</title>
   <style>
     :root {
-      --bg: #0f1419;
-      --surface: #1a222c;
-      --surface-2: #232d3a;
-      --border: #2f3b4a;
-      --text: #e8eef4;
-      --muted: #9aabbc;
+      --bg: #0e1318;
+      --surface: #161d26;
+      --surface-2: #1e2733;
+      --border: #2a3544;
+      --text: #e7eef5;
+      --muted: #8fa0b3;
       --accent: #3d9a78;
-      --accent-2: #c4a35a;
+      --gold: #c4a35a;
       --danger: #d4736a;
       --info: #5b8fbf;
-      --radius: 12px;
+      --radius: 14px;
       --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       --mono: "Cascadia Code", "Consolas", "Sarasa Mono SC", monospace;
+      --max: 960px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
     body {
       font-family: var(--font);
-      background:
-        radial-gradient(ellipse 80% 50% at 10% -10%, #1a3a32 0%, transparent 55%),
-        radial-gradient(ellipse 60% 40% at 90% 0%, #2a3040 0%, transparent 50%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
       line-height: 1.65;
       min-height: 100vh;
     }
-    .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 80px; }
-    header.hero {
-      margin-bottom: 36px;
-      padding-bottom: 28px;
-      border-bottom: 1px solid var(--border);
+    .wrap { max-width: var(--max); margin: 0 auto; padding: 40px 20px 72px; }
+
+    /* —— Hero —— */
+    .hero {
+      margin-bottom: 28px;
+      padding: 28px 28px 24px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background:
+        radial-gradient(ellipse 70% 80% at 0% 0%, #1a322c 0%, transparent 55%),
+        var(--surface);
     }
     .brand {
-      font-size: 12px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--accent);
-      font-weight: 600;
-      margin-bottom: 10px;
+      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--accent); font-weight: 600; margin-bottom: 10px;
     }
     h1 {
-      font-size: clamp(1.6rem, 4vw, 2.2rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      margin-bottom: 12px;
+      font-size: clamp(1.45rem, 3.5vw, 1.95rem);
+      font-weight: 700; letter-spacing: -0.02em;
+      margin-bottom: 10px; max-width: 18em;
     }
-    .lead { color: var(--muted); font-size: 1.05rem; max-width: 46em; }
-    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .lead { color: var(--muted); font-size: 0.98rem; max-width: 42em; margin-bottom: 16px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 12px; border-radius: 999px; font-size: 12px;
+      font-size: 12px; padding: 4px 11px; border-radius: 999px;
       background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
     }
-    .chip strong { color: var(--text); font-weight: 600; }
-    nav.toc {
+    .chip b { color: var(--text); font-weight: 600; }
+
+    /* —— TOC —— */
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 36px;
+    }
+    .toc a {
+      display: block; text-decoration: none; color: var(--muted);
       background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 16px 20px; margin-bottom: 32px;
+      border-radius: 10px; padding: 10px 12px; font-size: 13px;
+      transition: border-color .15s, color .15s;
     }
-    nav.toc h2 { font-size: 13px; color: var(--muted); margin-bottom: 10px; font-weight: 600; }
-    nav.toc ol { margin-left: 1.2em; color: var(--muted); font-size: 14px; }
-    nav.toc a { color: var(--info); text-decoration: none; }
-    nav.toc a:hover { text-decoration: underline; }
-    section {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 24px 26px; margin-bottom: 20px;
+    .toc a:hover { border-color: var(--accent); color: var(--text); }
+    .toc a .n {
+      display: block; font-size: 11px; color: var(--accent);
+      font-family: var(--mono); margin-bottom: 2px;
     }
-    section h2 {
-      font-size: 1.2rem; margin-bottom: 12px;
-      padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    @media (max-width: 800px) { .toc { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 480px) { .toc { grid-template-columns: 1fr; } }
+
+    /* —— Parts —— */
+    .part {
+      display: flex; align-items: baseline; gap: 12px;
+      margin: 36px 0 14px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
     }
-    section h3 { font-size: 1rem; margin: 18px 0 8px; color: var(--accent-2); }
-    p { margin-bottom: 10px; color: var(--text); }
+    .part-label {
+      font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--gold); font-weight: 700; white-space: nowrap;
+    }
+    .part-title { font-size: 0.95rem; color: var(--muted); font-weight: 500; }
+
+    /* —— Sections —— */
+    section.block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      margin-bottom: 14px;
+    }
+    section.block > h2 {
+      font-size: 1.12rem;
+      margin-bottom: 8px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    section.block > h2 .num {
+      font-family: var(--mono); font-size: 13px; color: var(--accent);
+      background: #1a322c; border: 1px solid #2d5a4a;
+      padding: 2px 8px; border-radius: 6px; font-weight: 700;
+    }
+    .intro { color: var(--muted); font-size: 0.94rem; margin-bottom: 16px; max-width: 48em; }
+    h3 {
+      font-size: 0.92rem; color: var(--gold); font-weight: 600;
+      margin: 0 0 8px;
+    }
+    p { margin-bottom: 10px; }
     .muted { color: var(--muted); }
-    ul, ol { margin: 8px 0 12px 1.25em; color: var(--text); }
-    li { margin-bottom: 6px; }
-    .verdict {
-      background: linear-gradient(135deg, #1a322c, var(--surface));
-      border-color: #2d5a4a;
-    }
-    .verdict p:first-of-type { font-size: 1.05rem; }
-    table {
-      width: 100%; border-collapse: collapse; font-size: 13.5px;
-      margin: 12px 0 8px;
-    }
-    th, td {
-      border: 1px solid var(--border); padding: 10px 12px;
-      text-align: left; vertical-align: top;
-    }
-    th { background: var(--surface-2); color: var(--muted); font-weight: 600; }
-    code, .mono {
-      font-family: var(--mono); font-size: 0.9em;
-      background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
+    ul, ol { margin: 0 0 0 1.15em; }
+    li { margin-bottom: 5px; }
+    strong { font-weight: 600; }
+    code {
+      font-family: var(--mono); font-size: 0.86em;
+      background: var(--surface-2); padding: 1px 5px; border-radius: 4px;
     }
     pre {
-      background: #12181f; border: 1px solid var(--border);
-      border-radius: 8px; padding: 14px 16px; overflow-x: auto;
-      font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
-      color: #d0dbe6; margin: 10px 0 14px; white-space: pre-wrap;
+      font-family: var(--mono); font-size: 12px; line-height: 1.55;
+      background: #10161d; border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+      color: #c9d6e2; margin: 8px 0; white-space: pre-wrap;
+    }
+
+    /* —— Callouts —— */
+    .note {
+      border-radius: 0 8px 8px 0; padding: 10px 14px;
+      font-size: 13.5px; color: var(--muted); margin: 14px 0 0;
+    }
+    .note.ok { border-left: 3px solid var(--accent); background: #14221d; }
+    .note.warn { border-left: 3px solid var(--danger); background: #221818; }
+
+    /* —— Tables —— */
+    .table-wrap { overflow-x: auto; margin: 12px 0; border-radius: 8px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+    th { background: var(--surface-2); color: var(--muted); font-weight: 600; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    td:first-child { color: var(--text); }
+
+    /* —— Architecture (horizontal on wide) —— */
+    .arch-flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+      gap: 6px;
+      align-items: stretch;
+      margin: 8px 0 20px;
+    }
+    .arch-node {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 10px; text-align: center; background: var(--surface-2);
+    }
+    .arch-node .t { font-weight: 700; font-size: 0.88rem; margin-bottom: 4px; }
+    .arch-node .s { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+    .arch-node.data { border-color: #3a5570; }
+    .arch-node.know { border-color: #4a6a45; }
+    .arch-node.ont { border-color: #6a5a3a; }
+    .arch-node.loop { border-color: #2d5a4a; background: #15241f; }
+    .arch-pipe {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 10.5px; text-align: center; max-width: 72px; gap: 2px;
+    }
+    .arch-pipe .arr { color: var(--accent); font-size: 14px; }
+    @media (max-width: 860px) {
+      .arch-flow {
+        grid-template-columns: 1fr;
+        max-width: 360px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+      .arch-pipe { flex-direction: row; max-width: none; padding: 4px 0; gap: 6px; }
+      .arch-pipe .arr { transform: rotate(90deg); }
+    }
+
+    /* —— Layer explain cards —— */
+    .layer-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    .layer-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--surface-2);
+    }
+    .layer-card header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .layer-card header .name { font-weight: 700; font-size: 0.92rem; }
+    .layer-card header .q { font-size: 12px; color: var(--muted); }
+    .layer-card.k header { background: #1a2a1e; border-bottom-color: #334a35; }
+    .layer-card.o header { background: #2a2418; border-bottom-color: #4a4030; }
+    .layer-card.l header { background: #15241f; border-bottom-color: #2d5a4a; }
+    .layer-card .body { padding: 12px 14px; }
+    .pair {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    }
+    @media (max-width: 640px) { .pair { grid-template-columns: 1fr; } }
+    .pair .box {
+      background: #10161d; border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px;
+    }
+    .pair .lbl {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+    }
+    .pair .box.before .lbl { color: var(--info); }
+    .pair .box.after.k .lbl { color: #8fbf7a; }
+    .pair .box.after.o .lbl { color: #d4b86a; }
+    .pair .box.after.l .lbl { color: #7dcea0; }
+    .pair pre { margin: 0; border: none; background: transparent; padding: 0; font-size: 12px; }
+    .pair ul { margin: 0 0 0 1em; font-size: 13px; }
+    .pair li { margin-bottom: 4px; }
+    .pair strong { color: var(--gold); }
+
+    .summary-3 {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+      margin: 16px 0 4px;
+    }
+    @media (max-width: 720px) { .summary-3 { grid-template-columns: 1fr; } }
+    .summary-3 .cell {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; background: var(--surface-2);
+    }
+    .summary-3 .cell .h { font-weight: 700; font-size: 0.88rem; margin-bottom: 4px; color: var(--gold); }
+    .summary-3 .cell .q { font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+    .summary-3 .cell .ex { font-size: 13px; }
+
+    /* —— Steps —— */
+    .steps { display: grid; gap: 8px; margin-top: 12px; }
+    .step {
+      display: grid; grid-template-columns: 48px 1fr; gap: 12px;
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; background: var(--surface-2);
+    }
+    .step .badge {
+      width: 40px; height: 40px; border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-weight: 700; font-size: 12px;
+      background: #1a322c; color: var(--accent); border: 1px solid #2d5a4a;
+    }
+    .step.gold .badge {
+      background: #2a2418; color: var(--gold); border-color: #6a5a3a;
+    }
+    .step h4 { font-size: 0.92rem; margin-bottom: 4px; }
+    .step .desc { font-size: 13.5px; color: var(--muted); }
+    .step .out {
+      margin-top: 6px; font-size: 12px; color: var(--accent);
+      font-family: var(--mono);
+    }
+    .step ul { margin-top: 6px; font-size: 13.5px; }
+    .step table { font-size: 12.5px; margin-top: 8px; }
+    .step th, .step td { border-bottom: 1px solid var(--border); }
+
+    /* —— Levels —— */
+    .levels { display: grid; gap: 0; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .level {
+      display: grid; grid-template-columns: 52px 1fr; gap: 10px;
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      font-size: 13.5px; background: var(--surface-2);
+    }
+    .level:last-child { border-bottom: none; }
+    .level .lv { font-family: var(--mono); font-weight: 700; color: var(--accent); }
+
+    /* —— Checklist —— */
+    .check { list-style: none; margin: 8px 0 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; }
+    @media (max-width: 640px) { .check { grid-template-columns: 1fr; } }
+    .check li {
+      position: relative; padding: 8px 10px 8px 28px;
+      background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border);
+      font-size: 13px; margin: 0;
+    }
+    .check li::before {
+      content: ""; position: absolute; left: 10px; top: 12px;
+      width: 12px; height: 12px; border: 1.5px solid var(--accent); border-radius: 3px;
+    }
+
+    /* —— Priority —— */
+    .prio { display: grid; gap: 8px; margin-top: 8px; }
+    .prio-item {
+      display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: start;
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface-2); font-size: 13.5px;
     }
     .tag {
-      display: inline-block; font-size: 11px; padding: 2px 8px;
-      border-radius: 6px; margin-right: 6px; font-weight: 600;
+      font-size: 11px; font-weight: 700; padding: 3px 7px; border-radius: 5px;
+      text-align: center;
     }
     .tag-p0 { background: #2a4a3a; color: #7dcea0; }
     .tag-p1 { background: #3a3a28; color: #d4c06a; }
     .tag-p2 { background: #2a3548; color: #8bb4d9; }
-    .dont {
-      border-left: 3px solid var(--danger);
-      padding: 10px 14px; background: #241a1a; border-radius: 0 8px 8px 0;
-      margin: 12px 0; color: var(--muted); font-size: 14px;
+
+    .cards-2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;
     }
+    @media (max-width: 640px) { .cards-2 { grid-template-columns: 1fr; } }
+    .mini {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; background: var(--surface-2); font-size: 13.5px;
+    }
+    .mini h4 { font-size: 0.88rem; margin-bottom: 6px; color: var(--gold); }
+
     footer {
-      margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
+      margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--border);
       color: var(--muted); font-size: 12px;
     }
+
     @media print {
       body { background: #fff; color: #111; }
-      .wrap { max-width: none; padding: 0; }
-      section, nav.toc { background: #fff; border-color: #ccc; break-inside: avoid; }
-      .lead, .muted, th, nav.toc, nav.toc ol, footer { color: #444; }
-      a { color: #06c; }
-      pre { background: #f5f5f5; color: #222; border-color: #ddd; }
+      .hero, section.block, .toc a, .layer-card, .step, .mini, .arch-node, .summary-3 .cell
+        { background: #fff !important; border-color: #ccc; box-shadow: none; }
+      .muted, .intro, .part-title, .chip, th { color: #555; }
+      .toc { display: none; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
+
     <header class="hero">
-      <div class="brand">良策 / Loop · 知识应用备忘</div>
-      <h1>商务动态学 × Loop：能否应用与落地建议</h1>
+      <div class="brand">良策 / Loop · 内部备忘</div>
+      <h1>从原始数据到系统模型</h1>
       <p class="lead">
-        基于 Sterman《商务动态分析方法》OCR 材料（1–691），对照标品现有反馈回路模块，
-        给出可分享的应用结论、抽取清单与分阶段方案。
+        对照 Sterman《商务动态学》与标品现有能力：把 Data / Knowledge / Ontology 接到可仿真的 Loop，并给出可重复的建模步骤。
       </p>
-      <div class="meta">
-        <span class="chip"><strong>来源</strong> Business Dynamics · John D. Sterman</span>
-        <span class="chip"><strong>对象</strong> FeedbackLoop / Stock·Flow / 仿真</span>
-        <span class="chip"><strong>结论</strong> 高度同构，宜精炼方法卡而非全文入库</span>
+      <div class="chips">
+        <span class="chip"><b>方法</b> Sterman 五步</span>
+        <span class="chip"><b>落地</b> S0–S7</span>
+        <span class="chip"><b>成熟度</b> L0→L4</span>
       </div>
     </header>
 
-    <nav class="toc">
-      <h2>目录</h2>
-      <ol>
-        <li><a href="#verdict">结论</a></li>
-        <li><a href="#map">书中概念 ↔ 现有能力</a></li>
-        <li><a href="#extract">对 Loop 最有用的抽取</a></li>
-        <li><a href="#plan">三层落地方案</a></li>
-        <li><a href="#templates">可复用话术模板</a></li>
-        <li><a href="#next">建议下一步</a></li>
-      </ol>
+    <nav class="toc" aria-label="目录">
+      <a href="#gap"><span class="n">01</span>缺什么</a>
+      <a href="#stack"><span class="n">02</span>四层链路</a>
+      <a href="#sterman"><span class="n">03</span>书中五步 + 走例</a>
+      <a href="#pipeline"><span class="n">04</span>落地 S0–S7</a>
+      <a href="#maturity"><span class="n">05</span>成熟度 &amp; 检查单</a>
+      <a href="#map"><span class="n">06</span>概念对照</a>
+      <a href="#extract"><span class="n">07</span>方法卡</a>
+      <a href="#next"><span class="n">08</span>下一步</a>
     </nav>
 
-    <section class="verdict" id="verdict">
-      <h2>1. 结论</h2>
-      <p><strong>能应用，而且和现有 Loop 模块高度同构。</strong></p>
-      <p class="muted">
-        四份 Markdown 是 Sterman《商务动态学》的 OCR 全文。产品中的
-        <code>FeedbackLoop</code>（R/B/comp）、<code>Stock</code>/<code>Flow</code>/<code>Delay</code>、
-        库存补货仿真，以及品牌代理 8 Stock（<code>loops_method.py</code>），本质上就是这本书的产品化。
+    <!-- ========== PART A ========== -->
+    <div class="part">
+      <span class="part-label">Part A</span>
+      <span class="part-title">问题与概念层</span>
+    </div>
+
+    <section class="block" id="gap">
+      <h2><span class="num">01</span>我们缺什么</h2>
+      <p class="intro">
+        已有 Raw、Snapshot、认证指标、FeedbackLoop、Stock/Flow、仿真——
+        <strong>缺的是可重复规程</strong>：从 Excel / ERP 到「这是一个系统」之间，第几步问什么、何时才允许写方程。
       </p>
-      <div class="dont">
-        <strong>不建议</strong>把整本约 691 页塞进知识库：噪声大、公式/图 OCR 质量差、且整书分发有版权风险。
-        更适合做成 <strong>8～12 张精炼方法卡</strong>，服务 Loop 发现、解释与仿真。
+      <div class="note ok">
+        <strong>原则：</strong>先问题与参考模式 → 再因果结构 → 再绑数据 → 再方程与情景。
+        没有闭环与延迟叙事，只是指标看板。
       </div>
     </section>
 
-    <section id="map">
-      <h2>2. 书中概念 ↔ 现有能力</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>书中概念</th>
-            <th>你们已有</th>
-            <th>可加强点</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>因果回路图 CLD（R/B）</td>
-            <td><code>loop_type</code> R/B/comp、图谱检测</td>
-            <td>CLD 画图规范、极性标注规则</td>
-          </tr>
-          <tr>
-            <td>存量–流量</td>
-            <td><code>Stock</code>/<code>Flow</code>、库存试点</td>
-            <td>更多电商模板（广告、服务产能）</td>
-          </tr>
-          <tr>
-            <td>延迟（物料/信息）</td>
-            <td><code>Delay</code>、lead_time</td>
-            <td>区分察觉延迟 vs 物流延迟</td>
-          </tr>
-          <tr>
-            <td>主导回路切换</td>
-            <td><code>comp</code>、增长极限文案</td>
-            <td>用主导回路解释「为什么突然失灵」</td>
-          </tr>
-          <tr>
-            <td>政策 / 干预</td>
-            <td><code>Intervention</code>、OODA ops loop</td>
-            <td>杠杆点清单（控增速 vs 补产能）</td>
-          </tr>
-          <tr>
-            <td>模型成熟度</td>
-            <td>L0–L4、<code>causal_maturity</code></td>
-            <td>对齐「先定性再定量」流程</td>
-          </tr>
-          <tr>
-            <td>供应链振荡</td>
-            <td>库存补货 B 回路</td>
-            <td>「订单放大」预警与解释</td>
-          </tr>
-        </tbody>
-      </table>
+    <section class="block" id="stack">
+      <h2><span class="num">02</span>全栈链路</h2>
+      <p class="intro">上游把文件与系统数据变成知识与对象；下游才生成 Workflow / Loop。数值与文档两条线在 Ontology 汇合。</p>
+
+      <div class="arch-flow" aria-label="Data to Loop">
+        <div class="arch-node data">
+          <div class="t">Data</div>
+          <div class="s">PDF / Excel<br>企微 / ERP / API</div>
+        </div>
+        <div class="arch-pipe"><span class="arr">→</span>清洗<br>★ Chunk<br>向量化</div>
+        <div class="arch-node know">
+          <div class="t">Knowledge</div>
+          <div class="s">规则 / SOP<br>经验 / 案例</div>
+        </div>
+        <div class="arch-pipe"><span class="arr">→</span>实体<br>抽取</div>
+        <div class="arch-node ont">
+          <div class="t">Ontology</div>
+          <div class="s">商品 / 品牌<br>订单 / 库存</div>
+        </div>
+        <div class="arch-pipe"><span class="arr">→</span>Workflow<br>CLD</div>
+        <div class="arch-node loop">
+          <div class="t">Loop</div>
+          <div class="s">Stock / Flow<br>仿真 · 干预</div>
+        </div>
+      </div>
+
+      <div class="summary-3">
+        <div class="cell">
+          <div class="h">Knowledge</div>
+          <div class="q">该怎么判？</div>
+          <div class="ex">库存天数 &gt; 60 → 滞销风险</div>
+        </div>
+        <div class="cell">
+          <div class="h">Ontology</div>
+          <div class="q">判的是谁？</div>
+          <div class="ex">SKU A · 仓 · 天猫店 · 负责人</div>
+        </div>
+        <div class="cell">
+          <div class="h">Loop</div>
+          <div class="q">为何反复？改了会怎样？</div>
+          <div class="ex">补货 B + 铅期 → 振荡；可仿真</div>
+        </div>
+      </div>
+
+      <div class="layer-grid" style="margin-top:16px">
+        <article class="layer-card k">
+          <header>
+            <span class="name">Knowledge · 知识层</span>
+            <span class="q">事实 → 可执行判断</span>
+          </header>
+          <div class="body">
+            <div class="pair">
+              <div class="box before">
+                <div class="lbl">Data 原始事实</div>
+                <pre>SKU A
+销售额  10,000
+库存    300
+利润率  12%</pre>
+              </div>
+              <div class="box after k">
+                <div class="lbl">Knowledge 规则</div>
+                <ul>
+                  <li>库存天数 &gt; <strong>60</strong> → 滞销风险</li>
+                  <li>利润率 &lt; <strong>10%</strong> → 检查成本</li>
+                  <li>大促库存 &lt; <strong>15 天</strong> → 补货</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="layer-card o">
+          <header>
+            <span class="name">Ontology · 业务对象层</span>
+            <span class="q">把词钉成可关联的对象</span>
+          </header>
+          <div class="body">
+            <div class="pair">
+              <div class="box before">
+                <div class="lbl">还只是文本</div>
+                <pre>「SKU A 库存低要补货」
+「天猫店利润率下滑」
+「运营小王负责该品」</pre>
+              </div>
+              <div class="box after o">
+                <div class="lbl">对象 + 关系</div>
+                <ul>
+                  <li><strong>商品</strong> SKU A ←归属→ <strong>品牌</strong></li>
+                  <li><strong>库存</strong>（仓×SKU）←供应→ <strong>店铺</strong></li>
+                  <li><strong>员工</strong> 小王 ←负责→ SKU A</li>
+                  <li>边可标极性：投放 ↑ → GMV ↑</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="layer-card l">
+          <header>
+            <span class="name">Loop · 循环层</span>
+            <span class="q">对象关系 → 会动的系统</span>
+          </header>
+          <div class="body">
+            <div class="pair">
+              <div class="box before">
+                <div class="lbl">只有告警（还不是 Loop）</div>
+                <pre>覆盖 &lt; 15 → 补货
+覆盖 &gt; 60 → 滞销
+利润率 &lt; 10% → 查成本</pre>
+              </div>
+              <div class="box after l">
+                <div class="lbl">结构 + 行为</div>
+                <ul>
+                  <li><strong>存量</strong>：可用 / 在途库存</li>
+                  <li><strong>流量</strong>：销出 / 下单 / 到货</li>
+                  <li><strong>B</strong>：覆盖低→补货→（铅期）回升</li>
+                  <li><strong>干预</strong>：改 cover_days 仿真对比</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div class="table-wrap" style="margin-top:16px">
+        <table>
+          <thead>
+            <tr><th>链路</th><th>仓库对应</th><th>建模步骤</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Data</strong></td><td>Raw 导入、连接器、知识上传</td><td>S2 入口</td></tr>
+            <tr><td>Chunk / Embedding</td><td>RAG 切片与向量</td><td>证据与 SOP（非指标）</td></tr>
+            <tr><td><strong>Knowledge</strong></td><td>Wiki、制度 / 案例</td><td>假说与政策话术</td></tr>
+            <tr><td><strong>Ontology</strong></td><td><code>apps.ontology</code></td><td>S3 变量 · S4 节点</td></tr>
+            <tr><td><strong>Loop</strong></td><td><code>apps.loops</code> + OODA</td><td>S5–S7</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note warn">
+        <strong>分叉：</strong>经营数值 → Snapshot / Metric（可仿真）；文档 → Chunk / Knowledge（可检索）。
+        勿用向量相似度代替存量流量结构。
+      </div>
     </section>
 
-    <section id="extract">
-      <h2>3. 对 Loop 最有用的抽取（方法卡清单）</h2>
-      <p class="muted">每张建议 ≤800 字，挂到 Loop / 协作建议的 system prompt，而非整本入库。</p>
-      <ol>
-        <li><strong>CLD 画图 10 条</strong>（约第 5 章）— 名词变量、+/-、R/B、闭环可讲故事</li>
-        <li><strong>存量 vs 流量判别</strong>（约第 6–7 章）— 对应 <code>Stock</code>/<code>Flow</code> 建模检查</li>
-        <li><strong>三类行为 → 结构</strong>（约第 4/8 章）— 指数增长→R；寻的→B；振荡→B+延迟</li>
-        <li><strong>延迟两分法</strong>（约第 11 章）— 物料延迟 vs 信息延迟</li>
-        <li><strong>主导回路 / 增长极限</strong>（约第 8–9 章）— 对齐现有代理 8 Stock 的 C1</li>
-        <li><strong>供应链振荡成因</strong>（约第 17/19–20 章精华）— 补货情景解释模板</li>
-        <li><strong>决策规则禁忌</strong>（约第 13 章）— 出流非负、少硬 IF、入/出流分开</li>
-        <li><strong>灵敏度与「先猜再测」</strong>（约第 20–21 章）— 服务 L1→L2 成熟度</li>
-      </ol>
-      <p class="muted">可后置：长案例（毒品传播、纸浆行业全仿真）、大量微分方程推导、公共管理案例。</p>
+    <!-- ========== PART B ========== -->
+    <div class="part">
+      <span class="part-label">Part B</span>
+      <span class="part-title">建模方法（书中五步）</span>
+    </div>
+
+    <section class="block" id="sterman">
+      <h2><span class="num">03</span>书中标准建模五步</h2>
+      <p class="intro">Sterman 表 3.1。建模是反复循环；目的是「刀子」——决定该割舍什么。</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>步骤</th><th>要回答</th><th>产物</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>1. 问题与边界</strong></td><td>问题？变量？时界？参考模式？</td><td>问题卡、草图</td></tr>
+            <tr><td><strong>2. 动态假说</strong></td><td>内部哪些反馈造成行为？</td><td>CLD / 存量流量图</td></tr>
+            <tr><td><strong>3. 写方程</strong></td><td>决策规则、参数、初值？</td><td>方程表、量纲一致</td></tr>
+            <tr><td><strong>4. 测试</strong></td><td>再现参考模式？极端？灵敏度？</td><td>对照与灵敏度笔记</td></tr>
+            <tr><td><strong>5. 政策评估</strong></td><td>改什么规则？如果—则？</td><td>干预对比、落地建议</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top:20px">走例：护发精油 70ml · 覆盖天数来回抖</h3>
+      <p class="intro" style="margin-bottom:10px">只切这一问题，不建「整个店铺」。</p>
+
+      <div class="steps">
+        <div class="step gold">
+          <div class="badge">①</div>
+          <div>
+            <h4>明确问题与边界</h4>
+            <ul>
+              <li><strong>问题：</strong>近 90 天覆盖天数在 8～28 天震荡；猛补后仍短暂断货。</li>
+              <li><strong>变量：</strong>可用 / 在途 / 日均销 / 覆盖天数 / 下单量（暂不含广告、退款）。</li>
+              <li><strong>时界：</strong>回看 90 天，前瞻 30～60 天。</li>
+              <li><strong>参考模式：</strong>锯齿——偏低 → 大补 → 滞后回升 → 再偏低。</li>
+            </ul>
+            <div class="out">产物 → 问题卡 + 参考模式（振荡）</div>
+          </div>
+        </div>
+
+        <div class="step gold">
+          <div class="badge">②</div>
+          <div>
+            <h4>动态假说</h4>
+            <p class="desc">不怪「供应商慢」，从系统内部讲：</p>
+            <pre>可用↓ → 覆盖↓ → 补货↑ → 下单↑ →（铅期 7～10 天）→ 到货↑ → 覆盖↑ → 补货↓</pre>
+            <ul>
+              <li><strong>B 调节</strong>；振荡 = 寻的 + 延迟。</li>
+              <li>下单<strong>不计在途</strong> → 铅期内重复加单 → 振幅更大。</li>
+            </ul>
+            <div class="out">产物 → 假说一句话 + CLD（type=B）</div>
+          </div>
+        </div>
+
+        <div class="step gold">
+          <div class="badge">③</div>
+          <div>
+            <h4>写方程</h4>
+            <pre>覆盖天数 = 可用 / 日均销
+目标覆盖 = 14 天
+缺口 = max(0, 目标×日均 − 可用 − 在途)   // 含在途
+到货 = 延迟(下单, 铅期=7)
+可用 += 到货 − 日销</pre>
+            <p class="desc">初值例：可用 300、在途 0、日均 20 → 覆盖 ≈ 15 天。</p>
+            <div class="out">产物 → 方程 + 参数（lead_time=7, cover_days=14）</div>
+          </div>
+        </div>
+
+        <div class="step gold">
+          <div class="badge">④</div>
+          <div>
+            <h4>测试</h4>
+            <ul>
+              <li>仿真是否也出现「补后滞后再跌」？</li>
+              <li>可用=0 时销出必须停；铅期=0 时振荡应减弱。</li>
+              <li>改参前先写预期，再跑（避免乱点参数）。</li>
+            </ul>
+            <div class="out">产物 → 对照笔记 · L1→冲 L2</div>
+          </div>
+        </div>
+
+        <div class="step gold">
+          <div class="badge">⑤</div>
+          <div>
+            <h4>政策设计</h4>
+            <div class="table-wrap" style="margin:8px 0 0;border:none">
+              <table>
+                <thead><tr><th>政策</th><th>模型改动</th><th>预期</th></tr></thead>
+                <tbody>
+                  <tr><td>下单扣在途</td><td>缺口含在途</td><td>少重复加单</td></tr>
+                  <tr><td>按周补 / 上限</td><td>减猛补</td><td>更稳</td></tr>
+                  <tr><td>缩短铅期</td><td>7→4</td><td>振荡减弱</td></tr>
+                  <tr><td>仅抬目标覆盖</td><td>14→21</td><td>少断货但占资金；未必治根</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="out">推荐 → 含在途 + 适度目标；写入 Knowledge SOP</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note ok">
+        <strong>刻意割舍：</strong>全店 GMV、多仓、广告闭环、退款。若测试发现销量本身大抖，下一轮再把日销改内生。
+      </div>
     </section>
 
-    <section id="plan">
-      <h2>4. 三层落地方案</h2>
+    <!-- ========== PART C ========== -->
+    <div class="part">
+      <span class="part-label">Part C</span>
+      <span class="part-title">产品落地</span>
+    </div>
 
-      <h3>层 A：知识形态</h3>
-      <ul>
-        <li>不当全文 RAG；做「Loop 方法包」</li>
-        <li>Wiki 可选放方法摘要页，链到原书章节号</li>
-        <li>Council / 小策：只注入方法卡 + 本企业已确认 Loop</li>
+    <section class="block" id="pipeline">
+      <h2><span class="num">04</span>良策落地：S0–S7</h2>
+      <p class="intro">把五步嵌进栈：Raw → Snapshot → Metric → Ontology/CLD → LoopVersion → Simulate → Intervene。</p>
+
+      <div class="steps">
+        <div class="step"><div class="badge">S0</div><div><h4>锁定一个问题</h4><p class="desc">谁、在什么时限、关心哪个反常行为。</p><div class="out">问题卡 · 变量 3～7 个 · 时界</div></div></div>
+        <div class="step"><div class="badge">S1</div><div><h4>参考模式</h4><p class="desc">先画形状：增长 / 寻的 / 振荡 / 崩溃。</p><div class="out">草图 · 仍为 L0</div></div></div>
+        <div class="step"><div class="badge">S2</div><div><h4>可信 Snapshot</h4><p class="desc">Raw → 对账 → live 完整快照。Fixture 不得仿真。</p><div class="out">Snapshot ID · content_hash</div></div></div>
+        <div class="step"><div class="badge">S3</div><div><h4>变量分类</h4><p class="desc">存量 / 流量 / 辅助 / 外生；绑 <code>MetricContract</code>。</p><div class="out">变量表 · 单位 · metric_id</div></div></div>
+        <div class="step"><div class="badge">S4</div><div><h4>动态假说 CLD</h4><p class="desc">标 +/-、R/B、延迟；因果候选 → 确认。</p><div class="out">候选 FeedbackLoop</div></div></div>
+        <div class="step"><div class="badge">S5</div><div><h4>LoopVersion</h4><p class="desc">Stock / Flow（入出分开）/ Delay / Binding。</p><div class="out">definition · parameter_hash</div></div></div>
+        <div class="step"><div class="badge">S6</div><div><h4>认证指标 → 仿真</h4><p class="desc">同一 Snapshot 解析 → <code>/simulate/</code>，对照形状。</p><div class="out">SimulationRun · L1+</div></div></div>
+        <div class="step"><div class="badge">S7</div><div><h4>干预 / OODA</h4><p class="desc">「如果—则」对比；可挂运营闭环。</p><div class="out">干预表 · 可选 ops loop</div></div></div>
+      </div>
+
+      <div class="cards-2" style="margin-top:16px">
+        <div class="mini">
+          <h4>试点对照 · inventory.reorder.balance</h4>
+          <ul>
+            <li>S4：B + 铅期；不计在途会放大</li>
+            <li>S5：Stock×2 Flow×3 · <code>inventory-balance-v1</code></li>
+            <li>S7：含在途目标 · 减小猛补</li>
+          </ul>
+        </div>
+        <div class="mini">
+          <h4>常见跳步</h4>
+          <p class="muted" style="margin:0">有数据直接仿真 → 解释不了为什么；只堆相关边无存量/延迟 → 假回路很多。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="maturity">
+      <h2><span class="num">05</span>成熟度门禁 &amp; 检查单</h2>
+
+      <div class="levels">
+        <div class="level"><div class="lv">L0</div><div>问题卡 + 参考模式 + CLD 闭环（可无方程）</div></div>
+        <div class="level"><div class="lv">L1</div><div>Stock/Flow/Delay + 启发式参数 + 只读情景能跑</div></div>
+        <div class="level"><div class="lv">L2</div><div>历史校准；轨迹同相位/量级；有灵敏度笔记</div></div>
+        <div class="level"><div class="lv">L3</div><div>留出样本回测；证据升级 supported/validated</div></div>
+        <div class="level"><div class="lv">L4</div><div>受控预测；高风险仍走闸机审批</div></div>
+      </div>
+      <div class="note ok">
+        未完成 S0–S4 禁止 L1+；未绑同一 Snapshot 认证指标禁止仿真；未做极端/灵敏度禁止 L2+。
+      </div>
+
+      <h3 style="margin-top:18px">每场检查单</h3>
+      <ul class="check">
+        <li>一句话说清问题与时界？</li>
+        <li>画出参考模式形状？</li>
+        <li>Snapshot live 且对账完整？</li>
+        <li>变量标明存量/流量/单位？</li>
+        <li>至少一个闭合 R/B + 延迟？</li>
+        <li>入/出流分开、存量非负？</li>
+        <li>初值来自同一 Snapshot？</li>
+        <li>改参前写下预期？</li>
+        <li>干预改结构而非只加剂量？</li>
+        <li>业务参与过假说讨论？</li>
       </ul>
-
-      <h3>层 B：产品优先级</h3>
-      <p>
-        <span class="tag tag-p0">P0</span>
-        方法卡并入类似 <code>loops_method.py</code> 的 brief；AI 解释强制输出：回路类型、存量、关键延迟、主导回路、1 条杠杆动作；库存仿真旁加书式解释。
-      </p>
-      <p>
-        <span class="tag tag-p1">P1</span>
-        <code>loop_detect</code> 后处理：缺延迟的 B 降置信；只有 R 无 B 标「增长极限风险」；预置电商模板（种草飞轮、缺货调节、投流振荡、代理产能陷阱）。
-      </p>
-      <p>
-        <span class="tag tag-p2">P2</span>
-        第二仿真引擎（广告延迟 / 服务产能）；参数灵敏度 API（改 lead_time、cover_days → 周期与振幅摘要）。
-      </p>
-
-      <h3>层 C：知识库怎么用这四份文件</h3>
-      <table>
-        <thead>
-          <tr><th>做法</th><th>建议</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>全文进 RAG</td><td>不建议</td></tr>
-          <tr><td>切章进 Wiki</td><td>可选：只放方法摘要</td></tr>
-          <tr><td>给 AI 助手</td><td>方法卡 + 已确认 Loop</td></tr>
-          <tr><td>版权</td><td>内部方法提炼可；整书公开分发有风险</td></tr>
-        </tbody>
-      </table>
     </section>
 
-    <section id="templates">
-      <h2>5. 可复用话术模板</h2>
+    <!-- ========== PART D ========== -->
+    <div class="part">
+      <span class="part-label">Part D</span>
+      <span class="part-title">附录</span>
+    </div>
 
-      <h3>通用解释模板（给 AI）</h3>
-      <pre>结构决定行为。先找：①增强(R)还是调节(B)；②关键存量；③延迟在哪。
-若结果意外：多半是延迟 + 副作用回路，而非单点因果。
-杠杆优先改结构（延迟、目标、约束），少在症状上加剂量。</pre>
-
-      <h3>电商库存 B（对齐 inventory.reorder.balance）</h3>
-      <pre>存量：可用库存、在途库存
-流量：销售出、下单、到货
-延迟：采购铅期（物料）+ 缺货察觉（信息）
-行为：目标覆盖天数 → 寻的；铅期长且反应猛 → 振荡
-干预：改 cover_days / 提前算在途，比「看见缺了再猛补」更稳</pre>
-
-      <h3>代理增长极限（对齐 8 Stock）</h3>
-      <pre>R：品牌数↑→覆盖↑→认知↑→销售↑→信任↑→更多品牌
-B：品牌数↑→摊薄人才/产能↓→服务↓→信任↓→难续约
-主导切换：早期 R；S6/S8 不足后 B 主导 →「越拓越垮」
-杠杆：控 S1 增速，或先补 S6/S8，再加速</pre>
+    <section class="block" id="map">
+      <h2><span class="num">06</span>书中概念 ↔ 现有能力</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>书中</th><th>已有</th><th>可加强</th></tr></thead>
+          <tbody>
+            <tr><td>CLD（R/B）</td><td><code>loop_type</code>、图谱检测</td><td>画图规范、极性</td></tr>
+            <tr><td>存量–流量</td><td><code>Stock</code>/<code>Flow</code></td><td>广告、产能模板</td></tr>
+            <tr><td>延迟</td><td><code>Delay</code>、lead_time</td><td>察觉 vs 物流</td></tr>
+            <tr><td>主导回路</td><td><code>comp</code></td><td>「为何失灵」话术</td></tr>
+            <tr><td>政策</td><td><code>Intervention</code>、OODA</td><td>杠杆清单</td></tr>
+            <tr><td>成熟度</td><td>L0–L4</td><td>先定性再定量门禁</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
-    <section id="next">
-      <h2>6. 建议下一步</h2>
-      <ol>
-        <li>从第 5、6、11、17 章抽 <strong>5～8 张方法卡</strong></li>
-        <li>挂到 Loop / 协作 prompt（如 <code>STERMAN_LOOP_BRIEF</code>）</li>
-        <li>先跑通两条模板：<strong>库存补货</strong> + <strong>代理增长极限</strong></li>
-      </ol>
-      <p class="muted" style="margin-top:14px;">
-        最大价值：统一词汇（R/B、存量流量、延迟、主导回路）、提高 AI 解释与候选回路质量、给仿真讲清「为什么」。
-      </p>
+    <section class="block" id="extract">
+      <h2><span class="num">07</span>方法卡抽取（≤800 字/张）</h2>
+      <p class="intro">挂 Loop / 协作 prompt；勿整本 OCR 入库。</p>
+      <div class="cards-2">
+        <div class="mini">
+          <h4>优先</h4>
+          <ol>
+            <li>CLD 画图规则（第 5 章）</li>
+            <li>存量 vs 流量（第 6–7 章）</li>
+            <li>增长 / 寻的 / 振荡→结构</li>
+            <li>物料 vs 信息延迟（第 11 章）</li>
+          </ol>
+        </div>
+        <div class="mini">
+          <h4>其次</h4>
+          <ol>
+            <li>主导回路 / 增长极限</li>
+            <li>供应链振荡（第 17 章）</li>
+            <li>决策规则禁忌（第 13 章）</li>
+            <li>灵敏度「先猜再测」</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="next">
+      <h2><span class="num">08</span>产品化下一步</h2>
+      <div class="prio">
+        <div class="prio-item"><span class="tag tag-p0">P0</span><div>新建 Loop 向导强制走 S0–S7；缺步不可仿真。</div></div>
+        <div class="prio-item"><span class="tag tag-p0">P0</span><div>库存试点跑通检查单；有参考模式与延迟说明才标 L1。</div></div>
+        <div class="prio-item"><span class="tag tag-p1">P1</span><div>方法卡进 prompt；无延迟的 B / 纯 R 降置信。</div></div>
+        <div class="prio-item"><span class="tag tag-p2">P2</span><div>第二场景（增长极限 / 投流延迟）+ 灵敏度 API。</div></div>
+      </div>
+      <div class="note warn" style="margin-top:14px">全书 OCR 勿公开分发；本页步骤 + 方法卡即可对内分享。</div>
     </section>
 
     <footer>
-      内部备忘 · 供分享讨论 · 方法提炼自 Sterman《商务动态学》，请勿将 OCR 全书对外公开发布。
-      · 打印可用浏览器「打印 / 另存为 PDF」。
+      内部备忘 · 方法提炼自 Sterman《商务动态学》· 浏览器打印可另存 PDF
     </footer>
   </div>
 </body>

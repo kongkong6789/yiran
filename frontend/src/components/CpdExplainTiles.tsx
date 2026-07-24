@@ -43,10 +43,15 @@ function paletteFor(seed: string, index: number) {
 function splitExplainItems(text: string): string[] {
   const raw = (text || "").trim();
   if (!raw) return [];
-  return raw
-    .split(/[、；;|/]+/)
-    .map((part) => part.replace(/^[\s，,]+|[\s，,]+$/g, "").trim())
-    .filter(Boolean);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(/[、；;|/]+/)) {
+    const item = part.replace(/^[\s，,]+|[\s，,]+$/g, "").trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
 }
 
 export function CpdExplainTiles({
@@ -69,12 +74,12 @@ export function CpdExplainTiles({
           <div key={field.key} className="cpd-explain-line is-chips">
             <span>{field.label}</span>
             <div className="cpd-explain-chips">
-              {items.map((item) => {
+              {items.map((item, idx) => {
                 const tone = paletteFor(seed, chipIndex);
                 chipIndex += 1;
                 return (
                   <span
-                    key={`${field.key}-${item}`}
+                    key={`${field.key}-${idx}-${item}`}
                     className="cpd-explain-chip"
                     style={{
                       background: tone.bg,
