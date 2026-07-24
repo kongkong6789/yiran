@@ -35,7 +35,7 @@ export function persistAgentAvatar(agentId: number, dataUrl?: string) {
   }
 }
 
-export function resolveAgentAvatar(agent: Agent, offset = 0) {
+export function resolveAgentAvatar(agent: Pick<Agent, "id" | "emoji">, offset = 0) {
   const customAvatar = getStoredAgentAvatar(agent.id);
   if (customAvatar) return customAvatar;
 

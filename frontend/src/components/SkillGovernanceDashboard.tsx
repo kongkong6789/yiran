@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Avatar,
@@ -13,6 +13,7 @@ import {
   Pagination,
   Popconfirm,
   Progress,
+  Segmented,
   Select,
   Spin,
   Switch,
@@ -28,6 +29,7 @@ import {
   AppstoreOutlined,
   BarChartOutlined,
   CheckCircleFilled,
+  CheckOutlined,
   ClockCircleOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
@@ -91,6 +93,7 @@ import {
   type UserSkillItem,
 } from "../api/client";
 import { authenticatedAvatarUrl } from "../utils/avatar";
+import { resolveAgentAvatar } from "../utils/agentAvatars";
 import SkillWorkspaceDrawer from "./SkillWorkspaceDrawer";
 
 type Props = {
@@ -306,6 +309,19 @@ function formatDateTime(value?: string | null): string {
   }).format(date);
 }
 
+function hasSameSkillIds(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((skillId) => rightSet.has(skillId));
+}
+
+function agentSkillSourceLabel(skill: AgentSkillOption): string {
+  if (skill.source === "skillhub") return "SkillHub";
+  if (skill.visibility === "shared") return "企业共享";
+  if (skill.source === "personal") return "个人技能";
+  return "我的上传";
+}
+
 function skillScopeLabel(entry: SkillEntry): { label: string; tone: string } {
   if (entry.asset?.source === "skillhub") return { label: "SkillHub", tone: "skillhub" };
   if (entry.asset?.visibility === "shared") return { label: "企业共享", tone: "shared" };
@@ -358,6 +374,9 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
   const [agentSkillOptions, setAgentSkillOptions] = useState<AgentSkillOption[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const [selectedAgentSkillIds, setSelectedAgentSkillIds] = useState<string[]>([]);
+  const [agentSkillAgentQuery, setAgentSkillAgentQuery] = useState("");
+  const [agentSkillQuery, setAgentSkillQuery] = useState("");
+  const [agentSkillView, setAgentSkillView] = useState<"all" | "selected">("all");
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageRows, setUsageRows] = useState<SkillUsageEventItem[]>([]);
@@ -385,6 +404,29 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     dayjs(),
   ]);
   const trendRangeRef = useRef(trendRange);
+  const deferredAgentQuery = useDeferredValue(agentSkillAgentQuery.trim().toLowerCase());
+  const deferredSkillQuery = useDeferredValue(agentSkillQuery.trim().toLowerCase());
+  const selectedAgent = useMemo(
+    () => agentSkillAgents.find((agent) => agent.id === selectedAgentId) || null,
+    [agentSkillAgents, selectedAgentId],
+  );
+  const agentSkillDirty = useMemo(
+    () => Boolean(selectedAgent) && !hasSameSkillIds(selectedAgentSkillIds, selectedAgent?.skill_ids || []),
+    [selectedAgent, selectedAgentSkillIds],
+  );
+  const filteredAgentSkillAgents = useMemo(() => agentSkillAgents.filter((agent) => {
+    if (!deferredAgentQuery) return true;
+    return [agent.name, agent.group, agent.owner?.display_name, agent.owner?.username]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(deferredAgentQuery));
+  }), [agentSkillAgents, deferredAgentQuery]);
+  const filteredAgentSkillOptions = useMemo(() => agentSkillOptions.filter((skill) => {
+    if (agentSkillView === "selected" && !selectedAgentSkillIds.includes(skill.skill_id)) return false;
+    if (!deferredSkillQuery) return true;
+    return [skill.name, skill.skill_id, skill.description, skill.owner?.display_name, skill.owner?.username]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(deferredSkillQuery));
+  }), [agentSkillOptions, agentSkillView, deferredSkillQuery, selectedAgentSkillIds]);
   const batchFolderSelection = useMemo(() => groupSkillFolders(batchUploadFiles
     .map((file) => file.originFileObj)
     .filter((file): file is NonNullable<typeof file> => Boolean(file))), [batchUploadFiles]);
@@ -422,6 +464,9 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     setAgentSkillOpen(true);
     setAgentSkillLoading(true);
     setAgentSkillError("");
+    setAgentSkillAgentQuery("");
+    setAgentSkillQuery("");
+    setAgentSkillView("all");
     try {
       const result = await getAgentSkillOptions();
       const configurableAgents = result.agents || [];
@@ -439,10 +484,56 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
     }
   }, []);
 
-  const handleAgentSkillChange = (agentId: number) => {
+  const applyAgentSkillChange = (agentId: number) => {
     const agent = agentSkillAgents.find((item) => item.id === agentId);
     setSelectedAgentId(agentId);
     setSelectedAgentSkillIds(agent?.skill_ids || []);
+    setAgentSkillQuery("");
+    setAgentSkillView("all");
+  };
+
+  const handleAgentSkillChange = (agentId: number) => {
+    if (agentId === selectedAgentId) return;
+    if (!agentSkillDirty) {
+      applyAgentSkillChange(agentId);
+      return;
+    }
+    Modal.confirm({
+      title: "切换智能体并放弃修改？",
+      content: "当前技能配置尚未保存，切换后这些修改会丢失。",
+      okText: "放弃并切换",
+      cancelText: "继续配置",
+      centered: true,
+      onOk: () => applyAgentSkillChange(agentId),
+    });
+  };
+
+  const closeAgentSkillConfig = () => {
+    if (!agentSkillDirty) {
+      setAgentSkillOpen(false);
+      return;
+    }
+    Modal.confirm({
+      title: "关闭并放弃修改？",
+      content: "当前智能体的技能配置尚未保存。",
+      okText: "放弃修改",
+      cancelText: "继续配置",
+      centered: true,
+      onOk: () => setAgentSkillOpen(false),
+    });
+  };
+
+  const toggleAgentSkill = (skillId: string) => {
+    setSelectedAgentSkillIds((current) => (
+      current.includes(skillId)
+        ? current.filter((item) => item !== skillId)
+        : [...current, skillId]
+    ));
+  };
+
+  const selectVisibleAgentSkills = () => {
+    const visibleSkillIds = filteredAgentSkillOptions.map((skill) => skill.skill_id);
+    setSelectedAgentSkillIds((current) => Array.from(new Set([...current, ...visibleSkillIds])));
   };
 
   const handleAgentSkillSave = async () => {
@@ -1449,67 +1540,192 @@ export default function SkillGovernanceDashboard({ onInvoke }: Props) {
       </Modal>
 
       <Drawer
-        width="min(520px, 100vw)"
+        rootClassName="agent-skill-drawer"
+        width="min(920px, 100vw)"
         open={agentSkillOpen}
-        title="配置智能体技能"
-        onClose={() => setAgentSkillOpen(false)}
+        title={(
+          <div className="agent-skill-drawer-title">
+            <span><RobotOutlined /></span>
+            <div>
+              <strong>配置智能体技能</strong>
+              <small>为智能体建立清晰、可追踪的能力边界</small>
+            </div>
+          </div>
+        )}
+        onClose={closeAgentSkillConfig}
         footer={(
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <Button onClick={() => setAgentSkillOpen(false)}>取消</Button>
-            <Button
-              type="primary"
-              loading={agentSkillSaving}
-              disabled={selectedAgentId === null || agentSkillLoading}
-              onClick={() => void handleAgentSkillSave()}
-            >
-              保存技能配置
-            </Button>
+          <div className="agent-skill-drawer-footer">
+            <div aria-live="polite">
+              <strong>{selectedAgent?.name || "尚未选择智能体"}</strong>
+              <span>
+                {selectedAgent ? `已配置 ${selectedAgentSkillIds.length} 个技能` : "选择智能体后开始配置"}
+                {agentSkillDirty && <em>有未保存修改</em>}
+              </span>
+            </div>
+            <div>
+              <Button onClick={closeAgentSkillConfig}>取消</Button>
+              <Button
+                type="primary"
+                loading={agentSkillSaving}
+                disabled={selectedAgentId === null || agentSkillLoading || !agentSkillDirty}
+                onClick={() => void handleAgentSkillSave()}
+              >
+                保存当前配置
+              </Button>
+            </div>
           </div>
         )}
       >
         <Spin spinning={agentSkillLoading}>
           {agentSkillError ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={agentSkillError}>
+            <Empty className="agent-skill-drawer-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={agentSkillError}>
               <Button onClick={() => void openAgentSkillConfig()}>重新加载</Button>
             </Empty>
           ) : agentSkillAgents.length ? (
-            <div className="skill-create-form">
-              <label>
-                <span>选择智能体</span>
-                <Select
-                  aria-label="选择需要配置技能的智能体"
-                  value={selectedAgentId ?? undefined}
-                  options={agentSkillAgents.map((agent) => ({
-                    value: agent.id,
-                    label: `${agent.emoji || "AI"} ${agent.name}${agent.group ? ` · ${agent.group}` : ""}`,
-                  }))}
-                  onChange={handleAgentSkillChange}
-                />
-              </label>
-              <label>
-                <span>配置技能</span>
-                <Select
-                  mode="multiple"
+            <div className="agent-skill-config">
+              <aside className="agent-skill-config__agents" aria-label="可配置智能体">
+                <header>
+                  <div>
+                    <strong>选择智能体</strong>
+                    <span>{agentSkillAgents.length} 个可配置</span>
+                  </div>
+                </header>
+                <Input
                   allowClear
-                  showSearch
-                  maxTagCount="responsive"
-                  aria-label="选择智能体可使用的技能"
-                  placeholder="选择这个智能体可调用的技能"
-                  value={selectedAgentSkillIds}
-                  optionFilterProp="label"
-                  options={agentSkillOptions.map((skill) => ({
-                    value: skill.skill_id,
-                    label: `${skill.name} · ${skill.skill_id}`,
-                  }))}
-                  onChange={setSelectedAgentSkillIds}
+                  prefix={<SearchOutlined />}
+                  aria-label="搜索可配置智能体"
+                  placeholder="搜索名称、分组或负责人"
+                  value={agentSkillAgentQuery}
+                  onChange={(event) => setAgentSkillAgentQuery(event.target.value)}
                 />
-              </label>
-              <Typography.Text type="secondary" aria-live="polite">
-                已选择 {selectedAgentSkillIds.length} 个技能。保存后，其他人调用该智能体时，实际使用的技能会归因到这个智能体并进入技能统计。
-              </Typography.Text>
+                <div className="agent-skill-agent-list">
+                  {filteredAgentSkillAgents.length ? filteredAgentSkillAgents.map((agent) => {
+                    const isSelected = agent.id === selectedAgentId;
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        className={`agent-skill-agent-card${isSelected ? " is-selected" : ""}`}
+                        aria-pressed={isSelected}
+                        onClick={() => handleAgentSkillChange(agent.id)}
+                      >
+                        <span className="agent-skill-agent-card__avatar">
+                          <img src={resolveAgentAvatar(agent)} alt="" />
+                        </span>
+                        <span className="agent-skill-agent-card__body">
+                          <strong>{agent.name}</strong>
+                          <small>{agent.group || "未分组"} · {agent.owner?.display_name || agent.owner?.username || "待认领"}</small>
+                        </span>
+                        <span className="agent-skill-agent-card__meta">
+                          <b>{agent.skill_ids.length}</b>
+                          <small>技能</small>
+                        </span>
+                      </button>
+                    );
+                  }) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的智能体" />
+                  )}
+                </div>
+              </aside>
+
+              <section className="agent-skill-config__skills">
+                {selectedAgent ? (
+                  <>
+                    <header className="agent-skill-config__hero">
+                      <span className="agent-skill-config__hero-avatar">
+                        <img src={resolveAgentAvatar(selectedAgent)} alt="" />
+                      </span>
+                      <div>
+                        <span>正在配置</span>
+                        <strong>{selectedAgent.name}</strong>
+                        <small>{selectedAgent.group || "未分组"} · {selectedAgent.owner?.display_name || selectedAgent.owner?.username || "待认领"}</small>
+                      </div>
+                      <div className="agent-skill-config__count">
+                        <strong>{selectedAgentSkillIds.length}</strong>
+                        <span>个已选技能</span>
+                      </div>
+                    </header>
+
+                    <div className="agent-skill-config__toolbar">
+                      <Input
+                        allowClear
+                        prefix={<SearchOutlined />}
+                        aria-label="搜索可配置技能"
+                        placeholder="搜索技能名称、Skill ID、说明或责任人"
+                        value={agentSkillQuery}
+                        onChange={(event) => setAgentSkillQuery(event.target.value)}
+                      />
+                      <Segmented
+                        aria-label="筛选技能范围"
+                        value={agentSkillView}
+                        options={[
+                          { label: `全部 ${agentSkillOptions.length}`, value: "all" },
+                          { label: `已选 ${selectedAgentSkillIds.length}`, value: "selected" },
+                        ]}
+                        onChange={(value) => setAgentSkillView(value as "all" | "selected")}
+                      />
+                    </div>
+
+                    <div className="agent-skill-config__list-head">
+                      <span>显示 {filteredAgentSkillOptions.length} 个技能</span>
+                      <div>
+                        <Button type="text" disabled={!filteredAgentSkillOptions.length} onClick={selectVisibleAgentSkills}>选择当前结果</Button>
+                        <Button type="text" disabled={!selectedAgentSkillIds.length} onClick={() => setSelectedAgentSkillIds([])}>清空已选</Button>
+                      </div>
+                    </div>
+
+                    <div className="agent-skill-option-list" aria-label="可配置技能列表">
+                      {filteredAgentSkillOptions.length ? filteredAgentSkillOptions.map((skill) => {
+                        const isSelected = selectedAgentSkillIds.includes(skill.skill_id);
+                        return (
+                          <button
+                            key={skill.skill_id}
+                            type="button"
+                            className={`agent-skill-option-card${isSelected ? " is-selected" : ""}`}
+                            aria-pressed={isSelected}
+                            aria-label={`${isSelected ? "取消选择" : "选择"}技能 ${skill.name}`}
+                            onClick={() => toggleAgentSkill(skill.skill_id)}
+                          >
+                            <span className="agent-skill-option-card__check">
+                              {isSelected && <CheckOutlined />}
+                            </span>
+                            <span className="agent-skill-option-card__body">
+                              <span className="agent-skill-option-card__title">
+                                <strong>{skill.name}</strong>
+                                <code>{skill.skill_id}</code>
+                              </span>
+                              <span className="agent-skill-option-card__description">
+                                {skill.description || "暂无技能说明"}
+                              </span>
+                              <span className="agent-skill-option-card__meta">
+                                <em data-source={skill.source}>{agentSkillSourceLabel(skill)}</em>
+                                <span>{skill.owner?.display_name || skill.owner?.username || "待认领"}</span>
+                                {skill.is_personal_enabled && <span>个人已启用</span>}
+                              </span>
+                            </span>
+                          </button>
+                        );
+                      }) : (
+                        <Empty
+                          image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          description={agentSkillView === "selected" ? "当前智能体还没有已选技能" : "没有匹配的技能"}
+                        />
+                      )}
+                    </div>
+
+                    <div className="agent-skill-config__tip">
+                      <InfoCircleOutlined />
+                      <span>保存后，智能体运行时可调用这些技能；实际调用会归因到该智能体并进入技能统计。</span>
+                    </div>
+                  </>
+                ) : (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先选择一个智能体" />
+                )}
+              </section>
             </div>
           ) : (
             <Empty
+              className="agent-skill-drawer-empty"
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={agentSkillLoading ? "正在加载可配置智能体" : "暂无你可以配置的智能体"}
             />
