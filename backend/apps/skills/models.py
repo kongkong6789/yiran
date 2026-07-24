@@ -165,6 +165,14 @@ class SkillUsageEvent(models.Model):
         blank=True,
         verbose_name="调用人",
     )
+    agent = models.ForeignKey(
+        "council.AgentProfile",
+        related_name="skill_usage_events",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="调用智能体",
+    )
     source = models.CharField("调用方式", max_length=16, choices=Source.choices, default=Source.AGENT)
     used_at = models.DateTimeField("调用时间", auto_now_add=True, db_index=True)
 
@@ -175,6 +183,7 @@ class SkillUsageEvent(models.Model):
         indexes = [
             models.Index(fields=["skill_id", "used_at"], name="skill_usage_skill_time"),
             models.Index(fields=["user", "used_at"], name="skill_usage_user_time"),
+            models.Index(fields=["agent", "used_at"], name="skill_usage_agent_time"),
         ]
 
     def __str__(self):

@@ -4886,15 +4886,34 @@ body {
   overflow: hidden;
 }
 .chat-skill-popover {
-  width: min(340px, 78vw);
+  width: min(360px, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
 }
+.chat-skill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px 2px;
+}
+.chat-skill-head strong {
+  color: var(--lc-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+.chat-skill-head span {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
 .chat-skill-search {
+  width: calc(100% - 20px);
   margin: 10px 10px 6px;
+  box-sizing: border-box;
 }
 .chat-skill-search .ant-input-affix-wrapper,
 .chat-skill-search.ant-input-affix-wrapper {
+  width: 100%;
   border-radius: 10px;
   background: #f5f7fb !important;
   border-color: var(--lc-border) !important;
@@ -4940,23 +4959,14 @@ body {
   cursor: wait;
   opacity: 0.68;
 }
-.chat-skill-item--shared {
-  border: 1px solid rgba(50, 98, 229, 0.12);
-  background: rgba(50, 98, 229, 0.035);
-}
-.chat-skill-item--shared:hover {
-  border-color: rgba(50, 98, 229, 0.24);
-  background: rgba(50, 98, 229, 0.08);
-}
 .chat-skill-avatar {
   flex-shrink: 0;
-  background: var(--lc-gradient-navy) !important;
-  color: #fff !important;
+  border: 1px solid color-mix(in srgb, var(--lc-gold) 26%, var(--lc-border));
+  border-radius: 10px !important;
+  background: color-mix(in srgb, var(--lc-gold) 12%, var(--lc-surface)) !important;
+  color: var(--lc-navy) !important;
   font-size: 14px;
-  font-weight: 600;
-}
-.chat-skill-avatar--shared {
-  background: linear-gradient(145deg, #3262e5, #5b7ff0) !important;
+  font-weight: 700;
 }
 .chat-skill-meta {
   flex: 1;
@@ -4987,11 +4997,13 @@ body {
 }
 .chat-skill-footer {
   border-top: 1px solid var(--lc-border);
-  padding: 4px 6px 6px;
+  padding: 6px;
 }
 .chat-skill-footer .ant-btn {
   color: var(--lc-navy);
-  height: 36px;
+  height: 40px;
+  border-radius: 10px;
+  font-weight: 600;
 }
 .chat-skill-footer .ant-btn:hover {
   color: var(--lc-gold) !important;
@@ -5321,36 +5333,36 @@ body {
 
 /* 连接器配置抽屉：首屏只保留状态、当前配置方式和主字段 */
 .mcp-config-drawer .ant-drawer-header {
-  min-height: 62px;
-  padding: 12px 18px;
+  min-height: 70px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--lc-line);
 }
 .mcp-config-drawer .ant-drawer-body {
-  padding: 18px;
+  padding: 22px;
 }
 .mcp-config-shell {
   width: 100%;
 }
 .mcp-config-summary {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 12px 13px;
+  padding: 15px 16px;
   border: 1px solid var(--lc-line);
   border-radius: 12px;
   background: var(--lc-hover);
 }
 .mcp-config-summary-icon {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--lc-line));
   border-radius: 11px;
   background: color-mix(in srgb, var(--accent) 10%, var(--lc-surface));
   color: var(--accent);
-  font-size: 19px;
+  font-size: 21px;
 }
 .mcp-config-summary-copy {
   display: flex;
@@ -5360,18 +5372,38 @@ body {
 }
 .mcp-config-summary-copy strong {
   color: var(--lc-ink);
-  font-size: 14px;
+  font-size: 16px;
 }
 .mcp-config-summary-copy > span {
-  overflow: hidden;
   color: var(--lc-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.45;
 }
 .mcp-config-summary-copy small {
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 12px;
+}
+.mcp-config-enable {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  color: var(--lc-text-secondary);
+  font-size: 13px;
+}
+.mcp-config-form .ant-alert {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 12px;
+}
+.mcp-config-form .ant-alert-message {
+  font-size: 14px;
+  font-weight: 650;
+}
+.mcp-config-form .ant-alert-description {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .mcp-config-help,
 .mcp-config-advanced {
@@ -5383,13 +5415,13 @@ body {
 .mcp-config-help summary,
 .mcp-config-advanced summary {
   display: flex;
-  min-height: 38px;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
   color: var(--lc-ink);
-  font-size: 11px;
+  font-size: 13px;
   cursor: pointer;
   list-style: none;
 }
@@ -5412,13 +5444,13 @@ body {
 .mcp-config-advanced summary small {
   margin-left: auto;
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .mcp-config-help ul {
   margin: 0;
   padding: 0 30px 12px;
   color: var(--lc-muted);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.7;
 }
 .mcp-config-modebar {
@@ -5435,7 +5467,7 @@ body {
   background: transparent;
 }
 .mcp-config-section {
-  padding: 16px 2px 2px;
+  padding: 24px 2px 2px;
 }
 .mcp-config-section-head,
 .mcp-config-json-head {
@@ -5443,7 +5475,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 9px;
+  margin-bottom: 12px;
 }
 .mcp-config-section-head > div {
   display: flex;
@@ -5454,14 +5486,15 @@ body {
 .mcp-config-section-head strong,
 .mcp-config-json-head strong {
   color: var(--lc-ink);
-  font-size: 12px;
+  font-size: 15px;
 }
 .mcp-config-section-head span {
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .mcp-config-section .ant-form-item {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .mcp-config-section .ant-form-item-label {
   padding-bottom: 3px;
@@ -5469,17 +5502,23 @@ body {
 .mcp-config-section .ant-form-item-label > label {
   height: auto;
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.mcp-config-section .ant-input,
+.mcp-config-section .ant-input-affix-wrapper {
+  min-height: 44px;
+  font-size: 14px;
 }
 .mcp-config-section textarea {
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.6;
 }
 .mcp-config-note {
   margin: 0;
   color: var(--lc-muted);
-  font-size: 10px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.65;
 }
 .mcp-config-advanced {
   margin-top: 12px;
@@ -5499,44 +5538,55 @@ body {
   border-radius: 6px;
   background: var(--lc-hover);
   color: var(--lc-ink);
-  font-size: 9px;
+  font-size: 12px;
 }
 .mcp-config-json-head {
   margin: 0 0 6px;
 }
 .mcp-config-advanced .mcp-json {
   max-height: 180px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 /* NAS 文件资源管理器 */
 .nas-explorer-drawer .ant-drawer-header {
-  min-height: 62px;
-  padding: 12px 18px;
+  min-height: 72px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--lc-line);
 }
 .nas-explorer-drawer .ant-drawer-body {
   overflow: hidden;
   padding: 0;
 }
+.nas-explorer-drawer--settings .ant-drawer-body {
+  overflow-y: auto;
+}
+.nas-explorer-drawer .ant-drawer-close,
+.nas-explorer-drawer .ant-drawer-extra .ant-btn {
+  min-width: 40px;
+  min-height: 40px;
+}
+.nas-explorer-drawer .ant-drawer-extra .ant-btn {
+  font-size: 13px;
+}
 .nas-drawer-title {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
 }
 .nas-drawer-title .anticon {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--lc-line);
   border-radius: 7px;
 }
 .nas-explorer {
   display: flex;
-  height: calc(100vh - 63px);
+  height: 100%;
   min-height: 560px;
   flex-direction: column;
   color: var(--lc-ink);
@@ -5555,15 +5605,15 @@ body {
   align-items: center;
 }
 .nas-explorer-nav-buttons .ant-btn {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   padding: 0;
 }
 .nas-explorer-address {
   display: flex;
   align-items: center;
   min-width: 0;
-  height: 36px;
+  height: 42px;
   padding: 0 5px 0 11px;
   border: 1px solid var(--lc-line);
   border-radius: 6px;
@@ -5600,7 +5650,7 @@ body {
   background: transparent;
   color: var(--lc-ink);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5608,7 +5658,7 @@ body {
   background: var(--lc-hover);
 }
 .nas-explorer-search .ant-input {
-  font-size: 12px;
+  font-size: 14px;
 }
 .nas-explorer-actionbar {
   display: flex;
@@ -5626,10 +5676,10 @@ body {
   gap: 3px;
 }
 .nas-explorer-actionbar .ant-btn {
-  font-size: 12px;
+  font-size: 13px;
 }
 .nas-explorer-actionbar .ant-segmented-item-label {
-  font-size: 11px;
+  font-size: 13px;
 }
 .nas-explorer-workspace {
   display: grid;
@@ -5648,7 +5698,7 @@ body {
   display: block;
   padding: 8px 10px 5px;
   color: var(--lc-muted) !important;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
@@ -5734,12 +5784,12 @@ body {
   position: sticky;
   z-index: 2;
   top: -8px;
-  min-height: 34px;
+  min-height: 38px;
   padding: 0 10px 0 42px;
   border-bottom: 1px solid var(--lc-line);
   background: var(--lc-surface);
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .nas-file-item {
   width: 100%;
@@ -5751,7 +5801,7 @@ body {
 }
 .nas-file-view--details .nas-file-item {
   position: relative;
-  min-height: 38px;
+  min-height: 44px;
   padding: 3px 10px 3px 42px;
   border-radius: 4px;
   text-align: left;
@@ -5775,12 +5825,12 @@ body {
 .nas-file-item-type,
 .nas-file-item-size {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .nas-file-item-name {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
 }
 .nas-file-item-modified,
@@ -5895,7 +5945,7 @@ body {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr);
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 .nas-preview-meta span {
   color: var(--lc-muted);
@@ -5919,7 +5969,7 @@ body {
   border-radius: 6px;
   background: var(--lc-surface);
   color: var(--lc-ink);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
@@ -5963,19 +6013,55 @@ body {
 }
 .nas-explorer-statusbar {
   display: flex;
-  min-height: 30px;
+  min-height: 34px;
   padding: 5px 12px;
   border-top: 1px solid var(--lc-line);
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   color: var(--lc-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .nas-settings-panel {
   width: min(720px, 100%) !important;
   margin: 0 auto;
-  padding: 24px 8px 48px;
+  padding: 36px 16px 56px;
+}
+.nas-settings-panel .mcp-config-summary {
+  padding: 18px 20px;
+  border-color: color-mix(in srgb, var(--lc-primary) 14%, var(--lc-line));
+  background: color-mix(in srgb, var(--lc-primary) 4%, var(--lc-surface));
+}
+.nas-settings-panel .mcp-config-summary-copy {
+  gap: 4px;
+}
+.nas-settings-panel .mcp-config-summary-copy > span {
+  max-width: 480px;
+}
+.nas-settings-panel .mcp-config-enable {
+  padding-left: 12px;
+  border-left: 1px solid var(--lc-line);
+}
+.nas-settings-panel .mcp-config-form > .ant-alert {
+  margin-top: 16px;
+  margin-bottom: 0 !important;
+}
+.nas-settings-panel .mcp-config-section {
+  margin-top: 22px;
+  padding: 22px 4px 2px;
+  border-top: 1px solid var(--lc-line);
+}
+.nas-settings-panel .mcp-config-section-head {
+  margin-bottom: 16px;
+}
+.nas-settings-panel .mcp-config-section-head strong {
+  font-size: 16px;
+}
+.nas-settings-panel .mcp-config-section .ant-form-item {
+  margin-bottom: 10px;
+}
+.nas-settings-panel .mcp-config-note {
+  max-width: 620px;
 }
 
 @media (max-width: 960px) {
@@ -6027,13 +6113,52 @@ body {
     max-width: 100% !important;
   }
   .nas-explorer-drawer .ant-drawer-header {
+    flex-wrap: wrap;
+    gap: 8px;
     padding: 10px 12px;
   }
-  .nas-explorer-drawer .ant-drawer-extra .ant-btn:first-child {
+  .nas-explorer-drawer .ant-drawer-extra {
+    width: 100%;
+    padding-left: 42px;
+  }
+  .nas-explorer-drawer .ant-drawer-extra .ant-space {
+    display: grid;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  }
+  .nas-explorer-drawer .ant-drawer-extra .ant-space-item,
+  .nas-explorer-drawer .ant-drawer-extra .ant-btn {
+    width: 100%;
+  }
+  .nas-settings-panel {
+    padding: 20px 12px 40px;
+  }
+  .nas-settings-panel .mcp-config-summary {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    padding: 14px;
+  }
+  .nas-settings-panel .mcp-config-summary-icon {
+    width: 40px;
+    height: 40px;
+  }
+  .nas-settings-panel .mcp-config-summary-copy > span {
+    display: block;
+    font-size: 12px;
+  }
+  .nas-settings-panel .mcp-config-summary-copy small,
+  .nas-settings-panel .mcp-config-enable > span {
     display: none;
   }
+  .nas-settings-panel .mcp-config-enable {
+    min-height: 40px;
+    padding-left: 10px;
+  }
+  .nas-settings-panel .mcp-config-section {
+    margin-top: 18px;
+    padding-top: 18px;
+  }
   .nas-explorer {
-    min-height: 480px;
+    min-height: 0;
   }
   .nas-explorer-commandbar {
     grid-template-columns: 1fr;
@@ -6110,8 +6235,11 @@ body {
     radial-gradient(720px 360px at 92% 0%, rgba(61, 111, 168, 0.1), transparent 50%),
     linear-gradient(180deg, #f8fafd 0%, #eef2f8 100%);
 }
+.connectors-page {
+  padding: clamp(24px, 2vw, 36px) clamp(20px, 2vw, 36px) 44px;
+}
 .connectors-page-shell {
-  width: min(1240px, 100%);
+  width: min(1800px, 100%);
   margin: 0 auto;
 }
 .connectors-page-head,
@@ -6131,7 +6259,7 @@ body {
   border: 1px solid rgba(184, 134, 59, 0.28);
   background: rgba(255, 255, 255, 0.75);
   color: var(--lc-gold);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 1.5px;
   text-transform: uppercase;
@@ -6146,8 +6274,8 @@ body {
 .page-hero-desc {
   margin: 8px 0 0 !important;
   max-width: 560px;
-  font-size: 14px !important;
-  line-height: 1.65 !important;
+  font-size: 15px !important;
+  line-height: 1.7 !important;
 }
 .page-hero-desc code {
   padding: 1px 6px;
@@ -6199,8 +6327,11 @@ body {
   gap: 2px;
 }
 .connectors-hero-note .ant-typography:last-child {
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.connectors-hero-note .ant-typography:first-child {
+  font-size: 14px;
 }
 .connectors-featured-section {
   margin: 26px 0 30px;
@@ -6216,15 +6347,15 @@ body {
 .connectors-section-heading > .ant-typography,
 .connectors-board-head > div > .ant-typography:last-child {
   max-width: 520px;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.6;
   text-align: right;
 }
 .connectors-section-eyebrow {
   display: block;
   margin-bottom: 3px;
   color: var(--lc-gold) !important;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 1.3px;
   text-transform: uppercase;
@@ -6284,12 +6415,20 @@ body {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 .wecom-connector-card h5 { margin: 0 !important; }
+.wecom-connector-card__copy > .ant-typography {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.wecom-connector-card__copy .ant-tag {
+  font-size: 12px;
+  line-height: 22px;
+}
 .wecom-connector-card__features {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 16px;
   color: var(--lc-text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .wecom-connector-card__features span {
   display: inline-flex;
@@ -8526,7 +8665,7 @@ body {
   line-height: 1.1;
 }
 .connectors-stat span {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--lc-text-muted);
 }
 .connectors-toolbar {
@@ -8540,13 +8679,23 @@ body {
   background: rgba(248, 250, 252, 0.9);
 }
 .connectors-toolbar .ant-input-affix-wrapper {
+  min-height: 42px;
   border-color: transparent;
   background: #fff;
   box-shadow: 0 1px 4px rgba(26, 39, 64, 0.05);
+  font-size: 14px;
+}
+.connectors-toolbar .ant-segmented {
+  font-size: 13px;
+}
+.connectors-toolbar .ant-segmented-item-label {
+  min-height: 38px;
+  padding-inline: 14px;
+  line-height: 38px;
 }
 .connectors-toolbar > .ant-typography {
   min-width: 58px;
-  font-size: 11px;
+  font-size: 12px;
   text-align: right;
 }
 .connectors-layers {
@@ -8569,7 +8718,7 @@ body {
 .connectors-layer-title {
   margin: 0 !important;
   color: var(--lc-navy) !important;
-  font-size: 15px !important;
+  font-size: 17px !important;
   letter-spacing: 0.6px;
 }
 .connectors-grid {
@@ -8578,30 +8727,36 @@ body {
 }
 .connectors-grid .mcp-card--detailed {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) auto;
+  grid-template-columns: 50px minmax(0, 1fr) auto;
   align-items: center;
   gap: 13px;
-  min-height: 118px;
-  padding: 16px;
+  min-height: 132px;
+  padding: 18px 20px;
   border-radius: 15px;
   text-align: left;
 }
-.connectors-grid .mcp-card--detailed:hover,
-.connectors-grid .mcp-card--detailed:focus-visible {
+.connectors-grid .mcp-card--detailed:hover {
   border-color: color-mix(in srgb, var(--accent) 60%, var(--lc-border));
   box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 16%, transparent);
-  outline: none;
+}
+.connectors-grid .mcp-card--detailed:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+.connectors-grid .mcp-card--detailed:active {
+  transform: scale(0.995);
 }
 .connectors-grid .mcp-card-icon {
-  width: 46px;
-  height: 46px;
+  width: 50px;
+  height: 50px;
   border-radius: 13px;
-  font-size: 21px;
+  font-size: 22px;
 }
 .mcp-card-copy {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
   min-width: 0;
 }
 .mcp-card-title-row {
@@ -8612,14 +8767,14 @@ body {
 .mcp-card-title-row b {
   overflow: hidden;
   color: var(--lc-text);
-  font-size: 14px;
+  font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mcp-card-title-row .ant-tag {
   margin: 0;
-  font-size: 10px;
-  line-height: 18px;
+  font-size: 12px;
+  line-height: 22px;
 }
 .mcp-status-tag--configured.ant-tag {
   border-color: #bfdbfe !important;
@@ -8634,10 +8789,10 @@ body {
 .connectors-grid .mcp-card em {
   display: -webkit-box;
   overflow: hidden;
-  min-height: 34px;
+  min-height: 38px;
   color: var(--lc-text-muted);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.55;
   text-align: left;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -8651,7 +8806,7 @@ body {
   align-items: center;
   gap: 3px;
   color: var(--lc-text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 .connectors-grid .mcp-card-meta i + i::before {
   margin: 0 7px;
@@ -8669,7 +8824,7 @@ body {
   padding-left: 14px;
   border-left: 1px solid var(--lc-border-light);
   color: var(--lc-text-muted);
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
   transition: color 0.18s ease;
 }
@@ -9861,7 +10016,6 @@ body {
   background: var(--lc-bg);
 }
 
-:root[data-theme="dark"] .connectors-stats,
 :root[data-theme="dark"] .section-hub-card,
 :root[data-theme="dark"] .mcp-dock,
 :root[data-theme="dark"] .mcp-card {
@@ -10736,7 +10890,6 @@ body {
 :root[data-theme] .agent-md-section,
 :root[data-theme] .chat-skill-popover-wrap .ant-popover-inner,
 :root[data-theme] .login-card,
-:root[data-theme] .connectors-stats,
 :root[data-theme] .section-hub-card,
 :root[data-theme] .mcp-dock,
 :root[data-theme] .mcp-card,
@@ -15383,7 +15536,6 @@ body {
 :root[data-theme="dark"] .account-admin-tabs > .ant-tabs-nav,
 :root[data-theme="dark"] .account-admin-overview > div,
 :root[data-theme="dark"] .wecom-connector-card,
-:root[data-theme="dark"] .connectors-stats,
 :root[data-theme="dark"] .user-skills-card {
   color: var(--lc-ink) !important;
   background: var(--lc-surface) !important;
@@ -16674,6 +16826,11 @@ body {
   background: #f6f8fb !important;
 }
 
+.app-content-bleed.app-content-scrollable {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
 .app-content-padded {
   min-height: 0;
   margin: 0;
@@ -17528,15 +17685,6 @@ body {
   flex: 1;
   overflow-y: auto;
   border-top: 0;
-}
-.chat-skill-adopt-action {
-  flex-shrink: 0;
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: #3262e5;
-  background: rgba(50, 98, 229, 0.1);
-  font-size: 11px;
-  font-weight: 700;
 }
 .skill-governance-panel-head,
 .skill-insight-panel > header,

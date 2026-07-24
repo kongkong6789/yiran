@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Button, Empty, Input, Segmented, Select, Skeleton, Tag, Tooltip, Typography, message } from "antd";
 import {
   AppstoreOutlined,
@@ -62,6 +62,7 @@ const EMPTY_DIRECTORY: NasDirectoryResult = {
 
 function errorMessage(error: unknown): string {
   if (isAxiosError<{ error?: string }>(error)) {
+    if (error.code === "ECONNABORTED") return "NAS 响应超时，请稍后重试";
     return error.response?.data?.error || "NAS 文件库暂时无法访问";
   }
   return "NAS 文件库暂时无法访问";
@@ -125,6 +126,8 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
   const [handoffTargets, setHandoffTargets] = useState<AgentHandoffTarget[]>([XIAOCE_HANDOFF_TARGET]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [handoffTargetKey, setHandoffTargetKey] = useState(XIAOCE_HANDOFF_TARGET.key);
+  const directoryRequestId = useRef(0);
+  const hasLoadedDirectory = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,24 +160,26 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
   }, []);
 
   const fetchDirectory = useCallback(async (path: string) => {
+    const requestId = ++directoryRequestId.current;
     setLoading(true);
     setLoadError("");
     setSelected(null);
     setPreview(null);
     try {
-      setDirectory(await getNasDirectory(path));
+      const nextDirectory = await getNasDirectory(path);
+      if (requestId !== directoryRequestId.current) return;
+      hasLoadedDirectory.current = true;
+      setDirectory(nextDirectory);
     } catch (error: unknown) {
-      setLoadError(errorMessage(error));
-      const parts = path.split("/").filter(Boolean);
-      const parentPath = parts.length > 1 ? `/${parts.slice(0, -1).join("/")}` : parts.length ? "/" : null;
-      setDirectory((current) => ({
-        ...EMPTY_DIRECTORY,
-        root_name: current.root_name,
-        current_path: path,
-        parent_path: parentPath,
-      }));
+      if (requestId !== directoryRequestId.current) return;
+      const nextError = errorMessage(error);
+      if (hasLoadedDirectory.current) {
+        message.warning(`${nextError}，已保留上次加载结果`);
+      } else {
+        setLoadError(nextError);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === directoryRequestId.current) setLoading(false);
     }
   }, []);
 
@@ -185,6 +190,8 @@ export default function NasFileExplorer({ configured, enabled, onOpenSettings }:
     if (configured && enabled) {
       void fetchDirectory("/");
     } else {
+      directoryRequestId.current += 1;
+      hasLoadedDirectory.current = false;
       setDirectory(EMPTY_DIRECTORY);
       setLoadError("请先完成 NAS 连接设置，文件库将在连接成功后显示");
     }

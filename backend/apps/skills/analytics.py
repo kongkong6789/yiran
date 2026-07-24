@@ -15,7 +15,13 @@ from .models import SkillAsset, SkillUsageEvent, UserSkill
 logger = logging.getLogger(__name__)
 
 
-def record_skill_usage(skills: list[UserSkill], user, *, source: str) -> None:
+def record_skill_usage(
+    skills: list[UserSkill],
+    user,
+    *,
+    source: str,
+    agent=None,
+) -> None:
     """记录实际加载的技能；审计失败不能阻断对话主链路。"""
     if not skills or user is None or not getattr(user, "is_authenticated", False):
         return
@@ -28,6 +34,7 @@ def record_skill_usage(skills: list[UserSkill], user, *, source: str) -> None:
                 skill_name=skill.name,
                 asset_id=skill.source_asset_id,
                 user=user,
+                agent=agent,
                 source=source,
             )
             for skill in skills
@@ -86,6 +93,8 @@ def _event_payload(event: SkillUsageEvent) -> dict:
         "user_id": event.user_id,
         "user": _user_label(event.user),
         "avatar_url": user_avatar_url(event.user),
+        "agent_id": event.agent_id,
+        "agent_name": event.agent.name if event.agent_id else "",
         "source": event.source,
         "source_label": event.get_source_display(),
         "used_at": event.used_at.isoformat(),
@@ -120,7 +129,7 @@ def build_skill_analytics(
         if asset.uploader_id == user.id or asset.owner_id == user.id
     }
 
-    events = SkillUsageEvent.objects.select_related("user", "user__settings", "asset")
+    events = SkillUsageEvent.objects.select_related("user", "user__settings", "asset", "agent")
     if can_manage and scoped_user_ids is not None:
         events = events.filter(user_id__in=scoped_user_ids)
     elif not can_manage:

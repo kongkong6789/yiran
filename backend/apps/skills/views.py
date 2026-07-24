@@ -143,6 +143,8 @@ def _usage_event_payload(row: SkillUsageEvent) -> dict:
         "user_id": row.user_id,
         "user": (user.get_full_name().strip() or user.username) if user else "未知用户",
         "avatar_url": user_avatar_url(user),
+        "agent_id": row.agent_id,
+        "agent_name": row.agent.name if row.agent_id else "",
         "source": row.source,
         "source_label": row.get_source_display(),
         "used_at": row.used_at.isoformat(),
@@ -540,7 +542,11 @@ def asset_usage_history(request, asset_id: int):
         assets = assets.filter(Q(uploader=request.user) | Q(visibility=SkillAsset.Visibility.SHARED))
     asset = get_object_or_404(assets, id=asset_id)
 
-    events = SkillUsageEvent.objects.filter(asset=asset).select_related("user", "user__settings")
+    events = SkillUsageEvent.objects.filter(asset=asset).select_related(
+        "user",
+        "user__settings",
+        "agent",
+    )
     if not can_manage and asset.uploader_id != request.user.id:
         events = events.filter(user=request.user)
 

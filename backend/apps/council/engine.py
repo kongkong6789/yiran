@@ -58,7 +58,12 @@ def _agent_system_prompt(agent: AgentProfile, question: str, skill_prompt: str =
 def _agent_runtime_contexts(parts: list[AgentProfile], user, query: str) -> dict[int, dict]:
     """Resolve DB-backed capabilities before entering concurrent LLM workers."""
     return {
-        agent.id: build_agent_capability_context(agent, user, query)
+        agent.id: build_agent_capability_context(
+            agent,
+            user,
+            query,
+            record_usage=True,
+        )
         for agent in parts
     }
 
@@ -429,7 +434,12 @@ def tick(m: Meeting, *, user=None) -> dict:
     kb = knowledge.gather_knowledge(m.question)
 
     # 生成发言:优先真实 LLM
-    capability = build_agent_capability_context(agent, user, m.question)
+    capability = build_agent_capability_context(
+        agent,
+        user,
+        m.question,
+        record_usage=True,
+    )
     system = _agent_system_prompt(agent, m.question, capability.get("skill_prompt", ""))
     selected_kb = capability.get("knowledge_prompt", "")
     kb = "\n\n".join(item for item in [kb, selected_kb] if item)
