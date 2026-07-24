@@ -9,7 +9,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.council.access import agent_queryset_for_user
+from apps.council.access import agent_queryset_for_user, can_manage_agent
 from apps.council.capabilities import build_agent_capability_context
 from apps.council.models import AgentProfile
 from apps.council.serializers import AgentProfileSerializer
@@ -53,24 +53,92 @@ def resolve_published_version(*, organization, sop_key: str) -> SopVersion | Non
     ).first()
 
 
-def _load_agent(request, agent_id: int) -> tuple[AgentProfile | None, Response | None]:
+def _normalize_sop_keys(raw) -> list[str] | Response:
+    if raw is None:
+        return Response({"ok": False, "detail": "请提供 sop_keys 数组。"}, status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(raw, list):
+        return Response({"ok": False, "detail": "sop_keys 必须是字符串数组。"}, status=status.HTTP_400_BAD_REQUEST)
+    return list(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
+
+
+def _validate_published_sop_keys(*, organization, keys: list[str]) -> list[str] | Response:
+    if not keys:
+        return []
+    available = set(
+        SopDefinition.objects.filter(
+            Q(organization=organization) | Q(organization__isnull=True),
+            status=SopDefinition.Status.PUBLISHED,
+            sop_key__in=keys,
+        ).values_list("sop_key", flat=True)
+    )
+    missing = [key for key in keys if key not in available]
+    if missing:
+        return Response(
+            {
+                "ok": False,
+                "detail": f"以下 SOP 不存在、未发布或无权访问：{', '.join(missing)}",
+                "missing": missing,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return keys
+
+
+def _bound_sop_results(*, organization, keys: list[str]) -> list[dict]:
+    if not keys:
+        return []
+    definitions = list(
+        SopDefinition.objects.filter(
+            Q(organization=organization) | Q(organization__isnull=True),
+            status=SopDefinition.Status.PUBLISHED,
+            sop_key__in=keys,
+        )
+    )
+    by_key: dict[str, SopDefinition] = {}
+    for row in definitions:
+        prev = by_key.get(row.sop_key)
+        if prev is None or (prev.organization_id is None and row.organization_id is not None):
+            by_key[row.sop_key] = row
+    results = []
+    for key in keys:
+        row = by_key.get(key)
+        if row is None:
+            continue
+        results.append(_bindable_sop_payload(row))
+    return results
+
+
+def _load_agent(
+    request,
+    agent_id: int,
+    *,
+    for_execution: bool = True,
+    require_manage: bool = False,
+) -> tuple[AgentProfile | None, Response | None]:
     try:
-        agent = agent_queryset_for_user(request.user).get(id=int(agent_id))
+        qs = agent_queryset_for_user(request.user, include_archived=not for_execution)
+        agent = qs.get(id=int(agent_id))
     except (AgentProfile.DoesNotExist, TypeError, ValueError):
         return None, Response(
             {"ok": False, "detail": "所选执行智能体不存在或无权访问。"},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if not agent.is_active or agent.lifecycle_status != AgentProfile.LifecycleStatus.PUBLISHED:
+    if require_manage and not can_manage_agent(request.user, agent):
         return None, Response(
-            {"ok": False, "detail": "所选执行智能体已停用。"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"ok": False, "detail": "只有数字员工负责人或企业管理员可以修改 SOP 绑定。"},
+            status=status.HTTP_403_FORBIDDEN,
         )
-    if agent.quota_remaining <= 0:
-        return None, Response(
-            {"ok": False, "detail": "所选执行智能体额度已用尽。"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    if for_execution:
+        if not agent.is_active or agent.lifecycle_status != AgentProfile.LifecycleStatus.PUBLISHED:
+            return None, Response(
+                {"ok": False, "detail": "所选执行智能体已停用。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if agent.quota_remaining <= 0:
+            return None, Response(
+                {"ok": False, "detail": "所选执行智能体额度已用尽。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     return agent, None
 
 
@@ -99,38 +167,49 @@ def _with_capability(result: dict, capability: dict | None, agent: AgentProfile,
     return payload
 
 
-@api_view(["GET"])
+@api_view(["GET", "PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def agent_bound_sops(request, agent_id: int):
-    """List published SOPs bound on this agent (harness catalog)."""
-    agent, error = _load_agent(request, agent_id)
+    """List or replace published SOP bindings for an agent (harness config).
+
+    GET  → current bindings
+    PUT / PATCH body:
+      { "sop_keys": ["key_a", "key_b"] }   # full replace
+    """
+    writing = request.method in {"PUT", "PATCH"}
+    agent, error = _load_agent(
+        request,
+        agent_id,
+        for_execution=False,
+        require_manage=writing,
+    )
     if error:
         return error
+
     organization = ensure_current_organization(request.user)
+
+    if writing:
+        raw_keys = request.data.get("sop_keys")
+        if raw_keys is None and "keys" in request.data:
+            raw_keys = request.data.get("keys")
+        normalized = _normalize_sop_keys(raw_keys)
+        if isinstance(normalized, Response):
+            return normalized
+        validated = _validate_published_sop_keys(organization=organization, keys=normalized)
+        if isinstance(validated, Response):
+            return validated
+        agent.sop_keys = validated
+        agent.save(update_fields=["sop_keys"])
+
     keys = bound_sop_keys(agent)
-    if not keys:
-        return Response({"agent_id": agent.id, "results": [], "count": 0})
-
-    definitions = list(
-        SopDefinition.objects.filter(
-            Q(organization=organization) | Q(organization__isnull=True),
-            status=SopDefinition.Status.PUBLISHED,
-            sop_key__in=keys,
-        )
-    )
-    by_key: dict[str, SopDefinition] = {}
-    for row in definitions:
-        prev = by_key.get(row.sop_key)
-        if prev is None or (prev.organization_id is None and row.organization_id is not None):
-            by_key[row.sop_key] = row
-
-    results = []
-    for key in keys:
-        row = by_key.get(key)
-        if row is None:
-            continue
-        results.append(_bindable_sop_payload(row))
-    return Response({"agent_id": agent.id, "results": results, "count": len(results)})
+    results = _bound_sop_results(organization=organization, keys=keys)
+    return Response({
+        "ok": True,
+        "agent_id": agent.id,
+        "sop_keys": keys,
+        "results": results,
+        "count": len(results),
+    })
 
 
 @api_view(["POST"])

@@ -71,6 +71,45 @@ class AgentScopedSopApiTests(APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["key"], "agent.harness.demo")
+        self.assertEqual(response.data["sop_keys"], ["agent.harness.demo"])
+
+    def test_put_bound_sops_replaces_bindings(self):
+        other = SopDefinition.objects.create(
+            organization=self.organization,
+            sop_key="agent.harness.other",
+            name="另一个流程",
+            status=SopDefinition.Status.PUBLISHED,
+            current_version="1.0.0",
+            created_by=self.user,
+            updated_by=self.user,
+        )
+        SopVersion.objects.create(
+            definition=other,
+            version="1.0.0",
+            status=SopVersion.Status.PUBLISHED,
+            graph=self.version.graph,
+            content_hash=self.version.content_hash,
+            created_by=self.user,
+            published_by=self.user,
+        )
+        response = self.client.put(
+            f"/api/orchestration/agents/{self.agent.id}/sops/",
+            {"sop_keys": ["agent.harness.other"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["sop_keys"], ["agent.harness.other"])
+        self.agent.refresh_from_db()
+        self.assertEqual(self.agent.sop_keys, ["agent.harness.other"])
+
+    def test_put_rejects_unpublished_or_unknown(self):
+        response = self.client.put(
+            f"/api/orchestration/agents/{self.agent.id}/sops/",
+            {"sop_keys": ["does.not.exist"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("does.not.exist", response.data["detail"])
 
     def test_run_rejects_unbound_sop(self):
         response = self.client.post(
