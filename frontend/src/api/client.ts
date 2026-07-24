@@ -1508,6 +1508,43 @@ export const listBindableSops = (params: { q?: string } = {}) =>
     })
     .then((r) => r.data);
 
+/** SOPs currently bound on an AgentProfile (harness catalog). */
+export const listAgentBoundSops = (agentId: number) =>
+  api
+    .get<{ agent_id: number; results: BindableSopItem[]; count: number }>(
+      `/orchestration/agents/${agentId}/sops/`,
+    )
+    .then((r) => r.data);
+
+/** Run a bound published SOP as this agent (respects sop_keys). Resume with same trace_id. */
+export const runAgentSop = (
+  agentId: number,
+  sopKey: string,
+  body: {
+    text?: string;
+    payload?: Record<string, unknown>;
+    trace_id?: string;
+    role?: string;
+  } = {},
+) =>
+  api
+    .post<SopResult & {
+      ok?: boolean;
+      agent_sop?: {
+        sop_key: string;
+        version: string;
+        bound: boolean;
+        agent_id: number;
+      };
+      executor?: Agent;
+      capability?: Record<string, unknown>;
+    }>(
+      `/orchestration/agents/${agentId}/sops/${encodeURIComponent(sopKey)}/run/`,
+      body,
+      { timeout: 180_000 },
+    )
+    .then((r) => r.data);
+
 export const getSop = (key: string) =>
   api.get<SopDefinitionItem>(`/orchestration/sops/${key}/`).then((r) => r.data);
 

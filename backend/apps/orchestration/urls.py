@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import evolution_api, sop_api, sop_rewrite_stream, sop_trial, views
+from . import agent_sop_api, evolution_api, sop_api, sop_rewrite_stream, sop_trial, views
 
 urlpatterns = [
     path("run/", views.run, name="orchestration-run"),
@@ -9,6 +9,12 @@ urlpatterns = [
     path("sops/ai/rewrite/", sop_api.sop_ai_rewrite, name="orchestration-sop-ai-rewrite"),
     path("sops/ai/rewrite/stream/", sop_rewrite_stream.sop_ai_rewrite_stream, name="orchestration-sop-ai-rewrite-stream"),
     path("sops/bindable/", sop_api.sops_bindable, name="orchestration-sops-bindable"),
+    path("agents/<int:agent_id>/sops/", agent_sop_api.agent_bound_sops, name="orchestration-agent-bound-sops"),
+    path(
+        "agents/<int:agent_id>/sops/<str:sop_key>/run/",
+        agent_sop_api.agent_run_sop,
+        name="orchestration-agent-run-sop",
+    ),
     path("sops/", sop_api.sops, name="orchestration-sops"),
     path("runs/<str:run_key>/", evolution_api.sop_run_detail, name="orchestration-sop-run-detail"),
     path("sops/<str:sop_key>/", sop_api.sop_detail, name="orchestration-sop-detail"),
