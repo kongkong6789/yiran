@@ -4886,15 +4886,34 @@ body {
   overflow: hidden;
 }
 .chat-skill-popover {
-  width: min(340px, 78vw);
+  width: min(360px, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
 }
+.chat-skill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px 2px;
+}
+.chat-skill-head strong {
+  color: var(--lc-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+.chat-skill-head span {
+  color: var(--lc-text-muted);
+  font-size: 11px;
+}
 .chat-skill-search {
+  width: calc(100% - 20px);
   margin: 10px 10px 6px;
+  box-sizing: border-box;
 }
 .chat-skill-search .ant-input-affix-wrapper,
 .chat-skill-search.ant-input-affix-wrapper {
+  width: 100%;
   border-radius: 10px;
   background: #f5f7fb !important;
   border-color: var(--lc-border) !important;
@@ -4940,23 +4959,14 @@ body {
   cursor: wait;
   opacity: 0.68;
 }
-.chat-skill-item--shared {
-  border: 1px solid rgba(50, 98, 229, 0.12);
-  background: rgba(50, 98, 229, 0.035);
-}
-.chat-skill-item--shared:hover {
-  border-color: rgba(50, 98, 229, 0.24);
-  background: rgba(50, 98, 229, 0.08);
-}
 .chat-skill-avatar {
   flex-shrink: 0;
-  background: var(--lc-gradient-navy) !important;
-  color: #fff !important;
+  border: 1px solid color-mix(in srgb, var(--lc-gold) 26%, var(--lc-border));
+  border-radius: 10px !important;
+  background: color-mix(in srgb, var(--lc-gold) 12%, var(--lc-surface)) !important;
+  color: var(--lc-navy) !important;
   font-size: 14px;
-  font-weight: 600;
-}
-.chat-skill-avatar--shared {
-  background: linear-gradient(145deg, #3262e5, #5b7ff0) !important;
+  font-weight: 700;
 }
 .chat-skill-meta {
   flex: 1;
@@ -4987,11 +4997,13 @@ body {
 }
 .chat-skill-footer {
   border-top: 1px solid var(--lc-border);
-  padding: 4px 6px 6px;
+  padding: 6px;
 }
 .chat-skill-footer .ant-btn {
   color: var(--lc-navy);
-  height: 36px;
+  height: 40px;
+  border-radius: 10px;
+  font-weight: 600;
 }
 .chat-skill-footer .ant-btn:hover {
   color: var(--lc-gold) !important;
@@ -15336,15 +15348,6 @@ body {
   flex: 1;
   overflow-y: auto;
   border-top: 0;
-}
-.chat-skill-adopt-action {
-  flex-shrink: 0;
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: #3262e5;
-  background: rgba(50, 98, 229, 0.1);
-  font-size: 11px;
-  font-weight: 700;
 }
 .skill-governance-panel-head,
 .skill-insight-panel > header,
