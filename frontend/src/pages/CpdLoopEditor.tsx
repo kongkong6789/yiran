@@ -1405,10 +1405,10 @@ export default function CpdLoopEditor() {
                 <span className="cpd-loop-bindings-tip">未绑定可用上方「AI 接入数据源」</span>
               </div>
               <div className="cpd-loop-bindings-list">
-                {draft.nodes.map((n) => {
+                {draft.nodes.map((n, idx) => {
                   const bind = formatNodeBinding(n.binding);
                   return (
-                    <div key={n.id} className={`cpd-loop-binding-row${bind ? " is-bound" : ""}`}>
+                    <div key={`${n.id}::${idx}`} className={`cpd-loop-binding-row${bind ? " is-bound" : ""}`}>
                       <Tag color={n.binding?.bind_type === "knowledge" ? "purple" : n.binding?.bind_type === "connector" ? "cyan" : n.binding?.bind_type === "metric" ? "blue" : "default"}>
                         {n.code}
                       </Tag>
@@ -1444,7 +1444,7 @@ export default function CpdLoopEditor() {
               <div className="cpd-loop-notes">
                 <strong>编辑备注</strong>
                 <ul>
-                  {draft.notes.slice(0, 6).map((note) => <li key={note}>{note}</li>)}
+                  {draft.notes.slice(0, 6).map((note, idx) => <li key={`note-${idx}`}>{note}</li>)}
                 </ul>
               </div>
             ) : null}

@@ -132,7 +132,14 @@ function resolveNodeId(
  * 修正边端点（AI 常用 code 当 from/to），并为孤立新节点自动接到路径前一个点。
  */
 export function normalizeDraftGraph(draft: CpdLoopDraft): CpdLoopDraft {
-  const nodes = draft.nodes || [];
+  // 同 id 只保留第一次，避免 React key / 全图重复
+  const seenNodeIds = new Set<string>();
+  const nodes: CpdDraftNode[] = [];
+  for (const n of draft.nodes || []) {
+    if (!n?.id || seenNodeIds.has(n.id)) continue;
+    seenNodeIds.add(n.id);
+    nodes.push(n);
+  }
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const edges: CpdDraftEdge[] = [];
   const seen = new Set<string>();
