@@ -1488,6 +1488,26 @@ export interface SopEvolutionProposalItem {
 export const listSops = () =>
   api.get<{ results: SopDefinitionItem[] }>("/orchestration/sops/").then((r) => r.data);
 
+/** Published SOP options for AgentProfile.sop_keys configuration. */
+export interface BindableSopItem {
+  key: string;
+  name: string;
+  description: string;
+  businessDomain: string;
+  actionName: string;
+  currentVersion: string;
+  system: boolean;
+  nodeCount: number;
+  status: string;
+}
+
+export const listBindableSops = (params: { q?: string } = {}) =>
+  api
+    .get<{ results: BindableSopItem[]; count: number }>("/orchestration/sops/bindable/", {
+      params: params.q ? { q: params.q } : undefined,
+    })
+    .then((r) => r.data);
+
 export const getSop = (key: string) =>
   api.get<SopDefinitionItem>(`/orchestration/sops/${key}/`).then((r) => r.data);
 

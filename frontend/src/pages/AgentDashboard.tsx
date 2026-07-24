@@ -23,7 +23,7 @@ import {
   getSkills,
   listKnowledgeBases,
   listAgents,
-  listSops,
+  listBindableSops,
   updateAgent,
   type Agent,
 } from "../api/client";
@@ -143,7 +143,7 @@ export default function AgentDashboard() {
         getSkillAssets(),
         getSkills(),
         listKnowledgeBases(),
-        listSops(),
+        listBindableSops(),
       ]);
       const skillMap = new Map<string, CapabilityOption<string>>();
       (skillAssets.results || []).forEach((skill) => {
@@ -167,12 +167,11 @@ export default function AgentDashboard() {
         .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")));
       setSopOptions(
         (sops.results || [])
-          .filter((sop) => sop.status === "published")
           .map((sop) => ({
             value: sop.key,
             label: sop.name || sop.key,
             description: sop.description || sop.actionName || "",
-            meta: `已发布 · ${sop.key}${sop.currentVersion ? ` · v${sop.currentVersion}` : ""}`,
+            meta: `${sop.system ? "系统" : "工作区"} · ${sop.key}${sop.currentVersion ? ` · v${sop.currentVersion}` : ""}`,
           }))
           .sort((a, b) => a.label.localeCompare(b.label, "zh-CN")),
       );

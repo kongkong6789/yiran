@@ -1360,6 +1360,27 @@ def _visible_sops(organization):
     )
 
 
+def _bindable_sop_payload(row: SopDefinition) -> dict:
+    """Lightweight published SOP row for Agent capability pickers."""
+    current = (
+        row.versions.filter(version=row.current_version).first()
+        if row.current_version
+        else row.versions.filter(status=SopVersion.Status.PUBLISHED).order_by("-published_at", "-id").first()
+    )
+    node_count = len((current.graph or {}).get("nodes") or []) if current else 0
+    return {
+        "key": row.sop_key,
+        "name": row.name,
+        "description": row.description or "",
+        "businessDomain": row.business_domain or "",
+        "actionName": row.action_name or "",
+        "currentVersion": row.current_version or (current.version if current else ""),
+        "system": bool(row.organization_id is None),
+        "nodeCount": node_count,
+        "status": row.status,
+    }
+
+
 def _find_sop(organization, sop_key: str):
     return _visible_sops(organization).filter(sop_key=sop_key).order_by("organization_id").last()
 
@@ -1890,6 +1911,29 @@ def sops(request):
         )
         SopVersion.objects.create(definition=sop, version=version_number, created_by=request.user, **values)
     return Response(_sop_payload(sop, request.user, include_graph=True), status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def sops_bindable(request):
+    """Published SOP options for AgentProfile.sop_keys configuration."""
+    organization = ensure_current_organization(request.user)
+    query = str(request.query_params.get("q") or request.query_params.get("query") or "").strip()
+    rows = _visible_sops(organization).filter(status=SopDefinition.Status.PUBLISHED)
+    if query:
+        rows = rows.filter(
+            Q(name__icontains=query)
+            | Q(sop_key__icontains=query)
+            | Q(description__icontains=query)
+            | Q(business_domain__icontains=query)
+            | Q(action_name__icontains=query)
+        )
+    # Prefer org-owned SOPs ahead of system templates when keys collide conceptually.
+    results = [_bindable_sop_payload(row) for row in rows[:200]]
+    return Response({
+        "results": results,
+        "count": len(results),
+    })
 
 
 @api_view(["GET", "PATCH", "DELETE"])
