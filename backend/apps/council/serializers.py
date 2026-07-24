@@ -10,7 +10,6 @@ from .models import AgentProfile
 
 
 class AgentProfileSerializer(serializers.ModelSerializer):
-    quota_remaining = serializers.IntegerField(read_only=True)
     status = serializers.SerializerMethodField()
     organization_id = serializers.IntegerField(read_only=True)
     organization_name = serializers.CharField(source="organization.name", read_only=True)
@@ -30,6 +29,11 @@ class AgentProfileSerializer(serializers.ModelSerializer):
         child=serializers.IntegerField(min_value=1),
         required=False,
     )
+    sop_keys = serializers.ListField(
+        child=serializers.CharField(max_length=96),
+        required=False,
+    )
+    sops = serializers.SerializerMethodField()
 
     class Meta:
         model = AgentProfile
@@ -49,13 +53,12 @@ class AgentProfileSerializer(serializers.ModelSerializer):
             "persona",
             "execution_role",
             "is_active",
-            "quota_limit",
-            "quota_used",
-            "quota_remaining",
             "status",
             "skill_ids",
             "sop_keys",
             "knowledge_base_ids",
+            "sop_keys",
+            "sops",
             "capability_instructions",
             "lifecycle_status",
             "can_manage",
@@ -69,22 +72,21 @@ class AgentProfileSerializer(serializers.ModelSerializer):
             "created_by",
             "owner",
             "employee_code",
-            "quota_used",
-            "quota_remaining",
             "status",
+            "sops",
             "can_manage",
             "archived_at",
             "created_at",
         )
 
     def get_status(self, obj: AgentProfile) -> str:
+        if obj.lifecycle_status == AgentProfile.LifecycleStatus.DRAFT:
+            return "pending"
         if (
             not obj.is_active
             or obj.lifecycle_status != AgentProfile.LifecycleStatus.PUBLISHED
         ):
             return "disabled"
-        if obj.quota_remaining <= 0:
-            return "quota_exhausted"
         return "available"
 
     def get_created_by(self, obj: AgentProfile) -> dict | None:
@@ -96,6 +98,39 @@ class AgentProfileSerializer(serializers.ModelSerializer):
     def get_can_manage(self, obj: AgentProfile) -> bool:
         request = self.context.get("request")
         return can_manage_agent(getattr(request, "user", None), obj)
+
+    def get_sops(self, obj: AgentProfile) -> list[dict]:
+        keys = [str(key).strip() for key in (obj.sop_keys or []) if str(key).strip()]
+        if not keys:
+            return []
+
+        from apps.orchestration.models import SopDefinition
+
+        rows = SopDefinition.objects.filter(
+            Q(organization=obj.organization) | Q(organization__isnull=True),
+            sop_key__in=keys,
+            status=SopDefinition.Status.PUBLISHED,
+        )
+        by_key = {
+            row.sop_key: row
+            for row in rows
+            if row.organization_id is None
+        }
+        by_key.update({
+            row.sop_key: row
+            for row in rows
+            if row.organization_id == obj.organization_id
+        })
+        return [
+            {
+                "key": key,
+                "name": by_key[key].name,
+                "business_domain": by_key[key].business_domain,
+                "current_version": by_key[key].current_version,
+            }
+            for key in keys
+            if key in by_key
+        ]
 
     def validate_owner_id(self, value: int | None) -> int | None:
         if value is None:
@@ -228,6 +263,33 @@ class AgentProfileSerializer(serializers.ModelSerializer):
         if missing:
             raise serializers.ValidationError(
                 f"以下知识库不存在或无权访问：{', '.join(str(item) for item in missing)}"
+            )
+        return normalized
+
+    def validate_sop_keys(self, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not normalized:
+            return []
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not getattr(user, "is_authenticated", False):
+            raise serializers.ValidationError("登录后才能绑定 SOP。")
+
+        from apps.orchestration.models import SopDefinition
+
+        organization = self.instance.organization if self.instance else organization_for_user(user)
+        available = set(
+            SopDefinition.objects.filter(
+                Q(organization=organization) | Q(organization__isnull=True),
+                sop_key__in=normalized,
+                status=SopDefinition.Status.PUBLISHED,
+            ).values_list("sop_key", flat=True)
+        )
+        missing = [key for key in normalized if key not in available]
+        if missing:
+            raise serializers.ValidationError(
+                f"以下 SOP 未发布、不存在或无权访问：{', '.join(missing)}"
             )
         return normalized
 

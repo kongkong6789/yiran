@@ -2144,6 +2144,12 @@ export const getNasFilePreview = (path: string) =>
 // ================= ? Agent ???? =================
 export interface Agent {
   id: number;
+  organization_id: number | null;
+  organization_name: string;
+  created_by: AgentUserSummary | null;
+  owner: AgentUserSummary | null;
+  owner_id: number | null;
+  employee_code: string;
   name: string;
   emoji: string;
   group: string;
@@ -2152,15 +2158,43 @@ export interface Agent {
   persona: string;
   execution_role: "operator" | "manager" | "director";
   is_active: boolean;
-  quota_limit: number;
-  quota_used: number;
-  quota_remaining: number;
-  status: "available" | "disabled" | "quota_exhausted";
+  status: "available" | "disabled" | "pending";
   skill_ids: string[];
   sop_keys: string[];
   knowledge_base_ids: number[];
+  sop_keys: string[];
+  sops: AgentSopSummary[];
   capability_instructions: string;
+  lifecycle_status: "draft" | "published" | "disabled" | "archived";
+  can_manage: boolean;
+  archived_at: string | null;
   created_at: string;
+}
+
+export interface AgentSopSummary {
+  key: string;
+  name: string;
+  business_domain: string;
+  current_version: string;
+}
+
+export interface AgentUserSummary {
+  id: number;
+  username: string;
+  display_name: string;
+}
+
+export interface AgentListPermissions {
+  can_create: boolean;
+  can_manage_all: boolean;
+}
+
+export interface AgentListResult {
+  count: number;
+  results: Agent[];
+  llm: boolean;
+  organization: { id: number; name: string } | null;
+  permissions: AgentListPermissions;
 }
 
 export interface CouncilHuman {
@@ -2236,45 +2270,56 @@ export interface GraphWriteback {
   error?: string;
 }
 
+const normalizeAgent = (row: Partial<Agent>): Agent => {
+  const isActive = row.is_active !== false;
+  return {
+    id: Number(row.id),
+    organization_id: row.organization_id == null ? null : Number(row.organization_id),
+    organization_name: String(row.organization_name || ""),
+    created_by: row.created_by || null,
+    owner: row.owner || null,
+    owner_id: row.owner_id == null ? null : Number(row.owner_id),
+    employee_code: String(row.employee_code || ""),
+    name: String(row.name || "未命名智能体"),
+    emoji: String(row.emoji || "🤖"),
+    group: String(row.group || "未分类"),
+    role: String(row.role || ""),
+    expertise: String(row.expertise || ""),
+    persona: String(row.persona || ""),
+    execution_role: row.execution_role || "operator",
+    is_active: isActive,
+    status: row.status || (!isActive ? "disabled" : "available"),
+    skill_ids: Array.isArray(row.skill_ids) ? row.skill_ids.map(String) : [],
+    knowledge_base_ids: Array.isArray(row.knowledge_base_ids)
+      ? row.knowledge_base_ids.map(Number).filter(Number.isFinite)
+      : [],
+    sop_keys: Array.isArray(row.sop_keys) ? row.sop_keys.map(String) : [],
+    sops: Array.isArray(row.sops) ? row.sops : [],
+    capability_instructions: String(row.capability_instructions || ""),
+    lifecycle_status: row.lifecycle_status || (isActive ? "published" : "disabled"),
+    can_manage: row.can_manage !== false,
+    archived_at: row.archived_at || null,
+    created_at: String(row.created_at || ""),
+  };
+};
+
 export const listAgents = () =>
-  api.get<{
-    results: Partial<Agent>[];
-    llm: boolean;
-  }>("/council/agents/").then((r) => ({
-    ...r.data,
-    results: (r.data.results || []).map((row) => {
-      const quotaLimit = Number(row.quota_limit ?? 10000);
-      const quotaUsed = Number(row.quota_used ?? 0);
-      const quotaRemaining = Number(row.quota_remaining ?? Math.max(0, quotaLimit - quotaUsed));
-      const isActive = row.is_active !== false;
-      return {
-        id: Number(row.id),
-        name: String(row.name || "??????"),
-        emoji: String(row.emoji || "??"),
-        group: String(row.group || "???"),
-        role: String(row.role || ""),
-        expertise: String(row.expertise || ""),
-        persona: String(row.persona || ""),
-        execution_role: row.execution_role || "operator",
-        is_active: isActive,
-        quota_limit: quotaLimit,
-        quota_used: quotaUsed,
-        quota_remaining: quotaRemaining,
-        status: row.status || (!isActive ? "disabled" : quotaRemaining <= 0 ? "quota_exhausted" : "available"),
-        skill_ids: Array.isArray(row.skill_ids) ? row.skill_ids.map(String) : [],
-        sop_keys: Array.isArray(row.sop_keys) ? row.sop_keys.map(String) : [],
-        knowledge_base_ids: Array.isArray(row.knowledge_base_ids)
-          ? row.knowledge_base_ids.map(Number).filter(Number.isFinite)
-          : [],
-        capability_instructions: String(row.capability_instructions || ""),
-        created_at: String(row.created_at || ""),
-      } satisfies Agent;
-    }),
-  }));
+  api.get<Partial<AgentListResult> & { results?: Partial<Agent>[] }>("/council/agents/").then((r) => ({
+    count: Number(r.data.count ?? r.data.results?.length ?? 0),
+    results: (r.data.results || []).map(normalizeAgent),
+    llm: Boolean(r.data.llm),
+    organization: r.data.organization || null,
+    permissions: {
+      can_create: Boolean(r.data.permissions?.can_create),
+      can_manage_all: Boolean(r.data.permissions?.can_manage_all),
+    },
+  } satisfies AgentListResult));
+export const getAgent = (id: number) =>
+  api.get<Partial<Agent>>(`/council/agents/${id}/`).then((r) => normalizeAgent(r.data));
 export const createAgent = (body: Partial<Agent>) =>
-  api.post<Agent>("/council/agents/", body).then((r) => r.data);
+  api.post<Partial<Agent>>("/council/agents/", body).then((r) => normalizeAgent(r.data));
 export const updateAgent = (id: number, body: Partial<Agent>) =>
-  api.patch<Agent>(`/council/agents/${id}/`, body).then((r) => r.data);
+  api.patch<Partial<Agent>>(`/council/agents/${id}/`, body).then((r) => normalizeAgent(r.data));
 export const deleteAgent = (id: number) =>
   api.delete(`/council/agents/${id}/`).then((r) => r.data);
 

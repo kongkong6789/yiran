@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeftOutlined,
   ArrowUpOutlined,
@@ -15,12 +15,13 @@ import {
   ScheduleOutlined,
   ToolOutlined,
 } from "@ant-design/icons";
-import { Skeleton, message } from "antd";
+import { Button, Empty, Skeleton, message } from "antd";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   getSkillAssets,
   getSkills,
+  getAgent,
   listKnowledgeBases,
   listAgents,
   listSops,
@@ -36,6 +37,7 @@ import {
 } from "../utils/agentAvatars";
 import {
   AgentFormModal,
+  buildSopOptions,
   type AgentAvatarSelection,
   type AgentFormValues,
   type CapabilityOption,
@@ -59,7 +61,6 @@ const FALLBACK_AGENT: Agent = {
   quota_remaining: 10000,
   status: "available",
   skill_ids: ["文本翻译", "日志分析", "诊断脚本执行"],
-  sop_keys: [],
   knowledge_base_ids: [1, 2],
   capability_instructions: "故障报修受理 / 权限开通工单分流",
   created_at: "2026-07-08T00:00:00Z",
@@ -99,20 +100,34 @@ function formatJoinedAt(value: string) {
   ].join("-");
 }
 
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return `${date.getMonth() + 1}.${date.getDate()}`;
+}
+
 function agentAvatar(agent: Agent, offset = 0) {
   return resolveAgentAvatar(agent, offset);
 }
+
+const agentStatusLabel: Record<Agent["status"], string> = {
+  available: "在线",
+  pending: "待审批",
+  disabled: "已停用",
+};
 
 export default function AgentDashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [capabilityOptionsLoading, setCapabilityOptionsLoading] = useState(false);
   const [skillOptions, setSkillOptions] = useState<CapabilityOption<string>[]>([]);
   const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [knowledgeBaseOptions, setKnowledgeBaseOptions] = useState<CapabilityOption<number>[]>([]);
+  const [sopOptions, setSopOptions] = useState<CapabilityOption<string>[]>([]);
   const [tab, setTab] = useState<AgentProfileTab>("work");
   const [timelineMode, setTimelineMode] = useState<TimelineMode>("day");
   const [anchorDate, setAnchorDate] = useState(() => new Date(2026, 6, 23));
@@ -123,9 +138,19 @@ export default function AgentDashboard() {
   const load = async () => {
     setLoading(true);
     try {
-      const response = await listAgents();
+      if (!Number.isFinite(requestedId) || requestedId <= 0) {
+        setAgents([]);
+        setSelectedAgent(null);
+        return;
+      }
+      const [agent, response] = await Promise.all([
+        getAgent(requestedId),
+        listAgents(),
+      ]);
+      setSelectedAgent(agent);
       setAgents(response.results);
     } catch (error) {
+      setSelectedAgent(null);
       message.error(dashboardError(error, "智能体详情加载失败"));
     } finally {
       setLoading(false);
@@ -134,7 +159,7 @@ export default function AgentDashboard() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [requestedId]);
 
   const loadCapabilityOptions = async () => {
     setCapabilityOptionsLoading(true);
@@ -182,50 +207,58 @@ export default function AgentDashboard() {
         description: knowledgeBase.description || "",
         meta: `${knowledgeBase.visibility === "private" ? "个人" : knowledgeBase.visibility === "company" ? "公司" : "团队"} · ${knowledgeBase.file_count} 个文件 · ${knowledgeBase.status === "ready" ? "可用" : `状态：${knowledgeBase.status}`}`,
       })));
+      setSopOptions(buildSopOptions(sops.results || []));
     } catch (error) {
-      message.error(dashboardError(error, "Skill / SOP / 知识库加载失败，请稍后重试"));
+      message.error(dashboardError(error, "Skill、知识库或 SOP 加载失败，请稍后重试"));
     } finally {
       setCapabilityOptionsLoading(false);
     }
   };
 
-  const selectedAgent = useMemo(() => {
-    if (Number.isFinite(requestedId)) {
-      const requested = agents.find((agent) => agent.id === requestedId);
-      if (requested) return requested;
-    }
-    return agents[0] || FALLBACK_AGENT;
-  }, [agents, requestedId]);
-
   useEffect(() => {
-    if (editing) void loadCapabilityOptions();
-  }, [editing]);
+    if (editing && selectedAgent?.can_manage) void loadCapabilityOptions();
+  }, [editing, selectedAgent?.can_manage]);
 
-  const knowledgeCount = selectedAgent.knowledge_base_ids.length;
-  const skillCount = selectedAgent.skill_ids.length;
-  const sopCount = selectedAgent.sop_keys?.length || 0;
-  const toolCount = selectedAgent.capability_instructions.trim() ? 2 : 0;
+  const knowledgeIds = selectedAgent?.knowledge_base_ids || [];
+  const skillIds = selectedAgent?.skill_ids || [];
+  const knowledgeCount = knowledgeIds.length;
+  const skillCount = skillIds.length;
+  const sopCount = selectedAgent?.sop_keys.length || 0;
+  const toolCount = 0;
 
-  const growthRecords = useMemo(() => {
-    const skillNames = selectedAgent.skill_ids.length
-      ? selectedAgent.skill_ids
-      : ["文本翻译", "日志分析", "诊断脚本执行"];
-    return [
-      { kind: "新增 SOP", title: "权限开通工单分流" },
-      { kind: "新增 SOP", title: "故障报修受理" },
-      ...skillNames.slice(0, 3).map((title) => ({ kind: "技能升级", title })),
-      { kind: "新增工具", title: "系统权限开通" },
-      { kind: "新增工具", title: "IT 工单登记" },
-    ].slice(0, 7);
-  }, [selectedAgent.skill_ids]);
+  const growthRecords: Array<{ kind: string; title: string; tone: string }> = [
+    ...(selectedAgent?.sops || []).map((sop) => ({
+      kind: "绑定 SOP",
+      title: sop.name,
+      tone: "sop",
+    })),
+    ...skillIds.map((skillId) => ({
+      kind: "启用技能",
+      title: skillId,
+      tone: "skill",
+    })),
+    ...knowledgeIds.map((knowledgeBaseId) => ({
+      kind: "绑定知识库",
+      title: `知识库 ${knowledgeBaseId}`,
+      tone: "knowledge",
+    })),
+  ].slice(0, 7);
+
+  if (selectedAgent && growthRecords.length === 0) {
+    growthRecords.push({
+      kind: "创建智能体",
+      title: selectedAgent.name,
+      tone: "created",
+    });
+  }
 
   const capabilityCards = [
     {
       key: "knowledge",
       title: "知识库",
       count: knowledgeCount,
-      body: selectedAgent.knowledge_base_ids.length
-        ? selectedAgent.knowledge_base_ids.map((id) => `知识库 ${id}`).join(" / ")
+      body: knowledgeIds.length
+        ? knowledgeIds.map((id) => `知识库 ${id}`).join(" / ")
         : "暂无知识库",
       icon: <FolderOutlined />,
       dark: false,
@@ -234,7 +267,7 @@ export default function AgentDashboard() {
       key: "skills",
       title: "技能",
       count: skillCount,
-      body: selectedAgent.skill_ids.join(" / ") || "暂无启用技能",
+      body: skillIds.join(" / ") || "暂无启用技能",
       icon: <ToolOutlined />,
       dark: false,
     },
@@ -242,7 +275,7 @@ export default function AgentDashboard() {
       key: "sop",
       title: "SOP",
       count: sopCount,
-      body: selectedAgent.capability_instructions || "暂无启用 SOP",
+      body: selectedAgent?.sops.map((sop) => sop.name).join(" / ") || "暂无启用 SOP",
       icon: <ProfileOutlined />,
       dark: false,
     },
@@ -283,14 +316,11 @@ export default function AgentDashboard() {
   };
 
   const saveProfile = async (values: AgentFormValues, avatar: AgentAvatarSelection) => {
+    if (!selectedAgent) return;
     setSaving(true);
     try {
-      if (selectedAgent.id < 0) {
-        setAgents([{ ...selectedAgent, ...values, emoji: avatar.token }]);
-      } else {
-        await updateAgent(selectedAgent.id, { ...values, emoji: avatar.token });
-        await load();
-      }
+      await updateAgent(selectedAgent.id, { ...values, emoji: avatar.token });
+      await load();
       persistAgentAvatar(selectedAgent.id, avatar.customDataUrl);
       setEditMode(false);
       message.success("智能体资料已更新");
@@ -315,6 +345,22 @@ export default function AgentDashboard() {
     );
   }
 
+  if (!selectedAgent) {
+    return (
+      <div className="agent-dashboard-page">
+        <div className="agent-dashboard-back">
+          <button type="button" onClick={() => navigate("/agents")}>
+            <ArrowLeftOutlined />
+            返回智能体列表
+          </button>
+        </div>
+        <Empty description="智能体不存在、已归档或你没有访问权限">
+          <Button type="primary" onClick={() => navigate("/agents")}>返回列表</Button>
+        </Empty>
+      </div>
+    );
+  }
+
   return (
     <div className="agent-dashboard-page">
       <div className="agent-dashboard-back">
@@ -332,9 +378,11 @@ export default function AgentDashboard() {
             <button type="button" onClick={() => navigate(`/agent?agent=${selectedAgent.id}`)}>
               <MessageOutlined /> 去对话
             </button>
-            <button type="button" onClick={() => setEditMode(true)}>
-              <EditOutlined /> 编辑资料
-            </button>
+            {selectedAgent.can_manage && (
+              <button type="button" onClick={() => setEditMode(true)}>
+                <EditOutlined /> 编辑资料
+              </button>
+            )}
           </div>
         </div>
 
@@ -346,17 +394,20 @@ export default function AgentDashboard() {
           <div className="agent-dashboard-meta">
             <span className={`agent-dashboard-status${selectedAgent.status === "available" ? " is-online" : ""}`}>
               <i />
-              {selectedAgent.status === "available" ? "在线" : "下线"}
+              {agentStatusLabel[selectedAgent.status]}
             </span>
-            <span>创建者：admin</span>
+            <span>企业：{selectedAgent.organization_name || "未归属企业"}</span>
+            <span>负责人：{selectedAgent.owner?.display_name || "未分配"}</span>
+            <span>创建者：{selectedAgent.created_by?.display_name || "系统"}</span>
+            {selectedAgent.employee_code && <span>员工编号：{selectedAgent.employee_code}</span>}
             <span>入职时间：{formatJoinedAt(selectedAgent.created_at)}</span>
           </div>
           <p>{selectedAgent.expertise || selectedAgent.persona || "负责接收任务、调用知识库、执行 SOP 并沉淀工作记录。"}</p>
           <div className="agent-dashboard-hero-metrics">
-            <span><strong>{knowledgeCount}</strong> 资料</span>
-            <span><strong>{skillCount}</strong> 技能</span>
-            <span><strong>{sopCount}</strong> SOP</span>
-            <span><strong>0</strong> 定时任务</span>
+            <span className="is-knowledge"><strong>{knowledgeCount}</strong> 知识库</span>
+            <span className="is-skill"><strong>{skillCount}</strong> 技能</span>
+            <span className="is-sop"><strong>{sopCount}</strong> SOP</span>
+            <span className="is-scheduled"><strong>0</strong> 定时任务</span>
           </div>
         </div>
       </section>
@@ -370,6 +421,7 @@ export default function AgentDashboard() {
         skillOptions={skillOptions}
         sopOptions={sopOptions}
         knowledgeBaseOptions={knowledgeBaseOptions}
+        sopOptions={sopOptions}
         capabilityOptionsLoading={capabilityOptionsLoading}
         submitting={saving}
         onClose={() => setEditMode(false)}
@@ -427,10 +479,16 @@ export default function AgentDashboard() {
 
           <section className="agent-dashboard-growth">
             <h2><ArrowUpOutlined /> 成长记录</h2>
-            <div className="agent-dashboard-growth-track">
+            <div
+              className="agent-dashboard-growth-track"
+              style={{ gridTemplateColumns: `repeat(${growthRecords.length}, minmax(150px, 1fr))` }}
+            >
               {growthRecords.map((record, index) => (
-                <article key={`${record.kind}-${record.title}-${index}`}>
-                  <strong>7.22</strong>
+                <article
+                  className={`is-${record.tone}`}
+                  key={`${record.kind}-${record.title}-${index}`}
+                >
+                  <strong>{formatShortDate(selectedAgent.created_at)}</strong>
                   <i />
                   <div>
                     <span>{record.kind}</span>

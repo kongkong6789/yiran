@@ -22,14 +22,17 @@ def _with_capability_step(result: dict, capability: dict | None) -> dict:
         return result
     skill_count = len(capability.get("skills") or [])
     knowledge_count = len(capability.get("configured_knowledge_base_ids") or [])
+    sop_count = len(capability.get("sops") or [])
     step = {
         "node": "智能体能力加载",
         "status": "done" if capability.get("prompt") else "warn",
-        "detail": f"已加载 {skill_count} 个 Skill、{knowledge_count} 个指定知识库",
+        "detail": f"已加载 {skill_count} 个 Skill、{knowledge_count} 个指定知识库、{sop_count} 个 SOP",
         "data": {
             "skills": capability.get("skills") or [],
             "knowledge_bases": capability.get("knowledge_bases") or [],
             "configured_knowledge_base_ids": capability.get("configured_knowledge_base_ids") or [],
+            "sops": capability.get("sops") or [],
+            "configured_sop_keys": capability.get("configured_sop_keys") or [],
         },
     }
     steps = [step, *(result.get("steps") or [])]
@@ -59,16 +62,15 @@ def run(request):
             or executor.lifecycle_status != AgentProfile.LifecycleStatus.PUBLISHED
         ):
             return Response({"ok": False, "detail": "所选执行智能体已停用。"}, status=status.HTTP_400_BAD_REQUEST)
-        if executor.quota_remaining <= 0:
-            return Response({"ok": False, "detail": "所选执行智能体额度已用尽。"}, status=status.HTTP_400_BAD_REQUEST)
-
     organization = ensure_current_organization(request.user)
     role = executor.execution_role if executor else _business_role(request.user)
     requested_trace_id = str(request.data.get("trace_id") or "").strip()
     capability = build_agent_capability_context(executor, request.user, text) if executor else None
-    run_payload = dict(payload) if isinstance(payload, dict) else {}
-    if capability:
-        run_payload["_agent_kb_ids"] = capability.get("configured_knowledge_base_ids") or []
+    if executor:
+        payload = {
+            **payload,
+            "_allowed_sop_keys": list(capability.get("configured_sop_keys") or []),
+        }
     result = run_sop(
         text,
         run_payload,

@@ -23,6 +23,8 @@ def build_agent_capability_context(
     - skills: list[{skill_id, name, description}]
     - knowledge_bases: list of visible KB summaries
     - configured_knowledge_base_ids: raw ids bound on the agent
+    - sops: list of visible, published SOP summaries
+    - configured_sop_keys: raw keys bound on the agent
     """
     empty = {
         "prompt": "",
@@ -31,6 +33,9 @@ def build_agent_capability_context(
         "skills": [],
         "knowledge_bases": [],
         "configured_knowledge_base_ids": [],
+        "sop_prompt": "",
+        "sops": [],
+        "configured_sop_keys": [],
         "capability_instructions": "",
     }
     if agent is None:
@@ -52,6 +57,45 @@ def build_agent_capability_context(
 
     skill_prompt = build_skill_system_block(skills).strip()
     instructions = (agent.capability_instructions or "").strip()
+
+    sop_keys = [str(key).strip() for key in (agent.sop_keys or []) if str(key).strip()]
+    sops: list[dict[str, Any]] = []
+    sop_prompt = ""
+    if sop_keys:
+        from django.db.models import Q
+        from apps.orchestration.models import SopDefinition
+
+        rows = SopDefinition.objects.filter(
+            Q(organization=agent.organization) | Q(organization__isnull=True),
+            sop_key__in=sop_keys,
+            status=SopDefinition.Status.PUBLISHED,
+        )
+        by_key = {
+            row.sop_key: row
+            for row in rows
+            if row.organization_id is None
+        }
+        by_key.update({
+            row.sop_key: row
+            for row in rows
+            if row.organization_id == agent.organization_id
+        })
+        sops = [
+            {
+                "key": key,
+                "name": by_key[key].name,
+                "business_domain": by_key[key].business_domain,
+                "description": by_key[key].description,
+                "current_version": by_key[key].current_version,
+            }
+            for key in sop_keys
+            if key in by_key
+        ]
+        if sops:
+            sop_prompt = "已绑定 SOP:\n" + "\n".join(
+                f"- {row['name']} ({row['key']}): {row['description']}".rstrip(": ")
+                for row in sops
+            )
 
     kb_ids = [int(x) for x in (agent.knowledge_base_ids or []) if str(x).strip().isdigit()]
     knowledge_bases: list[dict[str, Any]] = []
@@ -100,6 +144,8 @@ def build_agent_capability_context(
         prompt_parts.append(f"能力调用规则:\n{instructions}")
     if skill_prompt:
         prompt_parts.append(skill_prompt)
+    if sop_prompt:
+        prompt_parts.append(sop_prompt)
     if knowledge_prompt:
         prompt_parts.append(knowledge_prompt)
     if knowledge_bases and not knowledge_prompt:
@@ -113,5 +159,8 @@ def build_agent_capability_context(
         "skills": skills_payload(skills),
         "knowledge_bases": knowledge_bases,
         "configured_knowledge_base_ids": kb_ids,
+        "sop_prompt": sop_prompt,
+        "sops": sops,
+        "configured_sop_keys": sop_keys,
         "capability_instructions": instructions,
     }
