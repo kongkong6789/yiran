@@ -8,9 +8,12 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import ctypes
 import base64
+import threading
+import time
 from ctypes import POINTER, Structure, byref, cast
 from ctypes import wintypes
 from datetime import datetime, timezone
@@ -33,7 +36,10 @@ MAX_AGENT_DIRECTORY_DEPTH = 4
 MAX_AGENT_DIRECTORY_TEXT_CHARS = 60_000
 MAX_AGENT_DIRECTORY_IMAGES = 4
 MAX_AGENT_DIRECTORY_IMAGE_BYTES = 12 * 1024 * 1024
+WINDOWS_SHARE_CACHE_SECONDS = 30
 DOWNLOAD_TICKET_SALT = "liangce.nas.file"
+_WINDOWS_SHARE_CACHE: dict[str, tuple[float, list[str]]] = {}
+_WINDOWS_SHARE_CACHE_LOCK = threading.Lock()
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".csv", ".json", ".jsonl", ".yaml", ".yml", ".log",
     ".ini", ".cfg", ".conf", ".py", ".js", ".jsx", ".ts", ".tsx",
@@ -81,10 +87,51 @@ def _configured_target(user) -> tuple[str, Path | None]:
     raise NasFileError("NAS 配置中没有可访问的网络路径，请检查连接设置", 409)
 
 
-def _list_windows_shares(server: str) -> list[str]:
-    """通过 Windows NetShareEnum 枚举 SMB 服务器的普通磁盘共享。"""
+def _parse_net_view_shares(output: str) -> list[str] | None:
+    lines = output.splitlines()
+    separator_index = next(
+        (index for index, line in enumerate(lines) if re.fullmatch(r"-{3,}", line.strip())),
+        None,
+    )
+    if separator_index is None:
+        return None
+
+    shares: list[str] = []
+    for line in lines[separator_index + 1:]:
+        if "Disk" not in line:
+            continue
+        name = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0].strip()
+        if name and not name.endswith("$"):
+            shares.append(name)
+    return sorted(set(shares), key=str.casefold)
+
+
+def _list_windows_shares_via_net(server: str) -> list[str] | None:
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["net", "view", server],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=creation_flags,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_net_view_shares(result.stdout)
+
+
+def _enumerate_windows_shares(server: str) -> list[str]:
+    """优先使用快速命令枚举 SMB 共享，失败时回退 Windows NetShareEnum。"""
     if sys.platform != "win32":
         raise NasFileError("仅 Windows 服务端支持直接浏览 SMB 服务器根路径", 501)
+
+    command_shares = _list_windows_shares_via_net(server)
+    if command_shares is not None:
+        return command_shares
 
     class SHARE_INFO_1(Structure):
         _fields_ = [
@@ -128,6 +175,25 @@ def _list_windows_shares(server: str) -> list[str]:
     finally:
         if buffer:
             netapi32.NetApiBufferFree(buffer)
+
+
+def _list_windows_shares(server: str) -> list[str]:
+    """短时缓存 SMB 共享枚举，并合并同一时刻的重复慢请求。"""
+    cache_key = server.casefold().rstrip("\\")
+    now = time.monotonic()
+    cached = _WINDOWS_SHARE_CACHE.get(cache_key)
+    if cached and now - cached[0] < WINDOWS_SHARE_CACHE_SECONDS:
+        return list(cached[1])
+
+    with _WINDOWS_SHARE_CACHE_LOCK:
+        now = time.monotonic()
+        cached = _WINDOWS_SHARE_CACHE.get(cache_key)
+        if cached and now - cached[0] < WINDOWS_SHARE_CACHE_SECONDS:
+            return list(cached[1])
+
+        shares = _enumerate_windows_shares(server)
+        _WINDOWS_SHARE_CACHE[cache_key] = (time.monotonic(), list(shares))
+        return shares
 
 
 def _virtual_parts(virtual_path: str) -> list[str]:
@@ -271,17 +337,20 @@ def list_directory(user, virtual_path: str = "/") -> dict[str, Any]:
 
     entries: list[dict[str, Any]] = []
     try:
-        children = sorted(
-            directory.iterdir(),
-            key=lambda item: (not item.is_dir(), item.name.casefold()),
-        )
+        # Path.iterdir() 后再逐项调用 is_dir()/stat() 会在 SMB 上触发大量
+        # 重复网络往返。DirEntry 会复用 Windows 目录枚举返回的属性缓存。
+        with os.scandir(directory) as scanner:
+            children = sorted(
+                scanner,
+                key=lambda item: (not item.is_dir(), item.name.casefold()),
+            )
         for child in children[:MAX_ENTRIES]:
             try:
                 stat = child.stat()
                 is_dir = child.is_dir()
             except (OSError, RuntimeError):
                 continue
-            extension = "" if is_dir else child.suffix.lower()
+            extension = "" if is_dir else Path(child.name).suffix.lower()
             mime_type = "inode/directory" if is_dir else (mimetypes.guess_type(child.name)[0] or "application/octet-stream")
             child_virtual_path = _virtual_child(normalized, child.name)
             preview_kind = "none" if is_dir else _preview_kind(extension, mime_type)
@@ -296,7 +365,7 @@ def list_directory(user, virtual_path: str = "/") -> dict[str, Any]:
                 "mime_type": mime_type,
                 "previewable": preview_kind != "none",
                 "preview_kind": preview_kind,
-                "native_path": str(child),
+                "native_path": child.path,
                 "download_url": download_url,
                 "preview_url": preview_url,
             })

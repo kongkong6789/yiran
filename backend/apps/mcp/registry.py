@@ -111,7 +111,7 @@ REGISTRY: list[McpServerDef] = [
         ],
     ),
     McpServerDef(
-        id="nas", name="NAS 文件库", desc="合同 · 归档 · 附件检索",
+        id="nas", name="NAS 文件库", desc="浏览和检索企业共享目录中的文件与附件",
         layer="协作", transport="stdio", command_env="MCP_NAS_COMMAND", args_env="MCP_NAS_ARGS",
         tools=["list_directory", "read_file", "search_files", "get_metadata"],
     ),

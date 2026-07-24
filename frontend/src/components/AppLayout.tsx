@@ -318,7 +318,9 @@ export default function AppLayout() {
       ? "compact"
       : "full";
   const isFullBleed = FULL_BLEED.has(loc.pathname) || loc.pathname.startsWith("/loops/");
-  const isScrollableFullBleed = loc.pathname === "/agents" || loc.pathname === "/agent-dashboard";
+  const isScrollableFullBleed = loc.pathname === "/connectors"
+    || loc.pathname === "/agents"
+    || loc.pathname === "/agent-dashboard";
 
   const selectedKeys = useMemo(() => {
     const key = navKeyForLocation(loc.pathname, loc.search);

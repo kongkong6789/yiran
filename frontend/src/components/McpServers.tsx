@@ -47,9 +47,9 @@ const COLORS: Record<string, string> = {
 const STATUS_TAG: Record<string, { color: string; text: string }> = {
   unconfigured: { color: "default", text: "未配置" },
   configured: { color: "processing", text: "已配置" },
-  reachable: { color: "success", text: "可连通" },
-  unreachable: { color: "error", text: "不可达" },
-  error: { color: "error", text: "异常" },
+  reachable: { color: "success", text: "连接正常" },
+  unreachable: { color: "error", text: "无法连接" },
+  error: { color: "error", text: "连接异常" },
   disabled: { color: "default", text: "已禁用" },
 };
 
@@ -64,8 +64,8 @@ const SOURCE_LABEL: Record<string, string> = {
 const TRANSPORT_LABEL: Record<string, string> = {
   streamable_http: "HTTP",
   sse: "SSE",
-  stdio: "stdio",
-  openapi: "OpenAPI",
+  stdio: "本地服务",
+  openapi: "开放接口",
 };
 
 const WECOM_JSON_TEMPLATE = `{
@@ -106,10 +106,10 @@ type StatusFilter = "all" | "configured" | "reachable" | "attention";
 type NasDrawerMode = "files" | "settings";
 type ConfigInputMode = "direct" | "import";
 
-const LAYER_DESC: Record<string, string> = {
-  协作: "文档、消息与团队协作服务",
-  感知: "业务数据读取与外部信息感知",
-  终端: "本地文件、桌面环境与执行终端",
+const LAYER_META: Record<string, { title: string; description: string }> = {
+  协作: { title: "协作与文件", description: "企业沟通、共享文件与团队协作" },
+  感知: { title: "业务系统", description: "订单、库存、财务等业务数据" },
+  终端: { title: "本地工具", description: "本地文件、桌面环境与执行能力" },
 };
 
 function mcpStatus(item: Pick<McpServer, "status" | "configured" | "enabled">): McpServer["status"] {
@@ -242,7 +242,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
       applyDetail(saved, openId);
       if (openId === "nas") {
         setNasDrawerMode("files");
-        message.success("NAS 路径已保存，正在打开文件库");
+        message.success("NAS 连接设置已保存，正在打开文件库");
       } else {
         message.success("MCP 配置已保存");
       }
@@ -366,6 +366,11 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
     const color = COLORS[item.id] || "#59c2ff";
     const status = mcpStatus(item);
     const st = STATUS_TAG[status] || STATUS_TAG.unconfigured;
+    const actionLabel = status === "unconfigured"
+      ? "开始配置"
+      : item.id === "nas"
+        ? "打开文件库"
+        : "查看设置";
     return (
       <button
         key={item.id}
@@ -373,7 +378,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         className="mcp-card mcp-card--detailed"
         onClick={() => openServer(item.id)}
         style={{ "--accent": color } as React.CSSProperties}
-        aria-label={`管理${item.name}连接，当前状态：${st.text}`}
+        aria-label={`${actionLabel}${item.name}，当前状态：${st.text}`}
       >
         <span className="mcp-card-icon" style={{ color }}>{ICONS[item.id]}</span>
         <span className="mcp-card-copy">
@@ -395,7 +400,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           </span>
         </span>
         <span className="mcp-card-action">
-          管理连接
+          {actionLabel}
           <ArrowRightOutlined />
         </span>
       </button>
@@ -481,10 +486,10 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
         <section className="connectors-board">
           <div className="connectors-board-head">
             <div>
-              <Typography.Text className="connectors-section-eyebrow">MCP 服务目录</Typography.Text>
+              <Typography.Text className="connectors-section-eyebrow">业务系统与资源</Typography.Text>
               <Typography.Title level={4}>{title}</Typography.Title>
               <Typography.Text type="secondary">
-                按业务层查看可用连接。选择卡片即可配置参数、导入 mcp.json 或探测连通性。
+                连接共享文件、经营系统和外部服务。打开卡片后完成设置，并在使用前检查连接状态。
               </Typography.Text>
             </div>
             <Button icon={<ReloadOutlined />} loading={loading} onClick={load}>刷新状态</Button>
@@ -497,7 +502,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               onClick={() => setStatusFilter("all")}
             >
               <b>{servers.length}</b>
-              <span>平台总数</span>
+              <span>全部连接</span>
             </button>
             <button
               type="button"
@@ -505,7 +510,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               onClick={() => setStatusFilter("configured")}
             >
               <b>{configuredCount}</b>
-              <span>已配置</span>
+              <span>配置完成</span>
             </button>
             <button
               type="button"
@@ -513,7 +518,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               onClick={() => setStatusFilter("reachable")}
             >
               <b>{reachableCount}</b>
-              <span>可连通</span>
+              <span>连接正常</span>
             </button>
             <button
               type="button"
@@ -521,7 +526,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               onClick={() => setStatusFilter("attention")}
             >
               <b>{attentionCount}</b>
-              <span>待处理</span>
+              <span>需要处理</span>
             </button>
           </div>
 
@@ -531,24 +536,24 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               prefix={<SearchOutlined />}
-              placeholder="搜索平台、能力或协议"
-              aria-label="搜索平台连接器"
+              placeholder="搜索连接器、用途或接入方式"
+              aria-label="搜索企业连接器"
             />
             <Segmented
               value={statusFilter}
               onChange={(value) => setStatusFilter(value as StatusFilter)}
               options={[
                 { label: "全部", value: "all" },
-                { label: "已配置", value: "configured" },
-                { label: "可连通", value: "reachable" },
-                { label: "待处理", value: "attention" },
+                { label: "配置完成", value: "configured" },
+                { label: "连接正常", value: "reachable" },
+                { label: "需要处理", value: "attention" },
               ]}
             />
             <Typography.Text type="secondary">{filteredServers.length} 个结果</Typography.Text>
           </div>
 
           {loading && !servers.length ? (
-            <div className="connectors-loading" aria-label="正在加载平台连接器">
+            <div className="connectors-loading" aria-label="正在加载业务连接器">
               <Skeleton active paragraph={{ rows: 4 }} />
             </div>
           ) : filteredServers.length ? (
@@ -560,8 +565,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                   <div key={layer} className="connectors-layer">
                     <div className="connectors-layer-head">
                       <div>
-                        <Typography.Title level={5} className="connectors-layer-title">{layer}</Typography.Title>
-                        <Typography.Text type="secondary">{LAYER_DESC[layer] || "外部业务系统与能力服务"}</Typography.Text>
+                        <Typography.Title level={5} className="connectors-layer-title">
+                          {LAYER_META[layer]?.title || layer}
+                        </Typography.Title>
+                        <Typography.Text type="secondary">
+                          {LAYER_META[layer]?.description || "外部业务系统与能力服务"}
+                        </Typography.Text>
                       </div>
                       <Typography.Text type="secondary">{items.length} 个连接</Typography.Text>
                     </div>
@@ -602,7 +611,10 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
 
       <Drawer
         title={detail ? (isNas ? (
-          <span className="nas-drawer-title"><HddOutlined /> NAS 文件资源管理器</span>
+          <span className="nas-drawer-title">
+            <HddOutlined />
+            {nasDrawerMode === "files" ? "NAS 文件库" : "设置 NAS 文件库"}
+          </span>
         ) : isNativeOpenApi ? `${detail.name} · 连接配置` : `${detail.name} · MCP 配置`) : "连接配置"}
         open={!!openId}
         onClose={() => {
@@ -613,7 +625,7 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
           form.resetFields();
         }}
         width={isNas ? "min(1180px, calc(100vw - 24px))" : 560}
-        className={isNas ? "nas-explorer-drawer" : "mcp-config-drawer"}
+        className={isNas ? `nas-explorer-drawer nas-explorer-drawer--${nasDrawerMode}` : "mcp-config-drawer"}
         extra={
           detail && isNas && nasDrawerMode === "files" ? (
             <Space>
@@ -622,8 +634,12 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
             </Space>
           ) : detail && isNas ? (
             <Space>
-              <Button onClick={() => setNasDrawerMode("files")}>返回文件库</Button>
-              <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={detail.can_manage === false} onClick={doSave}>连接并打开</Button>
+              <Button onClick={() => setNasDrawerMode("files")}>
+                {detail.configured ? "返回文件库" : "取消"}
+              </Button>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={detail.can_manage === false} onClick={doSave}>
+                保存并打开
+              </Button>
             </Space>
           ) : detail ? (
             <Button
@@ -655,25 +671,37 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                   {ICONS[detail.id] || <ApiOutlined />}
                 </span>
                 <div className="mcp-config-summary-copy">
-                  <strong>{detail.name}</strong>
-                  <span>{detail.desc}</span>
+                  <strong>{isNas ? "企业 NAS 文件库" : detail.name}</strong>
+                  <span>{isNas ? "连接企业共享目录，用于浏览、检索和引用文件" : detail.desc}</span>
                   <small>
-                    {detail.layer} · {TRANSPORT_LABEL[detail.transport] || detail.transport} · {SOURCE_LABEL[detail.config_source] || detail.config_source}
+                    {isNas
+                      ? "企业级配置 · Windows 网络路径"
+                      : `${detail.layer} · ${TRANSPORT_LABEL[detail.transport] || detail.transport} · ${SOURCE_LABEL[detail.config_source] || detail.config_source}`}
                   </small>
                 </div>
-                <Form.Item name="enabled" valuePropName="checked" noStyle>
-                  <Switch size="small" aria-label="启用连接器" />
-                </Form.Item>
+                <span className="mcp-config-enable">
+                  <span>{isNas ? "启用文件库" : "启用"}</span>
+                  <Form.Item name="enabled" valuePropName="checked" noStyle>
+                    <Switch aria-label={`启用${detail.name}`} />
+                  </Form.Item>
+                </span>
               </section>
 
               <Alert
-                type={detail.can_manage === false ? "info" : "success"}
+                type={isNas || detail.can_manage === false ? "info" : "success"}
                 showIcon
-                style={{ marginBottom: 12 }}
-                message={`当前企业：${detail.organization_name || "未加入企业"}`}
-                description={detail.can_manage === false
-                  ? "该连接由企业管理员统一维护，你可以使用但不能修改。"
-                  : "此处保存的连接配置只对当前企业生效，切换企业后会加载对应企业的配置。"}
+                message={isNas
+                  ? (detail.can_manage === false
+                    ? "此文件库由企业管理员统一维护"
+                    : `配置仅对「${detail.organization_name || "当前企业"}」生效`)
+                  : `当前企业：${detail.organization_name || "未加入企业"}`}
+                description={isNas
+                  ? (detail.can_manage === false
+                    ? "你可以使用该文件库，但不能修改连接设置。"
+                    : "切换企业后，将自动加载对应企业的文件库配置。")
+                  : (detail.can_manage === false
+                    ? "该连接由企业管理员统一维护，你可以使用但不能修改。"
+                    : "此处保存的连接配置只对当前企业生效，切换企业后会加载对应企业的配置。")}
               />
 
               {!!detail.hints?.length && (
@@ -717,28 +745,36 @@ export default function McpServers({ variant = "dock", title = "MCP 业务接入
                 <section className="mcp-config-section">
                   <div className="mcp-config-section-head">
                     <div>
-                      <strong>NAS 网络路径</strong>
-                      <span>支持服务器根路径、盘符或绝对目录</span>
+                      <strong>共享目录</strong>
+                      <span>填写可访问的 UNC 网络路径或本机绝对路径。</span>
                     </div>
                   </div>
                   <Form.Item
+                    label="目录路径"
                     name="nas_path"
                     rules={[
-                      { required: true, whitespace: true, message: "请输入 NAS 网络路径" },
+                      { required: true, whitespace: true, message: "请输入共享目录路径" },
                       {
                         validator: (_, value?: string) => {
                           const path = value?.trim() || "";
                           const valid = /^\\\\[^\\]+/.test(path) || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/");
                           return valid
                             ? Promise.resolve()
-                            : Promise.reject(new Error("请输入 \\\\服务器、盘符路径或绝对目录"));
+                            : Promise.reject(new Error("请输入 UNC 网络路径、本机盘符路径或绝对目录"));
                         },
                       },
                     ]}
                   >
-                    <Input size="large" placeholder="\\\\192.168.0.188" allowClear autoFocus />
+                    <Input
+                      size="large"
+                      placeholder={String.raw`例如：\\192.168.0.188\共享文件夹`}
+                      allowClear
+                      autoFocus
+                    />
                   </Form.Item>
-                  <p className="mcp-config-note">使用运行良策后端的 Windows 账户访问；已在资源管理器登录时通常无需再次输入密码。</p>
+                  <p className="mcp-config-note">
+                    访问权限取决于运行良策服务的 Windows 账户。保存前，请先在资源管理器中确认该目录可以打开。
+                  </p>
                 </section>
               ) : isJackyun ? (
                 <section className="mcp-config-section">

@@ -38,13 +38,13 @@ export default function Connectors() {
           <div className="connectors-hero-copy">
             <div className="page-hero-kicker">
               <ApiOutlined />
-              Capability Connect
+              企业连接
             </div>
             <Typography.Title level={3} className="page-hero-title">
               连接中心
             </Typography.Title>
             <Typography.Paragraph type="secondary" className="page-hero-desc">
-              把企业协作、业务系统与 Agent 能力接入同一个工作台。集中查看连接状态，按需配置，并在使用前完成连通性验证。
+              统一连接企业微信、共享文件和业务系统。完成配置后，Agent 可在授权范围内读取信息、发送通知或执行任务。
             </Typography.Paragraph>
           </div>
 
@@ -53,9 +53,9 @@ export default function Connectors() {
               <SafetyCertificateOutlined />
             </span>
             <div>
-              <Typography.Text strong>配置跟随当前企业</Typography.Text>
+              <Typography.Text strong>配置按企业隔离</Typography.Text>
               <Typography.Text type="secondary">
-                密钥、地址与连接参数按企业隔离，切换企业后自动加载对应配置
+                地址、密钥和连接状态仅对当前企业生效，切换企业后自动加载对应配置
               </Typography.Text>
             </div>
           </div>
@@ -70,7 +70,7 @@ export default function Connectors() {
               </Typography.Title>
             </div>
             <Typography.Text type="secondary">
-              先完成通知渠道配置，Agent 才能把任务结果送到正确的人和群聊。
+              配置通知与组织协作渠道，让 Agent 把任务进展和结果发送给指定成员或群聊。
             </Typography.Text>
           </div>
 
@@ -83,7 +83,7 @@ export default function Connectors() {
                   <Tag color="green" bordered={false}>推荐接入</Tag>
                 </Space>
                 <Typography.Text type="secondary">
-                  连接自建应用、回调服务与群聊机器人，承接任务通知、成员同步和事件回传。
+                  连接企业微信自建应用和群机器人，用于任务通知、成员同步与事件回传。
                 </Typography.Text>
                 <div className="wecom-connector-card__features" aria-label="企业微信连接能力">
                   <span><CheckCircleOutlined /> 任务通知</span>
@@ -98,7 +98,7 @@ export default function Connectors() {
           </Card>
         </section>
 
-        <McpServers variant="page" title="平台连接器" />
+        <McpServers variant="page" title="业务连接器" />
       </div>
 
       <WeComConfigModal open={weComOpen} onClose={closeWeCom} initialTab={initialWeComTab} />

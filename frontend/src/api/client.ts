@@ -2132,7 +2132,10 @@ export interface NasFilePreview {
 }
 
 export const getNasDirectory = (path = "/") =>
-  api.get<NasDirectoryResult>("/mcp/servers/nas/files/", { params: { path } }).then((r) => r.data);
+  api.get<NasDirectoryResult>("/mcp/servers/nas/files/", {
+    params: { path },
+    timeout: 45000,
+  }).then((r) => r.data);
 
 export const getNasFilePreview = (path: string) =>
   api.get<NasFilePreview>("/mcp/servers/nas/files/preview/", { params: { path } }).then((r) => r.data);

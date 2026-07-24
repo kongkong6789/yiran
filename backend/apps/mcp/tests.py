@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,6 +12,7 @@ from rest_framework.test import APIClient
 
 from apps.core.models import OrganizationMembership
 from apps.core.organizations import assign_user_to_organization, create_personal_organization
+from . import nas_files
 from .models import McpServerConfig
 from .nas_files import (
     NasFileError,
@@ -83,6 +86,61 @@ class NasFileServiceTests(SimpleTestCase):
         self.assertEqual(payload["root_name"], "192.168.0.188")
         self.assertEqual([item["name"] for item in payload["entries"]], ["amuse", "财务部"])
         self.assertTrue(all(item["kind"] == "folder" for item in payload["entries"]))
+
+    def test_windows_share_enumeration_uses_short_lived_cache(self):
+        nas_files._WINDOWS_SHARE_CACHE.clear()
+        self.addCleanup(nas_files._WINDOWS_SHARE_CACHE.clear)
+
+        with patch(
+            "apps.mcp.nas_files._enumerate_windows_shares",
+            return_value=["amuse", "财务部"],
+        ) as enumerate_shares:
+            first = nas_files._list_windows_shares(r"\\cache-test")
+            second = nas_files._list_windows_shares(r"\\cache-test")
+
+        self.assertEqual(first, ["amuse", "财务部"])
+        self.assertEqual(second, first)
+        enumerate_shares.assert_called_once_with(r"\\cache-test")
+
+    def test_parse_net_view_shares(self):
+        output = "\n".join([
+            "Share name   Type   Used as  Comment",
+            "------------------------------------",
+            "IT           Disk",
+            "财务 资料      Disk",
+            "ADMIN$       Disk",
+            "The command completed successfully.",
+        ])
+
+        self.assertEqual(
+            nas_files._parse_net_view_shares(output),
+            ["IT", "财务 资料"],
+        )
+
+    def test_concurrent_windows_share_enumeration_is_coalesced(self):
+        nas_files._WINDOWS_SHARE_CACHE.clear()
+        self.addCleanup(nas_files._WINDOWS_SHARE_CACHE.clear)
+        started = Event()
+        release = Event()
+
+        def enumerate_shares(_server):
+            started.set()
+            release.wait(timeout=2)
+            return ["共享目录"]
+
+        with patch(
+            "apps.mcp.nas_files._enumerate_windows_shares",
+            side_effect=enumerate_shares,
+        ) as enumerate_mock:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(nas_files._list_windows_shares, r"\\concurrent-test")
+                self.assertTrue(started.wait(timeout=1))
+                second = pool.submit(nas_files._list_windows_shares, r"\\concurrent-test")
+                release.set()
+                self.assertEqual(first.result(timeout=2), ["共享目录"])
+                self.assertEqual(second.result(timeout=2), ["共享目录"])
+
+        enumerate_mock.assert_called_once_with(r"\\concurrent-test")
 
     def test_agent_reads_explicit_nas_path_without_upload(self):
         user = SimpleNamespace(id=17)
